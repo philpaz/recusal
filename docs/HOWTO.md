@@ -45,14 +45,24 @@ tool call before it executes. Gather whatever evidence proves the call is safe, 
 verdict, and on a non-PASS verdict hand Claude an `is_error` tool_result, it self-corrects.
 
 ```python
+import os
 from recusal import Finding
 from recusal.claude import gate_tool_use
 
+SAFE_ROOT = os.path.abspath("/workspace/tmp")
+
 def gather_evidence(tool):
     # Whatever proves THIS call is safe: preconditions, policy, a dry-run, an allowlist.
-    if tool.name == "delete_file" and not tool.input["path"].startswith("/workspace/tmp/"):
-        return [Finding.fail("path_allowlist", severity="CRITICAL",
-                             message=f"{tool.input['path']} is outside /workspace/tmp/")]
+    # commonpath, not startswith: "/workspace/tmp_evil" would slip past startswith.
+    if tool.name == "delete_file":
+        target = os.path.abspath(tool.input["path"])
+        try:
+            inside = os.path.commonpath([SAFE_ROOT, target]) == SAFE_ROOT
+        except ValueError:  # different drives on Windows
+            inside = False
+        if not inside:
+            return [Finding.fail("path_allowlist", severity="CRITICAL",
+                                 message=f"{tool.input['path']} is outside {SAFE_ROOT}")]
     return [Finding.ok("path_allowlist", severity="CRITICAL")]
 
 # inside the manual loop, for each tool_use block:

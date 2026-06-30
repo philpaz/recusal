@@ -19,6 +19,8 @@ jobs:
     name: Build distributions
     runs-on: ubuntu-latest
     steps:
+      # Actions are tag-pinned (reference-architecture convention). For production
+      # supply-chain hardening, pin each `uses:` to an immutable commit SHA.
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

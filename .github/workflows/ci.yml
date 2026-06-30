@@ -13,6 +13,8 @@ jobs:
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
+      # Actions are tag-pinned (reference-architecture convention). For production
+      # supply-chain hardening, pin each `uses:` to an immutable commit SHA.
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

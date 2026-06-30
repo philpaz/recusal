@@ -11,9 +11,11 @@ Severity is chosen by consequence: a wrong-target write or exfiltration is CRITI
 volume is WARNING (allow, but record it).
 """
 
+import os
+
 from recusal import Finding
 
-SAFE_PATH = "/workspace/tmp/"
+SAFE_PATH = os.path.abspath("/workspace/tmp")
 EMAIL_ALLOWLIST = {"acme.com"}
 
 
@@ -36,7 +38,12 @@ def wrong_subject(tool_input: dict, active_id: str) -> list:
 def destructive_path(tool_input: dict) -> list:
     """A file delete/write must stay inside the safe path."""
     path = tool_input.get("path", "")
-    if not path.startswith(SAFE_PATH):
+    target = os.path.abspath(path)
+    try:  # commonpath, not startswith ("/workspace/tmp_evil" would slip past startswith)
+        inside = os.path.commonpath([SAFE_PATH, target]) == SAFE_PATH
+    except ValueError:  # different drives on Windows
+        inside = False
+    if not inside:
         return [
             Finding.fail(
                 "path_allowlist",
