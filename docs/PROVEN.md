@@ -57,6 +57,29 @@ strips your existing prompts.
 [`tests/test_dogfood.py`](../tests/test_dogfood.py) loads this exact policy and asserts the
 refusals (and the defers), so the proof cannot silently rot — every CI run re-proves it.
 
+## Proven again — a real bug in a real system
+
+Recusal is also wired into a **production FastAPI agent backend** (a relationship agent
+with confirm-gated CRM writes) to close a named audit finding — **wrong-subject write**:
+the agent could stage a write against a *different* member than the conversation was about,
+and the human confirm card would wave it through.
+
+A subject-match guard at the confirm endpoint adjudicates the write with Recusal's
+`compute_verdict` — the write must target the member who was active when it was proposed.
+Real output from the wired guard:
+
+```text
+wrong subject  -> write targets C-9988 but the active member this turn is C1001   (refused)
+right subject  -> None                                                            (allowed)
+no active mbr  -> None                                                            (fail-open)
+```
+
+On a mismatch the confirm endpoint returns `409 Refused by subject guard …` and the CRM
+write never executes. It is proven by tests against the live endpoint, and the service's
+existing confirm/CRM tests (27) still pass — a deterministic, independent verifier catching
+a real, named bug with **zero regression**. The integration is intentionally fail-open and
+treats Recusal as an optional dependency, so it can never block a previously-working flow.
+
 ## Honest scope
 
 This proves the **enforcement path** end to end on the real wire format: a real hook, the
