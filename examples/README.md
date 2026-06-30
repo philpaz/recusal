@@ -1,7 +1,7 @@
 # Examples
 
 Runnable demos of Recusal. The offline ones need **no API key** and are exactly what CI
-runs (and what the screenshots come from); run any of them straight from a clone:
+runs (capture any of them for a demo screenshot); run any of them straight from a clone:
 
 ```bash
 git clone https://github.com/philpaz/recusal && cd recusal

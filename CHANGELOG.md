@@ -24,8 +24,8 @@ All notable changes to this project are documented here. The format follows
   append-only JSONL record of every verdict; any later edit, deletion, or reorder is
   detected. Maps to OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
 - **Deterministic failure classifier**: `recusal.classify` (`classify_failure`,
-  `classify_verdict`): routes a failure to a class + remediation channel (transient,
-  policy_violation, prompt_injection, code_bug, data_shape, data_missing, spec_ambiguity)
+  `classify_verdict`): routes a failure to a class + remediation channel (policy_violation,
+  prompt_injection, transient, code_bug, data_shape, data_missing, spec_ambiguity)
   by explicit markers; extensible taxonomy, never guesses.
 - **Dogfood**: Recusal governs its own repository via a real Claude Code hook; verbatim,
   reproducible, CI-locked proof in `docs/PROVEN.md`.

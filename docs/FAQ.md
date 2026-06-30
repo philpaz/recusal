@@ -28,7 +28,7 @@ review on high-stakes infrastructure"* and carries an acknowledged 17% false-neg
 In *Trustworthy agents in practice* Anthropic also says the security of agents *"cannot be achieved by any single company"*,
 an explicit invitation for an **independent** verifier.
 
-That's the gap Recusal fills. The builder and an in-family reviewer share training data,
+That's the gap Recusal aims at. The builder and an in-family reviewer share training data,
 share blind spots, and can be argued out of a refusal by the same reasoning that produced
 the action. Recusal puts **no model in the decision path**, so it can't be talked into it.
 And a Claude Code `PreToolUse` `deny` from Recusal is honored **even under
@@ -39,7 +39,7 @@ And a Claude Code `PreToolUse` `deny` from Recusal is honored **even under
 An autonomous loop is *generate → act → observe → repeat*, often dozens of tool calls
 deep with no human between steps. The thing generating each action is also, in most
 stacks, the only thing judging whether it's safe. That's a builder grading its own work,
-the single most common way autonomous agents fail (they declare success, confidently, on
+a common and well-documented way autonomous agents fail (they declare success, confidently, on
 work that doesn't hold; see the Anthropic `sys.exit(0)` study and the UC Berkeley 100%-by-
 cheating result in [`WHY.md` §2](WHY.md)). Recusal inserts an **independent, deterministic
 gate** into that loop:
@@ -76,16 +76,16 @@ folds those findings into one verdict. See [`HOWTO.md`](HOWTO.md) and
 - **Observability** (Langfuse, AgentOps) **records** what happened, zero authority to stop
   anything.
 
-Recusal is the small piece none of them are: an independent authority *in* the action path
+Recusal aims at the piece those tools leave out: an independent authority *in* the action path
 that can say **no**. Full comparison: [`LANDSCAPE.md`](LANDSCAPE.md).
 
-## Is it production-ready? What's the maturity?
+## Is it ready to use? What's the maturity?
 
 It's early (`0.x`, Alpha) and honest about scope. What's proven end-to-end **today**: the
 enforcement path on the real wire format, a real Claude Code hook, the real `PreToolUse`
 JSON, a real `deny` Claude Code honors, and it governs *this* repository's own
 development. See [`PROVEN.md`](PROVEN.md). What it does not yet claim: fleet-scale
-production deployment. The core is zero-dependency stdlib and frozen/immutable by design,
+deployment. The core is zero-dependency stdlib and frozen/immutable by design,
 which is exactly what you want from the part allowed to refuse.
 
 ## What are the dependencies? What Python versions?

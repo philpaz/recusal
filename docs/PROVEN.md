@@ -57,16 +57,17 @@ strips your existing prompts.
 [`tests/test_dogfood.py`](../tests/test_dogfood.py) loads this exact policy and asserts the
 refusals (and the defers), so the proof cannot silently rot, every CI run re-proves it.
 
-## Proven again, a real bug in a real system
+## A reference architecture: catching a real bug
 
-Recusal is also wired into a **production FastAPI agent backend** (a relationship agent
-with confirm-gated CRM writes) to close a named audit finding, **wrong-subject write**:
-the agent could stage a write against a *different* member than the conversation was about,
-and the human confirm card would wave it through.
+Recusal also ships as a **reference integration** showing how to wire it into an agent: a
+FastAPI agent (a relationship agent with confirm-gated CRM writes) where a subject-match
+guard closes a named audit finding, **wrong-subject write**. The agent could stage a write
+against a *different* member than the conversation was about, and the human confirm card
+would wave it through.
 
-A subject-match guard at the confirm endpoint adjudicates the write with Recusal's
-`compute_verdict`, the write must target the member who was active when it was proposed.
-Real output from the wired guard:
+The guard sits at the confirm endpoint and adjudicates the write with Recusal's
+`compute_verdict`: the write must target the member who was active when it was proposed.
+Output from the wired guard:
 
 ```text
 wrong subject  -> write targets C-9988 but the active member this turn is C1001   (refused)
@@ -75,16 +76,17 @@ no active mbr  -> None                                                          
 ```
 
 On a mismatch the confirm endpoint returns `409 Refused by subject guard …` and the CRM
-write never executes. It is proven by tests against the live endpoint, and the service's
-existing confirm/CRM tests (27) still pass, a deterministic, independent verifier catching
-a real, named bug with **zero regression**. The integration is intentionally fail-open and
-treats Recusal as an optional dependency, so it can never block a previously-working flow.
+write never executes. This is a reference pattern, not a deployment claim: it lives in a
+separate private codebase and is not reproducible from this repo, and the integration is
+intentionally fail-open (Recusal is an optional dependency), so it can never block a
+previously-working flow. What it demonstrates is the pattern: a deterministic, independent
+guard catching a real, named wrong-subject bug before the write runs.
 
 ## Honest scope
 
 This proves the **enforcement path** end to end on the real wire format: a real hook, the
-real PreToolUse JSON, a real `deny` that Claude Code honors. It does not yet claim
-production scale or deployment across a fleet, those are on the roadmap (tamper-evident
+real PreToolUse JSON, a real `deny` that Claude Code honors. It does not claim
+deployment at fleet scale, that is on the roadmap (tamper-evident
 audit logging already ships in `recusal.audit`). What it does claim is true: Recusal
 refuses real, dangerous tool calls in the tool people actually use, and it does so to its
 own maintainers first.

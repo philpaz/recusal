@@ -6,9 +6,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 ## Start here
 
 - **[FAQ](FAQ.md)**: the questions people ask before adopting: *do I need this? doesn't
-  Claude already do it? is it production-ready?* The fastest orientation.
+  Claude already do it? is it ready to use?* The fastest orientation.
 - **[WHY](WHY.md)**: the long-form "so what," written for the people who own the decision
-  to run agents in production (engineering, platform/SRE, risk/compliance).
+  to run agents that take real actions (engineering, platform/SRE, risk/compliance).
 - **[../README](../README.md)**: the project overview, install, and copy-paste integrations.
 
 ## Understand the design

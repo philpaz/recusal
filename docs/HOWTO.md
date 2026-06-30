@@ -149,8 +149,9 @@ elif c.route == "ask-human":
     ...                                    # ambiguous, escalate
 ```
 
-Default classes (order is precedence): `transient`, `policy_violation`, `prompt_injection`,
-`code_bug`, `data_shape`, `data_missing`, `spec_ambiguity`. Unmatched failures fall back to
+Default classes (order is precedence, security-critical first): `policy_violation`,
+`prompt_injection`, `transient`, `code_bug`, `data_shape`, `data_missing`, `spec_ambiguity`.
+Unmatched failures fall back to
 `ask-human`, it never guesses. See `examples/classify_demo.py`.
 
 ## Patterns & choices

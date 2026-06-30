@@ -1,6 +1,6 @@
 <!--
 Thanks for contributing to Recusal. Keeping the kernel small and deterministic is
-the whole point — please make sure your change fits the constitution before opening.
+the whole point, please make sure your change fits the constitution before opening.
 -->
 
 ## What this changes
@@ -14,7 +14,7 @@ the whole point — please make sure your change fits the constitution before op
 - [ ] New failure-taxonomy class
 - [ ] Bug fix (wrong verdict / misfiring gate / crash)
 - [ ] Docs / examples
-- [ ] Core change (please justify — these are rare)
+- [ ] Core change (please justify, these are rare)
 
 ## Constitution checklist
 

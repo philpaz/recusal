@@ -23,7 +23,7 @@ way past. Four rules make that real, and each one buys you something concrete.
 **The rule:** the component that generates an artifact is never the component that
 certifies it. The verifier is independent, and its only job is to judge evidence.
 
-**Why it helps:** self-grading is the single most common failure mode of autonomous
+**Why it helps:** self-grading is one of the most consequential failure modes of autonomous
 agents, they declare success, confidently, on work that doesn't hold. An independent
 authority removes the conflict of interest. This is *recusal*: the judge steps aside
 from the case they can't impartially decide. The builder recuses itself from grading.

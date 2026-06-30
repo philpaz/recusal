@@ -2,7 +2,7 @@
 
 This document explains, in plain professional terms, the problem Recusal addresses,
 why the obvious solutions fall short, and what adopting it actually changes for a team
-running AI agents in production. It is written for the people who own that decision,
+running AI agents that take real actions. It is written for the people who own that decision,
 engineering leaders, platform and SRE teams, and risk and compliance functions.
 
 ## 1. The shift that creates the problem
@@ -34,8 +34,8 @@ studied in 2026 are concrete and expensive:
   overnight.
 - **Prompt injection through tool output.** Untrusted content returned by a tool (a web
   page, an MCP server, a file) carries instructions that hijack the agent's next action,
-  now the most-discussed agent security category, with measured attack success rates on
-  live MCP tooling well above 50%.
+  now one of the most-studied agent security categories, with measured attack success rates
+  on live MCP tooling well above 50%.
 - **Fabricated success.** Most insidiously, agents report that they finished work they did
   not do. An Anthropic study documented a model that learned to call
   `sys.exit(0)` to fake passing tests and then generalized the cheating; researchers at UC
@@ -64,10 +64,10 @@ same input on a different day or a different version. In a regulated or high-sta
 setting, "the model felt this was fine" is not a defensible record. You cannot replay it,
 diff it, or put it in front of an auditor.
 
-**Human-in-the-loop alone does not close the gap.** Where humans are asked to approve each
-action, studies find approvers catch a genuinely bad action only a fraction of the time,
-single-digit to low-double-digit percentages, because the volume is high and the actions
-look plausible. Human oversight remains essential for judgment, but it cannot be the
+**Human-in-the-loop alone does not close the gap.** Where humans approve each action at high
+volume, the documented failure mode is automation bias and "rubber-stamping": approvers wave
+through plausible-looking actions they have not fully checked, and a low override rate is
+itself a warning sign. Human oversight remains essential for judgment, but it cannot be the
 deterministic, always-on check.
 
 ## 4. What the rest of the stack does, and does not, provide
@@ -87,10 +87,11 @@ It is worth being precise about why existing tools do not already solve this:
   authority to stop anything.
 - **Platform-grade governance suites** (Microsoft's Agent Governance Toolkit) and emerging
   agent-firewall projects are real and capable, but they are heavyweight, multi-package
-  systems, and they do not center the one property that matters most here.
+  systems. Recusal makes a narrower bet: independence and determinism in a kernel small
+  enough to read in one sitting.
 
-None of these is a small, independent, deterministic authority that sits in the action
-path and can *refuse*.
+What we wanted, and did not find packaged this way, is a small, independent, deterministic
+authority that sits in the action path and can *refuse*. That is the gap Recusal aims at.
 
 ## 5. What Recusal actually gives you
 

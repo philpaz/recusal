@@ -35,8 +35,8 @@ auto-mode safety layer is a same-family classifier with an admitted 17% false-ne
 and Anthropic says plainly it is *"not a drop-in replacement for careful human review on
 high-stakes infrastructure."*
 
-Recusal is the **independent, deterministic** authority that can't be talked into it,
-no model in the decision path, a verdict you can replay and audit, and a refusal that holds
+Recusal is **an** independent, deterministic authority with no model in the decision path,
+a verdict you can replay and audit, and a refusal that holds
 (a Claude Code `deny` is honored even under `bypassPermissions`).
 
 ---
@@ -249,10 +249,10 @@ Default taxonomy (extend or replace it): `transient → retry` · `policy_violat
 - **Eval libraries** (promptfoo, DeepEval, Haize's Verdict) *score offline*, usually with an LLM-as-judge, the probabilistic opposite of a deterministic gate.
 - **Observability** (Langfuse, AgentOps) *records*, zero authority to stop anything.
 - **Anthropic's auto mode** is a *same-family classifier* grading the same family, exactly the conflict of interest this exists to remove.
-- The newer **agent-firewall** projects (e.g. AEGIS) and **Microsoft's Agent Governance Toolkit** are real peers. Recusal's bet is not feature parity, it's **independence** (a verifier the builder cannot influence), determinism, and a kernel small enough to trust on sight.
+- The newer **agent-firewall** projects (e.g. AEGIS) and **Microsoft's Agent Governance Toolkit** are real peers. Recusal's bet is not feature parity, it's **independence** (a verifier the builder cannot influence) and a kernel small enough to trust on sight.
 
 **New here?** The quick objections, *do I need this? doesn't Claude already do it? is it
-production-ready?*, are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
+ready to use?*, are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
 what": [`docs/WHY.md`](docs/WHY.md).
 
 **Full documentation index: [`docs/`](docs/README.md).** Comparison with the landscape:
