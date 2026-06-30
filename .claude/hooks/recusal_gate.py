@@ -39,6 +39,19 @@ _DESTRUCTIVE = (
 _CHMOD_WORLD = re.compile(r"\bchmod\b.*-\w*r.*\b0?777\b")  # recursive chmod to 777
 _GIT_FORCE_REFSPEC = re.compile(r"\bgit\s+push\b.*\s\+\S")  # force-push via +refspec
 _PIPE_TO_SHELL = re.compile(r"(curl|wget)\b.*(\|\s*(sh|bash)\b|<\(\s*(curl|wget))")
+_PROCESS_SUB_TO_SHELL = re.compile(r"\b(sh|bash)\b\s*<\(\s*(curl|wget)\b")
+# Piping ANY output into a bare shell interpreter (defeats `... | base64 -d | sh`).
+_PIPE_INTO_SHELL = re.compile(r"\|\s*(sh|bash|zsh|dash)\b")
+# Destructive commands beyond rm: POSIX (shred, find -delete, truncate -s 0) and
+# Windows/PowerShell (rd/rmdir /s, del /s|/q, Remove-Item -Recurse).
+_EXTRA_DESTRUCTIVE = re.compile(
+    r"\bshred\b"
+    r"|\bfind\b[^|&;]*\s-delete\b"
+    r"|\btruncate\b[^|&;]*-s\s*0\b"
+    r"|\b(rd|rmdir)\b[^|&;]*\s/s\b"
+    r"|\bdel\b[^|&;]*\s/[sq]\b"
+    r"|\bremove-item\b[^|&;]*-recurse\b"
+)
 _REDIRECT_TO_SECRET = re.compile(
     r">>?\s*\S*(\.env(?:\.[^\s'\"/\\]+)?|\.pem|\.key|\.p12|id_rsa|id_ed25519)"
 )
@@ -59,6 +72,12 @@ def _norm(cmd: str) -> str:
     return re.sub(r"\s+", " ", cmd).strip().lower()
 
 
+def _deobfuscate(cmd: str) -> str:
+    # Catch simple token-splitting obfuscations: r''m, g""it, cu\rl, rm${IFS}-rf, etc.
+    s = cmd.replace("'", "").replace('"', "").replace("`", "").replace("\\", "")
+    return re.sub(r"\$\{?ifs\}?", " ", s)  # $IFS / ${IFS} word-splitting -> space
+
+
 def _rm_recursive_force(cmd: str) -> bool:
     """True if the command is an `rm` with both recursive and force, any flag order."""
     if not re.search(r"\brm\b", cmd):
@@ -76,14 +95,17 @@ def policy(tool_name: str, tool_input: dict) -> list:
     if tool_name == "Bash":
         raw = str(tool_input.get("command", ""))
         cmd = _norm(raw)
+        cmd_deobf = _deobfuscate(cmd)
         cmd_paths = re.sub(r"/+", "/", cmd.replace("\\", "/"))
-        markers = [m for m in _DESTRUCTIVE if m in cmd]
-        if _rm_recursive_force(cmd):
+        markers = [m for m in _DESTRUCTIVE if m in cmd or m in cmd_deobf]
+        if _rm_recursive_force(cmd) or _rm_recursive_force(cmd_deobf):
             markers.append("rm -rf")
-        if _CHMOD_WORLD.search(cmd):
+        if _CHMOD_WORLD.search(cmd) or _CHMOD_WORLD.search(cmd_deobf):
             markers.append("chmod -R 777")
-        if _GIT_FORCE_REFSPEC.search(cmd):
+        if _GIT_FORCE_REFSPEC.search(cmd) or _GIT_FORCE_REFSPEC.search(cmd_deobf):
             markers.append("git push +force")
+        if _EXTRA_DESTRUCTIVE.search(cmd) or _EXTRA_DESTRUCTIVE.search(cmd_deobf):
+            markers.append("destructive")
         if markers:
             findings.append(
                 Finding.fail(
@@ -93,12 +115,19 @@ def policy(tool_name: str, tool_input: dict) -> list:
                     command=raw,
                 )
             )
-        if _PIPE_TO_SHELL.search(cmd):
+        if (
+            _PIPE_TO_SHELL.search(cmd)
+            or _PIPE_TO_SHELL.search(cmd_deobf)
+            or _PROCESS_SUB_TO_SHELL.search(cmd)
+            or _PROCESS_SUB_TO_SHELL.search(cmd_deobf)
+            or _PIPE_INTO_SHELL.search(cmd)
+            or _PIPE_INTO_SHELL.search(cmd_deobf)
+        ):
             findings.append(
                 Finding.fail(
                     "pipe_to_shell",
                     severity="CRITICAL",
-                    message="refusing to pipe a network download straight into a shell",
+                    message="refusing to pipe output straight into a shell interpreter",
                     command=raw,
                 )
             )
