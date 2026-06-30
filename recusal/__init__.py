@@ -29,6 +29,7 @@ authority. (See CONSTITUTION.md.)
 Zero runtime dependencies — standard library only.
 """
 
+from .audit import AuditLog, verify
 from .evidence import (
     Decision,
     Finding,
@@ -47,6 +48,8 @@ __all__ = [
     "Decision",
     "compute_verdict",
     "GateAdjudicator",
+    "AuditLog",
+    "verify",
 ]
 
 __version__ = "0.1.0"
