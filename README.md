@@ -152,6 +152,21 @@ if verdict.refused:
 
 ---
 
+## Tamper-evident audit
+
+Pair any verdict with an append-only, hash-chained log — every decision on the record,
+any later edit detectable:
+
+```python
+from recusal import AuditLog, verify
+
+audit = AuditLog(path="audit.jsonl")
+audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
+ok, problems = verify(audit.entries)   # False if the log was altered
+```
+
+Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 14.
+
 ## Why this, and why not the alternatives
 
 - **Agent frameworks** (LangGraph, CrewAI, AutoGen, OpenAI Agents SDK) *orchestrate* — their governance is in-process and self-graded.

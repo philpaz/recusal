@@ -111,6 +111,24 @@ assert release["release_ready"], "release refused"
 
 ---
 
+## 6. Audit every decision (tamper-evident)
+
+Pair the gate with an append-only, hash-chained log so every verdict is on the record and
+any later edit is detectable:
+
+```python
+from recusal import compute_verdict, AuditLog, verify
+
+audit = AuditLog(path="audit.jsonl")   # omit path for in-memory
+verdict = compute_verdict(findings)
+audit.append(verdict, action={"tool": tool.name, "input": tool.input}, actor=session_id)
+
+ok, problems = verify(audit.entries)   # (False, [...reasons]) if anything was altered
+```
+
+Each entry carries the SHA-256 of the entry before it, so deleting, editing, or reordering
+a record breaks the chain. See `examples/audit_demo.py`.
+
 ## Patterns & choices
 
 - **Where evidence comes from is yours.** Recusal doesn't gather evidence — it adjudicates it. Preconditions, dry-runs, policy checks, an allowlist, the output of your existing validators (Great Expectations, pytest, a linter): anything that produces `Finding`s.
