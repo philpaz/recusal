@@ -31,19 +31,30 @@ def gather_evidence(tool_input: dict) -> list:
     target = tool_input.get("customer_id")
     active = ACTIVE_MEMBER["customer_id"]
     if target != active:
-        return [Finding.fail(
-            "subject_match", severity="CRITICAL",
-            message=f"write targets {target} but the active member this turn is {active}",
-            target=target, active=active,
-        )]
-    return [Finding.ok("subject_match", severity="CRITICAL",
-                       message="write targets the active member", target=target)]
+        return [
+            Finding.fail(
+                "subject_match",
+                severity="CRITICAL",
+                message=f"write targets {target} but the active member this turn is {active}",
+                target=target,
+                active=active,
+            )
+        ]
+    return [
+        Finding.ok(
+            "subject_match",
+            severity="CRITICAL",
+            message="write targets the active member",
+            target=target,
+        )
+    ]
 
 
 def propose(tool_use_id, tool_input):
     print(f"\n  proposed: update_customer_record({_fmt(tool_input)})")
-    allow, refusal = gate_tool_use(tool_use_id, gather_evidence(tool_input),
-                                   tool_name="update_customer_record")
+    allow, refusal = gate_tool_use(
+        tool_use_id, gather_evidence(tool_input), tool_name="update_customer_record"
+    )
     if allow:
         print("  gate verdict: PASS")
         print("  -> ALLOWED. The tool executes.")

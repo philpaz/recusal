@@ -17,8 +17,8 @@ MEMBERS = [
 ]
 ACCOUNTS = [
     {"id": 10, "member_id": 1, "type": "checking"},
-    {"id": 11, "member_id": 99, "type": "savings"},   # orphan
-    {"id": 12, "member_id": 3, "type": "wildcat"},     # not in approved set
+    {"id": 11, "member_id": 99, "type": "savings"},  # orphan
+    {"id": 12, "member_id": 3, "type": "wildcat"},  # not in approved set
 ]
 
 
@@ -65,7 +65,7 @@ def test_checks_compose_into_a_verdict():
     findings = [
         row_count(MEMBERS, min_rows=1),
         referential_integrity(ACCOUNTS, MEMBERS, fk="member_id", pk="id"),  # CRITICAL fail
-        in_set(ACCOUNTS, "type", allowed=["checking", "savings"]),          # ERROR fail
+        in_set(ACCOUNTS, "type", allowed=["checking", "savings"]),  # ERROR fail
     ]
     verdict = compute_verdict(findings)
     assert verdict.refused  # CRITICAL orphan dominates

@@ -5,11 +5,14 @@ from recusal.gates import GateAdjudicator
 
 def test_g2_tiered_verdict_passes_through():
     adj = GateAdjudicator()
-    result = adj.adjudicate_gate("G2", {
-        "verdict": "RETRY",
-        "failures": [{"type": "null_rate_high", "message": "[ERROR] null rate 0.30 > 0.15"}],
-        "warnings": [{"message": "[WARNING] distribution drift on product_code"}],
-    })
+    result = adj.adjudicate_gate(
+        "G2",
+        {
+            "verdict": "RETRY",
+            "failures": [{"type": "null_rate_high", "message": "[ERROR] null rate 0.30 > 0.15"}],
+            "warnings": [{"message": "[WARNING] distribution drift on product_code"}],
+        },
+    )
     assert result["verdict"] == "RETRY"
     assert any("null rate" in f for f in result["failures"])
     assert any("distribution drift" in f for f in result["failures"])
@@ -17,11 +20,18 @@ def test_g2_tiered_verdict_passes_through():
 
 def test_g2_legacy_orphans_fail():
     adj = GateAdjudicator()
-    result = adj.adjudicate_gate("G2", {
-        "validations": [
-            {"type": "referential_integrity", "relationship": "account->member", "orphan_count": 4},
-        ]
-    })
+    result = adj.adjudicate_gate(
+        "G2",
+        {
+            "validations": [
+                {
+                    "type": "referential_integrity",
+                    "relationship": "account->member",
+                    "orphan_count": 4,
+                },
+            ]
+        },
+    )
     assert result["verdict"] == "FAIL"
     assert "Orphaned records" in result["failures"][0]
 
@@ -46,7 +56,9 @@ def test_g1_schema_fail():
 def test_release_evidence_requires_all_gates_pass():
     adj = GateAdjudicator()
     g0 = adj.adjudicate_gate("G0", {})
-    g5_pass = adj.adjudicate_gate("G5", {"test_results": {"coverage": 90, "failed": 0, "total_tests": 12}})
+    g5_pass = adj.adjudicate_gate(
+        "G5", {"test_results": {"coverage": 90, "failed": 0, "total_tests": 12}}
+    )
     release = adj.generate_release_evidence("mission-1", [g0, g5_pass])
     assert release["release_ready"] is True
 

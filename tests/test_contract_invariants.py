@@ -46,9 +46,16 @@ def test_failed_info_is_a_metric_never_blocks():
 
 def test_passing_or_info_findings_never_change_the_decision():
     base = [_fail("ERROR")]
-    noise = [_ok("INFO"), _ok("CRITICAL"), _ok("ERROR"), _ok("WARNING"),
-             Finding.fail("c", severity="INFO")]
-    assert compute_verdict(base).decision is compute_verdict(base + noise).decision is Decision.RETRY
+    noise = [
+        _ok("INFO"),
+        _ok("CRITICAL"),
+        _ok("ERROR"),
+        _ok("WARNING"),
+        Finding.fail("c", severity="INFO"),
+    ]
+    assert (
+        compute_verdict(base).decision is compute_verdict(base + noise).decision is Decision.RETRY
+    )
 
 
 def test_decision_is_order_independent():
@@ -86,8 +93,10 @@ def test_reasons_falls_back_to_summary_when_no_messages():
 
 
 def test_mixed_finding_objects_and_dicts():
-    v = compute_verdict([
-        Finding.fail("a", severity="CRITICAL", message="obj"),
-        {"severity": "ERROR", "status": "fail", "message": "dict"},
-    ])
+    v = compute_verdict(
+        [
+            Finding.fail("a", severity="CRITICAL", message="obj"),
+            {"severity": "ERROR", "status": "fail", "message": "dict"},
+        ]
+    )
     assert v.decision is Decision.FAIL  # the CRITICAL Finding dominates

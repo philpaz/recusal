@@ -106,14 +106,15 @@ def run_pretooluse_hook(
     tool_input = event.get("tool_input", {}) or {}
 
     decision, reason = decide(
-        tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed)
+        tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
+    )
     if decision == "defer":
         return None
 
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": decision,            # "allow" | "deny"
+            "permissionDecision": decision,  # "allow" | "deny"
             "permissionDecisionReason": reason,
         }
     }

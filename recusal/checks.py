@@ -5,10 +5,7 @@ The verdict kernel (``compute_verdict``) decides; these functions do the tedious
 part that earns the decision: inspect real data and emit findings. Each check
 takes plain Python (a list of dict-like rows — anything with ``[]`` access, so
 ``csv.DictReader`` rows, JSON records, or pandas rows all work) and returns a
-single **finding** dict ready to hand to ``compute_verdict``:
-
-    {"type": ..., "severity": "CRITICAL"|"ERROR"|"WARNING"|"INFO",
-     "status": "pass"|"fail", "message": ..., ...context...}
+single ``Finding`` ready to hand to ``compute_verdict``.
 
 Severity is a parameter, not a hardcode — *you* decide whether a high null rate
 is a CRITICAL stop or a WARNING. Pure logic, standard library only, no pandas
@@ -47,15 +44,18 @@ def row_count(
     min_rows: int = 1,
     severity: str = RuleSeverity.CRITICAL.value,
     label: str = "dataset",
-) -> dict:
+) -> Finding:
     """Fail if there are fewer than ``min_rows`` rows (empty data usually means
     generation silently failed)."""
     n = len(rows)
     if n < min_rows:
         return _failed(
-            "row_count", severity,
+            "row_count",
+            severity,
             f"{label}: {n} rows < required {min_rows}.",
-            actual=n, min_rows=min_rows, label=label,
+            actual=n,
+            min_rows=min_rows,
+            label=label,
         )
     return _passed("row_count", severity, f"{label}: {n} rows.", actual=n, label=label)
 
@@ -65,7 +65,7 @@ def null_rate(
     column: str,
     max_rate: float = 0.15,
     severity: str = RuleSeverity.ERROR.value,
-) -> dict:
+) -> Finding:
     """Fail if the fraction of null/empty values in ``column`` exceeds ``max_rate``."""
     total = len(rows)
     if total == 0:
@@ -74,14 +74,19 @@ def null_rate(
     rate = nulls / total
     if rate > max_rate:
         return _failed(
-            "null_rate", severity,
+            "null_rate",
+            severity,
             f"{column}: null rate {rate:.1%} > max {max_rate:.1%} ({nulls}/{total}).",
-            column=column, null_rate=rate, max_rate=max_rate,
+            column=column,
+            null_rate=rate,
+            max_rate=max_rate,
         )
     return _passed(
-        "null_rate", severity,
+        "null_rate",
+        severity,
         f"{column}: null rate {rate:.1%} within {max_rate:.1%}.",
-        column=column, null_rate=rate,
+        column=column,
+        null_rate=rate,
     )
 
 
@@ -91,24 +96,32 @@ def referential_integrity(
     fk: str,
     pk: str,
     severity: str = RuleSeverity.CRITICAL.value,
-) -> dict:
+) -> Finding:
     """Fail if any child row's foreign key has no matching parent primary key
     (orphans = broken relationships)."""
     parent_keys = {_get(r, pk) for r in parent_rows}
     orphans = [
-        _get(r, fk) for r in child_rows
+        _get(r, fk)
+        for r in child_rows
         if not _is_null(_get(r, fk)) and _get(r, fk) not in parent_keys
     ]
     if orphans:
         sample = ", ".join(str(o) for o in orphans[:5])
         return _failed(
-            "referential_integrity", severity,
+            "referential_integrity",
+            severity,
             f"{len(orphans)} orphan(s) in {fk} -> {pk} (e.g. {sample}).",
-            fk=fk, pk=pk, orphan_count=len(orphans),
+            fk=fk,
+            pk=pk,
+            orphan_count=len(orphans),
         )
     return _passed(
-        "referential_integrity", severity,
-        f"{fk} -> {pk}: no orphans.", fk=fk, pk=pk, orphan_count=0,
+        "referential_integrity",
+        severity,
+        f"{fk} -> {pk}: no orphans.",
+        fk=fk,
+        pk=pk,
+        orphan_count=0,
     )
 
 
@@ -117,19 +130,22 @@ def in_set(
     column: str,
     allowed: Iterable[Any],
     severity: str = RuleSeverity.ERROR.value,
-) -> dict:
+) -> Finding:
     """Fail if any non-null value in ``column`` is outside the ``allowed`` set."""
     allowed_set = set(allowed)
     bad = [
-        _get(r, column) for r in rows
+        _get(r, column)
+        for r in rows
         if not _is_null(_get(r, column)) and _get(r, column) not in allowed_set
     ]
     if bad:
         sample = ", ".join(str(b) for b in sorted(set(map(str, bad)))[:5])
         return _failed(
-            "in_set", severity,
+            "in_set",
+            severity,
             f"{column}: {len(bad)} value(s) not in approved set (e.g. {sample}).",
-            column=column, violation_count=len(bad),
+            column=column,
+            violation_count=len(bad),
         )
     return _passed("in_set", severity, f"{column}: all values in approved set.", column=column)
 
@@ -140,7 +156,7 @@ def in_range(
     min_value: float,
     max_value: float,
     severity: str = RuleSeverity.ERROR.value,
-) -> dict:
+) -> Finding:
     """Fail if any numeric value in ``column`` falls outside [min_value, max_value]."""
     violations = 0
     for r in rows:
@@ -156,13 +172,17 @@ def in_range(
             violations += 1
     if violations:
         return _failed(
-            "in_range", severity,
+            "in_range",
+            severity,
             f"{column}: {violations} value(s) outside [{min_value}, {max_value}].",
-            column=column, violation_count=violations,
+            column=column,
+            violation_count=violations,
         )
     return _passed(
-        "in_range", severity,
-        f"{column}: all values within [{min_value}, {max_value}].", column=column,
+        "in_range",
+        severity,
+        f"{column}: all values within [{min_value}, {max_value}].",
+        column=column,
     )
 
 
@@ -170,7 +190,7 @@ def required_keys(
     rows: Rows,
     keys: Iterable[str],
     severity: str = RuleSeverity.CRITICAL.value,
-) -> dict:
+) -> Finding:
     """Fail if any row is missing one of the required ``keys`` (schema drift)."""
     required = list(keys)
     missing_rows = 0
@@ -183,14 +203,19 @@ def required_keys(
     if missing_rows:
         cols = ", ".join(sorted(seen_missing))
         return _failed(
-            "required_keys", severity,
+            "required_keys",
+            severity,
             f"{missing_rows} row(s) missing required key(s): {cols}.",
-            missing_keys=sorted(seen_missing), affected_rows=missing_rows,
+            missing_keys=sorted(seen_missing),
+            affected_rows=missing_rows,
         )
-    return _passed("required_keys", severity, f"all rows have required keys: {', '.join(required)}.")
+    return _passed(
+        "required_keys", severity, f"all rows have required keys: {', '.join(required)}."
+    )
 
 
 # ── tiny accessors that work for dicts and pandas-like rows ────────────────────
+
 
 def _get(row: Any, key: str) -> Any:
     try:

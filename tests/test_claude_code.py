@@ -36,8 +36,13 @@ def _run(event):
 
 
 def test_hook_emits_pretooluse_deny_json():
-    _res, text = _run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
-                       "tool_input": {"command": "rm -rf /"}})
+    _res, text = _run(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf /"},
+        }
+    )
     hso = json.loads(text)["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
     assert hso["permissionDecision"] == "deny"
@@ -45,8 +50,9 @@ def test_hook_emits_pretooluse_deny_json():
 
 
 def test_hook_defers_silently_on_clean():
-    res, text = _run({"hook_event_name": "PreToolUse", "tool_name": "Read",
-                      "tool_input": {"file_path": "/x"}})
+    res, text = _run(
+        {"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": "/x"}}
+    )
     assert res is None
     assert text == ""
 

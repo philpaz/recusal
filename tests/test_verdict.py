@@ -8,10 +8,12 @@ from recusal import Decision, Finding, Severity, compute_verdict
 
 
 def test_critical_failure_is_terminal_fail():
-    v = compute_verdict([
-        Finding.fail("rows", severity="CRITICAL", message="0 rows in members"),
-        Finding.fail("nulls", severity="ERROR", message="null rate high"),
-    ])
+    v = compute_verdict(
+        [
+            Finding.fail("rows", severity="CRITICAL", message="0 rows in members"),
+            Finding.fail("nulls", severity="ERROR", message="null rate high"),
+        ]
+    )
     assert v.decision is Decision.FAIL
     assert v.refused
     assert v.highest_severity == "CRITICAL"
@@ -27,10 +29,12 @@ def test_error_failure_is_retry():
 
 
 def test_warnings_pass_but_are_recorded():
-    v = compute_verdict([
-        Finding.fail("dist", severity="WARNING", message="distribution drift"),
-        Finding.ok("count", severity="INFO", value=1200),
-    ])
+    v = compute_verdict(
+        [
+            Finding.fail("dist", severity="WARNING", message="distribution drift"),
+            Finding.ok("count", severity="INFO", value=1200),
+        ]
+    )
     assert v.passed
     assert v.highest_severity == "WARNING"
     assert len(v.warnings) == 1

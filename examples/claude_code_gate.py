@@ -33,15 +33,25 @@ def policy(tool_name: str, tool_input: dict) -> list:
     if tool_name == "Bash":
         cmd = str(tool_input.get("command", ""))
         if "rm -rf" in cmd or ":(){:|:&};:" in cmd:
-            findings.append(Finding.fail(
-                "destructive_bash", severity="CRITICAL",
-                message=f"refusing destructive shell command: {cmd!r}", command=cmd))
+            findings.append(
+                Finding.fail(
+                    "destructive_bash",
+                    severity="CRITICAL",
+                    message=f"refusing destructive shell command: {cmd!r}",
+                    command=cmd,
+                )
+            )
     if tool_name in ("Write", "Edit"):
         path = str(tool_input.get("file_path", ""))
         if "/.env" in path or path.endswith((".pem", ".key")):
-            findings.append(Finding.fail(
-                "secret_write", severity="CRITICAL",
-                message=f"refusing write to a secret file: {path}", path=path))
+            findings.append(
+                Finding.fail(
+                    "secret_write",
+                    severity="CRITICAL",
+                    message=f"refusing write to a secret file: {path}",
+                    path=path,
+                )
+            )
     return findings
 
 

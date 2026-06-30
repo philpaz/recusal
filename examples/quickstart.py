@@ -14,9 +14,9 @@ findings = [
     {"severity": "INFO", "status": "pass", "metric": "row_count", "value": 0},
 ]
 verdict = compute_verdict(findings)
-print(f"verdict          : {verdict.decision.value}")        # FAIL
+print(f"verdict          : {verdict.decision.value}")  # FAIL
 print(f"highest_severity : {verdict.highest_severity.value}")  # CRITICAL
-print(f"message          : {verdict.message}")               # refused, no retry
+print(f"message          : {verdict.message}")  # refused, no retry
 
 # 2. Staged gates roll up into a single release decision. The gate can say no.
 gate = GateAdjudicator()
@@ -24,4 +24,4 @@ g5 = gate.adjudicate_gate("G5", {"test_results": {"coverage": 61, "failed": 1, "
 print(f"\nG5 verdict       : {g5['verdict']}  ({g5['failures']})")  # FAIL
 
 release = gate.generate_release_evidence("UC-001", [g5])
-print(f"release_ready    : {release['release_ready']}")     # False — it refuses to ship
+print(f"release_ready    : {release['release_ready']}")  # False — it refuses to ship

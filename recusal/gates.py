@@ -21,19 +21,19 @@ Pure logic, standard library only.
 """
 
 from datetime import datetime, timezone
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class GateAdjudicator:
     """Determines gate pass/fail based on collected evidence."""
 
-    def __init__(self, data_system: str = "postgres", required_objects: List[str] = None):
+    def __init__(self, data_system: str = "postgres", required_objects: Optional[List[str]] = None):
         # ``data_system`` is just a label for the G0 required-systems list, so the
         # release evidence reflects whichever data backend you actually run.
         # ``required_objects`` are the domain objects G3 expects present — empty by
         # default, because the gate engine is domain-neutral; you supply your own.
         self.data_system = data_system
-        self.GATE_CRITERIA = {
+        self.GATE_CRITERIA: Dict[str, Dict[str, Any]] = {
             "G0": {"required_systems": ["event_bus", data_system, "target_org"]},
             "G1": {"min_tables": 1, "min_rows": 1},
             "G2": {"row_count_tolerance": 0.05, "max_null_rate": 0.15, "zero_orphans": True},

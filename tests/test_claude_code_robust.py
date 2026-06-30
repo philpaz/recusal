@@ -47,8 +47,12 @@ def test_retry_verdict_maps_to_deny():
 
 def _run(policy, event, **kw):
     out = io.StringIO()
-    res = run_pretooluse_hook(policy, stdin=io.StringIO(event if isinstance(event, str)
-                                                        else json.dumps(event)), stdout=out, **kw)
+    res = run_pretooluse_hook(
+        policy,
+        stdin=io.StringIO(event if isinstance(event, str) else json.dumps(event)),
+        stdout=out,
+        **kw,
+    )
     return res, out.getvalue()
 
 

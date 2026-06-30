@@ -31,9 +31,9 @@ class Severity(str, Enum):
     """
 
     CRITICAL = "CRITICAL"  # the work is wrong → FAIL, no retry
-    ERROR = "ERROR"        # recoverable → RETRY once, with the failures as context
-    WARNING = "WARNING"    # proceed, but record it as evidence
-    INFO = "INFO"          # never blocks; recorded as a metric
+    ERROR = "ERROR"  # recoverable → RETRY once, with the failures as context
+    WARNING = "WARNING"  # proceed, but record it as evidence
+    INFO = "INFO"  # never blocks; recorded as a metric
 
 
 # Back-compat alias for the original name.
@@ -60,13 +60,25 @@ class Finding:
     context: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def ok(cls, check: str, *, severity: Union[Severity, str] = Severity.INFO,
-           message: str = "", **context: Any) -> "Finding":
+    def ok(
+        cls,
+        check: str,
+        *,
+        severity: Union[Severity, str] = Severity.INFO,
+        message: str = "",
+        **context: Any,
+    ) -> "Finding":
         return cls(check, _as_severity(severity), True, message, dict(context))
 
     @classmethod
-    def fail(cls, check: str, *, severity: Union[Severity, str] = Severity.ERROR,
-             message: str = "", **context: Any) -> "Finding":
+    def fail(
+        cls,
+        check: str,
+        *,
+        severity: Union[Severity, str] = Severity.ERROR,
+        message: str = "",
+        **context: Any,
+    ) -> "Finding":
         return cls(check, _as_severity(severity), False, message, dict(context))
 
     @classmethod
@@ -94,9 +106,9 @@ class Finding:
 class Decision(str, Enum):
     """The verdict's binding outcome."""
 
-    PASS = "PASS"    # certified — proceed
+    PASS = "PASS"  # certified — proceed
     RETRY = "RETRY"  # recoverable — try once more with the failures as context
-    FAIL = "FAIL"    # refused — terminal
+    FAIL = "FAIL"  # refused — terminal
 
 
 @dataclass(frozen=True)
@@ -105,9 +117,9 @@ class Verdict:
 
     decision: Decision
     highest_severity: Severity
-    failures: Tuple[Finding, ...]   # the findings that forced FAIL / RETRY
-    warnings: Tuple[Finding, ...]   # WARNING-level findings (informational)
-    metrics: Tuple[Finding, ...]    # INFO-level findings (calibration only)
+    failures: Tuple[Finding, ...]  # the findings that forced FAIL / RETRY
+    warnings: Tuple[Finding, ...]  # WARNING-level findings (informational)
+    metrics: Tuple[Finding, ...]  # INFO-level findings (calibration only)
     message: str
 
     @property
@@ -149,15 +161,27 @@ def compute_verdict(findings: Iterable[Union[Finding, Mapping[str, Any]]]) -> Ve
 
     if critical:
         return Verdict(
-            Decision.FAIL, Severity.CRITICAL, critical, warnings, metrics,
+            Decision.FAIL,
+            Severity.CRITICAL,
+            critical,
+            warnings,
+            metrics,
             f"{len(critical)} CRITICAL failure(s) - refused, no retry.",
         )
     if errors:
         return Verdict(
-            Decision.RETRY, Severity.ERROR, errors, warnings, metrics,
+            Decision.RETRY,
+            Severity.ERROR,
+            errors,
+            warnings,
+            metrics,
             f"{len(errors)} ERROR failure(s) - retry once with failure context.",
         )
     return Verdict(
-        Decision.PASS, Severity.WARNING if warnings else Severity.INFO, (), warnings, metrics,
+        Decision.PASS,
+        Severity.WARNING if warnings else Severity.INFO,
+        (),
+        warnings,
+        metrics,
         f"Passed with {len(warnings)} warning(s) and {len(metrics)} metric(s).",
     )

@@ -49,10 +49,10 @@ def test_coverage_floor_is_retry_not_terminal():
 
 
 def test_action_budget_tiers():
-    assert _decision(action_budget(5)) is Decision.PASS          # under soft budget
-    warned = compute_verdict(action_budget(47))                  # over soft → allow + warn
+    assert _decision(action_budget(5)) is Decision.PASS  # under soft budget
+    warned = compute_verdict(action_budget(47))  # over soft → allow + warn
     assert warned.passed and len(warned.warnings) == 1
-    assert _decision(action_budget(150)) is Decision.RETRY       # over hard cap → stop
+    assert _decision(action_budget(150)) is Decision.RETRY  # over hard cap → stop
 
 
 def test_critical_dominates_a_cooccurring_error():
@@ -62,7 +62,8 @@ def test_critical_dominates_a_cooccurring_error():
 
 def test_gate_tool_use_refuses_with_actionable_reason():
     allow, refusal = gate_tool_use(
-        "toolu_x", data_exfiltration({"to": "x@evil.com"}), tool_name="send_email")
+        "toolu_x", data_exfiltration({"to": "x@evil.com"}), tool_name="send_email"
+    )
     assert allow is False
     assert refusal["is_error"] is True
     assert "allowlist" in refusal["content"]
@@ -70,7 +71,8 @@ def test_gate_tool_use_refuses_with_actionable_reason():
 
 def test_gate_tool_use_allows_compliant_call():
     allow, refusal = gate_tool_use(
-        "toolu_y", destructive_path({"path": "/workspace/tmp/a.txt"}), tool_name="delete_file")
+        "toolu_y", destructive_path({"path": "/workspace/tmp/a.txt"}), tool_name="delete_file"
+    )
     assert allow is True and refusal is None
 
 

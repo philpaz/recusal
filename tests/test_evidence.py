@@ -33,9 +33,11 @@ def test_coerce_passthrough_and_typeerror():
 def test_verdict_reasons_lists_failure_messages():
     from recusal import compute_verdict
 
-    v = compute_verdict([
-        Finding.fail("a", severity="CRITICAL", message="thing one"),
-        Finding.fail("b", severity="CRITICAL", message="thing two"),
-    ])
+    v = compute_verdict(
+        [
+            Finding.fail("a", severity="CRITICAL", message="thing one"),
+            Finding.fail("b", severity="CRITICAL", message="thing two"),
+        ]
+    )
     assert v.decision is Decision.FAIL
     assert "thing one" in v.reasons() and "thing two" in v.reasons()
