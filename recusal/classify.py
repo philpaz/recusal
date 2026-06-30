@@ -61,8 +61,6 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "subject guard",
             "blocked by policy",
             "permission denied",
-            "not allowed",
-            "forbidden",
         ),
         "An action a deterministic policy refused, do not retry as-is; escalate or change the plan.",
     ),
@@ -75,7 +73,6 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "ignore the system prompt",
             "exfiltrate",
             "send the api key",
-            "new instructions:",
         ),
         "Tool output appears to carry injected instructions, quarantine, don't act on it.",
     ),
@@ -86,8 +83,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "timed out",
             "timeout",
             "rate limit",
-            "429",
-            "503",
+            "too many requests",
             "connection reset",
             "econnreset",
             "temporarily unavailable",
@@ -105,6 +101,10 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "typeerror",
             "attributeerror",
             "assertionerror",
+            "modulenotfounderror",
+            "importerror",
+            "no module named",
+            "command not found",
             "compile error",
             "exit code 1",
             "test failed",
@@ -129,7 +129,15 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
     FailureClass(
         "data_missing",
         "fetch-data",
-        ("0 rows", "no rows", "empty result", "not found", "does not exist", "orphan", "missing"),
+        (
+            "0 rows",
+            "no rows",
+            "empty result",
+            "not found",
+            "does not exist",
+            "orphan",
+            "missing data",
+        ),
         "Expected data is absent, fetch or re-migrate it.",
     ),
     FailureClass(
@@ -159,9 +167,10 @@ def classify_failure(
     """Classify a failure (an error string, a verdict reason, a log line) and route it.
 
     First matching class wins (taxonomy order is precedence). If nothing matches,
-    returns the fallback class/route, never guesses.
+    returns the fallback class/route, never guesses. Non-string input is coerced with
+    ``str()`` so the router never raises on the wrong type.
     """
-    haystack = (text or "").lower()
+    haystack = str(text or "").lower()
     for fc in taxonomy:
         for marker in fc.markers:
             if marker.lower() in haystack:
@@ -186,7 +195,10 @@ def classify_verdict(
     fallback_class: str = "unknown",
     fallback_route: str = "ask-human",
 ) -> Classification:
-    """Classify a non-PASS ``Verdict`` from its reasons, what kind of failure, and where it goes."""
+    """Classify a non-PASS ``Verdict`` from its reasons, what kind of failure, and where it
+    goes. A PASS verdict has nothing to route, so it returns ``pass -> proceed``."""
+    if verdict.passed:
+        return Classification("pass", "proceed", None, "verdict passed; nothing to route")
     return classify_failure(
         verdict.reasons(),
         taxonomy=taxonomy,

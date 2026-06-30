@@ -93,21 +93,34 @@ def run_pretooluse_hook(
     On a deny (or an explicit allow), writes the PreToolUse ``hookSpecificOutput`` JSON
     and returns it. On a defer, writes nothing and returns ``None``, Claude Code then
     proceeds with its normal permission flow.
+
+    A malformed envelope (unparseable stdin, or valid JSON that is not an object) is
+    treated like a policy error: it **fails closed** to a ``deny`` by default, so a
+    garbled or truncated event cannot silently skip the gate. Pass ``fail_closed=False``
+    to defer instead.
     """
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
 
     try:
         event = json.load(stdin)
-    except Exception:  # noqa: BLE001, a malformed event must not crash the tool path
-        event = {}
+        if not isinstance(event, dict):
+            raise ValueError("PreToolUse event is not a JSON object")
+        tool_input = event.get("tool_input", {})
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        decision, reason = decide(
+            event.get("tool_name", ""),
+            tool_input,
+            policy,
+            allow_on_pass=allow_on_pass,
+            fail_closed=fail_closed,
+        )
+    except Exception as exc:  # noqa: BLE001 - a malformed event must not silently disable the gate
+        if not fail_closed:
+            return None  # fail-open: defer to Claude Code's normal flow
+        decision, reason = "deny", f"Recusal failed closed: malformed PreToolUse event ({exc})"
 
-    tool_name = event.get("tool_name", "")
-    tool_input = event.get("tool_input", {}) or {}
-
-    decision, reason = decide(
-        tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
-    )
     if decision == "defer":
         return None
 

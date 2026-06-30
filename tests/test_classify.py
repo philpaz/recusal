@@ -75,3 +75,49 @@ def test_classification_is_frozen():
     c = _c("timeout")
     with pytest.raises(dataclasses.FrozenInstanceError):
         c.route = "x"  # type: ignore[misc]
+
+
+# --- regression: tightened markers must not mis-escalate or mis-route -----------------
+
+
+def test_validation_error_not_misrouted_to_refuse():
+    # "not allowed" used to hijack benign validation errors to policy_violation/refuse
+    assert (
+        _c("ValidationError: null not allowed for field 'email'").failure_class
+        != "policy_violation"
+    )
+
+
+def test_numeric_substring_does_not_trigger_transient_retry():
+    # bare "429" used to match line numbers/ids and send real bugs to retry
+    c = _c("AssertionError at module.py line 4291: expected 0, got 5")
+    assert c.failure_class == "code_bug" and c.route == "fix-code"
+
+
+def test_module_not_found_routes_to_code_not_human():
+    c = _c("ModuleNotFoundError: No module named 'requests'")
+    assert c.failure_class == "code_bug" and c.route == "fix-code"
+
+
+def test_command_not_found_is_code_not_data():
+    assert _c("bash: pytest: command not found").failure_class == "code_bug"
+
+
+def test_dismissing_does_not_match_data_missing():
+    assert _c("Dismissing the stale alert and continuing").failure_class != "data_missing"
+
+
+def test_benign_new_instructions_not_quarantined():
+    assert _c("Deploying new instructions: run migrations").failure_class != "prompt_injection"
+
+
+def test_classify_verdict_on_pass_does_not_invent_a_failure():
+    v = compute_verdict([{"severity": "INFO", "status": "pass", "message": "all good"}])
+    c = classify_verdict(v)
+    assert c.failure_class == "pass" and c.route == "proceed"
+
+
+def test_non_string_input_fails_safe():
+    assert classify_failure(429).failure_class == "unknown"  # no "429" marker, no crash
+    assert classify_failure(None).failure_class == "unknown"
+    assert isinstance(classify_failure(["x"]).route, str)  # coerced via str(), never raises

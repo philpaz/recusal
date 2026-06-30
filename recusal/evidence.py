@@ -82,22 +82,37 @@ class Finding:
         return cls(check, _as_severity(severity), False, message, dict(context))
 
     @classmethod
-    def coerce(cls, obj: Union["Finding", Mapping[str, Any]]) -> "Finding":
+    def coerce(cls, obj: Union["Finding", Mapping[str, Any]], *, strict: bool = False) -> "Finding":
         """Accept a Finding as-is, or a loose evidence dict, and return a Finding.
 
         The dict shape is the ergonomic input form:
-        ``{"severity": "CRITICAL", "status": "fail"|"pass"|"warn"|"error",
-           "message": ..., "check"|"type": ..., ...context}``.
+        ``{"severity": "CRITICAL", "status": "fail"|"pass"|"warn"|"error" (or
+           "passed": bool), "message": ..., "check"|"type": ..., ...context}``.
+
+        **Footgun:** a dict with *no* ``status`` or ``passed`` key defaults to
+        ``passed=True``, so ``{"severity": "CRITICAL", "message": "..."}`` reads as a
+        *passing* check, not a failure. Pass ``strict=True`` (or
+        ``compute_verdict(..., strict=True)``) to reject such ambiguous evidence rather
+        than silently pass it, which is the safer choice when wiring an adapter.
         """
         if isinstance(obj, Finding):
             return obj
         if isinstance(obj, Mapping):
             severity = _as_severity(obj.get("severity", Severity.INFO))
-            status = str(obj.get("status", "pass")).lower()
-            passed = status not in {"fail", "error", "warn"}
+            if "passed" in obj:
+                passed = bool(obj["passed"])
+            elif "status" in obj:
+                passed = str(obj["status"]).lower() not in {"fail", "error", "warn"}
+            elif strict:
+                raise ValueError(
+                    "ambiguous evidence dict: no 'status' or 'passed' key. In strict mode "
+                    "you must state the outcome explicitly so a failure cannot pass silently."
+                )
+            else:
+                passed = True  # lenient default: absence of a status reads as a pass
             check = obj.get("check") or obj.get("type") or "check"
             message = obj.get("message", "")
-            known = {"severity", "status", "message", "check", "type"}
+            known = {"severity", "status", "passed", "message", "check", "type"}
             context = {k: v for k, v in obj.items() if k not in known}
             return cls(str(check), severity, passed, str(message), context)
         raise TypeError(f"cannot coerce {type(obj).__name__} into a Finding")
@@ -141,7 +156,9 @@ class Verdict:
         return detail or self.message
 
 
-def compute_verdict(findings: Iterable[Union[Finding, Mapping[str, Any]]]) -> Verdict:
+def compute_verdict(
+    findings: Iterable[Union[Finding, Mapping[str, Any]]], *, strict: bool = False
+) -> Verdict:
     """Fold an iterable of findings (Finding objects or loose dicts) into one verdict.
 
     Decision rule (first match wins):
@@ -151,8 +168,11 @@ def compute_verdict(findings: Iterable[Union[Finding, Mapping[str, Any]]]) -> Ve
 
     Failed WARNING findings are surfaced as warnings (they don't block). INFO
     findings, and any failed INFO, which is a contradiction, are kept as metrics.
+
+    Pass ``strict=True`` to reject loose evidence dicts that omit an explicit
+    ``status``/``passed`` instead of defaulting them to a pass (see ``Finding.coerce``).
     """
-    items: List[Finding] = [Finding.coerce(f) for f in findings]
+    items: List[Finding] = [Finding.coerce(f, strict=strict) for f in findings]
 
     critical = tuple(f for f in items if not f.passed and f.severity is Severity.CRITICAL)
     errors = tuple(f for f in items if not f.passed and f.severity is Severity.ERROR)

@@ -57,7 +57,17 @@ def test_hook_defers_silently_on_clean():
     assert text == ""
 
 
-def test_hook_survives_malformed_event():
+def test_hook_malformed_event_fails_closed():
+    # A garbled envelope must not silently disable the gate: fail closed -> deny.
     out = io.StringIO()
     res = run_pretooluse_hook(_deny_rm, stdin=io.StringIO("not json"), stdout=out)
-    assert res is None  # empty event → no findings → defer, never crash the tool path
+    assert res["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "malformed" in out.getvalue().lower()
+
+
+def test_hook_malformed_event_fail_open_is_opt_in():
+    out = io.StringIO()
+    res = run_pretooluse_hook(
+        _deny_rm, stdin=io.StringIO("not json"), stdout=out, fail_closed=False
+    )
+    assert res is None and out.getvalue() == ""

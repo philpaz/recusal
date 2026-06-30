@@ -61,9 +61,17 @@ def test_hook_emits_deny_on_policy_error():
     assert json.loads(text)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_hook_malformed_stdin_does_not_crash_and_defers_with_empty_policy():
+def test_hook_malformed_stdin_fails_closed():
     res, text = _run(_empty, "{not valid json")
-    assert res is None and text == ""
+    assert res["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "malformed" in text.lower()
+
+
+def test_hook_non_object_json_fails_closed():
+    # valid JSON but not an object (42, "x", [1,2], true, null) must not crash or fail open
+    for payload in ("42", '"x"', "[1,2]", "true", "null"):
+        res, text = _run(_empty, payload)
+        assert res["hookSpecificOutput"]["permissionDecision"] == "deny", payload
 
 
 def test_hook_missing_tool_fields_still_evaluated():
