@@ -74,21 +74,31 @@ class ReleaseEvidence:
 
     mission_id: str
     results: Tuple[GateResult, ...]
+    required: Tuple[str, ...] = ()
 
     @property
-    def release_ready(self) -> bool:
-        """A release ships only if every gate PASSed, one FAIL/RETRY blocks it."""
-        return all(r.passed for r in self.results)
+    def missing(self) -> Tuple[str, ...]:
+        """Required gate ids that were never adjudicated (no evidence supplied)."""
+        seen = {r.gate_id for r in self.results}
+        return tuple(g for g in self.required if g not in seen)
 
     @property
     def blocking(self) -> Tuple[GateResult, ...]:
         """The gates that are holding the release back."""
         return tuple(r for r in self.results if not r.passed)
 
+    @property
+    def release_ready(self) -> bool:
+        """Ship only if there *is* gate evidence, every gate PASSed, and no required
+        gate is missing. An empty result set is never ready: absence of evidence is not
+        a pass, and a missing required gate blocks the release."""
+        return bool(self.results) and not self.blocking and not self.missing
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mission_id": self.mission_id,
             "release_ready": self.release_ready,
+            "missing_gates": list(self.missing),
             "gate_summary": [r.to_dict() for r in self.results],
         }
 
@@ -119,20 +129,33 @@ class GateAdjudicator:
         them. The same kernel, applied at a checkpoint."""
         return GateResult(gate_id, compute_verdict(findings))
 
-    def release(self, mission_id: str, results: Sequence[GateResult]) -> ReleaseEvidence:
-        """Roll staged gate results up into a single release decision."""
-        return ReleaseEvidence(mission_id, tuple(results))
+    def release(
+        self,
+        mission_id: str,
+        results: Sequence[GateResult],
+        *,
+        required: Sequence[str] = (),
+    ) -> ReleaseEvidence:
+        """Roll staged gate results up into a single release decision. Pass
+        ``required`` gate ids to refuse the release when any of them is absent, so an
+        incomplete gate set cannot ship as 'ready'."""
+        return ReleaseEvidence(mission_id, tuple(results), tuple(required))
 
     def adjudicate_all(
         self,
         mission_id: str,
         evidence_by_gate: Mapping[str, Iterable[Union[Finding, Mapping[str, Any]]]],
+        *,
+        require_all: bool = True,
     ) -> ReleaseEvidence:
-        """Convenience: adjudicate every gate in a ``{gate_id: findings}`` map (in
-        the adjudicator's gate order) and roll the results into release evidence."""
-        ordered: List[GateResult] = [
-            self.adjudicate(gid, evidence_by_gate[gid])
-            for gid in self.gates
-            if gid in evidence_by_gate
+        """Adjudicate the gates in a ``{gate_id: findings}`` map (configured gates
+        first, in order, then any extras) and roll them up. By default every configured
+        gate must be present: a missing gate refuses the release instead of passing
+        vacuously. Pass ``require_all=False`` to allow a partial set."""
+        ordered_ids = [g for g in self.gates if g in evidence_by_gate]
+        extra_ids = [g for g in evidence_by_gate if g not in self.gates]
+        results: List[GateResult] = [
+            self.adjudicate(gid, evidence_by_gate[gid]) for gid in ordered_ids + extra_ids
         ]
-        return self.release(mission_id, ordered)
+        required = tuple(self.gates) if require_all else ()
+        return self.release(mission_id, results, required=required)

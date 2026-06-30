@@ -112,7 +112,8 @@ g5 = gate.adjudicate(
     "G5", [Finding.fail("coverage_floor", severity="CRITICAL", message="coverage 61% < 75%")]
 )
 release = gate.release("run-001", [g5])
-assert release.release_ready, f"release refused: {[r.gate_id for r in release.blocking]}"
+assert not release.release_ready          # G5 failed, so the release is refused
+print([r.gate_id for r in release.blocking])   # ['G5']
 ```
 
 ---

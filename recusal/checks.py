@@ -3,9 +3,10 @@ Built-in deterministic checks, turn data into evidence.
 
 The verdict kernel (``compute_verdict``) decides; these functions do the tedious
 part that earns the decision: inspect real data and emit findings. Each check
-takes plain Python (a list of dict-like rows, anything with ``[]`` access, so
-``csv.DictReader`` rows, JSON records, or pandas rows all work) and returns a
-single ``Finding`` ready to hand to ``compute_verdict``.
+takes a materialized sequence of dict-like rows (a ``list`` of dicts, JSON records,
+or pandas rows, anything with ``[]`` access and a length). Iterators such as a
+generator or ``csv.DictReader`` must be wrapped first: ``list(csv.DictReader(f))``.
+Each check returns a single ``Finding`` ready to hand to ``compute_verdict``.
 
 Severity is a parameter, not a hardcode, *you* decide whether a high null rate
 is a CRITICAL stop or a WARNING. Pure logic, standard library only, no pandas
