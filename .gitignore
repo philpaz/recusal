@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Secrets — never commit
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*service-account*.json
+secrets/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local working docs — not part of the published project
+linkedin.md
+NOTES.md
