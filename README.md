@@ -167,6 +167,24 @@ ok, problems = verify(audit.entries)   # False if the log was altered
 
 Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 14.
 
+## Classify and route a failure
+
+A refusal or failure is only useful if you know what to do next. The classifier says
+*what kind* of failure it is and where it routes — deterministically, no model:
+
+```python
+from recusal import classify_failure
+
+c = classify_failure("Traceback ... TypeError: 'NoneType' object")
+c.failure_class   # "code_bug"
+c.route           # "fix-code"
+```
+
+Default taxonomy (extend or replace it): `transient → retry` · `policy_violation → refuse` ·
+`prompt_injection → quarantine` · `code_bug → fix-code` · `data_shape → fix-data` ·
+`data_missing → fetch-data` · `spec_ambiguity → ask-human`. Unmatched failures fall back to
+`ask-human` — it never guesses. `classify_verdict(verdict)` routes a non-PASS verdict.
+
 ## Why this, and why not the alternatives
 
 - **Agent frameworks** (LangGraph, CrewAI, AutoGen, OpenAI Agents SDK) *orchestrate* — their governance is in-process and self-graded.

@@ -30,6 +30,13 @@ Zero runtime dependencies — standard library only.
 """
 
 from .audit import AuditLog, verify
+from .classify import (
+    DEFAULT_TAXONOMY,
+    Classification,
+    FailureClass,
+    classify_failure,
+    classify_verdict,
+)
 from .evidence import (
     Decision,
     Finding,
@@ -50,6 +57,11 @@ __all__ = [
     "GateAdjudicator",
     "AuditLog",
     "verify",
+    "classify_failure",
+    "classify_verdict",
+    "FailureClass",
+    "Classification",
+    "DEFAULT_TAXONOMY",
 ]
 
 __version__ = "0.1.0"

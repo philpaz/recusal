@@ -90,6 +90,24 @@ release rollup picks it up automatically.
 
 ---
 
+## 6. Custom failure taxonomy
+
+The classifier ships a default taxonomy, but it's just data — supply your own classes:
+
+```python
+from recusal import classify_failure, FailureClass
+
+TAXONOMY = (
+    FailureClass("billing", "notify-finance", ("payment declined", "insufficient funds")),
+    FailureClass("auth", "reauth", ("401", "token expired", "unauthorized")),
+)
+classify_failure(error_text, taxonomy=TAXONOMY)
+```
+
+Markers are case-insensitive substrings; taxonomy order is precedence. Keep
+security-critical classes (policy refusals, injection) first so a refusal is never
+misread as a generic code/data error.
+
 ## What *not* to do
 
 - Don't put a model call inside a check or the verdict path. Evidence-gathering can use a

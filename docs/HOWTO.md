@@ -129,6 +129,27 @@ ok, problems = verify(audit.entries)   # (False, [...reasons]) if anything was a
 Each entry carries the SHA-256 of the entry before it, so deleting, editing, or reordering
 a record breaks the chain. See `examples/audit_demo.py`.
 
+## 7. Classify and route a failure
+
+When the gate refuses or an action fails, decide *what kind* of failure it is and where it
+goes — deterministically, no model:
+
+```python
+from recusal import classify_failure, classify_verdict
+
+c = classify_failure(error_text)          # or classify_verdict(verdict)
+if c.route == "retry":
+    ...                                    # transient — try again
+elif c.route == "refuse":
+    ...                                    # policy violation — don't retry as-is
+elif c.route == "ask-human":
+    ...                                    # ambiguous — escalate
+```
+
+Default classes (order is precedence): `transient`, `policy_violation`, `prompt_injection`,
+`code_bug`, `data_shape`, `data_missing`, `spec_ambiguity`. Unmatched failures fall back to
+`ask-human` — it never guesses. See `examples/classify_demo.py`.
+
 ## Patterns & choices
 
 - **Where evidence comes from is yours.** Recusal doesn't gather evidence — it adjudicates it. Preconditions, dry-runs, policy checks, an allowlist, the output of your existing validators (Great Expectations, pytest, a linter): anything that produces `Finding`s.

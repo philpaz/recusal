@@ -18,6 +18,10 @@ All notable changes to this project are documented here. The format follows
 - **Tamper-evident audit log** — `recusal.audit` (`AuditLog`, `verify`): a hash-chained,
   append-only JSONL record of every verdict; any later edit, deletion, or reorder is
   detected. Maps to OWASP Agentic logging / EU AI Act Article 14.
+- **Deterministic failure classifier** — `recusal.classify` (`classify_failure`,
+  `classify_verdict`): routes a failure to a class + remediation channel (transient,
+  policy_violation, prompt_injection, code_bug, data_shape, data_missing, spec_ambiguity)
+  by explicit markers; extensible taxonomy, never guesses.
 - **Dogfood** — Recusal governs its own repository via a real Claude Code hook; verbatim,
   reproducible, CI-locked proof in `docs/PROVEN.md`.
 - **Examples** — offline refusal demo, live Claude-agent demo, an OWASP-mapped scenario
