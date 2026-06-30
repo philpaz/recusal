@@ -68,6 +68,25 @@ def test_refuses_editing_its_own_hook():
     assert _decide("Write", {"file_path": "/repo/.claude/hooks/recusal_gate.py"}) == "deny"
 
 
+def test_refuses_bash_redirect_to_its_own_settings():
+    assert _decide("Bash", {"command": "echo '{}' > /repo/.claude/settings.json"}) == "deny"
+
+
+def test_refuses_bash_inline_script_write_to_its_own_hook():
+    cmd = "python -c \"open('/repo/.claude/hooks/recusal_gate.py','w').write('x')\""
+    assert _decide("Bash", {"command": cmd}) == "deny"
+
+
+def test_refuses_bash_copy_move_to_its_own_settings():
+    assert _decide("Bash", {"command": "cp /tmp/x /repo/.claude/settings.json"}) == "deny"
+    assert _decide("Bash", {"command": "mv /tmp/x /repo/.claude/settings.local.json"}) == "deny"
+
+
+def test_refuses_bash_windows_path_to_its_own_hook():
+    cmd = r"copy C:\\tmp\\x C:\\repo\\.claude\\hooks\\recusal_gate.py"
+    assert _decide("Bash", {"command": cmd}) == "deny"
+
+
 def test_refuses_rm_flag_variants():
     for cmd in ("rm -fr /x", "rm  -rf /x", "rm -r -f /x", "rm --recursive --force /x"):
         assert _decide("Bash", {"command": cmd}) == "deny", cmd
@@ -84,6 +103,21 @@ def test_refuses_dd_device_write_and_force_refspec():
 
 def test_refuses_secret_write_via_bash_redirect():
     assert _decide("Bash", {"command": "echo TOKEN=1 > /repo/.env"}) == "deny"
+
+
+def test_refuses_secret_write_via_bash_tee():
+    assert _decide("Bash", {"command": "printf 'TOKEN=1' | tee /repo/.env"}) == "deny"
+
+
+def test_refuses_secret_write_via_bash_copy_move_and_p12():
+    assert _decide("Bash", {"command": "cp /tmp/x /repo/.env"}) == "deny"
+    assert _decide("Bash", {"command": "mv /tmp/x /repo/server.pem"}) == "deny"
+    assert _decide("Bash", {"command": "echo X > /repo/client.p12"}) == "deny"
+
+
+def test_refuses_secret_write_case_variants():
+    assert _decide("Write", {"file_path": "/repo/.ENV"}) == "deny"
+    assert _decide("Edit", {"file_path": "/repo/SERVER.PEM"}) == "deny"
 
 
 def test_refuses_multiedit_to_secret():

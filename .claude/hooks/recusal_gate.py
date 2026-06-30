@@ -39,9 +39,17 @@ _DESTRUCTIVE = (
 _CHMOD_WORLD = re.compile(r"\bchmod\b.*-\w*r.*\b0?777\b")  # recursive chmod to 777
 _GIT_FORCE_REFSPEC = re.compile(r"\bgit\s+push\b.*\s\+\S")  # force-push via +refspec
 _PIPE_TO_SHELL = re.compile(r"(curl|wget)\b.*(\|\s*(sh|bash)\b|<\(\s*(curl|wget))")
-_REDIRECT_TO_SECRET = re.compile(r">>?\s*\S*(\.env|\.pem|\.key|id_rsa|id_ed25519)")
+_REDIRECT_TO_SECRET = re.compile(
+    r">>?\s*\S*(\.env(?:\.[^\s'\"/\\]+)?|\.pem|\.key|\.p12|id_rsa|id_ed25519)"
+)
+_WRITE_LIKE = re.compile(
+    r"\b(tee|sed\s+-i|python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e|cp|mv|copy|xcopy|robocopy|install|rsync|truncate|set-content|add-content|out-file)\b|>>?"
+)
+_SECRET_PATH_IN_CMD = re.compile(
+    r"(\.env(?:\.[^\s'\"/\\]+)?|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b)"
+)
 
-_SECRET_BASENAMES = {".env", "id_rsa", "id_ed25519", "LICENSE"}
+_SECRET_BASENAMES = {".env", "id_rsa", "id_ed25519"}
 _SECRET_SUFFIXES = (".pem", ".key", ".p12")
 # The gate's own kill-switch: settings that can disable hooks, and the hook scripts.
 _SELF_PROTECT = (".claude/settings.json", ".claude/settings.local.json", ".claude/hooks/")
@@ -68,6 +76,7 @@ def policy(tool_name: str, tool_input: dict) -> list:
     if tool_name == "Bash":
         raw = str(tool_input.get("command", ""))
         cmd = _norm(raw)
+        cmd_paths = re.sub(r"/+", "/", cmd.replace("\\", "/"))
         markers = [m for m in _DESTRUCTIVE if m in cmd]
         if _rm_recursive_force(cmd):
             markers.append("rm -rf")
@@ -102,12 +111,35 @@ def policy(tool_name: str, tool_input: dict) -> list:
                     command=raw,
                 )
             )
+        if _WRITE_LIKE.search(cmd) and _SECRET_PATH_IN_CMD.search(cmd):
+            findings.append(
+                Finding.fail(
+                    "secret_write_via_bash",
+                    severity="CRITICAL",
+                    message="refusing a Bash command that appears to write a secret file",
+                    command=raw,
+                )
+            )
+        if _WRITE_LIKE.search(cmd) and any(seg in cmd_paths for seg in _SELF_PROTECT):
+            findings.append(
+                Finding.fail(
+                    "self_protection",
+                    severity="CRITICAL",
+                    message="refusing a Bash command that appears to edit the gate config/hook",
+                    command=raw,
+                )
+            )
 
     if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         norm_path = path.replace("\\", "/").lower()
-        base = os.path.basename(path)
-        if base in _SECRET_BASENAMES or base.startswith(".env.") or path.endswith(_SECRET_SUFFIXES):
+        base = os.path.basename(path).lower()
+        low_path = path.lower()
+        if (
+            base in _SECRET_BASENAMES
+            or base.startswith(".env.")
+            or low_path.endswith(_SECRET_SUFFIXES)
+        ):
             findings.append(
                 Finding.fail(
                     "protected_file",
