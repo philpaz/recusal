@@ -94,7 +94,7 @@ path and can *refuse*.
 
 ## 5. What Recusal actually gives you
 
-Recusal is that authority. Operationally, adopting it changes four things:
+Recusal is that authority. Operationally, adopting it changes five things:
 
 1. **A deterministic refusal before the irreversible action.** You gather evidence about a
    proposed action — preconditions, an allowlist, a dry-run, the output of validators you
@@ -110,11 +110,19 @@ Recusal is that authority. Operationally, adopting it changes four things:
 3. **An auditable, replayable record.** A verdict is a typed, immutable object: the
    findings that drove it, the severity tiers, the decision, the reasons. Same evidence in,
    same verdict out — which is exactly what an incident review or a regulator expects, and
-   what maps cleanly onto frameworks like the OWASP Top 10 for Agentic Applications.
+   what maps cleanly onto frameworks like the OWASP Top 10 for Agentic Applications. And
+   `recusal.audit` chains those verdicts into a tamper-evident, hash-chained log, so the
+   record itself cannot be quietly edited after the fact.
 
 4. **It works where you already build.** The enforcement core is zero-dependency and
    framework-neutral; thin adapters place it in a Claude Code hook, in a Claude Agent SDK
    manual loop, or behind a Managed Agents confirmation. One policy engine, every surface.
+
+5. **It tells you what to do next.** A refusal is only useful if you know the next move.
+   When an action fails, the deterministic classifier routes it — transient (retry), a
+   policy violation (refuse), injected tool output (quarantine), bad or missing data, or an
+   ambiguous request (ask a human) — by explicit rules, never a guess. The gate refuses;
+   the router decides where the failure goes.
 
 ## 6. What it is not
 

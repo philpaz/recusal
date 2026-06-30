@@ -1,22 +1,25 @@
 # The Evidence Contract
 
-This is the spine of Recusal. Everything — checks, the verdict kernel, the Claude
-adapter, the release gates — reduces to two objects and one function. Get this
-contract right and the rest is small. (Pure standard library: `dataclasses` + `enum`,
-zero dependencies.)
+This is the spine of Recusal. Everything — the checks, the verdict kernel, the Claude
+adapters, the release gates, the audit log, and the failure classifier — reduces to two
+objects and one function. Get this contract right and the rest is small. (Pure standard
+library: `dataclasses` + `enum`, zero dependencies.)
 
 ```
-  data / a proposed action
+  data / a proposed agent action / a tool call
           │
-     [ checks ]            emit Findings
+     [ checks ]            emit Findings              (recusal.checks — or your own)
           │
      Finding, Finding, …
           │
    compute_verdict()       fold findings → one decision
           │
        Verdict             PASS / RETRY / FAIL
-          │
-   recusal.claude          allow or refuse a Claude tool call
+        │   │   │
+        │   │   └─ recusal.classify    route the failure (retry / refuse / ask-human / …)
+        │   └───── recusal.audit       append to a tamper-evident, hash-chained log
+        └───────── recusal.claude /    allow or refuse the tool call
+                   recusal.claude_code  (or recusal.gates for a staged release decision)
 ```
 
 ## `Finding` — one observation about the work

@@ -52,6 +52,40 @@ no model in the decision path, a verdict you can replay and audit, and a refusal
 
 ---
 
+## Architecture
+
+One object model, one pipeline. Checks (or your own evidence) produce **Findings**;
+`compute_verdict` folds them into a **Verdict**; and the Verdict drives every surface —
+the gate refuses, the audit log records, the classifier routes.
+
+```
+  data / a proposed agent action / a tool call
+          │
+     [ checks ]            emit Findings               (recusal.checks — or your own)
+          │
+   compute_verdict()       fold findings → one Verdict (PASS / RETRY / FAIL)
+          │
+       Verdict
+        │   │   │
+        │   │   └─ recusal.classify        route the failure (retry / refuse / ask-human / …)
+        │   └───── recusal.audit           tamper-evident, hash-chained record
+        └───────── recusal.claude(_code)   allow or refuse the tool call
+                   recusal.gates           staged G0–G8 release decision
+```
+
+| Module | What it is |
+|---|---|
+| `recusal.evidence` | the contract — `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
+| `recusal.checks` | built-in deterministic checks that turn data into Findings |
+| `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
+| `recusal.audit` | tamper-evident, hash-chained log of every verdict |
+| `recusal.classify` | deterministic failure classifier + router |
+| `recusal.gates` | staged `G0`–`G8` release-gate adjudication |
+
+Zero runtime dependencies — standard library only.
+
+---
+
 ## Install
 
 ```bash

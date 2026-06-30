@@ -84,6 +84,7 @@ treats Recusal as an optional dependency, so it can never block a previously-wor
 
 This proves the **enforcement path** end to end on the real wire format: a real hook, the
 real PreToolUse JSON, a real `deny` that Claude Code honors. It does not yet claim
-production scale, a tamper-evident audit trail, or deployment across a fleet — those are on
-the roadmap. What it does claim is true: Recusal refuses real, dangerous tool calls in the
-tool people actually use, and it does so to its own maintainers first.
+production scale or deployment across a fleet — those are on the roadmap (tamper-evident
+audit logging already ships in `recusal.audit`). What it does claim is true: Recusal
+refuses real, dangerous tool calls in the tool people actually use, and it does so to its
+own maintainers first.
