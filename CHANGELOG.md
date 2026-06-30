@@ -34,8 +34,9 @@ All notable changes to this project are documented here. The format follows
   (`examples/agent_loop.py`) whose only import is `recusal` — proof the zero-dep core gates
   any loop with no Claude and no SDK.
 - **Docs** — `CONSTITUTION`, `docs/WHY`, `docs/EVIDENCE`, `docs/HOWTO`, `docs/EXTENDING`,
-  `docs/LANDSCAPE`, `docs/PROVEN`, a `docs/FAQ` (adoption objections answered), and a
-  `docs/README` documentation index.
+  `docs/LANDSCAPE`, `docs/PROVEN`, a `docs/FAQ` (adoption objections answered), a
+  `docs/COOKBOOK` (copy-paste policies for the common gated actions), and a `docs/README`
+  documentation index.
 - **Community files** — `CODE_OF_CONDUCT` (Contributor Covenant), GitHub issue templates
   (bug / feature) and PR template under `.github/`, and enriched package metadata
   (`project.urls`, `Typing :: Typed`).

@@ -23,6 +23,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 
 - **[HOWTO](HOWTO.md)** — the three integration paths (Claude Code hook, Agent SDK loop,
   Managed Agents) plus direct adjudication, audit, and failure routing.
+- **[COOKBOOK](COOKBOOK.md)** — copy-paste policies for the actions people actually gate:
+  destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
+  allowlists, injection quarantine, action budgets, quality gates. Lift one and adapt it.
 - **[EXTENDING](EXTENDING.md)** — write your own checks, bundle policies, add an adapter for
   another framework, customize severities and the failure taxonomy.
 

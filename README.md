@@ -122,6 +122,10 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
+> **Don't start from a blank policy.** [`docs/COOKBOOK.md`](docs/COOKBOOK.md) has copy-paste
+> recipes — destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
+> allowlists, injection quarantine, action budgets — that drop straight into the hook above.
+
 > **Recusal governs *this* repository exactly this way** — a real hook refuses `rm -rf`,
 > force-pushes, and secret-file writes to its own maintainers. Verbatim, reproducible,
 > CI-locked proof: [`docs/PROVEN.md`](docs/PROVEN.md).
@@ -244,6 +248,7 @@ what": [`docs/WHY.md`](docs/WHY.md).
 [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md). The principles and why each helps:
 [`CONSTITUTION.md`](CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 Usage & extending: [`docs/HOWTO.md`](docs/HOWTO.md) · [`docs/EXTENDING.md`](docs/EXTENDING.md).
+Copy-paste policies: [`docs/COOKBOOK.md`](docs/COOKBOOK.md).
 Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
 
 ## Development
