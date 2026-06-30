@@ -24,13 +24,16 @@ classifiers = [
 dependencies = []  # zero runtime dependencies — standard library only
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.4"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/philpaz/recusal"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recusal"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
