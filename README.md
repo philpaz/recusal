@@ -212,15 +212,16 @@ if verdict.refused:
 
 ## Tamper-evident audit
 
-Pair any verdict with an append-only, hash-chained log, every decision on the record,
-any later edit detectable:
+Pair any verdict with an append-only, hash-chained log: every decision on the record, and
+in-place edits or reordering of existing entries detectable (catching tail-truncation or a
+full re-hash by a write-access attacker needs an external anchor, see `recusal.audit`):
 
 ```python
 from recusal import AuditLog, verify
 
 audit = AuditLog(path="audit.jsonl")
 audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
-ok, problems = verify(audit.entries)   # False if the log was altered
+ok, problems = verify(audit.entries)   # False if an existing entry was edited or reordered
 ```
 
 Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).

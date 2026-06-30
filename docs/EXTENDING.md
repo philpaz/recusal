@@ -116,7 +116,10 @@ classify_failure(error_text, taxonomy=TAXONOMY)
 
 Markers are case-insensitive substrings; taxonomy order is precedence. Keep
 security-critical classes (policy refusals, injection) first so a refusal is never
-misread as a generic code/data error.
+misread as a generic code/data error, but keep those markers *narrow*, a broad one
+(`"forbidden"`, bare `"429"`) mis-escalates ordinary errors. The default taxonomy
+intentionally leaves some failures uncovered (out-of-memory, disk-full, auth) so they fall
+to `ask-human` rather than be guessed; add markers for the ones your system should auto-route.
 
 ## What *not* to do
 

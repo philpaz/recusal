@@ -44,4 +44,20 @@ All notable changes to this project are documented here. The format follows
   pre-commit, all run in CI; a `release.yml` workflow that builds and publishes to PyPI via
   Trusted Publishing (OIDC) on a GitHub Release.
 
+### Security & hardening
+- The Claude Code hook **fails closed on a malformed/non-object event**, not just a policy
+  exception (previously a garbled event deferred, i.e. failed open).
+- `compute_verdict(..., strict=True)` / `Finding.coerce(..., strict=True)` reject a loose
+  evidence dict that omits an explicit `status`/`passed` instead of treating it as a pass.
+- `recusal.audit`: precise tamper model (tamper-evident, not tamper-proof);
+  `verify(..., expected_head=(count, last_hash))` catches truncation and a full-chain rewrite;
+  resume tolerates a corrupt trailing line; `default=str` so a verdict is never dropped.
+- `recusal.classify`: tightened over-broad default markers (no longer mis-escalates benign
+  validation errors to `refuse`, or numeric substrings to `retry`); non-string input is
+  coerced; `classify_verdict` returns `pass -> proceed` on a PASS.
+- `GateAdjudicator`: a release is not "ready" with empty or missing gate evidence.
+- The dogfood hook protects its own settings/hook from being disabled, normalizes commands,
+  and matches `rm` recursive-force in any flag order; example/cookbook path checks use
+  `os.path.commonpath` (the `startswith` prefix bypass is fixed).
+
 _Pre-release. No published version yet._

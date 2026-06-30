@@ -112,8 +112,9 @@ Recusal is that authority. Operationally, adopting it changes five things:
    findings that drove it, the severity tiers, the decision, the reasons. Same evidence in,
    same verdict out, which is exactly what an incident review or a regulator expects, and
    what maps cleanly onto frameworks like the OWASP Top 10 for Agentic Applications. And
-   `recusal.audit` chains those verdicts into a tamper-evident, hash-chained log, so the
-   record itself cannot be quietly edited after the fact.
+   `recusal.audit` chains those verdicts into a hash-chained log, so an in-place edit or
+   reordering of an existing record is detectable after the fact (catching truncation or a
+   full rewrite by a write-access attacker needs an external anchor).
 
 4. **It works where you already build.** The enforcement core is zero-dependency and
    framework-neutral; thin adapters place it in a Claude Code hook, in a Claude Agent SDK

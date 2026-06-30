@@ -113,12 +113,14 @@ It's deliberate, and the design owns the trade. `classify_failure` routes a fail
 explicit, ordered markers, *transparent, deterministic, and replaceable*, the same
 properties the gate has. A model-based classifier would be the thing this project exists
 to avoid in the decision path: non-reproducible and un-auditable. The classifier is built
-to fail safe, security classes (policy violation, prompt injection) are matched first so
-they're never misread as a generic error, and **anything unmatched falls through to
-`ask-human`; it never guesses.** The taxonomy is plain data (`DEFAULT_TAXONOMY`): tighten a
-marker, reorder precedence, or supply your own classes for your domain, without touching
-the core. If you need fuzzy classification, run a model *upstream* to produce the failure
-text; the routing of it stays deterministic.
+to fail safe: anything unmatched falls through to `ask-human`, and it never *invents* a
+class. The honest caveat runs the other way, though, a substring marker can still be a false
+positive, and because precedence puts the security classes first, an over-broad security
+marker could mis-escalate an ordinary error. So the default markers are deliberately narrow,
+and you should tighten them for your domain. The taxonomy is plain data (`DEFAULT_TAXONOMY`):
+adjust a marker, reorder precedence, or supply your own classes without touching the core.
+If you need fuzzy classification, run a model *upstream* to produce the failure text; the
+routing of it stays deterministic.
 
 ## Does it only work with Claude?
 

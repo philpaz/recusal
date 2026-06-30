@@ -146,7 +146,7 @@ def verify(
     This detects in-place edits and reordering of existing entries. It does **not**, on its
     own, detect truncation of the tail or a full re-hash by an attacker with write access
     (the digest is unkeyed and the head is unanchored). Pass ``expected_head=(count,
-    last_hash)`` — a value committed somewhere the attacker cannot also rewrite — to catch
+    last_hash)``, a value committed somewhere the attacker cannot also rewrite, to catch
     truncation and whole-chain forgery.
     """
     problems: List[str] = []
