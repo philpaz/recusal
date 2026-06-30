@@ -66,3 +66,28 @@ def test_documented_deny_list_limits_bypass(cmd):
     # Defers today: a deny-list can't see a constructed command name. If a future change
     # ever denies one, update this, it's a known limitation, not a regression.
     assert _d(cmd) == "defer", cmd
+
+
+# --- denial-of-service hardening -------------------------------------------------------
+
+
+def test_oversized_command_fails_closed():
+    # an absurdly long command can't be adjudicated safely -> refuse, don't grind.
+    assert _d("a" * (_mod._MAX_CMD_LEN + 1)) == "deny"
+
+
+def test_redirect_regex_is_not_quadratic():
+    # _REDIRECT_TO_SECRET on a long run of '>' was O(n^2) (ReDoS). Now bounded -> linear.
+    import time
+
+    start = time.perf_counter()
+    _mod._REDIRECT_TO_SECRET.search(">" * 50_000)
+    assert time.perf_counter() - start < 0.5  # old quadratic form took minutes
+
+
+def test_policy_on_huge_adversarial_input_is_instant():
+    import time
+
+    start = time.perf_counter()
+    assert _d(">" * 200_000) == "deny"  # length cap refuses before any heavy matching
+    assert time.perf_counter() - start < 0.5

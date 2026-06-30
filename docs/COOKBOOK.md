@@ -282,6 +282,63 @@ def policy(tool_name, tool_input):
 run_pretooluse_hook(policy)   # one hook, every rule; a clean verdict still defers
 ```
 
+## 11. Allowlist mode (default-deny), the stronger posture
+
+Every recipe above is a *deny-list*: it refuses known-bad calls and defers the rest. A
+deny-list cannot catch a command whose name is built at runtime (`c=$'\x72\x6d'; $c -rf`,
+`eval $(... | base64 -d)`), no string match ever sees the `rm`. The robust answer inverts it:
+**deny by default, allow only what you affirmatively vet.** For `Bash`, reject shell
+metacharacters (so a command can't chain, substitute, or expand into something else) and
+require a vetted first binary. That defeats the runtime-construction bypasses a deny-list
+cannot.
+
+```python
+import os, shlex
+from recusal import Finding
+
+WORKSPACE = os.path.abspath("./workspace")
+# Binaries safe regardless of arguments. Tools that can mutate (git, sed, find, rm) are NOT
+# here; allowlist those only with explicit per-subcommand rules.
+SAFE_BINARIES = {"ls", "cat", "head", "tail", "grep", "rg", "wc", "pwd", "stat", "diff",
+                 "pytest", "ruff", "mypy"}
+SHELL_META = set(";|&`$<>(){}\n\\")   # chaining / substitution / redirection / expansion
+
+def _under(root, path):
+    try:
+        return os.path.commonpath([root, os.path.abspath(path)]) == root
+    except ValueError:                 # different drives on Windows
+        return False
+
+def _bash_ok(cmd):
+    if set(cmd) & SHELL_META:          # can't reason about an expanded command -> refuse
+        return False
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:                 # unbalanced quotes -> refuse
+        return False
+    return bool(argv) and argv[0] in SAFE_BINARIES
+
+ALLOW = {
+    "Read":  lambda i: True,
+    "Grep":  lambda i: True,
+    "Glob":  lambda i: True,
+    "Bash":  lambda i: _bash_ok(i.get("command", "")),
+    "Write": lambda i: _under(WORKSPACE, i.get("file_path", "")),
+    "Edit":  lambda i: _under(WORKSPACE, i.get("file_path", "")),
+}
+
+def policy(tool_name, tool_input):
+    check = ALLOW.get(tool_name)
+    if check and check(tool_input):
+        return []                      # affirmatively allowed -> defer
+    return [Finding.fail("not_allowlisted", severity="CRITICAL",
+                         message=f"{tool_name} call is not on the allowlist")]
+```
+
+The trade-off: an allowlist is stricter and needs maintenance (you add capabilities as the
+agent legitimately needs them), but it fails *toward* refusal instead of away from it. For
+high-stakes agents prefer this to a deny-list, or compose both (recipe 10).
+
 ---
 
 **These are starting points, not turnkey security.** Read each one, tune the lists and

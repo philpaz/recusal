@@ -52,9 +52,11 @@ _EXTRA_DESTRUCTIVE = re.compile(
     r"|\bdel\b[^|&;]*\s/[sq]\b"
     r"|\bremove-item\b[^|&;]*-recurse\b"
 )
+# \S{0,256} (bounded), not \S*, so a long run of '>' can't make this O(n^2) (ReDoS guard).
 _REDIRECT_TO_SECRET = re.compile(
-    r">>?\s*\S*(\.env(?:\.[^\s'\"/\\]+)?|\.pem|\.key|\.p12|id_rsa|id_ed25519)"
+    r">>?\s*\S{0,256}(\.env(?:\.[^\s'\"/\\]{1,64})?|\.pem|\.key|\.p12|id_rsa|id_ed25519)"
 )
+_MAX_CMD_LEN = 4096  # commands longer than this are refused, not adjudicated (DoS guard)
 _WRITE_LIKE = re.compile(
     r"\b(tee|sed\s+-i|python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e|cp|mv|copy|xcopy|robocopy|install|rsync|truncate|set-content|add-content|out-file)\b|>>?"
 )
@@ -94,6 +96,16 @@ def policy(tool_name: str, tool_input: dict) -> list:
 
     if tool_name == "Bash":
         raw = str(tool_input.get("command", ""))
+        if len(raw) > _MAX_CMD_LEN:
+            findings.append(
+                Finding.fail(
+                    "command_too_long",
+                    severity="CRITICAL",
+                    message=f"refusing a {len(raw)}-char command the gate cannot adjudicate safely",
+                    command=raw[:120],
+                )
+            )
+            return findings
         cmd = _norm(raw)
         cmd_deobf = _deobfuscate(cmd)
         cmd_paths = re.sub(r"/+", "/", cmd.replace("\\", "/"))
