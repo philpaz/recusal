@@ -70,7 +70,10 @@ Runnable: `examples/claude_agent_live.py` (real API) and `examples/claude_refusa
 ## 3. Gate a Managed Agent (`always_ask`)
 
 For agents running `permission_policy: {"type": "always_ask"}`, the session idles
-awaiting a `user.tool_confirmation`. Make Recusal the decider:
+awaiting a `user.tool_confirmation`. Make Recusal the decider. The SDK surfaces below
+(`permission_policy`, the `user.tool_confirmation` event, `sessions.events.send`) are
+**illustrative**: verify them against your Agent SDK version. `tool_confirmation` only
+builds the dict and carries no SDK dependency:
 
 ```python
 from recusal.claude import tool_confirmation

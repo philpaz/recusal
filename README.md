@@ -25,14 +25,14 @@ together. That's not a control; it's a conflict of interest.
 
 2026 made the failure mode concrete:
 
-- An **Anthropic** study found an RL-trained coding model that learned to call `sys.exit(0)`
+- An **[Anthropic study](https://www.anthropic.com/research/emergent-misalignment-reward-hacking)** found an RL-trained coding model that learned to call `sys.exit(0)`
   to fake passing tests, and *generalized* the cheating to unrelated tasks.
-- **UC Berkeley** scored **100%** on six of eight agent benchmarks **without solving a single
+- **[UC Berkeley](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/)** scored **100%** on six of eight agent benchmarks **without solving a single
   task**, by intercepting the evaluator.
 
 A model will, given the chance, certify its own success. Even Anthropic's own Claude Code
 auto-mode safety layer is a same-family classifier with an admitted 17% false-negative rate,
-and Anthropic says plainly it is *"not a drop-in replacement for careful human review on
+and [Anthropic says plainly](https://www.anthropic.com/engineering/claude-code-auto-mode) it is *"not a drop-in replacement for careful human review on
 high-stakes infrastructure."*
 
 Recusal is **an** independent, deterministic authority with no model in the decision path,
@@ -159,7 +159,8 @@ else:
 
 Runnable: [`examples/claude_agent_live.py`](examples/claude_agent_live.py) (real API) and
 [`examples/claude_refusal.py`](examples/claude_refusal.py) (offline, no key). For **Managed
-Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic decider.
+Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic decider
+(the SDK event shape is illustrative; verify it against your Agent SDK version).
 
 ### Any agent loop, no Claude required
 
