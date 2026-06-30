@@ -62,16 +62,22 @@ def gate_tool_use(
             results.append({"type": "tool_result", "tool_use_id": tool.id,
                             "content": execute_tool(tool.name, tool.input)})
     """
-    verdict = compute_verdict(findings)
-    if verdict.passed:
-        return True, None
+    # strict at the enforcement boundary: ambiguous evidence (a dict with no
+    # status/passed) fails closed to a refusal rather than degrading to PASS.
+    try:
+        verdict = compute_verdict(findings, strict=True)
+    except Exception as exc:  # noqa: BLE001
+        detail = f"invalid evidence ({exc})"
+    else:
+        if verdict.passed:
+            return True, None
+        detail = f"[{verdict.decision.value}]: {verdict.reasons()}"
 
     refusal_block = {
         "type": "tool_result",
         "tool_use_id": tool_use_id,
         "content": (
-            f"Refused by the gate before `{tool_name}` ran "
-            f"[{verdict.decision.value}]: {verdict.reasons()}. "
+            f"Refused by the gate before `{tool_name}` ran {detail}. "
             f"Address the findings and propose a corrected call."
         ),
         "is_error": True,
@@ -90,7 +96,17 @@ def tool_confirmation(
     and send this event back. PASS → ``allow``; RETRY/FAIL → ``deny`` with the
     verdict message as ``deny_message`` (which the agent receives and reacts to).
     """
-    verdict = compute_verdict(findings)
+    try:
+        verdict = compute_verdict(
+            findings, strict=True
+        )  # strict: fail closed on ambiguous evidence
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "type": "user.tool_confirmation",
+            "tool_use_id": tool_use_id,
+            "result": "deny",
+            "deny_message": f"invalid evidence ({exc})",
+        }
     allow = verdict.passed
 
     event: Dict[str, Any] = {

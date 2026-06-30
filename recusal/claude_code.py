@@ -68,7 +68,9 @@ def decide(
     """
     try:
         findings = policy(tool_name, tool_input) or []
-        verdict = compute_verdict(findings)
+        # strict at the enforcement boundary: ambiguous evidence (a dict with no
+        # status/passed) fails closed here rather than silently degrading to PASS.
+        verdict = compute_verdict(findings, strict=True)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         if fail_closed:
             return "deny", f"Recusal failed closed (policy error): {exc}"
@@ -106,11 +108,13 @@ def run_pretooluse_hook(
         event = json.load(stdin)
         if not isinstance(event, dict):
             raise ValueError("PreToolUse event is not a JSON object")
+        if "tool_name" not in event:
+            raise ValueError("PreToolUse event missing 'tool_name'")
         tool_input = event.get("tool_input", {})
         if not isinstance(tool_input, dict):
-            tool_input = {}
+            raise ValueError("PreToolUse 'tool_input' is not an object")
         decision, reason = decide(
-            event.get("tool_name", ""),
+            event["tool_name"],
             tool_input,
             policy,
             allow_on_pass=allow_on_pass,

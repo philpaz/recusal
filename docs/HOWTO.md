@@ -121,7 +121,7 @@ print([r.gate_id for r in release.blocking])   # ['G5']
 ## 6. Audit every decision (tamper-evident)
 
 Pair the gate with an append-only, hash-chained log so every verdict is on the record and
-any later edit is detectable:
+in-place edits or reordering of existing entries are detectable:
 
 ```python
 from recusal import compute_verdict, AuditLog, verify
@@ -130,11 +130,13 @@ audit = AuditLog(path="audit.jsonl")   # omit path for in-memory
 verdict = compute_verdict(findings)
 audit.append(verdict, action={"tool": tool.name, "input": tool.input}, actor=session_id)
 
-ok, problems = verify(audit.entries)   # (False, [...reasons]) if anything was altered
+ok, problems = verify(audit.entries)   # (False, [...reasons]) if an entry was edited or reordered
 ```
 
-Each entry carries the SHA-256 of the entry before it, so deleting, editing, or reordering
-a record breaks the chain. See `examples/audit_demo.py`.
+Each entry carries the SHA-256 of the entry before it, so editing or reordering an existing
+record breaks the chain. Tail-truncation or a full re-hash by a write-access attacker needs
+an external anchor (`verify(..., expected_head=(count, last_hash))`), the chain is
+tamper-evident, not tamper-proof. See `examples/audit_demo.py`.
 
 ## 7. Classify and route a failure
 

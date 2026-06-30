@@ -45,3 +45,9 @@ def test_adjudicate_all_allows_partial_when_not_required():
     rel = adj.adjudicate_all("m", {"A": _OK}, require_all=False)
     assert rel.release_ready is True  # only A, passing, nothing required
     assert rel.missing == ()
+
+
+def test_ambiguous_evidence_becomes_a_critical_gate_failure():
+    # a status-less dict must not let a gate pass vacuously; it fails closed.
+    result = GateAdjudicator().adjudicate("G2", [{"severity": "CRITICAL", "message": "no status"}])
+    assert result.decision.value == "FAIL"

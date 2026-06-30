@@ -74,9 +74,18 @@ def test_hook_non_object_json_fails_closed():
         assert res["hookSpecificOutput"]["permissionDecision"] == "deny", payload
 
 
-def test_hook_missing_tool_fields_still_evaluated():
-    _res, text = _run(_always_deny, {})  # no tool_name / tool_input
+def test_hook_missing_tool_name_fails_closed():
+    # an event with no tool_name is schema drift; the envelope fails closed (deny),
+    # independent of the policy (even an empty policy can't make it pass).
+    _res, text = _run(_empty, {})
     assert json.loads(text)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "malformed" in text.lower()
+
+
+def test_ambiguous_evidence_dict_fails_closed():
+    # a policy bug: a status-less finding dict must not degrade to PASS at the gate.
+    statusless = lambda tn, ti: [{"severity": "CRITICAL", "message": "block this"}]  # noqa: E731
+    assert decide("Bash", {"command": "x"}, statusless)[0] == "deny"
 
 
 def test_hook_allow_on_pass_opt_in_emits_allow():

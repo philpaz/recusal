@@ -126,8 +126,19 @@ class GateAdjudicator:
     ) -> GateResult:
         """Fold a gate's findings into a typed ``Verdict``. ``findings`` may be
         ``Finding`` objects or loose evidence dicts, ``compute_verdict`` coerces
-        them. The same kernel, applied at a checkpoint."""
-        return GateResult(gate_id, compute_verdict(findings))
+        them. The same kernel, applied at a checkpoint. Strict: ambiguous evidence
+        (a dict with no status/passed) becomes a CRITICAL gate failure, not a pass."""
+        try:
+            verdict = compute_verdict(findings, strict=True)
+        except Exception as exc:  # noqa: BLE001
+            verdict = compute_verdict(
+                [
+                    Finding.fail(
+                        "evidence_error", severity="CRITICAL", message=f"invalid evidence: {exc}"
+                    )
+                ]
+            )
+        return GateResult(gate_id, verdict)
 
     def release(
         self,

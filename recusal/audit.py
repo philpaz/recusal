@@ -2,7 +2,7 @@
 Hash-chained audit log, a linked record of every verdict.
 
 A gate that can refuse is only half of an auditable control; the other half is a
-record an auditor can trust. ``recusal.audit`` appends each verdict to an
+record you can replay and an auditor can read. ``recusal.audit`` appends each verdict to an
 append-only, hash-chained log: every entry carries the SHA-256 hash of the entry
 before it, so an **in-place edit or a reordering** of existing entries breaks the
 chain and ``verify`` catches it, naming the entry and the reason.

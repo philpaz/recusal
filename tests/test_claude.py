@@ -41,3 +41,18 @@ def test_tool_confirmation_deny_carries_reason():
     ev = tool_confirmation("toolu_5", CRITICAL_FAIL)
     assert ev["result"] == "deny"
     assert "delete prod table" in ev["deny_message"]
+
+
+# A status-less finding dict (a policy bug) must fail closed at the enforcement boundary,
+# not silently degrade to PASS.
+_AMBIGUOUS = [{"severity": "CRITICAL", "message": "block this, but I forgot the status"}]
+
+
+def test_gate_fails_closed_on_ambiguous_evidence():
+    allow, refusal = gate_tool_use("toolu_6", _AMBIGUOUS, tool_name="drop_table")
+    assert allow is False
+    assert refusal["is_error"] is True
+
+
+def test_tool_confirmation_denies_ambiguous_evidence():
+    assert tool_confirmation("toolu_7", _AMBIGUOUS)["result"] == "deny"
