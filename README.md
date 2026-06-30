@@ -92,6 +92,17 @@ Zero runtime dependencies — standard library only.
 pip install recusal
 ```
 
+## See it refuse (20 seconds, no API key)
+
+```bash
+git clone https://github.com/philpaz/recusal && cd recusal
+python examples/claude_refusal.py   # a Claude agent stages a write to the WRONG
+                                    # customer; the gate refuses before the tool runs
+python examples/gallery.py          # the same gate across the OWASP agentic failure modes
+```
+
+Deterministic and offline — same evidence, same verdict, including the **no**.
+
 ## Plug it into Claude
 
 ### Claude Code — drop-in `PreToolUse` hook

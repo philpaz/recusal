@@ -12,13 +12,19 @@ license = { file = "LICENSE" }
 authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
 keywords = [
     "ai-agents", "agent-governance", "guardrails", "verifier", "determinism",
-    "claude", "separation-of-powers", "runtime-governance", "agent-reliability",
+    "claude", "claude-code", "separation-of-powers", "runtime-governance",
+    "agent-reliability", "agent-safety", "tool-use", "llm", "ai-safety",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
     "Typing :: Typed",
 ]
