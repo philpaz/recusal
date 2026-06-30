@@ -1,5 +1,5 @@
 """
-Recusal — deterministic failure classifier/router demo (offline, no API key).
+Recusal, deterministic failure classifier/router demo (offline, no API key).
 
     python examples/classify_demo.py
 """

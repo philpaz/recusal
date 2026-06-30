@@ -1,5 +1,5 @@
 """
-Recusal — LIVE Claude tool-call gate (real Anthropic SDK, manual agent loop).
+Recusal, LIVE Claude tool-call gate (real Anthropic SDK, manual agent loop).
 
 This actually drives Claude. It gives the model a CRM tool and a task that leads
 it to write to the *wrong* customer; Recusal adjudicates the proposed call and
@@ -25,7 +25,7 @@ from recusal import Finding  # noqa: E402
 from recusal.claude import gate_tool_use  # noqa: E402
 
 MODEL = "claude-opus-4-8"
-MAX_TURNS = 6  # bound the loop — agents shouldn't run unbounded
+MAX_TURNS = 6  # bound the loop, agents shouldn't run unbounded
 
 ACTIVE_CUSTOMER = {"customer_id": "C1001", "name": "Bob Smith"}
 
@@ -57,7 +57,7 @@ TOOLS = [
 
 
 def gather_evidence(tool_input: dict) -> list:
-    """A write must target the active customer — an invariant the model can't self-enforce."""
+    """A write must target the active customer, an invariant the model can't self-enforce."""
     target = tool_input.get("customer_id")
     active = ACTIVE_CUSTOMER["customer_id"]
     if target != active:

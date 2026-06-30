@@ -1,4 +1,4 @@
-"""Hermetic tests for the built-in checks — plain dicts, no pandas. Checks emit Findings."""
+"""Hermetic tests for the built-in checks, plain dicts, no pandas. Checks emit Findings."""
 
 from recusal import compute_verdict
 from recusal.checks import (

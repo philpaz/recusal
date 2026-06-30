@@ -1,9 +1,9 @@
 """
-Claude Code adapter — run Recusal as a PreToolUse hook.
+Claude Code adapter, run Recusal as a PreToolUse hook.
 
 Claude Code fires a ``PreToolUse`` hook before it executes any tool. The hook reads
 a JSON event on stdin and writes a decision on stdout. This adapter turns a Recusal
-policy — a function ``(tool_name, tool_input) -> findings`` — into that decision.
+policy, a function ``(tool_name, tool_input) -> findings``, into that decision.
 
 Design: a governance gate should only ever **deny**, never force-allow. So:
 
@@ -40,7 +40,7 @@ Wire it up in ``.claude/settings.json``::
 
     run_pretooluse_hook(policy)
 
-No Anthropic-SDK dependency — this only speaks the hook's stdin/stdout JSON.
+No Anthropic-SDK dependency, this only speaks the hook's stdin/stdout JSON.
 """
 
 import json
@@ -69,7 +69,7 @@ def decide(
     try:
         findings = policy(tool_name, tool_input) or []
         verdict = compute_verdict(findings)
-    except Exception as exc:  # noqa: BLE001 — a buggy policy must not silently disable the gate
+    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         if fail_closed:
             return "deny", f"Recusal failed closed (policy error): {exc}"
         return ("allow" if allow_on_pass else "defer"), f"policy error ignored: {exc}"
@@ -91,7 +91,7 @@ def run_pretooluse_hook(
     """Read a Claude Code PreToolUse event on stdin, apply ``policy``, emit the decision.
 
     On a deny (or an explicit allow), writes the PreToolUse ``hookSpecificOutput`` JSON
-    and returns it. On a defer, writes nothing and returns ``None`` — Claude Code then
+    and returns it. On a defer, writes nothing and returns ``None``, Claude Code then
     proceeds with its normal permission flow.
     """
     stdin = stdin if stdin is not None else sys.stdin
@@ -99,7 +99,7 @@ def run_pretooluse_hook(
 
     try:
         event = json.load(stdin)
-    except Exception:  # noqa: BLE001 — a malformed event must not crash the tool path
+    except Exception:  # noqa: BLE001, a malformed event must not crash the tool path
         event = {}
 
     tool_name = event.get("tool_name", "")

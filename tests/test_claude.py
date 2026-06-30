@@ -1,4 +1,4 @@
-"""Hermetic tests for the Claude adapter — no Anthropic SDK, no network."""
+"""Hermetic tests for the Claude adapter, no Anthropic SDK, no network."""
 
 from recusal.claude import gate_tool_use, tool_confirmation
 

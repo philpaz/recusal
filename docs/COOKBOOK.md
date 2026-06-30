@@ -1,7 +1,7 @@
 # Policy cookbook
 
 Copy-paste policies for the agent actions people actually want to gate. Each recipe is a
-**starting point you own and adapt** — Recusal adjudicates evidence; *you* decide what
+**starting point you own and adapt**, Recusal adjudicates evidence; *you* decide what
 proves an action is safe. The kernel never changes; only your policy does.
 
 The mental model is the same everywhere: **a proposed action → findings → a verdict
@@ -9,24 +9,24 @@ The mental model is the same everywhere: **a proposed action → findings → a 
 
 | Severity | Verdict | Use it when… |
 |---|---|---|
-| `CRITICAL` | **FAIL** — refuse, terminal | the action is destructive or wrong; never let it run |
-| `ERROR` | **RETRY** — block, try once more | recoverable; the agent should adjust and re-propose |
-| `WARNING` | **PASS** — allow, but record | worth noting, not worth stopping |
-| `INFO` | **PASS** — allow, kept as a metric | calibration only |
+| `CRITICAL` | **FAIL**, refuse, terminal | the action is destructive or wrong; never let it run |
+| `ERROR` | **RETRY**, block, try once more | recoverable; the agent should adjust and re-propose |
+| `WARNING` | **PASS**, allow, but record | worth noting, not worth stopping |
+| `INFO` | **PASS**, allow, kept as a metric | calibration only |
 
 ## Wiring (do this once)
 
 Every recipe below is a `policy(tool_name, tool_input)` that returns findings. Two ways to
-run one — pick your surface, then drop any recipe's body in:
+run one, pick your surface, then drop any recipe's body in:
 
-**Claude Code — `PreToolUse` hook** (`.claude/hooks/my_gate.py`, registered in
+**Claude Code, `PreToolUse` hook** (`.claude/hooks/my_gate.py`, registered in
 `.claude/settings.json`):
 
 ```python
 from recusal.claude_code import run_pretooluse_hook
 
 def policy(tool_name, tool_input):
-    ...  # a recipe body — return findings, or [] to defer
+    ...  # a recipe body, return findings, or [] to defer
     return []
 
 run_pretooluse_hook(policy)   # a clean verdict defers; a non-clean one denies
@@ -44,7 +44,7 @@ if verdict.refused or verdict.retryable:
 
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
-> and are exercised by the suite — lift from there when you want the proven form.
+> and are exercised by the suite, lift from there when you want the proven form.
 
 ---
 
@@ -120,7 +120,7 @@ def policy(tool_name, tool_input):
 ## 4. Wrong-subject write guard (the signature recipe)
 
 Mid-conversation about one subject, the agent stages a write against a *different* one. The
-data is valid; it's just applied to the wrong record — an invariant the model can't
+data is valid; it's just applied to the wrong record, an invariant the model can't
 self-enforce, because it doesn't know which subject your system says is active.
 
 ```python
@@ -140,7 +140,7 @@ def make_subject_guard(active_id):
 # policy = make_subject_guard(active_id="C1001")   # bind the active subject per session/turn
 ```
 
-## 5. Egress allowlist — stop exfiltration
+## 5. Egress allowlist, stop exfiltration
 
 Outbound email/HTTP must go to an allowlisted destination. This is your guard against a
 prompt-injected "send the data to attacker@evil.com".
@@ -212,7 +212,7 @@ def policy(tool_name, tool_input, soft=25, hard=100):
     n = _bump()
     if n > hard:
         return [Finding.fail("action_budget", severity="ERROR",
-                             message=f"{n} actions exceeds the hard cap {hard} — stop the loop")]
+                             message=f"{n} actions exceeds the hard cap {hard}, stop the loop")]
     if n > soft:
         return [Finding.fail("action_budget", severity="WARNING",
                              message=f"{n} actions over the soft budget {soft}")]
@@ -221,7 +221,7 @@ def policy(tool_name, tool_input, soft=25, hard=100):
 
 ## 8. Quality gate before a merge or deploy
 
-A recoverable gate — below the coverage floor or with failing tests is `ERROR` (RETRY), not
+A recoverable gate, below the coverage floor or with failing tests is `ERROR` (RETRY), not
 a terminal refusal. Drop this in a CI step or a `merge_pr` / `deploy` tool guard.
 
 ```python
@@ -259,7 +259,7 @@ def policy(tool_name, tool_input):
 
 ## 10. Compose several policies into one gate
 
-Policies are just functions returning findings — concatenate them and let `compute_verdict`
+Policies are just functions returning findings, concatenate them and let `compute_verdict`
 fold the lot. The worst severity across *all* of them decides the verdict.
 
 ```python
@@ -281,5 +281,5 @@ run_pretooluse_hook(policy)   # one hook, every rule; a clean verdict still defe
 **These are starting points, not turnkey security.** Read each one, tune the lists and
 thresholds to your system, and add the evidence *your* actions actually need. The discipline
 that makes them trustworthy is the same one the whole library is built on: the verdict is
-deterministic, replayable, and has no model in the decision path — so the same proposed
+deterministic, replayable, and has no model in the decision path, so the same proposed
 action gets the same answer, including the **no**.

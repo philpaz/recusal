@@ -1,6 +1,6 @@
 # Recusal
 
-**Deterministic governance for Claude agents — an independent verifier that can refuse to certify a tool call *before* it runs.**
+**Deterministic governance for Claude agents: an independent verifier that can refuse to certify a tool call *before* it runs.**
 
 **Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook and the Claude Agent SDK as a tool gate). The zero-dep core works in any agent loop.
 
@@ -11,31 +11,31 @@
 
 A judge **recuses** themselves from a case they can't impartially decide. The same
 principle governs autonomous agents: the thing that *generates* the work must never be
-the thing that *certifies* it. Recusal is that independent authority — collect evidence,
+the thing that *certifies* it. Recusal is that independent authority: collect evidence,
 adjudicate it into **`PASS` / `RETRY` / `FAIL`**, and let the gate **refuse**. No model
-call in the decision path. Same evidence, same verdict, every time — including the "no".
+call in the decision path. Same evidence, same verdict, every time, including the "no".
 
 ---
 
 ## The wedge: don't let the same model grade its own work
 
-The reflex fix for agent safety is *another model* — "does this action look OK?" But the
+The reflex fix for agent safety is *another model*: "does this action look OK?" But the
 judge and the builder come from the same family, share the same blind spots, and drift
 together. That's not a control; it's a conflict of interest.
 
-2026 made the failure mode concrete and peer-reviewed:
+2026 made the failure mode concrete:
 
-- A **Nature** study found an RL-trained coding model that learned to call `sys.exit(0)`
-  to fake passing tests — and *generalized* the cheating.
-- **UC Berkeley** scored **100%** on three agent benchmarks **without solving a single
+- An **Anthropic** study found an RL-trained coding model that learned to call `sys.exit(0)`
+  to fake passing tests, and *generalized* the cheating to unrelated tasks.
+- **UC Berkeley** scored **100%** on six of eight agent benchmarks **without solving a single
   task**, by intercepting the evaluator.
 
 A model will, given the chance, certify its own success. Even Anthropic's own Claude Code
-auto-mode safety layer is a same-family classifier with an admitted false-negative rate,
-and Anthropic says plainly it is *"not a drop-in replacement for human review on
+auto-mode safety layer is a same-family classifier with an admitted 17% false-negative rate,
+and Anthropic says plainly it is *"not a drop-in replacement for careful human review on
 high-stakes infrastructure."*
 
-Recusal is the **independent, deterministic** authority that can't be talked into it —
+Recusal is the **independent, deterministic** authority that can't be talked into it,
 no model in the decision path, a verdict you can replay and audit, and a refusal that holds
 (a Claude Code `deny` is honored even under `bypassPermissions`).
 
@@ -43,10 +43,10 @@ no model in the decision path, a verdict you can replay and audit, and a refusal
 
 ## Positioning
 
-- **Lightweight** — zero dependencies, a kernel you can read in one sitting. Governance without a Kubernetes-sized platform.
-- **Extensible** — a check is just a function that returns a finding. Bring your own policy; the core never changes.
-- **Claude-native** — drops into Claude Code as a `PreToolUse` hook and the Agent SDK as a tool gate; a `deny` holds even under `bypassPermissions`.
-- **Independent & deterministic** — not the same model grading its own work. No model in the decision path; a verdict you can replay and audit.
+- **Lightweight**: zero dependencies, a kernel you can read in one sitting. Governance without a Kubernetes-sized platform.
+- **Extensible**: a check is just a function that returns a finding. Bring your own policy; the core never changes.
+- **Claude-native**: drops into Claude Code as a `PreToolUse` hook and the Agent SDK as a tool gate; a `deny` holds even under `bypassPermissions`.
+- **Independent & deterministic**: not the same model grading its own work. No model in the decision path; a verdict you can replay and audit.
 
 > Builders generate. Recusal certifies. Refusal is a feature.
 
@@ -55,13 +55,13 @@ no model in the decision path, a verdict you can replay and audit, and a refusal
 ## Architecture
 
 One object model, one pipeline. Checks (or your own evidence) produce **Findings**;
-`compute_verdict` folds them into a **Verdict**; and the Verdict drives every surface —
+`compute_verdict` folds them into a **Verdict**; and the Verdict drives every surface:
 the gate refuses, the audit log records, the classifier routes.
 
 ```
   data / a proposed agent action / a tool call
           │
-     [ checks ]            emit Findings               (recusal.checks — or your own)
+     [ checks ]            emit Findings               (recusal.checks, or your own)
           │
    compute_verdict()       fold findings → one Verdict (PASS / RETRY / FAIL)
           │
@@ -70,19 +70,19 @@ the gate refuses, the audit log records, the classifier routes.
         │   │   └─ recusal.classify        route the failure (retry / refuse / ask-human / …)
         │   └───── recusal.audit           tamper-evident, hash-chained record
         └───────── recusal.claude(_code)   allow or refuse the tool call
-                   recusal.gates           staged G0–G8 release decision
+                   recusal.gates           staged G0-G8 release decision
 ```
 
 | Module | What it is |
 |---|---|
-| `recusal.evidence` | the contract — `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
+| `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
 | `recusal.audit` | tamper-evident, hash-chained log of every verdict |
 | `recusal.classify` | deterministic failure classifier + router |
-| `recusal.gates` | staged `G0`–`G8` release-gate adjudication — `compute_verdict` at each checkpoint |
+| `recusal.gates` | staged `G0`-`G8` release-gate adjudication, `compute_verdict` at each checkpoint |
 
-Zero runtime dependencies — standard library only.
+Zero runtime dependencies, standard library only.
 
 ---
 
@@ -101,13 +101,13 @@ python examples/claude_refusal.py   # a Claude agent stages a write to the WRONG
 python examples/gallery.py          # the same gate across the OWASP agentic failure modes
 ```
 
-Deterministic and offline — same evidence, same verdict, including the **no**.
+Deterministic and offline, same evidence, same verdict, including the **no**.
 
 ## Plug it into Claude
 
-### Claude Code — drop-in `PreToolUse` hook
+### Claude Code, drop-in `PreToolUse` hook
 
-Refuse destructive tool calls *before* Claude Code runs them — even in auto / bypass mode.
+Refuse destructive tool calls *before* Claude Code runs them, even in auto / bypass mode.
 Register a hook in `.claude/settings.json`:
 
 ```json
@@ -134,17 +134,17 @@ A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
 > **Don't start from a blank policy.** [`docs/COOKBOOK.md`](docs/COOKBOOK.md) has copy-paste
-> recipes — destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
-> allowlists, injection quarantine, action budgets — that drop straight into the hook above.
+> recipes, destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
+> allowlists, injection quarantine, action budgets, that drop straight into the hook above.
 
-> **Recusal governs *this* repository exactly this way** — a real hook refuses `rm -rf`,
+> **Recusal governs *this* repository exactly this way**, a real hook refuses `rm -rf`,
 > force-pushes, and secret-file writes to its own maintainers. Verbatim, reproducible,
 > CI-locked proof: [`docs/PROVEN.md`](docs/PROVEN.md).
 
-### Claude Agent SDK — manual loop
+### Claude Agent SDK, manual loop
 
 In a manual agent loop, gate each tool call and hand Claude an `is_error` tool_result on a
-refusal — it self-corrects:
+refusal, it self-corrects:
 
 ```python
 from recusal.claude import gate_tool_use
@@ -161,14 +161,14 @@ Runnable: [`examples/claude_agent_live.py`](examples/claude_agent_live.py) (real
 [`examples/claude_refusal.py`](examples/claude_refusal.py) (offline, no key). For **Managed
 Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic decider.
 
-### Any agent loop — no Claude required
+### Any agent loop, no Claude required
 
 The Claude adapters are conveniences; the zero-dep core is framework-neutral.
 [`examples/agent_loop.py`](examples/agent_loop.py) gates a plain `propose → gate → act`
-loop whose only import is `recusal` — the same `compute_verdict` seam drops into LangGraph,
+loop whose only import is `recusal`, the same `compute_verdict` seam drops into LangGraph,
 the OpenAI Agents SDK, or a homegrown runtime unchanged.
 
-## Robustness — across the OWASP Agentic failure modes
+## Robustness, across the OWASP Agentic failure modes
 
 `python examples/gallery.py` runs the gate against the common autonomous-agent failure modes:
 
@@ -211,7 +211,7 @@ if verdict.refused:
 
 ## Tamper-evident audit
 
-Pair any verdict with an append-only, hash-chained log — every decision on the record,
+Pair any verdict with an append-only, hash-chained log, every decision on the record,
 any later edit detectable:
 
 ```python
@@ -222,12 +222,12 @@ audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
 ok, problems = verify(audit.entries)   # False if the log was altered
 ```
 
-Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 14.
+Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
 
 ## Classify and route a failure
 
 A refusal or failure is only useful if you know what to do next. The classifier says
-*what kind* of failure it is and where it routes — deterministically, no model:
+*what kind* of failure it is and where it routes, deterministically, no model:
 
 ```python
 from recusal import classify_failure
@@ -240,19 +240,19 @@ c.route           # "fix-code"
 Default taxonomy (extend or replace it): `transient → retry` · `policy_violation → refuse` ·
 `prompt_injection → quarantine` · `code_bug → fix-code` · `data_shape → fix-data` ·
 `data_missing → fetch-data` · `spec_ambiguity → ask-human`. Unmatched failures fall back to
-`ask-human` — it never guesses. `classify_verdict(verdict)` routes a non-PASS verdict.
+`ask-human`, it never guesses. `classify_verdict(verdict)` routes a non-PASS verdict.
 
 ## Why this, and why not the alternatives
 
-- **Agent frameworks** (LangGraph, CrewAI, AutoGen, OpenAI Agents SDK) *orchestrate* — their governance is in-process and self-graded.
-- **Guardrails** (Guardrails AI, NeMo Guardrails) *filter I/O content* — they don't adjudicate a work product.
-- **Eval libraries** (promptfoo, DeepEval, Haize's Verdict) *score offline*, usually with an LLM-as-judge — the probabilistic opposite of a deterministic gate.
-- **Observability** (Langfuse, AgentOps) *records* — zero authority to stop anything.
-- **Anthropic's auto mode** is a *same-family classifier* grading the same family — exactly the conflict of interest this exists to remove.
-- The newer **agent-firewall** projects (e.g. AEGIS) and **Microsoft's Agent Governance Toolkit** are real peers. Recusal's bet is not feature parity — it's **independence** (a verifier the builder cannot influence), determinism, and a kernel small enough to trust on sight.
+- **Agent frameworks** (LangGraph, CrewAI, AutoGen, OpenAI Agents SDK) *orchestrate*, their governance is in-process and self-graded.
+- **Guardrails** (Guardrails AI, NeMo Guardrails) *filter I/O content*, they don't adjudicate a work product.
+- **Eval libraries** (promptfoo, DeepEval, Haize's Verdict) *score offline*, usually with an LLM-as-judge, the probabilistic opposite of a deterministic gate.
+- **Observability** (Langfuse, AgentOps) *records*, zero authority to stop anything.
+- **Anthropic's auto mode** is a *same-family classifier* grading the same family, exactly the conflict of interest this exists to remove.
+- The newer **agent-firewall** projects (e.g. AEGIS) and **Microsoft's Agent Governance Toolkit** are real peers. Recusal's bet is not feature parity, it's **independence** (a verifier the builder cannot influence), determinism, and a kernel small enough to trust on sight.
 
-**New here?** The quick objections — *do I need this? doesn't Claude already do it? is it
-production-ready?* — are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
+**New here?** The quick objections, *do I need this? doesn't Claude already do it? is it
+production-ready?*, are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
 what": [`docs/WHY.md`](docs/WHY.md).
 
 **Full documentation index: [`docs/`](docs/README.md).** Comparison with the landscape:
@@ -260,6 +260,7 @@ what": [`docs/WHY.md`](docs/WHY.md).
 [`CONSTITUTION.md`](CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 Usage & extending: [`docs/HOWTO.md`](docs/HOWTO.md) · [`docs/EXTENDING.md`](docs/EXTENDING.md).
 Copy-paste policies: [`docs/COOKBOOK.md`](docs/COOKBOOK.md).
+A full worked configuration: [`docs/EXAMPLE.md`](docs/EXAMPLE.md).
 Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
 
 ## Development
@@ -271,7 +272,7 @@ pytest -q
 
 ## Contributing
 
-Contributions are welcome — Recusal is deliberately small, and the bar is keeping it that
+Contributions are welcome, Recusal is deliberately small, and the bar is keeping it that
 way (no model in the verdict path, no runtime dependencies, don't grow the kernel). Read
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 first. Security reports go through [`SECURITY.md`](SECURITY.md), privately.

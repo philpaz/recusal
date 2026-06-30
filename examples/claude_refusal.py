@@ -1,9 +1,9 @@
 """
-Recusal — Claude tool-call gate, offline demo (no API key, no dependencies).
+Recusal, Claude tool-call gate, offline demo (no API key, no dependencies).
 
 Reproduces the "wrong-subject write" failure mode: a Claude agent, mid-conversation
 about one customer, stages a write that targets a *different* customer. The gate
-adjudicates the evidence and refuses *before the tool runs* — and hands Claude a
+adjudicates the evidence and refuses *before the tool runs*, and hands Claude a
 reason it can act on.
 
     python examples/claude_refusal.py
@@ -18,14 +18,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from recusal import Finding  # noqa: E402
 from recusal.claude import gate_tool_use  # noqa: E402
 
-# The session's verified subject this turn — the customer the user is actually asking about.
+# The session's verified subject this turn, the customer the user is actually asking about.
 ACTIVE_CUSTOMER = {"customer_id": "C1001", "name": "Bob Smith"}
 
 
 def gather_evidence(tool_input: dict) -> list:
     """Deterministic precondition: a write must target the active customer.
 
-    This is the kind of invariant the model cannot self-enforce — it doesn't know
+    This is the kind of invariant the model cannot self-enforce, it doesn't know
     which subject is 'active' in your system. The gate does.
     """
     target = tool_input.get("customer_id")

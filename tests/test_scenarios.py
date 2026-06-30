@@ -1,4 +1,4 @@
-"""Robustness — the gate across diverse autonomous-agent failure modes.
+"""Robustness, the gate across diverse autonomous-agent failure modes.
 
 These exercise the full Finding -> compute_verdict -> gate_tool_use pipeline with
 realistic policies, and assert the verdict tier is right for each consequence.
@@ -43,7 +43,7 @@ def test_data_exfiltration_refused():
 
 
 def test_coverage_floor_is_retry_not_terminal():
-    # A recoverable failure must be RETRY, not FAIL — the loop tries again, it doesn't die.
+    # A recoverable failure must be RETRY, not FAIL, the loop tries again, it doesn't die.
     assert _decision(coverage_floor(61)) is Decision.RETRY
     assert _decision(coverage_floor(82)) is Decision.PASS
 

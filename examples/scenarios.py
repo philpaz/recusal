@@ -1,5 +1,5 @@
 """
-Reusable demo policies — each returns Recusal Findings for a proposed agent action.
+Reusable demo policies, each returns Recusal Findings for a proposed agent action.
 
 These cover the common autonomous-agent failure modes (wrong target, destructive
 action, unscoped mutation, data exfiltration, coverage floor, runaway volume).
@@ -80,7 +80,7 @@ def data_exfiltration(tool_input: dict) -> list:
 
 
 def coverage_floor(coverage: float, floor: float = 75) -> list:
-    """Below the coverage floor is recoverable — RETRY, not a terminal refusal."""
+    """Below the coverage floor is recoverable, RETRY, not a terminal refusal."""
     if coverage < floor:
         return [
             Finding.fail(

@@ -1,4 +1,4 @@
-"""Heavy edge-case tests for the built-in checks — nulls, NaN, boundaries, row shapes."""
+"""Heavy edge-case tests for the built-in checks, nulls, NaN, boundaries, row shapes."""
 
 from recusal import Severity
 from recusal.checks import (

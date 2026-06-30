@@ -8,7 +8,7 @@ git clone https://github.com/philpaz/recusal && cd recusal
 python examples/claude_refusal.py
 ```
 
-## Start here — see the refusal (offline, no key)
+## Start here, see the refusal (offline, no key)
 
 | Example | What it shows |
 |---|---|
@@ -20,20 +20,21 @@ python examples/claude_refusal.py
 
 | Example | What it shows |
 |---|---|
-| [`claude_code_gate.py`](claude_code_gate.py) | A drop-in Claude Code **`PreToolUse` hook** — refuses destructive bash and secret-file writes even under `bypassPermissions`; defers on anything it has no opinion on. |
+| [`claude_code_gate.py`](claude_code_gate.py) | A drop-in Claude Code **`PreToolUse` hook**, refuses destructive bash and secret-file writes even under `bypassPermissions`; defers on anything it has no opinion on. |
 | [`claude_agent_live.py`](claude_agent_live.py) | The **live** version (real Anthropic SDK, manual agent loop): Claude proposes a wrong-subject write, Recusal refuses, Claude self-corrects. Needs `pip install anthropic` + a key. |
-| [`agent_loop.py`](agent_loop.py) | **Framework-neutral** — a full gate in a plain `propose → gate → act` loop whose only import is `recusal`. No Claude, no SDK. Proof it works in any agent loop. |
+| [`agent_loop.py`](agent_loop.py) | **Framework-neutral**, a full gate in a plain `propose → gate → act` loop whose only import is `recusal`. No Claude, no SDK. Proof it works in any agent loop. |
 
 ## The other surfaces (offline, no key)
 
 | Example | What it shows |
 |---|---|
 | [`audit_demo.py`](audit_demo.py) | The tamper-evident **audit log**: record verdicts, verify the hash chain, edit one record, watch the chain catch it. |
-| [`classify_demo.py`](classify_demo.py) | The deterministic **failure classifier/router** — a failure string in, a class + remediation route out (retry / refuse / quarantine / ask-human). |
-| [`scenarios.py`](scenarios.py) | The reusable policy library behind `gallery.py` *and* the test suite — the same policies are demonstrated **and** proven. Import, don't run. |
+| [`classify_demo.py`](classify_demo.py) | The deterministic **failure classifier/router**, a failure string in, a class + remediation route out (retry / refuse / quarantine / ask-human). |
+| [`scenarios.py`](scenarios.py) | The reusable policy library behind `gallery.py` *and* the test suite, the same policies are demonstrated **and** proven. Import, don't run. |
 
 ---
 
-Looking for policies to drop into your own gate? See the
-[**policy cookbook**](../docs/COOKBOOK.md). New to the project? Start with the
-[README](../README.md) and the [FAQ](../docs/FAQ.md).
+Want a complete, narrated setup for one real use case? See the
+[**worked example**](../docs/EXAMPLE.md) (a database-admin agent left in auto mode). Looking
+for policies to drop into your own gate? See the [**policy cookbook**](../docs/COOKBOOK.md).
+New to the project? Start with the [README](../README.md) and the [FAQ](../docs/FAQ.md).

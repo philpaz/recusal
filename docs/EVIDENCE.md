@@ -1,14 +1,14 @@
 # The Evidence Contract
 
-This is the spine of Recusal. Everything — the checks, the verdict kernel, the Claude
-adapters, the release gates, the audit log, and the failure classifier — reduces to two
+This is the spine of Recusal. Everything, the checks, the verdict kernel, the Claude
+adapters, the release gates, the audit log, and the failure classifier, reduces to two
 objects and one function. Get this contract right and the rest is small. (Pure standard
 library: `dataclasses` + `enum`, zero dependencies.)
 
 ```
   data / a proposed agent action / a tool call
           │
-     [ checks ]            emit Findings              (recusal.checks — or your own)
+     [ checks ]            emit Findings              (recusal.checks, or your own)
           │
      Finding, Finding, …
           │
@@ -22,7 +22,7 @@ library: `dataclasses` + `enum`, zero dependencies.)
                    recusal.claude_code  (or recusal.gates for a staged release decision)
 ```
 
-## `Finding` — one observation about the work
+## `Finding`, one observation about the work
 
 ```python
 from recusal import Finding, Severity
@@ -46,16 +46,16 @@ Finding.fail("row_count", severity="CRITICAL", message="empty", actual=0)  # fai
 `severity` accepts a `Severity` or the plain string (`"CRITICAL"`). Extra keyword
 args land in `context`.
 
-### Severity — what each tier does to the verdict
+### Severity, what each tier does to the verdict
 
 | Severity | If the finding **fails** |
 |----------|--------------------------|
-| `CRITICAL` | **FAIL** — the work is wrong. Terminal, no retry. |
-| `ERROR` | **RETRY** — recoverable. Try once more with the failures as context. |
+| `CRITICAL` | **FAIL**, the work is wrong. Terminal, no retry. |
+| `ERROR` | **RETRY**, recoverable. Try once more with the failures as context. |
 | `WARNING` | Proceed, but record it as a warning. |
 | `INFO` | Never blocks. Recorded as a metric (held or not). |
 
-A *passed* finding of any severity is fine — it held. Severity only matters on failure.
+A *passed* finding of any severity is fine, it held. Severity only matters on failure.
 
 ### Loose-dict input (coercion)
 
@@ -69,7 +69,7 @@ coerce loose dicts, which is the convenient form when wiring up an agent:
 `status` is one of `pass` / `fail` / `error` / `warn` (`fail`/`error`/`warn` → not passed).
 `type` is accepted as an alias for `check`. Everything else becomes `context`.
 
-## `Verdict` — the decision the findings add up to
+## `Verdict`, the decision the findings add up to
 
 ```python
 from recusal import compute_verdict
@@ -77,18 +77,18 @@ from recusal import compute_verdict
 v = compute_verdict(findings)   # findings: Finding objects or loose dicts
 
 v.decision           # Decision.PASS | RETRY | FAIL
-v.passed             # bool — decision is PASS
-v.refused            # bool — decision is FAIL
-v.retryable          # bool — decision is RETRY
+v.passed             # bool, decision is PASS
+v.refused            # bool, decision is FAIL
+v.retryable          # bool, decision is RETRY
 v.highest_severity   # Severity
-v.failures           # tuple[Finding, ...] — what forced FAIL/RETRY
+v.failures           # tuple[Finding, ...], what forced FAIL/RETRY
 v.warnings           # tuple[Finding, ...]
 v.metrics            # tuple[Finding, ...]
 v.message            # one-line summary
 v.reasons()          # the specific failure messages, for a human or an agent to act on
 ```
 
-## `compute_verdict` — the rule
+## `compute_verdict`, the rule
 
 Deterministic. Same findings in, same verdict out. First match wins:
 
@@ -96,8 +96,8 @@ Deterministic. Same findings in, same verdict out. First match wins:
 2. else any **failed ERROR** → `RETRY`
 3. else → `PASS`
 
-Failed `WARNING`s are surfaced as `warnings` (they don't block). `INFO` findings —
-and any failed `INFO`, which is a contradiction — are kept as `metrics`.
+Failed `WARNING`s are surfaced as `warnings` (they don't block). `INFO` findings,
+and any failed `INFO`, which is a contradiction, are kept as `metrics`.
 
 ## Why a contract, not just dicts
 
@@ -106,7 +106,7 @@ verdict" **is the product**. Typing it:
 
 - makes the four surfaces (checks, verdict, gates, Claude adapter) one coherent
   pipeline instead of cousins passing loose dicts;
-- makes a verdict auditable and replayable — a frozen, comparable object you can log;
+- makes a verdict auditable and replayable, a frozen, comparable object you can log;
 - lets you extend cleanly (new checks just emit `Finding`s; new consumers just read
   `Verdict`s) without breaking the core.
 

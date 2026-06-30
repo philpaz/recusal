@@ -83,7 +83,7 @@ def test_release_is_a_pure_function_of_findings():
     findings = [row_count([{"id": 1}], min_rows=1)]
     a = adj.release("m", [adj.adjudicate("G1", findings)]).to_dict()
     b = adj.release("m", [adj.adjudicate("G1", findings)]).to_dict()
-    assert a == b  # no timestamps, no nondeterminism — replayable
+    assert a == b  # no timestamps, no nondeterminism, replayable
 
 
 def test_default_gates_are_domain_neutral():

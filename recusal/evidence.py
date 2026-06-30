@@ -1,5 +1,5 @@
 """
-The evidence contract — the spine of Recusal.
+The evidence contract, the spine of Recusal.
 
 Everything reduces to two objects:
 
@@ -8,11 +8,11 @@ Everything reduces to two objects:
 
 Checks emit ``Finding``s. ``compute_verdict`` folds findings into a ``Verdict``.
 The Claude adapter turns a ``Verdict`` into an allow / refuse decision on a tool
-call. One object model, one pipeline — that is what makes this a governance layer
+call. One object model, one pipeline, that is what makes this a governance layer
 and not a pile of helpers.
 
 The contract is the product: it is the typed, documented definition of what
-"evidence" and "a verdict" *are*. Pure standard library — ``dataclasses`` + ``enum``,
+"evidence" and "a verdict" *are*. Pure standard library, ``dataclasses`` + ``enum``,
 no pydantic, no dependencies. See docs/EVIDENCE.md.
 """
 
@@ -24,7 +24,7 @@ from typing import Any, Iterable, List, Mapping, Tuple, Union
 
 
 class Severity(str, Enum):
-    """How bad a finding is *if it failed* — and therefore what it does to the verdict.
+    """How bad a finding is *if it failed*, and therefore what it does to the verdict.
 
     Subclasses ``str`` so values compare and serialize as plain strings
     (``Severity.CRITICAL == "CRITICAL"``), keeping evidence JSON-clean.
@@ -106,9 +106,9 @@ class Finding:
 class Decision(str, Enum):
     """The verdict's binding outcome."""
 
-    PASS = "PASS"  # certified — proceed
-    RETRY = "RETRY"  # recoverable — try once more with the failures as context
-    FAIL = "FAIL"  # refused — terminal
+    PASS = "PASS"  # certified, proceed
+    RETRY = "RETRY"  # recoverable, try once more with the failures as context
+    FAIL = "FAIL"  # refused, terminal
 
 
 @dataclass(frozen=True)
@@ -135,7 +135,7 @@ class Verdict:
         return self.decision is Decision.RETRY
 
     def reasons(self) -> str:
-        """The specific failure messages behind a non-PASS verdict — what a caller
+        """The specific failure messages behind a non-PASS verdict, what a caller
         (or an agent) needs to actually correct the work. Falls back to the summary."""
         detail = "; ".join(f.message or f.check for f in self.failures if f.message or f.check)
         return detail or self.message
@@ -150,7 +150,7 @@ def compute_verdict(findings: Iterable[Union[Finding, Mapping[str, Any]]]) -> Ve
       * else                  → PASS
 
     Failed WARNING findings are surfaced as warnings (they don't block). INFO
-    findings — and any failed INFO, which is a contradiction — are kept as metrics.
+    findings, and any failed INFO, which is a contradiction, are kept as metrics.
     """
     items: List[Finding] = [Finding.coerce(f) for f in findings]
 

@@ -1,4 +1,4 @@
-"""Hermetic tests for the evidence contract itself — Finding / Verdict / coercion."""
+"""Hermetic tests for the evidence contract itself, Finding / Verdict / coercion."""
 
 from recusal import Finding, Severity
 from recusal.evidence import Decision

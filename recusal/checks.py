@@ -1,13 +1,13 @@
 """
-Built-in deterministic checks — turn data into evidence.
+Built-in deterministic checks, turn data into evidence.
 
 The verdict kernel (``compute_verdict``) decides; these functions do the tedious
 part that earns the decision: inspect real data and emit findings. Each check
-takes plain Python (a list of dict-like rows — anything with ``[]`` access, so
+takes plain Python (a list of dict-like rows, anything with ``[]`` access, so
 ``csv.DictReader`` rows, JSON records, or pandas rows all work) and returns a
 single ``Finding`` ready to hand to ``compute_verdict``.
 
-Severity is a parameter, not a hardcode — *you* decide whether a high null rate
+Severity is a parameter, not a hardcode, *you* decide whether a high null rate
 is a CRITICAL stop or a WARNING. Pure logic, standard library only, no pandas
 required.
 

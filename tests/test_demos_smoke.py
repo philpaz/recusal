@@ -1,4 +1,4 @@
-"""Smoke tests — the offline demos actually run and produce the expected verdicts."""
+"""Smoke tests, the offline demos actually run and produce the expected verdicts."""
 
 import contextlib
 import io

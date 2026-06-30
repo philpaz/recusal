@@ -15,7 +15,7 @@ Register it in ``.claude/settings.json`` (use an absolute path):
     }
 
 Then Recusal refuses destructive bash and writes to secret files *before* Claude
-Code runs them — even in bypassPermissions / auto mode. Anything the policy has no
+Code runs them, even in bypassPermissions / auto mode. Anything the policy has no
 opinion on defers to Claude Code's normal permission flow.
 """
 

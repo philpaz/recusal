@@ -3,7 +3,7 @@ message: "If you use Recusal in your work, please cite it."
 title: "Recusal: deterministic separation-of-powers governance for AI agents"
 abstract: >-
   Recusal is a lightweight, zero-dependency, Claude-native library that places an
-  independent, deterministic verifier in an autonomous agent's action path — one that can
+  independent, deterministic verifier in an autonomous agent's action path, one that can
   refuse to certify a tool call before it runs. The thing that generates the work must
   never be the thing that certifies it: no model sits in the decision path, so a verdict
   is replayable and auditable, including the refusal.

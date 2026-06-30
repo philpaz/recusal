@@ -10,10 +10,10 @@ pip install recusal
 
 ---
 
-## 1. Claude Code — drop-in `PreToolUse` hook (the main path)
+## 1. Claude Code, drop-in `PreToolUse` hook (the main path)
 
 Register a hook in `.claude/settings.json` and Recusal refuses unsafe tool calls before
-Claude Code runs them — even under `bypassPermissions` (a `PreToolUse` `deny` overrides it):
+Claude Code runs them, even under `bypassPermissions` (a `PreToolUse` `deny` overrides it):
 
 ```json
 { "hooks": { "PreToolUse": [
@@ -38,11 +38,11 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (the gate adds refusals; it never strips Claude Code's own
 prompts). A non-clean verdict **denies**, with the reasons. See `examples/claude_code_gate.py`.
 
-## 2. Claude Agent SDK — manual loop
+## 2. Claude Agent SDK, manual loop
 
 Use the **manual** agent loop (not the auto tool-runner) so you can adjudicate each
 tool call before it executes. Gather whatever evidence proves the call is safe, get a
-verdict, and on a non-PASS verdict hand Claude an `is_error` tool_result — it self-corrects.
+verdict, and on a non-PASS verdict hand Claude an `is_error` tool_result, it self-corrects.
 
 ```python
 from recusal import Finding
@@ -135,27 +135,27 @@ a record breaks the chain. See `examples/audit_demo.py`.
 ## 7. Classify and route a failure
 
 When the gate refuses or an action fails, decide *what kind* of failure it is and where it
-goes — deterministically, no model:
+goes, deterministically, no model:
 
 ```python
 from recusal import classify_failure, classify_verdict
 
 c = classify_failure(error_text)          # or classify_verdict(verdict)
 if c.route == "retry":
-    ...                                    # transient — try again
+    ...                                    # transient, try again
 elif c.route == "refuse":
-    ...                                    # policy violation — don't retry as-is
+    ...                                    # policy violation, don't retry as-is
 elif c.route == "ask-human":
-    ...                                    # ambiguous — escalate
+    ...                                    # ambiguous, escalate
 ```
 
 Default classes (order is precedence): `transient`, `policy_violation`, `prompt_injection`,
 `code_bug`, `data_shape`, `data_missing`, `spec_ambiguity`. Unmatched failures fall back to
-`ask-human` — it never guesses. See `examples/classify_demo.py`.
+`ask-human`, it never guesses. See `examples/classify_demo.py`.
 
 ## Patterns & choices
 
-- **Where evidence comes from is yours.** Recusal doesn't gather evidence — it adjudicates it. Preconditions, dry-runs, policy checks, an allowlist, the output of your existing validators (Great Expectations, pytest, a linter): anything that produces `Finding`s.
-- **Pick severity by consequence, not by check.** The *same* check can be `CRITICAL` in one context and `WARNING` in another. Severity is a parameter — set it where you call the check.
+- **Where evidence comes from is yours.** Recusal doesn't gather evidence, it adjudicates it. Preconditions, dry-runs, policy checks, an allowlist, the output of your existing validators (Great Expectations, pytest, a linter): anything that produces `Finding`s.
+- **Pick severity by consequence, not by check.** The *same* check can be `CRITICAL` in one context and `WARNING` in another. Severity is a parameter, set it where you call the check.
 - **`RETRY` is a real signal.** An `ERROR`-severity failure returns `RETRY`; in an agent loop that means "let the model try once more with `verdict.reasons()` as context," not "give up."
-- **The gate refuses; it does not act.** It returns a verdict (and, for Claude, a tool_result). *You* decide what your loop/pipeline does with it. That separation is deliberate — see CONSTITUTION.md.
+- **The gate refuses; it does not act.** It returns a verdict (and, for Claude, a tool_result). *You* decide what your loop/pipeline does with it. That separation is deliberate, see CONSTITUTION.md.

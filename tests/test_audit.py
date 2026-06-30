@@ -1,4 +1,4 @@
-"""Tests for the tamper-evident audit log — chain integrity and tamper detection."""
+"""Tests for the tamper-evident audit log, chain integrity and tamper detection."""
 
 import json
 from datetime import datetime, timezone

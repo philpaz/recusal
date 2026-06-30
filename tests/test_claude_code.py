@@ -1,4 +1,4 @@
-"""Hermetic tests for the Claude Code PreToolUse hook adapter — stdin/stdout JSON."""
+"""Hermetic tests for the Claude Code PreToolUse hook adapter, stdin/stdout JSON."""
 
 import io
 import json

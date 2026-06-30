@@ -7,7 +7,7 @@ injected instructions in tool output (quarantine), a code bug (fix the code), th
 wrong data shape (re-shape), missing data (fetch), or an ambiguous request
 (ask a human). Guessing wastes a retry; asking a model is non-deterministic.
 
-``classify_failure`` decides by explicit marker rules — same input, same class,
+``classify_failure`` decides by explicit marker rules, same input, same class,
 same route, every time. It ships a default taxonomy (extracted from a real
 autonomous build system and generalized) that you can extend or replace.
 
@@ -64,7 +64,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "not allowed",
             "forbidden",
         ),
-        "An action a deterministic policy refused — do not retry as-is; escalate or change the plan.",
+        "An action a deterministic policy refused, do not retry as-is; escalate or change the plan.",
     ),
     FailureClass(
         "prompt_injection",
@@ -77,7 +77,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "send the api key",
             "new instructions:",
         ),
-        "Tool output appears to carry injected instructions — quarantine, don't act on it.",
+        "Tool output appears to carry injected instructions, quarantine, don't act on it.",
     ),
     FailureClass(
         "transient",
@@ -93,7 +93,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "temporarily unavailable",
             "service unavailable",
         ),
-        "A recoverable infrastructure hiccup — retry with backoff.",
+        "A recoverable infrastructure hiccup, retry with backoff.",
     ),
     FailureClass(
         "code_bug",
@@ -110,7 +110,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "test failed",
             "tests failed",
         ),
-        "The generated code is wrong — route to the builder/coding agent.",
+        "The generated code is wrong, route to the builder/coding agent.",
     ),
     FailureClass(
         "data_shape",
@@ -124,13 +124,13 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "null rate",
             "keyerror",
         ),
-        "Data is the wrong shape — re-synthesize or re-shape it.",
+        "Data is the wrong shape, re-synthesize or re-shape it.",
     ),
     FailureClass(
         "data_missing",
         "fetch-data",
         ("0 rows", "no rows", "empty result", "not found", "does not exist", "orphan", "missing"),
-        "Expected data is absent — fetch or re-migrate it.",
+        "Expected data is absent, fetch or re-migrate it.",
     ),
     FailureClass(
         "spec_ambiguity",
@@ -144,7 +144,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "need clarification",
             "acceptance criteria",
         ),
-        "The request is ambiguous — escalate to a human for refinement.",
+        "The request is ambiguous, escalate to a human for refinement.",
     ),
 )
 
@@ -159,7 +159,7 @@ def classify_failure(
     """Classify a failure (an error string, a verdict reason, a log line) and route it.
 
     First matching class wins (taxonomy order is precedence). If nothing matches,
-    returns the fallback class/route — never guesses.
+    returns the fallback class/route, never guesses.
     """
     haystack = (text or "").lower()
     for fc in taxonomy:
@@ -186,7 +186,7 @@ def classify_verdict(
     fallback_class: str = "unknown",
     fallback_route: str = "ask-human",
 ) -> Classification:
-    """Classify a non-PASS ``Verdict`` from its reasons — what kind of failure, and where it goes."""
+    """Classify a non-PASS ``Verdict`` from its reasons, what kind of failure, and where it goes."""
     return classify_failure(
         verdict.reasons(),
         taxonomy=taxonomy,

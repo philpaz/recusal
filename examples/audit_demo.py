@@ -1,5 +1,5 @@
 """
-Recusal — tamper-evident audit log demo (offline, no API key).
+Recusal, tamper-evident audit log demo (offline, no API key).
 
 Records three verdicts, verifies the chain is intact, then quietly edits one
 record and shows the chain detect it.

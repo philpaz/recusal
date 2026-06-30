@@ -1,9 +1,9 @@
 """
-Claude adapter — put the gate in front of a Claude agent's tool calls.
+Claude adapter, put the gate in front of a Claude agent's tool calls.
 
 Claude can now run long, autonomous, multi-tool agent loops. This adapter is the
 deterministic policy seam: before a proposed tool call executes, you adjudicate
-the evidence and the gate can **refuse** — and Claude adapts instead of acting.
+the evidence and the gate can **refuse**, and Claude adapts instead of acting.
 "Builders cannot grade their own work" applied to an agent's own tool use.
 
 Two integration surfaces, both from Anthropic's documented agent patterns:
@@ -11,7 +11,7 @@ Two integration surfaces, both from Anthropic's documented agent patterns:
 1. Manual agentic loop (`client.messages.create` in a while-loop). Anthropic's
    own guidance: use the manual loop "when you need human-in-the-loop approval
    before each tool execution." Swap the human for a deterministic gate with
-   ``gate_tool_use`` — on FAIL it returns a ``tool_result`` block with
+   ``gate_tool_use``, on FAIL it returns a ``tool_result`` block with
    ``is_error: true``, which Claude reads and self-corrects from.
 
 2. Managed Agents with ``permission_policy: {"type": "always_ask"}``. The session
@@ -19,7 +19,7 @@ Two integration surfaces, both from Anthropic's documented agent patterns:
    ``tool_confirmation`` is the deterministic decider behind that confirmation
    (``allow`` / ``deny`` with a reason fed back to the agent).
 
-This module has **no dependency on the Anthropic SDK** — it only builds the dict
+This module has **no dependency on the Anthropic SDK**, it only builds the dict
 shapes the SDK already uses, so the governance layer stays zero-dep and the seam
 stays auditable.
 """
@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 from .evidence import compute_verdict
 
 # A PASS verdict allows the action; RETRY and FAIL both block it (RETRY means
-# "recoverable, but not as-is" — the agent should adjust, same wire signal as FAIL).
+# "recoverable, but not as-is", the agent should adjust, same wire signal as FAIL).
 Evidence = Iterable[Any]  # Findings or loose evidence dicts; compute_verdict coerces.
 
 
@@ -47,8 +47,8 @@ def gate_tool_use(
     finding shape.
 
     Returns ``(allow, refusal_block)``:
-      * ``(True, None)``  — verdict is PASS; execute the tool.
-      * ``(False, block)`` — verdict is RETRY/FAIL; do **not** execute. Append
+      * ``(True, None)`` , verdict is PASS; execute the tool.
+      * ``(False, block)``, verdict is RETRY/FAIL; do **not** execute. Append
         ``block`` (a ``tool_result`` with ``is_error: true``) to your next user
         message so Claude sees the refusal and adapts.
 

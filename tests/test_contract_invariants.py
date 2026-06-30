@@ -1,4 +1,4 @@
-"""Heavy invariant tests for the evidence contract — precedence, idempotence, determinism."""
+"""Heavy invariant tests for the evidence contract, precedence, idempotence, determinism."""
 
 import itertools
 

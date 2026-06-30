@@ -1,4 +1,4 @@
-"""Dogfood — the repo's own Claude Code hook policy refuses dangerous tool calls.
+"""Dogfood, the repo's own Claude Code hook policy refuses dangerous tool calls.
 
 Loads the actual installed hook (.claude/hooks/recusal_gate.py) and asserts its policy,
 so docs/PROVEN.md cannot silently rot.

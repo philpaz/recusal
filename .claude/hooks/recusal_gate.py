@@ -4,7 +4,7 @@ Recusal governs its own repository.
 
 This is a real Claude Code ``PreToolUse`` hook, registered in
 ``.claude/settings.json``. When a Claude Code session works on *this* repo, every
-tool call is adjudicated here first — destructive shell commands and writes to
+tool call is adjudicated here first, destructive shell commands and writes to
 secret/protected files are refused before they run, even under bypassPermissions.
 
 The project eats its own dog food: the governance library is the thing governing

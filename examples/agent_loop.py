@@ -1,9 +1,9 @@
 """
-Framework-neutral agent loop — the zero-dependency core gating tool calls with no
+Framework-neutral agent loop, the zero-dependency core gating tool calls with no
 Claude, no SDK, no third-party anything. This is the proof behind the claim that
 Recusal works in *any* agent loop: the only import is ``recusal`` itself, and the
 loop below is a plain ``for`` over proposed actions. Swap it for LangGraph, the
-OpenAI Agents SDK, a homegrown runtime — the gate is identical.
+OpenAI Agents SDK, a homegrown runtime, the gate is identical.
 
     python examples/agent_loop.py
 """
@@ -20,7 +20,7 @@ ALLOWED_TABLES = {"audit_log", "staging"}
 
 
 def evaluate(tool: str, args: dict) -> list:
-    """Turn a proposed (tool, args) call into findings. This is the whole policy —
+    """Turn a proposed (tool, args) call into findings. This is the whole policy -
     deterministic, yours to own, and the only thing the verdict depends on."""
     findings = []
     if tool == "shell" and "rm -rf" in args.get("cmd", ""):

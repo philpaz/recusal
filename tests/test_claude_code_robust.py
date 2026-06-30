@@ -1,4 +1,4 @@
-"""Heavy robustness tests for the Claude Code hook — fail-closed, malformed input, edge cases."""
+"""Heavy robustness tests for the Claude Code hook, fail-closed, malformed input, edge cases."""
 
 import io
 import json

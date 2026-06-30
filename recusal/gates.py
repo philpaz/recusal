@@ -1,20 +1,20 @@
 """
-Staged release gates — the verdict spine, applied to a delivery pipeline.
+Staged release gates, the verdict spine, applied to a delivery pipeline.
 
-A gate is one named checkpoint (``G0``…``Gn``). Each gate collects **Findings** —
-from ``recusal.checks`` or your own evidence — and folds them into a typed
+A gate is one named checkpoint (``G0``…``Gn``). Each gate collects **Findings** -
+from ``recusal.checks`` or your own evidence, and folds them into a typed
 ``Verdict`` through the very same ``compute_verdict`` the rest of Recusal uses.
 There is exactly one decision function in the library; a gate is just that
 function applied at a checkpoint, plus an ordering. A release is ready only when
 *every* gate PASSes.
 
-The adjudicator never *generates* the work it judges — it only reads evidence
+The adjudicator never *generates* the work it judges, it only reads evidence
 others produced. Builders cannot grade their own work.
 
 Domain-neutral on purpose: the gate ids and what they mean are yours to define.
 This module ships a neutral default staging as a starting point, with no
 assumption about your stack (no database, no vendor, no migration). Pure standard
-library; the verdict — and the release rollup — are pure functions of the
+library; the verdict, and the release rollup, are pure functions of the
 findings, so they replay and compare exactly.
 """
 
@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple, Union
 
 from .evidence import Decision, Finding, Verdict, compute_verdict
 
-# A neutral default staging — purely labels + ordering, no domain assumptions.
+# A neutral default staging, purely labels + ordering, no domain assumptions.
 # Override freely by passing your own ``gates`` to ``GateAdjudicator``.
 DEFAULT_GATES: Tuple[Tuple[str, str], ...] = (
     ("G0", "environment / required systems reachable"),
@@ -77,7 +77,7 @@ class ReleaseEvidence:
 
     @property
     def release_ready(self) -> bool:
-        """A release ships only if every gate PASSed — one FAIL/RETRY blocks it."""
+        """A release ships only if every gate PASSed, one FAIL/RETRY blocks it."""
         return all(r.passed for r in self.results)
 
     @property
@@ -96,7 +96,7 @@ class ReleaseEvidence:
 class GateAdjudicator:
     """Adjudicate staged release gates over the shared verdict kernel.
 
-    ``gates`` is an ordered ``(id, description)`` list — pure labels; supply your
+    ``gates`` is an ordered ``(id, description)`` list, pure labels; supply your
     own staging or keep :data:`DEFAULT_GATES`. The adjudicator holds no domain
     logic: each gate's decision is ``compute_verdict`` over that gate's findings,
     exactly like every other surface in Recusal.
@@ -115,7 +115,7 @@ class GateAdjudicator:
         findings: Iterable[Union[Finding, Mapping[str, Any]]],
     ) -> GateResult:
         """Fold a gate's findings into a typed ``Verdict``. ``findings`` may be
-        ``Finding`` objects or loose evidence dicts — ``compute_verdict`` coerces
+        ``Finding`` objects or loose evidence dicts, ``compute_verdict`` coerces
         them. The same kernel, applied at a checkpoint."""
         return GateResult(gate_id, compute_verdict(findings))
 

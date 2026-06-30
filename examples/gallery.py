@@ -1,5 +1,5 @@
 """
-Recusal — gate scenario gallery (offline, no API key).
+Recusal, gate scenario gallery (offline, no API key).
 
 Robustness across the common autonomous-agent failure modes, mapped to the
 OWASP Top 10 for Agentic Applications (2026). Each row is a proposed agent action,

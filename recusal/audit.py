@@ -1,15 +1,15 @@
 """
-Tamper-evident audit log — a hash-chained record of every verdict.
+Tamper-evident audit log, a hash-chained record of every verdict.
 
 A gate that can refuse is only half of an auditable control; the other half is a
 record an auditor can trust. ``recusal.audit`` appends each verdict to an
 append-only, hash-chained log: every entry carries the SHA-256 hash of the entry
 before it, so any later edit, deletion, or reordering breaks the chain and
-``verify`` catches it — naming the entry and the reason.
+``verify`` catches it, naming the entry and the reason.
 
 Deterministic and dependency-free: SHA-256 over canonical JSON, standard library
 only. The record shape maps cleanly onto OWASP Agentic logging and EU AI Act
-Article 14 record-keeping.
+Article 12 (record-keeping).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ GENESIS = "0" * 64  # the prev_hash of the first entry
 
 
 def _canonical(entry: Dict[str, Any]) -> str:
-    """Stable serialization of an entry for hashing — everything but the hash field."""
+    """Stable serialization of an entry for hashing, everything but the hash field."""
     payload = {k: v for k, v in entry.items() if k != "hash"}
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -50,7 +50,7 @@ class AuditLog:
     """Append-only, hash-chained log of verdicts.
 
     Pass ``path`` to persist as JSONL (one entry per line); otherwise it lives in
-    memory on ``self.entries``. An existing file is resumed — the chain continues
+    memory on ``self.entries``. An existing file is resumed, the chain continues
     from its last entry.
     """
 
@@ -113,7 +113,7 @@ def load(path: str) -> List[Dict[str, Any]]:
 
 
 def verify(entries: List[Dict[str, Any]]) -> Tuple[bool, List[str]]:
-    """Check the hash chain. Returns ``(intact, problems)`` — ``problems`` is empty
+    """Check the hash chain. Returns ``(intact, problems)``, ``problems`` is empty
     when the log is intact, otherwise it names each broken entry and why."""
     problems: List[str] = []
     prev: str = GENESIS
