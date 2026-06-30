@@ -55,3 +55,36 @@ def test_allows_clean_read():
 
 def test_allows_normal_bash():
     assert _decide("Bash", {"command": "pytest -q && ruff check ."}) == "defer"
+
+
+# --- regression: self-protection and evasion-variant hardening -------------------------
+
+
+def test_refuses_disabling_its_own_settings():
+    assert _decide("Edit", {"file_path": "/repo/.claude/settings.json"}) == "deny"
+
+
+def test_refuses_editing_its_own_hook():
+    assert _decide("Write", {"file_path": "/repo/.claude/hooks/recusal_gate.py"}) == "deny"
+
+
+def test_refuses_rm_flag_variants():
+    for cmd in ("rm -fr /x", "rm  -rf /x", "rm -r -f /x", "rm --recursive --force /x"):
+        assert _decide("Bash", {"command": cmd}) == "deny", cmd
+
+
+def test_refuses_recursive_world_chmod():
+    assert _decide("Bash", {"command": "chmod -R 0777 ."}) == "deny"
+
+
+def test_refuses_dd_device_write_and_force_refspec():
+    assert _decide("Bash", {"command": "dd of=/dev/sda bs=1M"}) == "deny"
+    assert _decide("Bash", {"command": "git push origin +main"}) == "deny"
+
+
+def test_refuses_secret_write_via_bash_redirect():
+    assert _decide("Bash", {"command": "echo TOKEN=1 > /repo/.env"}) == "deny"
+
+
+def test_refuses_multiedit_to_secret():
+    assert _decide("MultiEdit", {"file_path": "/repo/.env"}) == "deny"

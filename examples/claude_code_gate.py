@@ -41,9 +41,11 @@ def policy(tool_name: str, tool_input: dict) -> list:
                     command=cmd,
                 )
             )
-    if tool_name in ("Write", "Edit"):
+    if tool_name in ("Write", "Edit", "MultiEdit"):
         path = str(tool_input.get("file_path", ""))
-        if "/.env" in path or path.endswith((".pem", ".key")):
+        base = os.path.basename(path)
+        # A file_path guard can't see a Bash redirect (echo X > .env); gate Bash for that.
+        if base == ".env" or base.startswith(".env.") or path.endswith((".pem", ".key")):
             findings.append(
                 Finding.fail(
                     "secret_write",

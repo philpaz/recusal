@@ -61,10 +61,15 @@ def policy(tool_name, tool_input):
 
     if tool_name in ("Write", "Edit", "MultiEdit"):
         path = tool_input.get("file_path", "")
+        ap = os.path.abspath(path)
+        try:  # commonpath, not startswith ("/workspace_evil" would slip past startswith)
+            inside = os.path.commonpath([WORKSPACE, ap]) == WORKSPACE
+        except ValueError:  # different drives on Windows
+            inside = False
         if any(p in path.lower() for p in PROTECTED):
             findings.append(Finding.fail("protected_file", severity="CRITICAL",
                                          message=f"refusing a write to a secret file: {path}"))
-        elif not os.path.abspath(path).startswith(WORKSPACE):
+        elif not inside:
             findings.append(Finding.fail("path_confinement", severity="CRITICAL",
                                          message=f"refusing a write outside the workspace: {path}"))
 

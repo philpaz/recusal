@@ -111,7 +111,13 @@ def policy(tool_name, tool_input):
     if any(p in low for p in PROTECTED):
         return [Finding.fail("protected_file", severity="CRITICAL",
                              message=f"refusing write to a secret/credential file: {path}")]
-    if not os.path.abspath(path).startswith(SAFE_ROOT):
+    # commonpath, not startswith: "/workspace_evil".startswith("/workspace") is a bypass.
+    ap = os.path.abspath(path)
+    try:
+        inside = os.path.commonpath([SAFE_ROOT, ap]) == SAFE_ROOT
+    except ValueError:  # different drives on Windows
+        inside = False
+    if not inside:
         return [Finding.fail("path_confinement", severity="CRITICAL",
                              message=f"write outside the workspace root: {path}")]
     return []
