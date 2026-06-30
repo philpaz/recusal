@@ -33,3 +33,11 @@ def test_quickstart_demo_runs():
     out = _run_demo("examples/quickstart.py")
     assert "FAIL" in out
     assert "release_ready" in out
+
+
+def test_framework_neutral_agent_loop_gates_tool_calls():
+    out = _run_demo("examples/agent_loop.py")
+    assert "REFUSE" in out  # destructive / unscoped actions blocked terminally
+    assert "RETRY" in out  # recoverable (allowlist) action blocked for retry
+    assert "ALLOW" in out  # compliant actions proceed
+    assert "no Claude, no SDK" in out  # the claim this demo exists to prove

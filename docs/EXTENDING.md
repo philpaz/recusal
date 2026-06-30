@@ -84,9 +84,19 @@ wrapper around `compute_verdict` rather than changing the core — keep the kern
 
 ## 5. Add a staged gate
 
-`GateAdjudicator` covers a `G0–G8` release pipeline. Subclass or extend `GATE_CRITERIA`
-and add an `_adjudicate_gX` method that turns evidence into `{verdict, failures}`; the
-release rollup picks it up automatically.
+`GateAdjudicator` covers a `G0–G8` release pipeline, but the gates are pure labels —
+pass your own ordered `(id, description)` staging to the constructor. Each gate is just
+`compute_verdict` over that gate's findings, so there is nothing to subclass: produce
+`Finding`s (from `recusal.checks` or your own checks), hand them to `adjudicate(gate_id,
+findings)`, and `release(...)` rolls the typed verdicts into one decision.
+
+```python
+from recusal import GateAdjudicator
+
+gate = GateAdjudicator(gates=(("LINT", "style clean"), ("SEC", "no secrets in diff")))
+results = [gate.adjudicate("LINT", lint_findings), gate.adjudicate("SEC", secret_findings)]
+release = gate.release("pr-482", results)
+```
 
 ---
 

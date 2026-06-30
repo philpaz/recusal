@@ -45,7 +45,7 @@ from .evidence import (
     Verdict,
     compute_verdict,
 )
-from .gates import GateAdjudicator
+from .gates import GateAdjudicator, GateResult, ReleaseEvidence
 
 __all__ = [
     "Severity",
@@ -55,6 +55,8 @@ __all__ = [
     "Decision",
     "compute_verdict",
     "GateAdjudicator",
+    "GateResult",
+    "ReleaseEvidence",
     "AuditLog",
     "verify",
     "classify_failure",

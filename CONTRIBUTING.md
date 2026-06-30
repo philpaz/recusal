@@ -39,10 +39,16 @@ Python 3.9+. **Zero runtime dependencies** — please keep `recusal/` standard-l
 - Anything that puts an LLM in the verdict path.
 - Scope creep that turns the kernel into a framework.
 
+## Code of conduct
+
+Participation is governed by our [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) (Contributor
+Covenant). Please read it before engaging.
+
 ## Reporting issues
 
 Security-relevant reports: see [`SECURITY.md`](SECURITY.md). Everything else: open an issue
-with a minimal reproduction.
+with a minimal reproduction — the templates under
+[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) will guide you.
 
 ## License
 

@@ -9,7 +9,7 @@ description = "Lightweight, extensible, Claude-native governance for AI agents: 
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Philip Paz" }]
+authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
 keywords = [
     "ai-agents", "agent-governance", "guardrails", "verifier", "determinism",
     "claude", "separation-of-powers", "runtime-governance", "agent-reliability",
@@ -20,6 +20,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
 ]
 dependencies = []  # zero runtime dependencies — standard library only
 
@@ -28,6 +29,10 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.8"]
 
 [project.urls]
 Homepage = "https://github.com/philpaz/recusal"
+Documentation = "https://github.com/philpaz/recusal/tree/main/docs"
+Repository = "https://github.com/philpaz/recusal"
+Issues = "https://github.com/philpaz/recusal/issues"
+Changelog = "https://github.com/philpaz/recusal/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recusal"]
@@ -47,7 +52,7 @@ ignore = ["E501"]  # long doc/example lines are fine
 "examples/*" = ["E402"]  # sys.path shim must precede imports in runnable examples
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 files = ["recusal"]
 warn_unused_ignores = true
 warn_redundant_casts = true

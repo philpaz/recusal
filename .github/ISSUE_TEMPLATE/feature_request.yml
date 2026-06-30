@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose a new check, adapter, or capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Recusal is deliberately small. Before proposing, please skim the
+        [CONSTITUTION](../blob/main/CONSTITUTION.md) and
+        [CONTRIBUTING](../blob/main/CONTRIBUTING.md): new capability is almost always a
+        **new check** (a function returning `Finding`s) or a **thin adapter** — not a
+        change to the kernel, and never a model in the decision path.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The agent failure mode or workflow gap you're hitting.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of addition is this?
+      options:
+        - A new check (data/action → Finding)
+        - A new adapter (Verdict → some framework's allow/deny)
+        - A new failure-taxonomy class
+        - A docs/example improvement
+        - Something that changes the core (please justify carefully)
+    validations:
+      required: true
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Rough API sketch (optional)
+      render: python
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Fit with the constitution
+      options:
+        - label: This keeps the verdict path deterministic (no model inside `compute_verdict`).
+        - label: This doesn't add a runtime dependency to `recusal/`.

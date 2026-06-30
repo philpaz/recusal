@@ -101,12 +101,15 @@ if verdict.refused:
 ## 5. Staged release gate (CI)
 
 ```python
-from recusal import GateAdjudicator
+from recusal import Finding, GateAdjudicator
 
 gate = GateAdjudicator()
-g5 = gate.adjudicate_gate("G5", {"test_results": {"coverage": 61, "failed": 1}})
-release = gate.generate_release_evidence("run-001", [g5])
-assert release["release_ready"], "release refused"
+# Each gate folds its findings into a typed Verdict via the shared kernel.
+g5 = gate.adjudicate(
+    "G5", [Finding.fail("coverage_floor", severity="CRITICAL", message="coverage 61% < 75%")]
+)
+release = gate.release("run-001", [g5])
+assert release.release_ready, f"release refused: {[r.gate_id for r in release.blocking]}"
 ```
 
 ---

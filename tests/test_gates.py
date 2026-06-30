@@ -1,72 +1,98 @@
-"""Hermetic tests for the gate adjudication engine."""
+"""Hermetic tests for the staged-gate adjudicator (built on the verdict kernel)."""
 
-from recusal.gates import GateAdjudicator
+from recusal import Finding
+from recusal.checks import referential_integrity, row_count
+from recusal.gates import DEFAULT_GATES, GateAdjudicator, GateResult, ReleaseEvidence
 
 
-def test_g2_tiered_verdict_passes_through():
+def test_gate_folds_findings_into_a_typed_verdict():
     adj = GateAdjudicator()
-    result = adj.adjudicate_gate(
+    result = adj.adjudicate(
         "G2",
+        [
+            Finding.fail("null_rate", severity="ERROR", message="null rate 0.30 > 0.15"),
+            Finding.fail("drift", severity="WARNING", message="distribution drift on product_code"),
+        ],
+    )
+    assert isinstance(result, GateResult)
+    assert result.verdict.retryable  # ERROR → RETRY
+    assert result.decision.value == "RETRY"
+    assert "null rate" in result.reasons()
+
+
+def test_gate_critical_finding_refuses():
+    adj = GateAdjudicator()
+    result = adj.adjudicate(
+        "G2",
+        [referential_integrity([{"member_id": "M9"}], [{"id": "M1"}], fk="member_id", pk="id")],
+    )
+    assert not result.passed
+    assert result.decision.value == "FAIL"
+    assert "orphan" in result.reasons().lower()
+
+
+def test_gate_accepts_loose_evidence_dicts():
+    adj = GateAdjudicator()
+    result = adj.adjudicate(
+        "G5", [{"severity": "CRITICAL", "status": "fail", "message": "coverage 50% < 75%"}]
+    )
+    assert result.decision.value == "FAIL"
+    assert "coverage" in result.reasons()
+
+
+def test_clean_gate_passes():
+    adj = GateAdjudicator()
+    result = adj.adjudicate("G1", [row_count([{"id": 1}], min_rows=1)])
+    assert result.passed
+    assert result.decision.value == "PASS"
+
+
+def test_release_requires_all_gates_pass():
+    adj = GateAdjudicator()
+    g1 = adj.adjudicate("G1", [row_count([{"id": 1}], min_rows=1)])
+    g5_pass = adj.adjudicate("G5", [Finding.ok("tests", message="12 passed, coverage 90%")])
+    release = adj.release("mission-1", [g1, g5_pass])
+    assert isinstance(release, ReleaseEvidence)
+    assert release.release_ready is True
+    assert release.blocking == ()
+
+    g5_fail = adj.adjudicate(
+        "G5", [Finding.fail("tests", severity="CRITICAL", message="coverage 10% < 75%")]
+    )
+    blocked = adj.release("mission-1", [g1, g5_fail])
+    assert blocked.release_ready is False
+    assert blocked.blocking[0].gate_id == "G5"
+
+
+def test_adjudicate_all_runs_in_gate_order():
+    adj = GateAdjudicator()
+    release = adj.adjudicate_all(
+        "mission-2",
         {
-            "verdict": "RETRY",
-            "failures": [{"type": "null_rate_high", "message": "[ERROR] null rate 0.30 > 0.15"}],
-            "warnings": [{"message": "[WARNING] distribution drift on product_code"}],
+            "G5": [Finding.fail("tests", severity="CRITICAL", message="coverage 10% < 75%")],
+            "G1": [row_count([{"id": 1}], min_rows=1)],
         },
     )
-    assert result["verdict"] == "RETRY"
-    assert any("null rate" in f for f in result["failures"])
-    assert any("distribution drift" in f for f in result["failures"])
+    # emitted in adjudicator gate order (G1 before G5), not dict order
+    assert [r.gate_id for r in release.results] == ["G1", "G5"]
+    assert release.release_ready is False
 
 
-def test_g2_legacy_orphans_fail():
+def test_release_is_a_pure_function_of_findings():
     adj = GateAdjudicator()
-    result = adj.adjudicate_gate(
-        "G2",
-        {
-            "validations": [
-                {
-                    "type": "referential_integrity",
-                    "relationship": "account->member",
-                    "orphan_count": 4,
-                },
-            ]
-        },
-    )
-    assert result["verdict"] == "FAIL"
-    assert "Orphaned records" in result["failures"][0]
+    findings = [row_count([{"id": 1}], min_rows=1)]
+    a = adj.release("m", [adj.adjudicate("G1", findings)]).to_dict()
+    b = adj.release("m", [adj.adjudicate("G1", findings)]).to_dict()
+    assert a == b  # no timestamps, no nondeterminism — replayable
 
 
-def test_g5_coverage_floor():
-    adj = GateAdjudicator()
-    passing = adj.adjudicate_gate("G5", {"test_results": {"coverage": 82, "failed": 0}})
-    assert passing["verdict"] == "PASS"
-
-    failing = adj.adjudicate_gate("G5", {"test_results": {"coverage": 50, "failed": 2}})
-    assert failing["verdict"] == "FAIL"
-    assert any("Coverage 50%" in f for f in failing["failures"])
-    assert any("2 tests failed" in f for f in failing["failures"])
+def test_default_gates_are_domain_neutral():
+    labels = " ".join(desc for _, desc in DEFAULT_GATES).lower()
+    for vendor_word in ("salesforce", "postgres", "target_org", "event_bus", "migration"):
+        assert vendor_word not in labels
 
 
-def test_g1_schema_fail():
-    adj = GateAdjudicator()
-    result = adj.adjudicate_gate("G1", {"validations": [{"status": "fail", "table": "members"}]})
-    assert result["verdict"] == "FAIL"
-
-
-def test_release_evidence_requires_all_gates_pass():
-    adj = GateAdjudicator()
-    g0 = adj.adjudicate_gate("G0", {})
-    g5_pass = adj.adjudicate_gate(
-        "G5", {"test_results": {"coverage": 90, "failed": 0, "total_tests": 12}}
-    )
-    release = adj.generate_release_evidence("mission-1", [g0, g5_pass])
-    assert release["release_ready"] is True
-
-    g5_fail = adj.adjudicate_gate("G5", {"test_results": {"coverage": 10, "failed": 3}})
-    blocked = adj.generate_release_evidence("mission-1", [g0, g5_fail])
-    assert blocked["release_ready"] is False
-
-
-def test_data_system_label_reflected_in_g0_criteria():
-    adj = GateAdjudicator(data_system="databricks")
-    assert "databricks" in adj.GATE_CRITERIA["G0"]["required_systems"]
+def test_custom_gate_staging():
+    adj = GateAdjudicator(gates=(("CHECK", "my one gate"),))
+    assert adj.describe("CHECK") == "my one gate"
+    assert adj.adjudicate("CHECK", []).passed

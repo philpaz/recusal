@@ -1,0 +1,50 @@
+name: Bug report
+description: Something in Recusal behaves incorrectly (a wrong verdict, a misfiring gate, a crash).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Recusal is a *governance* library, so correctness bugs
+        are high priority — a wrong `PASS` or a wrong `FAIL` is the worst thing it can do.
+        A minimal, runnable reproduction gets a fix fastest.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did Recusal decide, and what did you expect instead?
+      placeholder: |
+        compute_verdict([...]) returned PASS, but I expected FAIL because ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest snippet that shows the bug. Include the findings/evidence you passed in.
+      render: python
+      placeholder: |
+        from recusal import compute_verdict, Finding
+        v = compute_verdict([Finding.fail("x", severity="CRITICAL")])
+        print(v.decision)   # got PASS, expected FAIL
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Recusal version
+      placeholder: "0.1.0 (or a git SHA)"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Surface / context (optional)
+      description: Claude Code hook, Agent SDK loop, Managed Agents, release gate, or direct `compute_verdict`?

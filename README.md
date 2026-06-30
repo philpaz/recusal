@@ -80,7 +80,7 @@ the gate refuses, the audit log records, the classifier routes.
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
 | `recusal.audit` | tamper-evident, hash-chained log of every verdict |
 | `recusal.classify` | deterministic failure classifier + router |
-| `recusal.gates` | staged `G0`–`G8` release-gate adjudication |
+| `recusal.gates` | staged `G0`–`G8` release-gate adjudication — `compute_verdict` at each checkpoint |
 
 Zero runtime dependencies — standard library only.
 
@@ -146,6 +146,13 @@ Runnable: [`examples/claude_agent_live.py`](examples/claude_agent_live.py) (real
 [`examples/claude_refusal.py`](examples/claude_refusal.py) (offline, no key). For **Managed
 Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic decider.
 
+### Any agent loop — no Claude required
+
+The Claude adapters are conveniences; the zero-dep core is framework-neutral.
+[`examples/agent_loop.py`](examples/agent_loop.py) gates a plain `propose → gate → act`
+loop whose only import is `recusal` — the same `compute_verdict` seam drops into LangGraph,
+the OpenAI Agents SDK, or a homegrown runtime unchanged.
+
 ## Robustness — across the OWASP Agentic failure modes
 
 `python examples/gallery.py` runs the gate against the common autonomous-agent failure modes:
@@ -156,6 +163,7 @@ Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic d
   destructive file delete ASI02 Tool Misuse     FAIL    REFUSE
   unscoped SQL mutation   ASI05 Code Execution  FAIL    REFUSE
   data exfiltration       ASI01 Goal Hijack     FAIL    REFUSE
+  coverage floor          quality gate          RETRY   BLOCK (retry)
   runaway action volume   ASI08 Cascading       RETRY   BLOCK (retry)
   compliant write         -                     PASS    ALLOW
 ```
@@ -228,10 +236,13 @@ Default taxonomy (extend or replace it): `transient → retry` · `policy_violat
 - **Anthropic's auto mode** is a *same-family classifier* grading the same family — exactly the conflict of interest this exists to remove.
 - The newer **agent-firewall** projects (e.g. AEGIS) and **Microsoft's Agent Governance Toolkit** are real peers. Recusal's bet is not feature parity — it's **independence** (a verifier the builder cannot influence), determinism, and a kernel small enough to trust on sight.
 
-**Start here — why it matters, in plain terms (the "so what"): [`docs/WHY.md`](docs/WHY.md).**
+**New here?** The quick objections — *do I need this? doesn't Claude already do it? is it
+production-ready?* — are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
+what": [`docs/WHY.md`](docs/WHY.md).
 
-Full comparison with links: [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md). The principles and why
-each helps: [`CONSTITUTION.md`](CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
+**Full documentation index: [`docs/`](docs/README.md).** Comparison with the landscape:
+[`docs/LANDSCAPE.md`](docs/LANDSCAPE.md). The principles and why each helps:
+[`CONSTITUTION.md`](CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 Usage & extending: [`docs/HOWTO.md`](docs/HOWTO.md) · [`docs/EXTENDING.md`](docs/EXTENDING.md).
 Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
 
@@ -241,6 +252,13 @@ Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
 pip install -e ".[dev]"
 pytest -q
 ```
+
+## Contributing
+
+Contributions are welcome — Recusal is deliberately small, and the bar is keeping it that
+way (no model in the verdict path, no runtime dependencies, don't grow the kernel). Read
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+first. Security reports go through [`SECURITY.md`](SECURITY.md), privately.
 
 ## License
 
