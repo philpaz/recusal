@@ -1,0 +1,16 @@
+{
+  "_comment": "Copy to .claude/settings.json to have Recusal govern this repo's Claude Code sessions. Installing a permission-changing hook is a deliberate step; Claude Code will ask you to confirm it.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/recusal_gate.py"
+          }
+        ]
+      }
+    ]
+  }
+}

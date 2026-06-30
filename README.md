@@ -88,6 +88,10 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
+> **Recusal governs *this* repository exactly this way** — a real hook refuses `rm -rf`,
+> force-pushes, and secret-file writes to its own maintainers. Verbatim, reproducible,
+> CI-locked proof: [`docs/PROVEN.md`](docs/PROVEN.md).
+
 ### Claude Agent SDK — manual loop
 
 In a manual agent loop, gate each tool call and hand Claude an `is_error` tool_result on a
@@ -162,6 +166,7 @@ if verdict.refused:
 Full comparison with links: [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md). The principles and why
 each helps: [`CONSTITUTION.md`](CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 Usage & extending: [`docs/HOWTO.md`](docs/HOWTO.md) · [`docs/EXTENDING.md`](docs/EXTENDING.md).
+Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
 
 ## Development
 
