@@ -10,7 +10,7 @@ from recusal import Decision, Finding, Severity, compute_verdict
 def test_critical_failure_is_terminal_fail():
     v = compute_verdict(
         [
-            Finding.fail("rows", severity="CRITICAL", message="0 rows in members"),
+            Finding.fail("rows", severity="CRITICAL", message="0 rows in users"),
             Finding.fail("nulls", severity="ERROR", message="null rate high"),
         ]
     )

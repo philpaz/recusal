@@ -17,9 +17,9 @@ Typical use::
     from recusal.checks import row_count, null_rate, referential_integrity
 
     findings = [
-        row_count(members, min_rows=1),
-        null_rate(members, "email", max_rate=0.10),
-        referential_integrity(accounts, members, fk="member_id", pk="id"),
+        row_count(users, min_rows=1),
+        null_rate(users, "email", max_rate=0.10),
+        referential_integrity(orders, users, fk="user_id", pk="id"),
     ]
     verdict = compute_verdict(findings)   # PASS / RETRY / FAIL
 """

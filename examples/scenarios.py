@@ -18,14 +18,14 @@ EMAIL_ALLOWLIST = {"acme.com"}
 
 
 def wrong_subject(tool_input: dict, active_id: str) -> list:
-    """A write must target the session's active member (the 'right Bob' invariant)."""
+    """A write must target the session's active customer (the right-subject invariant)."""
     target = tool_input.get("customer_id")
     if target != active_id:
         return [
             Finding.fail(
                 "subject_match",
                 severity="CRITICAL",
-                message=f"write targets {target}, not the active member {active_id}",
+                message=f"write targets {target}, not the active customer {active_id}",
                 target=target,
                 active=active_id,
             )

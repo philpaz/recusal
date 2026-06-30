@@ -39,12 +39,12 @@ def test_data_shape_takes_precedence_over_data_missing():
 
 
 def test_data_missing_routes_to_fetch():
-    c = _c("query returned 0 rows for member C1001")
+    c = _c("query returned 0 rows for customer C1001")
     assert c.failure_class == "data_missing" and c.route == "fetch-data"
 
 
 def test_spec_ambiguity_asks_human():
-    c = _c("Which member did you mean?")
+    c = _c("Which customer did you mean?")
     assert c.failure_class == "spec_ambiguity" and c.route == "ask-human"
 
 

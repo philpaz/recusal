@@ -24,7 +24,7 @@ def test_gate_critical_finding_refuses():
     adj = GateAdjudicator()
     result = adj.adjudicate(
         "G2",
-        [referential_integrity([{"member_id": "M9"}], [{"id": "M1"}], fk="member_id", pk="id")],
+        [referential_integrity([{"user_id": "M9"}], [{"id": "M1"}], fk="user_id", pk="id")],
     )
     assert not result.passed
     assert result.decision.value == "FAIL"

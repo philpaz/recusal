@@ -178,9 +178,9 @@ from recusal import compute_verdict
 from recusal.checks import row_count, null_rate, referential_integrity
 
 verdict = compute_verdict([
-    row_count(members, min_rows=1),                                     # CRITICAL if empty
-    null_rate(members, "email", max_rate=0.10),                         # ERROR if too sparse
-    referential_integrity(accounts, members, fk="member_id", pk="id"),  # CRITICAL on orphans
+    row_count(users, min_rows=1),                                  # CRITICAL if empty
+    null_rate(users, "email", max_rate=0.10),                      # ERROR if too sparse
+    referential_integrity(orders, users, fk="user_id", pk="id"),   # CRITICAL on orphans
 ])
 if verdict.refused:
     raise RuntimeError(verdict.reasons())

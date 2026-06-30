@@ -33,8 +33,8 @@ def test_destructive_path_refused():
 
 
 def test_unscoped_sql_refused():
-    assert _decision(unscoped_sql({"sql": "DELETE FROM loans"})) is Decision.FAIL
-    assert _decision(unscoped_sql({"sql": "DELETE FROM loans WHERE id = 1"})) is Decision.PASS
+    assert _decision(unscoped_sql({"sql": "DELETE FROM orders"})) is Decision.FAIL
+    assert _decision(unscoped_sql({"sql": "DELETE FROM orders WHERE id = 1"})) is Decision.PASS
 
 
 def test_data_exfiltration_refused():
@@ -79,4 +79,4 @@ def test_gate_tool_use_allows_compliant_call():
 def test_managed_agent_confirmation_denies_on_refusal():
     ev = tool_confirmation("toolu_z", wrong_subject({"customer_id": "C-0002"}, ACTIVE))
     assert ev["result"] == "deny"
-    assert "active member" in ev["deny_message"]
+    assert "active customer" in ev["deny_message"]

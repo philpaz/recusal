@@ -58,11 +58,11 @@ def run(proposed: list) -> None:
 
 
 PROPOSED = [
-    ("sql", {"sql": "DELETE FROM loans"}),  # unscoped       -> REFUSE
+    ("sql", {"sql": "DELETE FROM orders"}),  # unscoped       -> REFUSE
     ("shell", {"cmd": "rm -rf /data"}),  # destructive    -> REFUSE
     ("write_table", {"table": "customers"}),  # not allowlisted -> RETRY
     ("write_table", {"table": "audit_log"}),  # allowed         -> ALLOW
-    ("sql", {"sql": "DELETE FROM loans WHERE id = 7"}),  # scoped  -> ALLOW
+    ("sql", {"sql": "DELETE FROM orders WHERE id = 7"}),  # scoped  -> ALLOW
 ]
 
 

@@ -31,7 +31,7 @@ Finding(
     check="row_count",       # what produced it
     severity=Severity.CRITICAL,  # how bad it is *if it failed*
     passed=False,            # did the check hold?
-    message="0 rows in `members`",
+    message="0 rows in `users`",
     context={"actual": 0, "min_rows": 1},  # arbitrary structured detail
 )
 ```

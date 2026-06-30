@@ -18,24 +18,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from recusal import Finding  # noqa: E402
 from recusal.claude import gate_tool_use  # noqa: E402
 
-# The session's verified subject this turn — the member the user is actually asking about.
-ACTIVE_MEMBER = {"customer_id": "C1001", "name": "Bob Smith"}
+# The session's verified subject this turn — the customer the user is actually asking about.
+ACTIVE_CUSTOMER = {"customer_id": "C1001", "name": "Bob Smith"}
 
 
 def gather_evidence(tool_input: dict) -> list:
-    """Deterministic precondition: a write must target the active member.
+    """Deterministic precondition: a write must target the active customer.
 
     This is the kind of invariant the model cannot self-enforce — it doesn't know
     which subject is 'active' in your system. The gate does.
     """
     target = tool_input.get("customer_id")
-    active = ACTIVE_MEMBER["customer_id"]
+    active = ACTIVE_CUSTOMER["customer_id"]
     if target != active:
         return [
             Finding.fail(
                 "subject_match",
                 severity="CRITICAL",
-                message=f"write targets {target} but the active member this turn is {active}",
+                message=f"write targets {target} but the active customer this turn is {active}",
                 target=target,
                 active=active,
             )
@@ -44,7 +44,7 @@ def gather_evidence(tool_input: dict) -> list:
         Finding.ok(
             "subject_match",
             severity="CRITICAL",
-            message="write targets the active member",
+            message="write targets the active customer",
             target=target,
         )
     ]
@@ -72,7 +72,7 @@ def _fmt(d):
 
 def main():
     print("RECUSAL - Claude tool-call gate (offline demo)")
-    print(f"Session active member: {ACTIVE_MEMBER['name']} ({ACTIVE_MEMBER['customer_id']})")
+    print(f"Session active customer: {ACTIVE_CUSTOMER['name']} ({ACTIVE_CUSTOMER['customer_id']})")
 
     print("\nTurn 1 - Claude proposes a write to the WRONG customer:")
     propose("toolu_01", {"customer_id": "C-9988", "field": "loyalty_tier", "value": "Gold"})

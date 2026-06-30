@@ -44,8 +44,8 @@ CASES = [
     (
         "unscoped SQL mutation",
         "ASI05 Code Execution",
-        "run_sql(DELETE FROM loans)",
-        unscoped_sql({"sql": "DELETE FROM loans"}),
+        "run_sql(DELETE FROM orders)",
+        unscoped_sql({"sql": "DELETE FROM orders"}),
     ),
     (
         "data exfiltration",

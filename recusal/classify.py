@@ -139,7 +139,7 @@ DEFAULT_TAXONOMY: Sequence[FailureClass] = (
             "ambiguous",
             "unclear",
             "underspecified",
-            "which member",
+            "which record",
             "did you mean",
             "need clarification",
             "acceptance criteria",

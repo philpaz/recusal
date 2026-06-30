@@ -15,8 +15,8 @@ from recusal import Finding, GateAdjudicator, compute_verdict  # noqa: E402
 # 1. The tiered-severity kernel. Evidence in, deterministic verdict out.
 #    CRITICAL refuses outright; ERROR earns exactly one retry; the rest pass.
 findings = [
-    {"severity": "CRITICAL", "status": "fail", "message": "0 rows synthesized in `members`"},
-    {"severity": "WARNING", "status": "warn", "message": "product-mix drift on `account_type`"},
+    {"severity": "CRITICAL", "status": "fail", "message": "0 rows produced in `users`"},
+    {"severity": "WARNING", "status": "warn", "message": "distribution drift on `plan`"},
     {"severity": "INFO", "status": "pass", "metric": "row_count", "value": 0},
 ]
 verdict = compute_verdict(findings)

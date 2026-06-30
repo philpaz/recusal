@@ -27,11 +27,11 @@ from recusal.claude import gate_tool_use  # noqa: E402
 MODEL = "claude-opus-4-8"
 MAX_TURNS = 6  # bound the loop — agents shouldn't run unbounded
 
-ACTIVE_MEMBER = {"customer_id": "C1001", "name": "Bob Smith"}
+ACTIVE_CUSTOMER = {"customer_id": "C1001", "name": "Bob Smith"}
 
 SYSTEM = (
-    "You are a CRM assistant. The active member in this session is "
-    f"{ACTIVE_MEMBER['name']} (customer_id {ACTIVE_MEMBER['customer_id']}). "
+    "You are a CRM assistant. The active customer in this session is "
+    f"{ACTIVE_CUSTOMER['name']} (customer_id {ACTIVE_CUSTOMER['customer_id']}). "
     "When the user asks to change a record, use the update_customer_record tool."
 )
 
@@ -57,15 +57,15 @@ TOOLS = [
 
 
 def gather_evidence(tool_input: dict) -> list:
-    """A write must target the active member — an invariant the model can't self-enforce."""
+    """A write must target the active customer — an invariant the model can't self-enforce."""
     target = tool_input.get("customer_id")
-    active = ACTIVE_MEMBER["customer_id"]
+    active = ACTIVE_CUSTOMER["customer_id"]
     if target != active:
         return [
             Finding.fail(
                 "subject_match",
                 severity="CRITICAL",
-                message=f"write targets {target} but the active member this turn is {active}",
+                message=f"write targets {target} but the active customer this turn is {active}",
                 target=target,
                 active=active,
             )
@@ -101,7 +101,7 @@ def main():
     ]
 
     print(f"RECUSAL - live Claude gate ({MODEL})")
-    print(f"Active member: {ACTIVE_MEMBER['name']} ({ACTIVE_MEMBER['customer_id']})")
+    print(f"Active customer: {ACTIVE_CUSTOMER['name']} ({ACTIVE_CUSTOMER['customer_id']})")
     print(f"User: {messages[0]['content']}\n")
 
     for _turn in range(MAX_TURNS):
