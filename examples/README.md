@@ -21,6 +21,7 @@ python examples/claude_refusal.py
 | Example | What it shows |
 |---|---|
 | [`claude_code_gate.py`](claude_code_gate.py) | A drop-in Claude Code **`PreToolUse` hook**, refuses destructive bash and secret-file writes even under `bypassPermissions`; defers on anything it has no opinion on. |
+| [`allowlist_gate.py`](allowlist_gate.py) | **Default-deny** (the stronger posture): the same runtime-constructed `rm` that a deny-list *defers*, the allowlist *refuses*, while a vetted binary still runs. Shows the ceiling a deny-list cannot clear. Runs as a demo or a hook. |
 | [`claude_agent_live.py`](claude_agent_live.py) | The **live** version (real Anthropic SDK, manual agent loop): Claude proposes a wrong-subject write, Recusal refuses, Claude self-corrects. Needs `pip install anthropic` + a key. |
 | [`agent_loop.py`](agent_loop.py) | **Framework-neutral**, a full gate in a plain `propose → gate → act` loop whose only import is `recusal`. No Claude, no SDK. Proof it works in any agent loop. |
 
@@ -30,6 +31,7 @@ python examples/claude_refusal.py
 |---|---|
 | [`audit_demo.py`](audit_demo.py) | The tamper-evident **audit log**: record verdicts, verify the hash chain, edit one record, watch the chain catch it. |
 | [`classify_demo.py`](classify_demo.py) | The deterministic **failure classifier/router**, a failure string in, a class + remediation route out (retry / refuse / quarantine / ask-human). |
+| [`injection_quarantine.py`](injection_quarantine.py) | **Quarantine prompt-injection in tool output** (OWASP LLM01 / ASI01; MITRE ATLAS AML.T0086). Adjudicate what a tool *returned* before the agent acts on it: poisoned output is refused and routed to `quarantine`, never fed back as trusted context. Cookbook recipe 6, made runnable. |
 | [`scenarios.py`](scenarios.py) | The reusable policy library behind `gallery.py` *and* the test suite, the same policies are demonstrated **and** proven. Import, don't run. |
 
 ---

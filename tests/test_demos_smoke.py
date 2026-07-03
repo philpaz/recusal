@@ -41,3 +41,27 @@ def test_framework_neutral_agent_loop_gates_tool_calls():
     assert "RETRY" in out  # recoverable (allowlist) action blocked for retry
     assert "ALLOW" in out  # compliant actions proceed
     assert "no Claude, no SDK" in out  # the claim this demo exists to prove
+
+
+def test_injection_quarantine_demo_quarantines_poisoned_output():
+    out = _run_demo("examples/injection_quarantine.py")
+    # Clean observations pass; poisoned ones are refused and routed to quarantine (not
+    # ask-human, i.e. the screen and the router share one vocabulary).
+    assert "safe, use as context" in out
+    assert "quarantine" in out
+    assert "ask-human" not in out
+    assert "2 of 4 observations quarantined" in out
+
+
+def test_allowlist_gate_demo_clears_the_denylist_ceiling():
+    out = _run_demo("examples/allowlist_gate.py")
+    # The teaching moment: a de-obfuscating deny-list still DEFERS the runtime-constructed
+    # names, while the default-deny allowlist DENIES every unvetted call.
+    assert "hex-built name" in out
+    assert "DEFER" in out  # the deny-list column lets a constructed name through
+    assert "default-deny" in out
+    # The allowlist column must refuse all five attacks (never a bare DEFER before "vetted").
+    body = out.split("run pytest")[0]
+    for line in body.splitlines():
+        if any(k in line for k in ("rm -rf", "built name", "base64")):
+            assert line.rstrip().endswith("DENY"), line  # allowlist (last column) refuses
