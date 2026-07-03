@@ -44,6 +44,23 @@ def _as_severity(value: Union[Severity, str]) -> Severity:
     return value if isinstance(value, Severity) else Severity(str(value).upper())
 
 
+# Strings that a JSON producer might use for a *failing* outcome. Needed because a raw
+# ``bool("false")`` is ``True`` (any non-empty string is truthy), so a stringified
+# ``"passed": "false"`` would otherwise read as a silent PASS - the exact failure mode
+# this library exists to prevent.
+_FALSE_LIKE = frozenset({"false", "0", "no", "n", "off", "fail", "failed", "error"})
+
+
+def _as_bool(value: Any) -> bool:
+    """Interpret a loose ``passed`` value. A genuine ``bool``/``int`` is used directly; a
+    *string* is read for intent (``"false"``/``"no"``/``"0"``/``"fail"`` -> ``False``, empty
+    -> ``False``) instead of trusting Python's truthiness, which would pass ``"false"``."""
+    if isinstance(value, str):
+        token = value.strip().lower()
+        return bool(token) and token not in _FALSE_LIKE
+    return bool(value)
+
+
 @dataclass(frozen=True)
 class Finding:
     """One observation about the work under adjudication.
@@ -94,13 +111,17 @@ class Finding:
         *passing* check, not a failure. Pass ``strict=True`` (or
         ``compute_verdict(..., strict=True)``) to reject such ambiguous evidence rather
         than silently pass it, which is the safer choice when wiring an adapter.
+
+        A ``passed`` value is read for intent, not raw truthiness: a *stringified*
+        ``"false"``/``"no"``/``"0"`` counts as a failure (a bare ``bool("false")`` is
+        ``True``), so a failing check serialized loosely cannot slip through as a pass.
         """
         if isinstance(obj, Finding):
             return obj
         if isinstance(obj, Mapping):
             severity = _as_severity(obj.get("severity", Severity.INFO))
             if "passed" in obj:
-                passed = bool(obj["passed"])
+                passed = _as_bool(obj["passed"])
             elif "status" in obj:
                 passed = str(obj["status"]).lower() not in {"fail", "error", "warn"}
             elif strict:
