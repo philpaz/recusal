@@ -11,6 +11,8 @@ type: software
 authors:
   - family-names: Paz
     given-names: Philip
+    affiliation: "NexiNexta (https://www.nexinexta.com)"
+    website: "https://www.linkedin.com/in/philippaz/"
 license: Apache-2.0
 repository-code: "https://github.com/philpaz/recusal"
 url: "https://github.com/philpaz/recusal"

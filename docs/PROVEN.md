@@ -1,11 +1,12 @@
 # Proven, Recusal governs its own repository
 
-Recusal isn't only shown on toy inputs. It governs the development of *this* repository.
-A real Claude Code `PreToolUse` hook, [`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py)
-- is installed so that when a Claude Code session works on this repo, every tool call is
-adjudicated first, and the dangerous ones the policy recognizes, destructive shell commands,
+Recusal isn't only shown on toy inputs. It is built to govern the development of *this*
+repository. A real Claude Code `PreToolUse` hook, [`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py),
+ships with the repo and, once registered (a deliberate step, see below), adjudicates every
+tool call first, so the dangerous ones the policy recognizes, destructive shell commands,
 writes to secret/protected files, and edits that would disable the gate itself, are
-**refused before they run**, even under `bypassPermissions`.
+**refused before they run**, even under `bypassPermissions`. Every refusal below is
+reproducible by anyone, registered or not, by piping the exact payload into the hook.
 
 The governance library is the thing governing its own development. That is the dog food.
 
@@ -27,15 +28,16 @@ The governance library is the thing governing its own development. That is the d
 ## It refuses, for real
 
 Each block below is the **verbatim** output of piping the exact JSON Claude Code sends on
-`PreToolUse` into the installed hook. Reproduce any line yourself:
+`PreToolUse` into the installed hook (the path in a reason simply echoes the path your
+payload carried). Reproduce any line yourself:
 
 ```bash
 echo '<payload>' | python3 .claude/hooks/recusal_gate.py
 ```
 
-**`rm -rf`**
+**`rm -rf`** (the recursive-`rm` guard fires on `-r` in any flag order, force or not)
 ```json
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing destructive command (rm -rf)"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing destructive command (rm -r)"}}
 ```
 
 **`git push --force`**
@@ -43,19 +45,24 @@ echo '<payload>' | python3 .claude/hooks/recusal_gate.py
 {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing destructive command (git push --force)"}}
 ```
 
-**`curl … | sh`**
+**`curl … | sh`** (and `… | python`/`perl`/`ruby`/`node`, same attack class)
 ```json
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing to pipe a network download straight into a shell"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing to pipe output straight into a shell/interpreter"}}
 ```
 
 **Write to `.env`**
 ```json
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Write` [FAIL]: refusing write to a protected/secret file: /repo/.env"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Write` [FAIL]: refusing write to a protected/secret file: .env"}}
 ```
 
 **Edit the gate's own config (self-protection)**
 ```json
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Edit` [FAIL]: refusing to edit the gate's own config/hook: /repo/.claude/settings.json"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Edit` [FAIL]: refusing a `Edit` call that targets a protected control path (gate config/hook or git hooks): .claude/settings.json"}}
+```
+
+**Delete the hook itself (self-protection covers removal, not just edits)**, `rm .claude/hooks/recusal_gate.py`
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing a command that edits or removes a protected control path (gate config/hook or git hooks)"}}
 ```
 
 A clean call, a `Read`, or `Bash` running `pytest -q`, produces **no output**: the hook

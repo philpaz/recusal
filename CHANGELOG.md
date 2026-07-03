@@ -59,5 +59,47 @@ All notable changes to this project are documented here. The format follows
 - The dogfood hook protects its own settings/hook from being disabled, normalizes commands,
   and matches `rm` recursive-force in any flag order; example/cookbook path checks use
   `os.path.commonpath` (the `startswith` prefix bypass is fixed).
+- **Dogfood hook, red-team hardening pass** (closes bypasses found in a full adversarial
+  review, each pinned as a regression test in `tests/test_dogfood_redteam.py`):
+  self-protection now covers *removal* of the kill-switch (`rm`/`mv`/`del` of the hook or
+  settings), not just edits; secret and self-protect checks run against the de-obfuscated
+  command and three path readings, so a quote-split (`.cla""ude`), a backslash-escape
+  (`.cl\aude`), or a Windows separator can no longer hide a protected path; piping into
+  *any* interpreter (`python`/`perl`/`ruby`/`node`/`php`/`pwsh`), not just `sh`/`bash`, is
+  refused; recursive `rm` is refused even without `-f`; `git clean -f`, `git checkout --`,
+  `find -exec rm`, `unlink`, and reverse/bind shells (`/dev/tcp`, `nc -e`) are refused;
+  `prod.env`-style secret files are protected. A false-positive guard test keeps reads
+  (`cat`/`grep`) and running the hook (`python file.py`) deferring, so the gate stays usable.
+  Coverage is no longer Bash-only: any tool carrying a command under `command`/`cmd`/
+  `shell`/`script` (an MCP shell) gets the same analysis, and a generic kill-switch guard
+  refuses any non-read tool (an MCP filesystem tool) that targets a protected control path;
+  `git config core.hooksPath` and `.git/hooks/**` writes (code-exec-on-commit vectors) are
+  refused. Remaining limits are documented explicitly in `SECURITY.md`: network egress
+  (an allowlist recipe, not the baseline hook), symlink/TOCTOU (closed for tool-based writes
+  by the realpath layer below; `Bash` fragments stay string-matched), and runtime-constructed
+  command names (the deny-list ceiling).
+- **Subversion test library + second red-team pass** (`tests/test_subversion_*.py`, ~170
+  adversarial cases across kernel, adapters, audit, hook, and classifier). New fixes it drove:
+  `Finding.coerce` reads a stringified `"passed": "false"`/`"no"`/`"0"` as a *failure* instead
+  of trusting raw truthiness (a `bool("false")` is `True`), closing a silent-pass footgun at
+  the loose-dict boundary; the dogfood hook now matches command-carrying keys
+  **case-insensitively and at any nesting depth** and joins **argv-array** command values
+  (so `"Command"`, `{"payload": {"command": ...}}`, and `["rm","-rf","/"]` can't smuggle a
+  shell past); and `socat EXEC:`/`SYSTEM:` reverse shells are refused. The suite also *pins*
+  the honest deny-list limits as expected-defer tests (runtime-constructed names, interpreter
+  code) so the boundary is a tested fact, not a footnote.
+- **Best-effort `realpath` layer for tool-based writes** (closes the innocent-name TOCTOU):
+  a `Write`/`Edit` or MCP filesystem write whose path resolves through a symlink onto a
+  protected control path is refused (`_resolves_into_protected`), so `notes.txt` ->
+  `.claude/settings.json` is caught even though the path string carries no protected segment.
+  A not-yet-created link and `Bash` string fragments remain out of scope by design (an
+  allowlist is the real defense).
+- **Symlink resolution now covers a bare filename on the MCP path** (found by running the
+  subversion suite in an environment that grants symlink privilege, where the case was live
+  rather than skipped): the generic kill-switch guard used to symlink-resolve only strings
+  containing a path separator, so a bare innocent-named link (`notes.txt` with no `/`) slipped
+  through as `defer` on an MCP filesystem tool while `Write` correctly denied it. The two
+  write paths now refuse the identical link. Pinned by two new tests in
+  `tests/test_subversion_hook.py` (the deny plus a bare-name false-positive guard).
 
 _Pre-release. No published version yet._

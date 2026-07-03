@@ -14,7 +14,7 @@ a ranking.
 - **Microsoft Agent Governance Toolkit**: open-sourced Apr 2, 2026; "runtime security for AI agents." [blog](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/) · [repo](https://github.com/microsoft/agent-governance-toolkit)
 - **Galileo Agent Control**: "write behavioral policies once, enforce across deployments." [coverage](https://thenewstack.io/galileo-agent-control-open-source/)
 - **OWASP Agentic Top 10** is now the reference risk taxonomy.
-- Consensus thesis: *"responsible AI in 2026 is enforced at runtime through infrastructure-level guarantees rather than in policy documents."* That is the angle Recusal takes.
+- The recurring theme across 2026 write-ups on agent governance is that responsible AI is increasingly enforced *at runtime* through infrastructure-level controls rather than in policy documents (our synthesis of the sources above and the emerging-peer projects below, not a single attributable quote). That runtime-enforcement angle is the one Recusal takes.
 - Regulatory note: EU AI Act high-risk obligations were slated for Aug 2, 2026, but the **Digital Omnibus (agreed May 2026) defers them to Dec 2, 2027**. Sell on reliability and audit-readiness *now*; compliance is the long game. [timeline](https://artificialintelligenceact.eu/implementation-timeline/) · [deferral](https://knowledge.dlapiper.com/dlapiperknowledge/globalemploymentlatestdevelopments/2026/The-Digital-AI-Omnibus-Proposed-deferral-of-high-risk-AI-obligations-under-the-AI-Act)
 
 ## Who's adjacent, and what they *don't* do
@@ -36,7 +36,7 @@ These build and run agents; adjudication is a different job. All are mature, wid
 ### Guardrails / safety, *filter content on the I/O, not the work product*
 - [Guardrails AI](https://github.com/guardrails-ai/guardrails): output validation (RAIL validators).
 - [NVIDIA NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails): Colang conversation rails.
-- Llama Guard / [LlamaFirewall](https://arxiv.org/html/2505.03574v1): probabilistic safety classifiers.
+- Llama Guard (a probabilistic safety classifier) / [LlamaFirewall](https://arxiv.org/html/2505.03574v1): an open-source guardrail *framework* (PromptGuard 2 jailbreak detection, Agent Alignment Checks over chain-of-thought, and CodeShield static analysis), broader than a single classifier.
 - [Invariant Labs](https://github.com/invariantlabs-ai/invariant): rule-based guardrail proxy; closest to "intercept and block," but a *security* gate, not a refusing certifier or failure-router.
 
 ### Eval / testing, *score offline, often LLM-as-judge*
@@ -54,7 +54,7 @@ These build and run agents; adjudication is a different job. All are mature, wid
 - **Anthropic's Claude Code auto mode**: a *same-family* safety layer: an injection probe on tool output plus a Sonnet-class transcript classifier judging actions pre-execution, with an admitted 17% false-negative rate and Anthropic's own note that it is "not a drop-in replacement for careful human review on high-stakes infrastructure." This is the conflict of interest Recusal exists to remove, a model from the same family grading the same family. In "Trustworthy agents in practice" Anthropic also states the security of agents "cannot be achieved by any single company", the ecosystem's explicit invitation for an independent verifier.
 
 ### Academic / niche on the exact thesis (no popular pip-install)
-- "AgentCity: Constitutional Governance for Autonomous Agent Economies via Separation of Power" ([arXiv](https://arxiv.org/abs/2604.07007), an on-chain governance model); "Dynamic Tiered AgentRunner" physically isolates Worker / Critic / **Verifier** into non-colluding processes ([arXiv](https://arxiv.org/abs/2605.10223)): conceptual overlap, but framework papers, not libraries.
+- "AgentCity: Constitutional Governance for Autonomous Agent Economies via Separation of Power" ([arXiv](https://arxiv.org/abs/2604.07007), an on-chain governance model); "Beyond Autonomy: A Dynamic Tiered AgentRunner" puts proposal, review, execution, and **verification** in independent agents with physically isolated boundaries ([arXiv](https://arxiv.org/abs/2605.10223)): conceptual overlap, but framework papers, not libraries.
 - **LawClaw**: a single self-governing agent with a `constitution.md` + judicial layer; closest in spirit to #4, but a demo agent, not a reusable governance library.
 
 ## Which layer each one works at

@@ -38,6 +38,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
   observability, and the real peers (Microsoft's toolkit, AEGIS, Anthropic's auto mode).
 - **[PROVEN](PROVEN.md)**: Recusal governs its own repository: a real Claude Code hook
   refusing real destructive tool calls, CI-locked and reproducible verbatim.
+- **[REFERENCES](REFERENCES.md)**: primary sources for every empirical claim the docs make
+  (self-grading bias, agent failure modes, MCP attack rates, the regulatory and standards
+  drivers), each with an honest note on what it does and does not support.
 
 ## Contribute
 
