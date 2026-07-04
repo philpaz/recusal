@@ -286,11 +286,24 @@ run_pretooluse_hook(policy)   # one hook, every rule; a clean verdict still defe
 
 Every recipe above is a *deny-list*: it refuses known-bad calls and defers the rest. A
 deny-list cannot catch a command whose name is built at runtime (`c=$'\x72\x6d'; $c -rf`,
-`eval $(... | base64 -d)`), no string match ever sees the `rm`. The robust answer inverts it:
-**deny by default, allow only what you affirmatively vet.** For `Bash`, reject shell
-metacharacters (so a command can't chain, substitute, or expand into something else) and
-require a vetted first binary. That defeats the runtime-construction bypasses a deny-list
-cannot.
+`eval $(... | base64 -d)`), no string match ever sees the `rm`, and it cannot see code run
+*inside* an interpreter, `python script.py` executes a program the gate never reads. The
+robust answer inverts it: **deny by default, allow only what you affirmatively vet.** For
+`Bash`, reject shell metacharacters (so a command can't chain, substitute, or expand into
+something else) and require a vetted first binary, with interpreters deliberately unvetted.
+That defeats the runtime-construction and bare-interpreter bypasses a deny-list cannot.
+
+This posture ships as library API, `recusal.claude_code.allowlist_policy` (tune it with
+`safe_binaries=`, `writable_root=`, `read_only_tools=`, and per-tool `allow={...}`
+predicates; the bare-interpreter refusal is pinned in `tests/test_claude_code_allowlist.py`):
+
+```python
+from recusal.claude_code import allowlist_policy, run_pretooluse_hook
+
+run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
+```
+
+The hand-rolled equivalent, if you want to own every line of the decision:
 
 ```python
 import os, shlex

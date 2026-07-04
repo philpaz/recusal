@@ -19,69 +19,26 @@ This file is both a demo and a real policy:
 
 The trade-off is honest: an allowlist is stricter and needs maintenance (you add
 capabilities as the agent legitimately needs them), but it fails *toward* refusal instead
-of away from it. This is a reference policy - read it, tune the lists to your system.
+of away from it. The policy ships as library API, ``recusal.claude_code.allowlist_policy``;
+this file wires it up and shows *why* it clears the deny-list ceiling — tune the lists to
+your system.
 """
 
 import os
-import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from recusal import Finding  # noqa: E402
-from recusal.claude_code import decide, run_pretooluse_hook  # noqa: E402
+from recusal.claude_code import allowlist_policy, decide, run_pretooluse_hook  # noqa: E402
 
 WORKSPACE = os.path.abspath("./workspace")
-# Binaries safe regardless of arguments. Tools that can mutate (git, sed, find, rm) are NOT
-# here; allowlist those only with explicit per-subcommand rules of your own.
-SAFE_BINARIES = {
-    "ls", "cat", "head", "tail", "grep", "rg", "wc", "pwd", "stat", "diff",
-    "pytest", "ruff", "mypy",
-}  # fmt: skip
-SHELL_META = set(";|&`$<>(){}\n\\")  # chaining / substitution / redirection / expansion
 
-
-def _under(root: str, path: str) -> bool:
-    try:
-        return os.path.commonpath([root, os.path.abspath(path)]) == root
-    except ValueError:  # different drives on Windows
-        return False
-
-
-def _bash_ok(cmd: str) -> bool:
-    if set(cmd) & SHELL_META:  # can't reason about an expanded command -> refuse
-        return False
-    try:
-        argv = shlex.split(cmd)
-    except ValueError:  # unbalanced quotes -> refuse
-        return False
-    return bool(argv) and argv[0] in SAFE_BINARIES
-
-
-# Each entry affirmatively vets a call. Anything not covered here is refused by default.
-ALLOW = {
-    "Read": lambda i: True,
-    "Grep": lambda i: True,
-    "Glob": lambda i: True,
-    "Bash": lambda i: _bash_ok(str(i.get("command", ""))),
-    "Write": lambda i: _under(WORKSPACE, str(i.get("file_path", ""))),
-    "Edit": lambda i: _under(WORKSPACE, str(i.get("file_path", ""))),
-}
-
-
-def policy(tool_name: str, tool_input: dict) -> list:
-    """Default-deny: return no findings (defer) only for an affirmatively vetted call;
-    refuse everything else with a CRITICAL finding."""
-    check = ALLOW.get(tool_name)
-    if check and check(tool_input):
-        return []  # affirmatively allowed -> defer to Claude Code's normal flow
-    return [
-        Finding.fail(
-            "not_allowlisted",
-            severity="CRITICAL",
-            message=f"{tool_name} call is not on the allowlist",
-        )
-    ]
+# Default-deny, straight from the library: Read/Grep/Glob defer; `Bash` needs a vetted
+# first binary (ls, cat, pytest, ruff, ... — interpreters deliberately unlisted, so
+# `python script.py` is refused: the script is a program the gate never reads) and no
+# shell metacharacters; writes stay under WORKSPACE; every other tool is refused.
+policy = allowlist_policy(writable_root=WORKSPACE)
 
 
 # --- a naive deny-list, only to show the ceiling this example clears --------------------

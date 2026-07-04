@@ -133,6 +133,20 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
+A hand-written policy like the above is a **deny-list**: it stops the accidental and common
+cases, but a literal matcher can be obfuscated past, and `python script.py` runs code no
+string check ever reads — don't read it as "cannot be subverted." For high-stakes channels
+use the shipped **allowlist mode** (default-deny): nothing runs unless affirmatively named,
+and bare interpreters are refused, closing the write-a-script-then-run-it bypass (pinned as
+a test). That's the posture that earns *"the agent could not subvert it"* for the routed
+tool channel:
+
+```python
+from recusal.claude_code import allowlist_policy, run_pretooluse_hook
+
+run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
+```
+
 > **Don't start from a blank policy.** [`docs/COOKBOOK.md`](docs/COOKBOOK.md) has copy-paste
 > recipes, destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
 > allowlists, injection quarantine, action budgets, that drop straight into the hook above.

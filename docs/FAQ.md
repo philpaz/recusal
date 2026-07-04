@@ -100,6 +100,25 @@ The Claude Code hook **fails closed**: a policy that raises becomes a `deny`, no
 allow. You can opt into fail-open (`fail_closed=False`) only if you understand the
 trade-off. See [`../SECURITY.md`](../SECURITY.md).
 
+## If I install the hook, can the agent still get around it?
+
+Depends on the posture, and the docs refuse to blur the two:
+
+- **Deny-list** (the drop-in examples): stops the accidental and common cases, holds even
+  under `bypassPermissions`, and protects its own kill-switch — but a literal matcher can
+  be obfuscated past, and `python script.py` runs code no string check ever reads (write an
+  innocent script, then run it). That limit is pinned as a test, not hidden. Never read a
+  deny-list as "cannot be subverted."
+- **Allowlist mode** (`recusal.claude_code.allowlist_policy`, default-deny): nothing runs
+  unless affirmatively named; shell metacharacters, runtime-constructed names, and bare
+  interpreters are refused, which closes the write-a-script-then-run-it bypass (also pinned
+  as a test). This earns *"the agent could not subvert it"* — scoped to the tool channel
+  routed through the hook. It still says nothing about what happens outside that loop (a
+  human pasting a suggested command, an unrouted side channel, a bug in your predicates).
+
+An absolute "cannot be subverted," unscoped, is never true, and a governance library that
+claimed it would be doing the exact thing it exists to prevent.
+
 ## How do I add my own rules?
 
 A check is just a function that returns `Finding`s; a policy is just a function that

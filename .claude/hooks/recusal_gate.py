@@ -35,8 +35,10 @@ Hardening notes (what this hook does that a naive deny-list does not):
   be resolved, and ``Bash`` fragments stay string-matched, so an allowlist is still stronger.
 
 The honest limit is unchanged: a deny-list cannot catch a command whose *name* is
-built at runtime (hex/char-codes/``eval`` of decoded data). For high-stakes tools use
-an allowlist (see ``docs/COOKBOOK.md`` recipe 11). That boundary is pinned as a test.
+built at runtime (hex/char-codes/``eval`` of decoded data) or code run inside a bare
+interpreter (``python script.py``). For high-stakes tools use allowlist mode,
+``recusal.claude_code.allowlist_policy`` (see ``docs/COOKBOOK.md`` recipe 11), which
+refuses both. That boundary is pinned as a test on each side.
 """
 
 import os

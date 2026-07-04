@@ -133,5 +133,12 @@ The record maps cleanly onto agent logging and audit requirements.
   answer every time, including the `no`, with a reason you can read and audit.
 - No model in the decision path, and no change to how the agent works when it behaves.
 
+One honest caveat: this gate is a **deny-list**, it stops the four named classes and the
+common variants, not everything a determined agent could construct (`python script.py`
+runs code no string match reads). If the stakes warrant "nothing runs unless named," flip
+the same hook to the shipped allowlist mode,
+`run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))`, see
+[HOWTO §1](HOWTO.md) "Two postures, two claims."
+
 Want different rules? Lift more from the [policy cookbook](COOKBOOK.md), or read
 [HOWTO](HOWTO.md) for the Agent SDK and any-loop surfaces.

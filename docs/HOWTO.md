@@ -38,6 +38,33 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (the gate adds refusals; it never strips Claude Code's own
 prompts). A non-clean verdict **denies**, with the reasons. See `examples/claude_code_gate.py`.
 
+### Two postures, two claims
+
+The policy above is a **deny-list**: refuse known-bad calls, defer the rest. It stops the
+accidental and common cases and its `deny` holds even in auto mode — but a literal matcher
+can be obfuscated past, and `python script.py` runs code no string check ever reads. Never
+read a deny-list as "cannot be subverted."
+
+For high-stakes channels, flip to **allowlist mode** (default-deny), shipped as a factory:
+
+```python
+from recusal.claude_code import allowlist_policy, run_pretooluse_hook
+
+run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
+```
+
+Nothing runs unless affirmatively named: unlisted tools, shell metacharacters, and **bare
+interpreters** (`python script.py`) are refused — closing the write-a-script-then-run-it
+bypass no deny-list can see (pinned in `tests/test_claude_code_allowlist.py`). This is the
+posture that earns *"the agent could not subvert it,"* scoped honestly to the tool channel
+routed through the hook; it says nothing about channels outside Claude Code's tool loop.
+The trade-off is maintenance: you add binaries, roots, and per-tool predicates
+(`safe_binaries=`, `writable_root=`, `allow={...}`) as the agent legitimately needs them,
+and it fails *toward* refusal in the meantime. A vetted call still defers to Claude Code's
+normal permission flow — allowlist mode, too, only ever adds refusals. See
+`examples/allowlist_gate.py` for the deny-list-vs-allowlist comparison, and
+`docs/COOKBOOK.md` recipe 11 for tuning.
+
 ## 2. Claude Agent SDK, manual loop
 
 Use the **manual** agent loop (not the auto tool-runner) so you can adjudicate each

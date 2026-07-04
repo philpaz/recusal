@@ -20,6 +20,15 @@ All notable changes to this project are documented here. The format follows
 - **Claude adapters**: `recusal.claude` (manual-loop tool gate + Managed Agents
   confirmation) and `recusal.claude_code` (a `PreToolUse` hook that denies even under
   `bypassPermissions` and fails closed on a policy error).
+- **Allowlist mode as library API**: `recusal.claude_code.allowlist_policy`, a
+  default-deny policy factory (nothing runs unless affirmatively named: vetted first
+  binaries only, no shell metacharacters, **bare interpreters refused** so
+  `python script.py` cannot execute unvetted code, writes scoped to a `writable_root`,
+  per-tool `allow` predicates). Closes the write-a-script-then-run-it bypass a deny-list
+  cannot see; pinned in `tests/test_claude_code_allowlist.py`. The docs now carry
+  **two-tier claim language**: a deny-list "raises the cost / stops the common cases";
+  only allowlist mode earns "the agent could not subvert it," scoped to the routed tool
+  channel (HOWTO §1, README, SECURITY, FAQ).
 - **Tamper-evident audit log**: `recusal.audit` (`AuditLog`, `verify`): a hash-chained,
   append-only JSONL record of every verdict; any later edit, deletion, or reorder is
   detected. Maps to OWASP Agentic logging / EU AI Act Article 12 (record-keeping).

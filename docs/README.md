@@ -21,8 +21,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 
 ## Use it
 
-- **[HOWTO](HOWTO.md)**: the three integration paths (Claude Code hook, Agent SDK loop,
-  Managed Agents) plus direct adjudication, audit, and failure routing.
+- **[HOWTO](HOWTO.md)**: the three integration paths (Claude Code hook — in deny-list or
+  default-deny allowlist posture, Agent SDK loop, Managed Agents) plus direct
+  adjudication, audit, and failure routing.
 - **[EXAMPLE](EXAMPLE.md)**: one complete, copy-paste configuration for a real use case
   (a database-admin agent left in auto mode), shown end to end: install, hook, settings,
   and what the agent experiences when it tries something it shouldn't.

@@ -21,7 +21,7 @@ python examples/claude_refusal.py
 | Example | What it shows |
 |---|---|
 | [`claude_code_gate.py`](claude_code_gate.py) | A drop-in Claude Code **`PreToolUse` hook**, refuses destructive bash and secret-file writes even under `bypassPermissions`; defers on anything it has no opinion on. |
-| [`allowlist_gate.py`](allowlist_gate.py) | **Default-deny** (the stronger posture): the same runtime-constructed `rm` that a deny-list *defers*, the allowlist *refuses*, while a vetted binary still runs. Shows the ceiling a deny-list cannot clear. Runs as a demo or a hook. |
+| [`allowlist_gate.py`](allowlist_gate.py) | **Default-deny** (the stronger posture), wiring the shipped `recusal.claude_code.allowlist_policy`: the same runtime-constructed `rm` that a deny-list *defers*, the allowlist *refuses* — bare interpreters (`python script.py`) included — while a vetted binary still runs. Shows the ceiling a deny-list cannot clear. Runs as a demo or a hook. |
 | [`claude_agent_live.py`](claude_agent_live.py) | The **live** version (real Anthropic SDK, manual agent loop): Claude proposes a wrong-subject write, Recusal refuses, Claude self-corrects. Needs `pip install anthropic` + a key. |
 | [`agent_loop.py`](agent_loop.py) | **Framework-neutral**, a full gate in a plain `propose → gate → act` loop whose only import is `recusal`. No Claude, no SDK. Proof it works in any agent loop. |
 
