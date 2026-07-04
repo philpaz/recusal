@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-gate-strip.png">
+    <img alt="recusal — deterministic governance for Claude agents" src="assets/banner-gate-strip-light.png" width="880">
+  </picture>
+</p>
+
 # Recusal
 
 **Deterministic governance for Claude agents: an independent verifier that can refuse to certify a tool call *before* it runs.**
