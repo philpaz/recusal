@@ -110,7 +110,7 @@ _REDIRECT_TO_SECRET = re.compile(
     r">>?\s*\S{0,256}(\.env(?:\.[^\s'\"/\\]{1,64})?|\.pem|\.key|\.p12|id_rsa|id_ed25519)"
 )
 _WRITE_LIKE = re.compile(
-    r"\b(tee|sed\s+-i|python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e|cp|mv|copy|xcopy|robocopy|install|rsync|truncate|set-content|add-content|out-file)\b|>>?"
+    r"\b(tee|sed\s+-i|python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e|cp|mv|copy|xcopy|robocopy|install|rsync|truncate|set-content|add-content|clear-content|out-file|new-item)\b|\[?io\.file\]?::\w*(write|append)|>>?"
 )
 _SECRET_PATH_IN_CMD = re.compile(
     r"(\.env(?:\.[^\s'\"/\\]+)?|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b)"
@@ -121,9 +121,10 @@ _SECRET_PATH_IN_CMD = re.compile(
 # open(...,'w') a file, so those are included. `>`/`>>` (redirect-truncate) count.
 _SELF_PROTECT_VERB = re.compile(
     r"\b(rm|unlink|shred|truncate|mv|move|cp|copy|xcopy|robocopy|ren|rename|tee|dd|sed"
-    r"|install|rsync|ln|mklink|set-content|add-content|out-file|remove-item|del|rd|rmdir"
-    r"|chmod|chown|chattr)\b"
+    r"|install|rsync|ln|mklink|set-content|add-content|clear-content|out-file|new-item"
+    r"|set-itemproperty|remove-item|del|rd|rmdir|chmod|chown|chattr|attrib|takeown|icacls)\b"
     r"|\b(python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e)\b"
+    r"|\[?io\.file\]?::\w*(write|append)"
     r"|>>?"
 )
 

@@ -145,6 +145,30 @@ def test_allows_gitignore_and_github_operations():
 #     imports and hijack the gate on the next run (red-team stdlib-shadow finding).
 
 
+def test_refuses_powershell_and_dotnet_writes_to_control_paths():
+    # PowerShell / .NET write verbs must guard the kill-switch just like POSIX ones.
+    for cmd in (
+        "New-Item -ItemType File -Force .claude/settings.json",
+        "Clear-Content .claude/settings.json",
+        "New-Item -Force recusal/claude_code.py",
+        '[IO.File]::WriteAllText("recusal/claude_code.py","x")',
+        '[System.IO.File]::WriteAllText(".claude/settings.json","x")',
+        "icacls .claude/hooks /grant everyone:F",
+    ):
+        assert _decide("Bash", {"command": cmd}) == "deny", cmd
+
+
+def test_powershell_verbs_on_ordinary_paths_still_defer():
+    # The verbs above must not over-block when they target non-control paths.
+    for cmd in (
+        "New-Item -ItemType File notes.txt",
+        "Clear-Content build.log",
+        "icacls src /grant x:F",
+        "attrib +h notes.txt",
+    ):
+        assert _decide("Bash", {"command": cmd}) == "defer", cmd
+
+
 def test_hook_appends_repo_to_syspath_not_front():
     src = open(_HOOK, encoding="utf-8").read()
     assert "sys.path.append(_REPO)" in src, "hook must append _REPO"
