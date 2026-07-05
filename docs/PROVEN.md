@@ -32,7 +32,7 @@ Each block below is the **verbatim** output of piping the exact JSON Claude Code
 payload carried). Reproduce any line yourself:
 
 ```bash
-echo '<payload>' | python3 .claude/hooks/recusal_gate.py
+echo '<payload>' | python .claude/hooks/recusal_gate.py   # or python3 / py, whichever your OS has
 ```
 
 **`rm -rf`** (the recursive-`rm` guard fires on `-r` in any flag order, force or not)

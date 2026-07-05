@@ -18,8 +18,23 @@ Claude Code runs them, even under `bypassPermissions` (a `PreToolUse` `deny` ove
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/my_gate.py" } ]}
+    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c '' 2>/dev/null && exec \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; done; echo 'gate: no python; failing closed' >&2; exit 2" } ]}
 ]}}
+```
+
+**Why the interpreter loop, and why `exit 2`:** Claude Code treats a hook whose command
+fails to *launch* (e.g. `python3` not found — the default on Windows, where only `python`
+or the `py` launcher exists) as a **non-blocking** error: the tool call proceeds and the
+gate is silently disabled. The loop probes `python3` → `python` → `py` and runs the first
+interpreter that actually works; if none do, `exit 2` is the one exit code Claude Code
+treats as **blocking**, so a missing interpreter refuses the tool call instead of waving
+it through. On Windows, Claude Code runs hook commands under Git Bash, so this POSIX
+one-liner is portable. Verify your install end-to-end before trusting it:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python .claude/hooks/my_gate.py
+# Windows (py launcher): ... | py .claude/hooks/my_gate.py
+# expect: {"hookSpecificOutput": {..., "permissionDecision": "deny", ...}}
 ```
 
 ```python

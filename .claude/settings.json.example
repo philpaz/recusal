@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to .claude/settings.json to have Recusal govern this repo's Claude Code sessions. Installing a permission-changing hook is a deliberate step; Claude Code will ask you to confirm it.",
+  "_comment": "Copy to .claude/settings.json to have Recusal govern this repo's Claude Code sessions. Installing a permission-changing hook is a deliberate step; Claude Code will ask you to confirm it. The command probes python3/python/py (macOS/Linux/Windows) and exits 2 -- a BLOCKING hook error -- if none work, so a missing interpreter fails closed, not open. On Windows, Claude Code runs hook commands under Git Bash.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/recusal_gate.py"
+            "command": "for p in python3 python py; do \"$p\" -c '' 2>/dev/null && exec \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py\"; done; echo 'recusal gate: no working python interpreter; failing closed' >&2; exit 2"
           }
         ]
       }

@@ -120,9 +120,15 @@ Register a hook in `.claude/settings.json`:
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/my_gate.py" } ]}
+    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c '' 2>/dev/null && exec \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; done; echo 'gate: no python; failing closed' >&2; exit 2" } ]}
 ]}}
 ```
+
+The command probes `python3` → `python` → `py` (macOS / Linux / Windows) and **fails
+closed**: Claude Code treats a hook whose command can't launch as a *non-blocking* error
+and lets the tool call proceed, so a bare `python3` invocation on a Windows machine would
+silently disable the gate. Exit code `2` is a *blocking* hook error — no interpreter, no
+tool call. (On Windows, Claude Code runs hook commands under Git Bash.)
 
 ```python
 # my_gate.py
