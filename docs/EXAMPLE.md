@@ -88,7 +88,7 @@ run_pretooluse_hook(policy)
     "PreToolUse": [
       { "matcher": ".*", "hooks": [
         { "type": "command",
-          "command": "for p in python3 python py; do \"$p\" -c '' 2>/dev/null && exec \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate.py\"; done; echo 'gate: no python; failing closed' >&2; exit 2" }
+          "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" }
       ]}
     ]
   }

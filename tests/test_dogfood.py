@@ -87,6 +87,58 @@ def test_refuses_bash_windows_path_to_its_own_hook():
     assert _decide("Bash", {"command": cmd}) == "deny"
 
 
+# --- regression: the hook delegates to the in-repo `recusal/` package, so editing that
+#     package is editing the gate. An unguarded package = the gate can be neutralized by an
+#     ordinary allowed Edit (red-team HIGH-1). It must be as protected as the hook itself.
+
+
+def test_refuses_editing_its_own_enforcement_package():
+    # Poisoning any recusal/*.py the hook imports disables the gate on the next tool call.
+    for path in (
+        "recusal/claude_code.py",
+        "recusal/evidence.py",
+        "recusal/__init__.py",
+        r"C:\\repo\\recusal\\claude_code.py",
+    ):
+        assert _decide("Edit", {"file_path": path}) == "deny", path
+        assert _decide("Write", {"file_path": path}) == "deny", path
+
+
+def test_refuses_bash_write_or_remove_of_enforcement_package():
+    assert _decide("Bash", {"command": "rm recusal/evidence.py"}) == "deny"
+    assert _decide("Bash", {"command": "echo x > recusal/claude_code.py"}) == "deny"
+    cmd = "python -c \"open('recusal/claude_code.py','w').write('x')\""
+    assert _decide("Bash", {"command": cmd}) == "deny"
+
+
+def test_allows_reading_and_running_the_package():
+    # Reads and running package code are not self-modification; they must still defer.
+    assert _decide("Bash", {"command": "cat recusal/evidence.py"}) == "defer"
+    assert _decide("Bash", {"command": "python recusal/__main__.py"}) == "defer"
+    assert _decide("Edit", {"file_path": "tests/test_evidence.py"}) == "defer"
+
+
+# --- regression: moving/removing the *parent* control directory disables the gate but
+#     carries no `.claude/hooks`-style segment (red-team MED-2).
+
+
+def test_refuses_move_or_remove_of_control_directory():
+    for cmd in (
+        "mv .claude _off",
+        "rm -rf .claude",
+        "rmdir .git",
+        "ren .claude disabled",
+        "mv .git .git_bak",
+    ):
+        assert _decide("Bash", {"command": cmd}) == "deny", cmd
+
+
+def test_allows_gitignore_and_github_operations():
+    # `.gitignore` / `.github` must not be mistaken for the `.git` control directory.
+    assert _decide("Bash", {"command": "mv .gitignore .gitignore.bak"}) == "defer"
+    assert _decide("Bash", {"command": "cp .github/workflows/ci.yml /tmp/x"}) == "defer"
+
+
 def test_refuses_rm_flag_variants():
     for cmd in ("rm -fr /x", "rm  -rf /x", "rm -r -f /x", "rm --recursive --force /x"):
         assert _decide("Bash", {"command": cmd}) == "deny", cmd

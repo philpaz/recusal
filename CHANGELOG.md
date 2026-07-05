@@ -111,4 +111,4 @@ All notable changes to this project are documented here. The format follows
   write paths now refuse the identical link. Pinned by two new tests in
   `tests/test_subversion_hook.py` (the deny plus a bare-name false-positive guard).
 
-_Pre-release. No published version yet._
+_0.1.0 is the first published release (on PyPI). Unreleased changes will be listed here._

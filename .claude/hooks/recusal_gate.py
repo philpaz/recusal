@@ -66,7 +66,9 @@ _DESTRUCTIVE = (
     "dd of=",
     "> /dev/sd",
 )
-_CHMOD_WORLD = re.compile(r"\bchmod\b.*-\w*r.*\b0?777\b")  # recursive chmod to 777
+_CHMOD_WORLD = re.compile(
+    r"\bchmod\b[^|&;]{0,256}-\w*r[^|&;]{0,256}\b0?777\b"
+)  # recursive chmod to 777
 _GIT_FORCE_REFSPEC = re.compile(r"\bgit\s+push\b.*\s\+\S")  # force-push via +refspec
 # curl/wget piped or process-substituted into ANY interpreter (not just sh/bash).
 _PIPE_TO_SHELL = re.compile(r"(curl|wget)\b.*(\|\s*" + _INTERP + r"\b|<\(\s*(curl|wget))")
@@ -121,12 +123,27 @@ _SELF_PROTECT_VERB = re.compile(
 # directory -> arbitrary code exec on the next commit/checkout. A gate-disabling vector.
 _GIT_HOOK_REDIRECT = re.compile(r"\bgit\s+config\b[^|&;]{0,256}core\.hookspath\b")
 
+# Moving, renaming, copying over, or removing the *parent* control directory itself
+# (`.claude` or `.git`) disables the gate just like editing its contents, but the bare
+# directory name carries none of the `.claude/hooks`-style segments matched elsewhere.
+# Catch move/remove verbs aimed at the directory token itself. `.gitignore`/`.github` are
+# excluded by the trailing no-word-char lookahead; a longer path like `.claude/hooks` is
+# still (harmlessly) re-matched here and by the segment guard.
+_CONTROL_DIR_OP = re.compile(
+    r"\b(mv|move|ren|rename|cp|copy|xcopy|robocopy|rm|rmdir|rd|del|remove-item|ln|mklink)\b"
+    r"[^|&;]{0,256}(?<![\w./])\.(claude|git)(?![\w])"
+)
+
 _SECRET_BASENAMES = {".env", "id_rsa", "id_ed25519"}
 _SECRET_SUFFIXES = (".pem", ".key", ".p12")
 # The gate's own kill-switch: settings that can disable hooks (settings.json /
-# settings.local.json, matched by the ".claude/settings" prefix) and the hook scripts,
-# plus `.git/hooks/` (writing a git hook is another run-code-on-commit vector).
-_SELF_PROTECT = (".claude/settings", ".claude/hooks")
+# settings.local.json, matched by the ".claude/settings" prefix), the hook scripts, and
+# the in-repo ``recusal/`` package the hook imports and delegates every decision to (see
+# the ``sys.path`` insert + ``from recusal ...`` imports at the top of this file). Editing
+# ``recusal/*.py`` is equivalent to editing the hook -- the next tool call re-imports the
+# working-tree source -- so it must be equally protected. Plus ``.git/hooks/`` (writing a
+# git hook is another run-code-on-commit vector).
+_SELF_PROTECT = (".claude/settings", ".claude/hooks", "recusal/")
 _PROTECTED_PATHS = _SELF_PROTECT + (".git/hooks",)
 
 # A non-Bash tool that carries a shell command under one of these keys (an MCP shell, a
@@ -274,6 +291,8 @@ def _analyze_command(raw: str) -> list:
         markers.append("git push +force")
     if _search_any(_GIT_HOOK_REDIRECT, variants):
         markers.append("git hooksPath redirect")
+    if _search_any(_CONTROL_DIR_OP, variants):
+        markers.append("control-directory move/remove")
     if _search_any(_EXTRA_DESTRUCTIVE, variants):
         markers.append("destructive")
     if markers:
@@ -333,7 +352,7 @@ def _analyze_command(raw: str) -> list:
                 "self_protection",
                 severity="CRITICAL",
                 message="refusing a command that edits or removes a protected control path "
-                "(gate config/hook or git hooks)",
+                "(gate config, hook, the recusal enforcement package, or git hooks)",
                 command=raw,
             )
         )
@@ -425,7 +444,8 @@ def policy(tool_name: str, tool_input: dict) -> list:
                         "self_protection",
                         severity="CRITICAL",
                         message=f"refusing a `{tool_name}` call that targets a protected "
-                        f"control path (gate config/hook or git hooks): {s}",
+                        f"control path (gate config, hook, the recusal enforcement "
+                        f"package, or git hooks): {s}",
                         path=s,
                     )
                 )

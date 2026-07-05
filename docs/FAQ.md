@@ -24,7 +24,8 @@ See [`WHY.md` §1-2](WHY.md) for the full argument.
 Partly, and Anthropic is refreshingly candid about the limit. Claude Code's auto-mode
 safety layer is a **same-family classifier**: a Claude-class model (Sonnet 4.6) judging another Claude
 agent's actions. Anthropic itself states it is *"not a drop-in replacement for careful human
-review on high-stakes infrastructure"* and carries an acknowledged 17% false-negative rate.
+review on high-stakes infrastructure"* and carries an acknowledged 17% false-negative rate
+on a curated hard-case set (see [REFERENCES](REFERENCES.md)).
 In *Trustworthy agents in practice* Anthropic also says the security of agents *"cannot be achieved by any single company"*,
 an explicit invitation for an **independent** verifier.
 
@@ -90,7 +91,9 @@ which is exactly what you want from the part allowed to refuse.
 
 ## What are the dependencies? What Python versions?
 
-**Zero runtime dependencies**, standard library only (`dataclasses` + `enum`). Python
+**Zero runtime dependencies**, standard library only (no third-party runtime packages;
+the kernel uses `dataclasses` + `enum`, other modules add `hashlib`/`json`/`re`/`shlex`/
+`os`). Python
 **3.9+**, tested in CI on 3.9-3.13. The dev extras (`pytest`, `ruff`, `mypy`) are only for
 contributing.
 
@@ -104,11 +107,15 @@ trade-off. See [`../SECURITY.md`](../SECURITY.md).
 
 Depends on the posture, and the docs refuse to blur the two:
 
-- **Deny-list** (the drop-in examples): stops the accidental and common cases, holds even
-  under `bypassPermissions`, and protects its own kill-switch — but a literal matcher can
-  be obfuscated past, and `python script.py` runs code no string check ever reads (write an
-  innocent script, then run it). That limit is pinned as a test, not hidden. Never read a
-  deny-list as "cannot be subverted."
+- **Deny-list** (the drop-in examples): stops the accidental and common cases and holds even
+  under `bypassPermissions` — but a literal matcher can be obfuscated past, and `python
+  script.py` runs code no string check ever reads (write an innocent script, then run it).
+  That limit is pinned as a test, not hidden. Never read a deny-list as "cannot be
+  subverted." A deny-list also only guards what you write into it: the repo's *own* dogfood
+  hook ([`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py)) adds a
+  kill-switch guard that refuses edits to its config, hook, and enforcement package, but the
+  README `my_gate.py` snippet does not — add that guard, or use allowlist mode, if you need
+  it.
 - **Allowlist mode** (`recusal.claude_code.allowlist_policy`, default-deny): nothing runs
   unless affirmatively named; shell metacharacters, runtime-constructed names, and bare
   interpreters are refused, which closes the write-a-script-then-run-it bypass (also pinned

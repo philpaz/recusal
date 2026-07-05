@@ -51,7 +51,7 @@ allow, refusal = gate_tool_use(tool.id, write_policy(tool.input, active), tool_n
 
 ## 3. Write an adapter for another agent framework
 
-`recusal.claude` is ~100 lines and the template for any framework: it turns a `Verdict`
+`recusal.claude` is ~120 lines and the template for any framework: it turns a `Verdict`
 into that framework's allow/deny shape. To support, say, a generic callback-based loop:
 
 ```python

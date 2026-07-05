@@ -15,13 +15,19 @@ Deferring on PASS is deliberate: the gate adds refusals, it does not strip away
 Claude Code's own permission prompts. (Pass ``allow_on_pass=True`` only if you truly
 want the gate to auto-approve and bypass the prompt.)
 
-Wire it up in ``.claude/settings.json``::
+Wire it up in ``.claude/settings.json``. Use the interpreter-probe launcher below rather
+than a bare ``python3 ...``: Claude Code treats a hook whose command fails to *launch* as a
+*non-blocking* error (the tool call proceeds), so a bare ``python3`` silently disables the
+gate on any host without a ``python3`` on PATH (Windows, and any box where the py3 is
+``python``). The loop runs the first ``python3``/``python``/``py`` that is >=3.9 and coerces
+ANY nonzero exit -- missing interpreter, wrong version, or a hook that fails to run -- into
+``exit 2``, the one exit code Claude Code treats as *blocking*, so it fails **closed**::
 
     {
       "hooks": {
         "PreToolUse": [
           { "matcher": ".*", "hooks": [
-            { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/my_gate.py" }
+            { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" }
           ]}
         ]
       }

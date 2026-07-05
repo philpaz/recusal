@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to .claude/settings.json to have Recusal govern this repo's Claude Code sessions. Installing a permission-changing hook is a deliberate step; Claude Code will ask you to confirm it. The command probes python3/python/py (macOS/Linux/Windows) and exits 2 -- a BLOCKING hook error -- if none work, so a missing interpreter fails closed, not open. On Windows, Claude Code runs hook commands under Git Bash.",
+  "_comment": "Copy to .claude/settings.json to have Recusal govern this repo's Claude Code sessions. Installing a permission-changing hook is a deliberate step; Claude Code will ask you to confirm it. The command probes for a python3/python/py that is >=3.9 (macOS/Linux/Windows), runs the hook, and coerces ANY nonzero exit -- missing interpreter, wrong version, or a hook that fails to run -- into exit 2, the one BLOCKING hook exit code, so the gate fails CLOSED rather than open. Claude Code treats a non-2 hook error as non-blocking, which is why we do not `exec` and instead check the exit code. On Windows, Claude Code runs hook commands under Git Bash.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "for p in python3 python py; do \"$p\" -c '' 2>/dev/null && exec \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py\"; done; echo 'recusal gate: no working python interpreter; failing closed' >&2; exit 2"
+            "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing closed' >&2; exit 2"
           }
         ]
       }

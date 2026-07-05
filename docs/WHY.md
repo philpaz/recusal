@@ -3,8 +3,9 @@
 This document explains, in plain professional terms, the problem Recusal addresses,
 why the obvious solutions fall short, and what adopting it actually changes for a team
 running AI agents that take real actions. It is written for the people who own that decision,
-engineering leaders, platform and SRE teams, and risk and compliance functions. Every
-empirical claim below is sourced in [REFERENCES](REFERENCES.md).
+engineering leaders, platform and SRE teams, and risk and compliance functions. The
+external studies, figures, and quotes cited below are listed in
+[REFERENCES](REFERENCES.md).
 
 ## 1. The shift that creates the problem
 
@@ -31,8 +32,7 @@ studied in 2026 are concrete and expensive:
   against a *different* customer's record. The data is technically valid; it is simply
   applied to the wrong subject.
 - **Runaway loops.** The same tool is re-called with minor argument variations until a
-  budget is exhausted, publicly reported cases describe thousands of dollars burned
-  overnight.
+  budget is exhausted, burning through API spend or quota before anyone notices.
 - **Prompt injection through tool output.** Untrusted content returned by a tool (a web
   page, an MCP server, a file) carries instructions that hijack the agent's next action,
   now one of the most-studied agent security categories, with attack success rates against
@@ -56,7 +56,8 @@ reasons.
 same model family. They share training data, share blind spots, and drift together. A
 governance control that can be persuaded by the same reasoning that produced the action is
 not an independent check. Even Anthropic's own Claude Code auto-mode safety layer, a
-same-family classifier, carries an acknowledged 17% false-negative rate and is described by
+same-family classifier, carries an acknowledged 17% false-negative rate (on a curated
+hard-case set) and is described by
 Anthropic itself as *"not a drop-in replacement for careful human review on high-stakes
 infrastructure."* That is a candid and correct statement of the limit of self-grading.
 
@@ -66,7 +67,7 @@ setting, "the model felt this was fine" is not a defensible record. You cannot r
 diff it, or put it in front of an auditor.
 
 **Human-in-the-loop alone does not close the gap.** Where humans approve each action at high
-volume, the documented failure mode is automation bias and "rubber-stamping": approvers wave
+volume, the failure mode is automation bias and "rubber-stamping": approvers wave
 through plausible-looking actions they have not fully checked, and a low override rate is
 itself a warning sign. Human oversight remains essential for judgment, but it cannot be the
 deterministic, always-on check.

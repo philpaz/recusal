@@ -1,6 +1,6 @@
 # Landscape, is anyone else doing this?
 
-*Researched June 2026. Star counts are approximate (±10-20%); re-check live before citing.*
+*Researched June 2026; re-check live before citing.*
 
 Short answer: the category is active and filling fast. Most adjacent tools cover a
 *different* layer (orchestration, content filtering, evaluation, observability), and real
@@ -50,7 +50,7 @@ These build and run agents; adjudication is a different job. All are mature, wid
 - **[Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit)**: a multi-package, multi-language platform (Agent OS / Mesh / Runtime / SRE / Compliance / Marketplace / Lightning / Agent Control Specification; Python/TS/Rust/Go/.NET). It covers **#3** (circuit breakers, SLOs, cascade handling) and partial compliance grading, but per its own docs does **not** package (1) an adjudicator that can *refuse to certify*, (2) deterministic failure-classification→remediator routing, or (4) a constitutional separation-of-powers model. It is OWASP/policy-engine framed (Cedar/OPA Rego) and platform-scale, the opposite of a zero-dependency kernel. It is itself deterministic, so that is shared ground, not a difference.
 
 ### Direct peers, the lane is filling
-- **AEGIS** ([github](https://github.com/Justin0504/Aegis)): an OSS agent-firewall that already ships ~80% of an obvious MVP: pre-execution policy enforcement (YAML/AJV DSL), deterministic blocking, hash-chained + Merkle audit, a kill switch, and Claude Code + MCP adapters. This is the genuine competitor. Recusal does **not** try to out-feature it; it differentiates on **independence** ("a verifier the builder cannot influence"), determinism, and a kernel small enough to read in one sitting. (See also LoopRails.)
+- **AEGIS** ([github](https://github.com/Justin0504/Aegis)): an OSS agent-firewall that already ships ~80% of an obvious MVP: pre-execution policy enforcement (YAML/AJV DSL), deterministic blocking, hash-chained + Merkle audit, a kill switch, and Claude Code + MCP adapters. This is the genuine competitor. Recusal does **not** try to out-feature it; it differentiates on **independence** ("a verifier the builder cannot influence"), determinism, and a kernel small enough to read in one sitting.
 - **Anthropic's Claude Code auto mode**: a *same-family* safety layer: an injection probe on tool output plus a Sonnet-class transcript classifier judging actions pre-execution, with an admitted 17% false-negative rate and Anthropic's own note that it is "not a drop-in replacement for careful human review on high-stakes infrastructure." This is the conflict of interest Recusal exists to remove, a model from the same family grading the same family. In "Trustworthy agents in practice" Anthropic also states the security of agents "cannot be achieved by any single company", the ecosystem's explicit invitation for an independent verifier.
 
 ### Academic / niche on the exact thesis (no popular pip-install)
@@ -79,4 +79,4 @@ that family. Real OSS peers now exist (AEGIS especially), so this is a different
 question, not an empty category. Recusal's bet is narrow: an independent, deterministic
 authority in the action path that can refuse, with no model in the decision and a kernel
 small enough to read in one sitting. Whether that is worth adopting over a more featureful
-peer is a fair question to ask of a zero-star, pre-release library.
+peer is a fair question to ask of a new, early-stage library.

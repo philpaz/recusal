@@ -38,7 +38,8 @@ together. That's not a control; it's a conflict of interest.
   task**, by intercepting the evaluator.
 
 A model will, given the chance, certify its own success. Even Anthropic's own Claude Code
-auto-mode safety layer is a same-family classifier with an admitted 17% false-negative rate,
+auto-mode safety layer is a same-family classifier with an admitted 17% false-negative rate
+on a curated set of hard cases,
 and [Anthropic says plainly](https://www.anthropic.com/engineering/claude-code-auto-mode) it is *"not a drop-in replacement for careful human review on
 high-stakes infrastructure."*
 
@@ -120,15 +121,18 @@ Register a hook in `.claude/settings.json`:
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c '' 2>/dev/null && exec \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; done; echo 'gate: no python; failing closed' >&2; exit 2" } ]}
+    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" } ]}
 ]}}
 ```
 
-The command probes `python3` → `python` → `py` (macOS / Linux / Windows) and **fails
-closed**: Claude Code treats a hook whose command can't launch as a *non-blocking* error
-and lets the tool call proceed, so a bare `python3` invocation on a Windows machine would
-silently disable the gate. Exit code `2` is a *blocking* hook error — no interpreter, no
-tool call. (On Windows, Claude Code runs hook commands under Git Bash.)
+The command runs the first `python3` → `python` → `py` that is `>=3.9` (macOS / Linux /
+Windows) and **fails closed**: Claude Code treats a hook whose command can't launch, or
+that exits with anything other than `2`, as a *non-blocking* error and lets the tool call
+proceed — so a bare `python3` on a Windows machine (no `python3` on PATH), a `python` that
+is Python 2, or a hook that raises at import would each silently disable the gate. The loop
+coerces every one of those into `exit 2`, the one *blocking* hook exit code, so a broken or
+absent interpreter refuses the tool call instead of waving it through. (On Windows, Claude
+Code runs hook commands under Git Bash.)
 
 ```python
 # my_gate.py

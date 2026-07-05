@@ -1,14 +1,18 @@
 """
 Example Claude Code PreToolUse hook backed by Recusal.
 
-Register it in ``.claude/settings.json`` (use an absolute path):
+Register it in ``.claude/settings.json``. Use the interpreter-probe launcher (not a bare
+``python3 ...``): a hook whose command fails to launch is a *non-blocking* error in Claude
+Code, so a missing ``python3`` would silently disable the gate; the loop runs the first
+``python3``/``python``/``py`` that is >=3.9 and coerces any nonzero exit into ``exit 2``
+(the blocking code), so it fails **closed**:
 
     {
       "hooks": {
         "PreToolUse": [
           { "matcher": ".*", "hooks": [
             { "type": "command",
-              "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/claude_code_gate.py" }
+              "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/claude_code_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" }
           ]}
         ]
       }
