@@ -139,6 +139,21 @@ def test_allows_gitignore_and_github_operations():
     assert _decide("Bash", {"command": "cp .github/workflows/ci.yml /tmp/x"}) == "defer"
 
 
+# --- regression: the hook must APPEND the repo to sys.path, never insert it at the front.
+#     At the front, a repo-root `hashlib.py`/`json.py`/`shlex.py`/`re.py` (a path with no
+#     protected segment, so the write defers) would shadow the stdlib module the package
+#     imports and hijack the gate on the next run (red-team stdlib-shadow finding).
+
+
+def test_hook_appends_repo_to_syspath_not_front():
+    src = open(_HOOK, encoding="utf-8").read()
+    assert "sys.path.append(_REPO)" in src, "hook must append _REPO"
+    assert "sys.path.insert(0, _REPO)" not in src, (
+        "inserting the repo at sys.path[0] lets a repo-root file shadow a stdlib module the "
+        "recusal package imports; append so the standard library always resolves first"
+    )
+
+
 def test_refuses_rm_flag_variants():
     for cmd in ("rm -fr /x", "rm  -rf /x", "rm -r -f /x", "rm --recursive --force /x"):
         assert _decide("Bash", {"command": cmd}) == "deny", cmd

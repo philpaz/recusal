@@ -45,9 +45,17 @@ import os
 import re
 import sys
 
-# Make `recusal` importable from the repo without an install.
+# Make `recusal` importable from the repo without an install. Append (not insert-at-0):
+# a repo-root file must NEVER shadow a stdlib module the package imports. If _REPO were at
+# the front of sys.path, an agent could plant `<repo>/hashlib.py` (or json/shlex/re) -- a
+# path that carries no protected segment, so a naive guard defers the write -- and it would
+# be imported in place of the real stdlib module the next time the hook runs, hijacking or
+# disabling the gate. Appending puts the standard library (and any installed distribution)
+# first, so `recusal` is resolved from the repo only when nothing legitimate provides it,
+# and the repo directory can shadow nothing. (`.claude/hooks`, the script dir Python puts at
+# sys.path[0], is itself a protected control path, so it cannot be used to shadow either.)
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, _REPO)
+sys.path.append(_REPO)
 
 from recusal import Finding  # noqa: E402
 from recusal.claude_code import run_pretooluse_hook  # noqa: E402
