@@ -284,7 +284,10 @@ def allowlist_policy(
       Bare interpreters (``python script.py``) are refused: the script is a program the
       gate cannot vet, the exact bypass that defeats a deny-list.
     - Write tools (Write/Edit/MultiEdit/NotebookEdit) are allowed only under
-      ``writable_root``; with no root named, all writes are refused.
+      ``writable_root``; with no root named, all writes are refused. ``writable_root`` is
+      resolved against the process working directory, so prefer an **absolute** path -- a
+      relative root like ``./workspace`` shifts if the hook is ever launched from a different
+      CWD (it fails toward refusal, never toward a wider root, but absolute is unambiguous).
     - ``allow`` maps a tool name to a predicate ``tool_input -> bool`` and **overrides**
       the built-in vetting for that tool (your predicate is the whole decision).
 

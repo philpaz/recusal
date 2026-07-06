@@ -152,18 +152,28 @@ Outbound email/HTTP must go to an allowlisted destination. This is your guard ag
 prompt-injected "send the data to attacker@evil.com".
 
 ```python
+from urllib.parse import urlparse
 from recusal import Finding
 
 ALLOWED_DOMAINS = {"acme.com", "internal.example"}
 
+def _destination_host(tool_input):
+    # An email `to` (user@host) or a URL (http_post/webhook). Parse each properly:
+    # a naive split on "/" turns "https://acme.com/x" into "https:", refusing every URL.
+    to = str(tool_input.get("to") or "")
+    if to:
+        return to.rsplit("@", 1)[-1].split(">")[0].strip().lower()
+    url = str(tool_input.get("url") or "")
+    return (urlparse(url if "://" in url else "//" + url).hostname or "").lower()
+
 def policy(tool_name, tool_input):
     if tool_name not in ("send_email", "http_post", "webhook"):
         return []
-    target = str(tool_input.get("to") or tool_input.get("url") or "")
-    domain = target.split("@")[-1].split("/")[0].lower()
-    if domain and domain not in ALLOWED_DOMAINS:
+    host = _destination_host(tool_input)
+    allowed = any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)  # host + subdomains
+    if host and not allowed:
         return [Finding.fail("egress_allowlist", severity="CRITICAL",
-                             message=f"destination '{domain}' is not on the egress allowlist")]
+                             message=f"destination '{host}' is not on the egress allowlist")]
     return []
 ```
 
@@ -312,10 +322,12 @@ import os, shlex
 from recusal import Finding
 
 WORKSPACE = os.path.abspath("./workspace")
-# Binaries safe regardless of arguments. Tools that can mutate (git, sed, find, rm) are NOT
-# here; allowlist those only with explicit per-subcommand rules.
-SAFE_BINARIES = {"ls", "cat", "head", "tail", "grep", "rg", "wc", "pwd", "stat", "diff",
-                 "pytest", "ruff", "mypy"}
+# Binaries safe under EVERY argument: read/inspect tools with no flag that executes code,
+# spawns a process, or writes a file. Tools that can mutate (git, sed, find, rm) or run code
+# through an argument (pytest imports conftest.py; mypy loads plugins; rg has `--pre`) are
+# deliberately NOT here -- allowlisting their name would reopen the write-a-script-then-run
+# bypass this posture exists to close. Gate those with explicit per-argument rules instead.
+SAFE_BINARIES = {"ls", "cat", "head", "tail", "grep", "wc", "pwd", "stat", "diff"}
 SHELL_META = set(";|&`$<>(){}\n\\")   # chaining / substitution / redirection / expansion
 
 def _under(root, path):

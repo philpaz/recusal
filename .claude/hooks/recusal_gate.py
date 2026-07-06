@@ -126,10 +126,19 @@ _SECRET_PATH_IN_CMD = re.compile(
 # only *reads* the hook. But their inline-code forms (`python -c`, `perl -e`, ...) can
 # open(...,'w') a file, so those are included. `>`/`>>` (redirect-truncate) count.
 _SELF_PROTECT_VERB = re.compile(
-    r"\b(rm|unlink|shred|truncate|mv|move|cp|copy|xcopy|robocopy|ren|rename|tee|dd|sed"
+    r"\b(rm|unlink|shred|truncate|mv|move|cp|copy|xcopy|robocopy|ren|rename|tee|dd"
     r"|install|rsync|ln|mklink|set-content|add-content|clear-content|out-file|new-item"
     r"|set-itemproperty|remove-item|del|rd|rmdir|chmod|chown|chattr|attrib|takeown|icacls)\b"
-    r"|\b(python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e)\b"
+    r"|\bsed\s+-\w*i"  # sed -i (in-place write); sed -n / print-to-stdout is a read
+    # Inline interpreter code (`... -c`/`-e`/`eval`) can open(...,'w') a protected file.
+    # Generalized past the bare `python -c` form: `py` (the Windows launcher), a dotted
+    # version (`python3.12 -c`), `node --eval`, and the `deno`/`bun eval` subcommands.
+    r"|\b(?:py|python[\d.]*|pypy[\d.]*)\s+-\w*c\b"
+    r"|\b(?:perl|ruby)\s+-\w*e\b"
+    r"|\bnode\s+(?:-e|--eval)\b"
+    r"|\b(?:deno|bun)\s+eval\b"
+    r"|\b(?:pwsh|powershell)\s+-[ce]\w*\b"
+    r"|\bosascript\s+-e\b"
     r"|\[?io\.file\]?::\w{0,64}(write|append)"
     r"|>>?"
 )
@@ -147,7 +156,10 @@ _GIT_HOOK_REDIRECT = re.compile(r"\bgit\s+config\b[^|&;]{0,256}core\.hookspath\b
 # `.claude/hooks` is still (harmlessly) re-matched here and by the segment guard.
 _CONTROL_DIR_OP = re.compile(
     r"\b(mv|move|ren|rename|cp|copy|xcopy|robocopy|rm|rmdir|rd|del|remove-item|ln|mklink)\b"
-    r"[^|&;]{0,256}(?<![\w./])(?:\.(?:claude|git)|recusal)(?![\w./-])"
+    # `/` is excluded from neither look-around, so a leading `./`/`../` or a trailing `/`
+    # (`mv ./recusal x`, `mv .claude/ x`) no longer exempts the control-dir token; `.` stays
+    # excluded so `foo.recusal`/`recusal.egg-info` don't match, `-` so `recusal-docs` doesn't.
+    r"[^|&;]{0,256}(?<![\w.])(?:\.(?:claude|git)|recusal)(?![\w.-])"
 )
 
 _SECRET_BASENAMES = {".env", "id_rsa", "id_ed25519"}

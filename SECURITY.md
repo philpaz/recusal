@@ -62,6 +62,13 @@ any public disclosure.
   an allowlist of writable paths remains the real defense. A command whose *name* is built at
   runtime (hex/char-codes/`eval` of decoded data) is likewise uncatchable by any deny-list;
   both limits are pinned as tests.
+- **The deny-list over-refuses in the safe direction.** Because it strips quotes/backticks
+  before matching (so `r""m -rf` can't hide), it also matches a dangerous string that appears
+  as *text* rather than a command — e.g. `git commit -m "remove the rm -rf call"` or
+  `echo "do not run rm -rf /"` are refused, and a `cp`/`sed -i`/`python -c` that merely
+  *reads* a protected path is refused too. This is deliberate: the gate fails toward refusal,
+  never toward silently allowing. Rephrase the command, or use allowlist mode where reads are
+  affirmatively vetted rather than pattern-matched.
 - `recusal.audit` is **tamper-evident, not tamper-proof**: the hash chain detects in-place
   edits and reordering, but the digest is unkeyed and the head is unanchored, so an attacker
   with write access can truncate the tail or rewrite the whole chain. Commit the head

@@ -41,6 +41,12 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python .claude
 # expect: {"hookSpecificOutput": {..., "permissionDecision": "deny", ...}}
 ```
 
+The hook must run under the **same interpreter `recusal` is installed in**. The launcher
+picks the first `python3`/`python`/`py` on `PATH`; if that is a system Python while you
+`pip install`ed `recusal` into a venv, the hook raises `ImportError` and (correctly) fails
+closed — blocking *every* tool call. For a venv, point the command at the venv's interpreter
+explicitly (e.g. `.venv/bin/python` / `.venv\Scripts\python.exe`) instead of the bare probe.
+
 ```python
 # my_gate.py
 from recusal import Finding

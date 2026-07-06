@@ -38,9 +38,10 @@ from recusal.claude_code import allowlist_policy, decide, run_pretooluse_hook  #
 WORKSPACE = os.path.abspath("./workspace")
 
 # Default-deny, straight from the library: Read/Grep/Glob defer; `Bash` needs a vetted
-# first binary (ls, cat, pytest, ruff, ... — interpreters deliberately unlisted, so
-# `python script.py` is refused: the script is a program the gate never reads) and no
-# shell metacharacters; writes stay under WORKSPACE; every other tool is refused.
+# first binary (ls, cat, grep, diff, ... — read/inspect tools only; interpreters AND
+# code-through-an-argument tools like pytest/mypy/rg are deliberately unlisted, so
+# `python script.py` and `pytest` are refused: each runs a program the gate never reads)
+# and no shell metacharacters; writes stay under WORKSPACE; every other tool is refused.
 policy = allowlist_policy(writable_root=WORKSPACE)
 
 
@@ -68,7 +69,11 @@ _ATTACKS = [
     ("char-built name", "a=r;b=m;${a}${b} -rf /repo"),
     ("eval of base64", "eval $(echo cm0gLXJmIC9yZXBv | base64 -d)"),
 ]
-_SAFE = ("run pytest", "pytest -q")
+_SAFE = ("list a directory", "ls -la src")
+# pytest is NOT vetted: it imports conftest.py / the test files it collects, i.e. it runs
+# arbitrary code through an argument -- exactly the write-a-script-then-run-it bypass this
+# posture closes -- so the allowlist refuses it (shown as its own row below).
+_SAFE_REFUSED = ("run pytest (code-exec)", "pytest -q")
 
 
 def main() -> None:
@@ -83,13 +88,15 @@ def main() -> None:
         allow = decide("Bash", {"command": cmd}, policy)[0]
         print(f"  {label:<22}{deny.upper():<14}{allow.upper()}")
     safe = decide("Bash", {"command": _SAFE[1]}, policy)[0]
-    print(f"  {_SAFE[0]:<22}{'-':<14}{safe.upper()}  (vetted binary -> still usable)")
+    print(f"  {_SAFE[0]:<22}{'-':<14}{safe.upper()}  (vetted read -> still usable)")
+    refused = decide("Bash", {"command": _SAFE_REFUSED[1]}, policy)[0]
+    print(f"  {_SAFE_REFUSED[0]:<22}{'-':<14}{refused.upper()}  (code-exec binary -> refused)")
     print(
         "\n  DEFER = the gate had no opinion (the call proceeds); DENY = refused.\n"
         "  Even a de-obfuscating deny-list DEFERS the three runtime-constructed names. The\n"
-        "  allowlist DENIES every unvetted call and still lets the vetted `pytest` through.\n"
-        "  That is the ceiling a deny-list cannot clear, and why high-stakes tools want\n"
-        "  default-deny."
+        "  allowlist DENIES every unvetted call, lets a vetted read like `ls` through, and\n"
+        "  still refuses `pytest` (it runs code via conftest.py -> not arg-safe). That is the\n"
+        "  ceiling a deny-list cannot clear, and why high-stakes tools want default-deny."
     )
 
 

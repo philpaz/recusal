@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-07-06
+
+### Security
+- **Allowlist default hardened.** Removed `pytest`, `mypy`, `rg` (and `ruff`) from
+  `DEFAULT_SAFE_BINARIES`: each executes arbitrary code through an argument (pytest imports
+  `conftest.py`, mypy loads plugins, rg `--pre` spawns a command), which reopened the
+  write-a-script-then-run-it bypass allowlist mode exists to close. The default set is now
+  read/inspect tools only; any binary you add must be safe under every argument. COOKBOOK
+  recipe 11 and `examples/allowlist_gate.py` updated to match.
+- **Dogfood hook self-protection widened.** Closed fail-open gaps where inline-interpreter
+  code (`py -c`, `python3.12 -c`, `node --eval`, `deno`/`bun eval`) or a slash-decorated
+  control-directory move (`mv ./recusal`, `mv .claude/`) could edit/move the gate's own
+  package or config and defer. `writable_root` now resolves symlinks (no escape via an
+  in-root link). `sed -n` reads no longer false-positive (only `sed -i` writes are refused).
+- **ReDoS fixed** in path normalization (trailing-dot stripping is now linear, not
+  quadratic); the `[IO.File]::Write*` pattern quantifier is bounded.
+
+### Changed
+- Docs frame deny-list vs allowlist as two paths chosen by channel (no ranking); the
+  reference architecture dogfoods the deny-list path, with the rationale stated.
+
 ## [0.1.0] - 2026-07-02
 
 ### Added

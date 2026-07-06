@@ -111,6 +111,38 @@ def test_refuses_bash_write_or_remove_of_enforcement_package():
     assert _decide("Bash", {"command": cmd}) == "deny"
 
 
+def test_refuses_inline_interpreter_variants_writing_the_package():
+    # The self-protect verb list must cover more than bare `python -c`: the `py` launcher,
+    # a dotted version, node --eval, and deno/bun eval all run inline code that can overwrite
+    # the enforcement package and neuter the gate on the next call.
+    for cmd in (
+        "py -c \"open('recusal/evidence.py','w').write('x')\"",
+        "python3.12 -c \"open('recusal/checks.py','w')\"",
+        "node --eval \"require('fs').unlinkSync('recusal/evidence.py')\"",
+        "deno eval \"Deno.removeSync('recusal/checks.py')\"",
+        "bun eval \"require('fs').unlinkSync('recusal/checks.py')\"",
+    ):
+        assert _decide("Bash", {"command": cmd}) == "deny", cmd
+
+
+def test_refuses_slash_decorated_control_dir_moves():
+    # A leading ./ or ../ or a trailing / must not exempt a control-directory token.
+    for cmd in (
+        "mv .claude/ backup",
+        "mv ./.claude x",
+        "mv ./recusal x",
+        "mv ../recusal x",
+        "rm -r ./recusal",
+    ):
+        assert _decide("Bash", {"command": cmd}) == "deny", cmd
+
+
+def test_sed_read_defers_but_inplace_write_denies():
+    # `sed -n`/print over the package is a read (defer); only `sed -i` writes (deny).
+    assert _decide("Bash", {"command": "sed -n 1,5p recusal/checks.py"}) == "defer"
+    assert _decide("Bash", {"command": "sed -i s/a/b/ recusal/checks.py"}) == "deny"
+
+
 def test_allows_reading_and_running_the_package():
     # Reads and running package code are not self-modification; they must still defer.
     assert _decide("Bash", {"command": "cat recusal/evidence.py"}) == "defer"
