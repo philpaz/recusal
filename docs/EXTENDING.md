@@ -49,6 +49,11 @@ def write_policy(tool_input, active_subject) -> list:
 allow, refusal = gate_tool_use(tool.id, write_policy(tool.input, active), tool_name=tool.name)
 ```
 
+Two ready-made policies ship as exactly this pattern, read them for a worked example or use
+them as a baseline you extend: `recusal.deny_list.deny_list_policy()` (refuse known-bad, the
+hardened engine behind the dogfood hook) and `recusal.claude_code.allowlist_policy()`
+(default-deny). Both are `(tool_name, tool_input) -> findings` functions like the one above.
+
 ## 3. Write an adapter for another agent framework
 
 `recusal.claude` is ~120 lines and the template for any framework: it turns a `Verdict`

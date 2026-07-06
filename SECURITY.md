@@ -80,8 +80,10 @@ any public disclosure.
 Recusal is a **reference architecture** for governing autonomous agents, not a turnkey
 production security product. The table shows the surfaces the design addresses, the
 architectural response, and the honest limit you own. Where a row cites a recipe, see
-[`docs/COOKBOOK.md`](docs/COOKBOOK.md); the dogfood hook is
-[`.claude/hooks/recusal_gate.py`](.claude/hooks/recusal_gate.py).
+[`docs/COOKBOOK.md`](docs/COOKBOOK.md); the dogfood hook
+[`.claude/hooks/recusal_gate.py`](.claude/hooks/recusal_gate.py) is a thin shim over the
+deny-list engine, which lives in the installable package as `recusal.deny_list`
+(`deny_list_policy(...)`), so it is versioned and unit-tested rather than copy-pasted.
 
 | Attack surface | How this is architected for it | Honest limit (your job) |
 |---|---|---|

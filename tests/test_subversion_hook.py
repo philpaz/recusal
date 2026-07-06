@@ -12,33 +12,26 @@ live here on purpose:
     them is an allowlist (COOKBOOK recipe 11). If a future change ever denies one, update
     the pin - it's a known limitation being lifted, not a silent win to hide.
 
-The hook is loaded from its real installed path so the self-governance claim can't rot.
+The deny-list engine is imported from the installable package (``recusal.deny_list``); the
+dogfood hook is a thin shim over it, exercised end-to-end in tests/test_dogfood.py.
 """
 
-import importlib.util
 import os
 
 import pytest
 
+from recusal import deny_list as _mod
 from recusal.claude_code import decide
 
-_HOOK = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".claude",
-    "hooks",
-    "recusal_gate.py",
-)
-_spec = importlib.util.spec_from_file_location("recusal_gate_sub", _HOOK)
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
+policy = _mod.deny_list_policy()
 
 
 def d(cmd):
-    return decide("Bash", {"command": cmd}, _mod.policy)[0]
+    return decide("Bash", {"command": cmd}, policy)[0]
 
 
 def t(tool, tool_input):
-    return decide(tool, tool_input, _mod.policy)[0]
+    return decide(tool, tool_input, policy)[0]
 
 
 # --- destructive shell: more forms, more obfuscation ------------------------------------
@@ -362,4 +355,7 @@ class TestSymlinkResolution:
     def test_resolution_is_best_effort_never_crashes(self):
         # Unresolvable / other-drive / junk paths must fall back quietly, not raise.
         for junk in ("", "Z:/does/not/exist/x", "\x00bad", "a" * 5000):
-            assert _mod._resolves_into_protected(junk) in (True, False)
+            assert _mod._resolves_into_protected(junk, _mod.DEFAULT_PROTECTED_PATHS) in (
+                True,
+                False,
+            )

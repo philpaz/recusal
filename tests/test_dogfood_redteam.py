@@ -1,34 +1,25 @@
-"""Red-team regression for the dogfood hook: obfuscated / alternate destructive Bash
+"""Red-team regression for the deny-list engine: obfuscated / alternate destructive Bash
 payloads it must still deny, plus the documented inherent limits of a substring deny-list.
 
-Loads the real installed hook so docs/PROVEN.md and the self-governance claim can't rot.
+Tests the engine in the installable package (``recusal.deny_list``); the dogfood hook is a
+thin shim over it, and tests/test_dogfood.py loads that real hook end-to-end for the wiring.
 """
-
-import importlib.util
-import os
 
 import pytest
 
+from recusal import deny_list as _mod
 from recusal.claude_code import decide
 
-_HOOK = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".claude",
-    "hooks",
-    "recusal_gate.py",
-)
-_spec = importlib.util.spec_from_file_location("recusal_gate_rt", _HOOK)
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
+policy = _mod.deny_list_policy()
 
 
 def _d(cmd):
-    return decide("Bash", {"command": cmd}, _mod.policy)[0]
+    return decide("Bash", {"command": cmd}, policy)[0]
 
 
 def _t(tool, tool_input):
     """Decide for an arbitrary tool name / input (to exercise non-Bash coverage)."""
-    return decide(tool, tool_input, _mod.policy)[0]
+    return decide(tool, tool_input, policy)[0]
 
 
 DENIED = [

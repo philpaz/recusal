@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-07-06
+
+### Added
+- **`recusal.deny_list`**: the reference deny-list engine, extracted from the dogfood hook
+  into an importable, versioned, unit-tested module. `deny_list_policy(...)` builds the
+  hardened policy (destructive shell, secret writes, kill-switch edits/deletes, with
+  de-obfuscation, pipe-into-any-interpreter, reverse-shell, `cd`/variable-indirection, and
+  best-effort symlink coverage) and takes `protected_paths=` / `secret_basenames=` /
+  `command_keys=` / `read_only_tools=` so adopters can point it at their own gate;
+  `analyze_command(...)` exposes the command adjudicator as a pure function.
+
+### Changed
+- `.claude/hooks/recusal_gate.py` is now a thin shim over `recusal.deny_list.deny_list_policy()`,
+  so a fix to the deny-list ships through `pip install -U` instead of a copy-paste, and the
+  security logic is covered as a package unit (`tests/test_deny_list.py`) in addition to the
+  end-to-end dogfood test that still loads the real hook.
+
 ## [0.1.2] - 2026-07-06
 
 ### Security

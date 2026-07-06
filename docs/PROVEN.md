@@ -12,10 +12,12 @@ The governance library is the thing governing its own development. That is the d
 
 ## What's installed
 
-- [`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py): the hook and its
-  repo-protection policy (refuse `rm -rf` and its flag variants, force-push, `reset --hard`,
-  `curl … | sh`, writes to `.env` / `*.pem` / `*.key` and shell redirects to them, and edits
-  to the gate's own settings/hook so an agent can't disable it). It is a substring/regex
+- [`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py): the hook, a thin shim
+  that wires the repo-protection policy from `recusal.deny_list` (`deny_list_policy()`, the
+  installable, unit-tested engine) into `PreToolUse`. That policy refuses `rm -rf` and its
+  flag variants, force-push, `reset --hard`, `curl … | sh`, writes to `.env` / `*.pem` /
+  `*.key` and shell redirects to them, and edits to the gate's own settings/hook so an agent
+  can't disable it. It is a substring/regex
   deny-list, a *baseline*, not a guarantee: an obfuscated command can evade any literal
   matcher, and for a narrow high-stakes channel the refuse-by-default allowlist path fits
   better (neither is "better" in the abstract; the channel decides). What this proves is the

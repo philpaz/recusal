@@ -65,10 +65,25 @@ prompts). A non-clean verdict **denies**, with the reasons. See `examples/claude
 
 ### Two postures, two claims
 
-The policy above is a **deny-list**: refuse known-bad calls, defer the rest. It stops the
-accidental and common cases and its `deny` holds even in auto mode, but a literal matcher
-can be obfuscated past, and `python script.py` runs code no string check ever reads. Never
-read a deny-list as "cannot be subverted."
+The policy above is a hand-written **deny-list**: refuse known-bad calls, defer the rest.
+It stops the accidental and common cases and its `deny` holds even in auto mode, but a
+literal matcher can be obfuscated past, and `python script.py` runs code no string check
+ever reads. Never read a deny-list as "cannot be subverted."
+
+Rather than hand-roll one, use the hardened reference deny-list that governs this repo:
+
+```python
+from recusal.claude_code import run_pretooluse_hook
+from recusal.deny_list import deny_list_policy
+
+run_pretooluse_hook(deny_list_policy())   # point it at your gate: protected_paths=(".mygate/",)
+```
+
+`deny_list_policy` refuses destructive shell, writes to secret files, and edits *or
+deletions* of the gate's own control paths, with uniform de-obfuscation, pipe-into-any-
+interpreter, reverse-shell, `cd`/variable-indirection, and best-effort symlink coverage. It
+is the engine behind `.claude/hooks/recusal_gate.py`, versioned and unit-tested in the
+package (`tests/test_deny_list.py`), so a fix reaches you via `pip install -U`.
 
 For high-stakes channels, flip to **allowlist mode** (default-deny), shipped as a factory:
 

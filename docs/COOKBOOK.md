@@ -46,6 +46,20 @@ if verdict.refused or verdict.retryable:
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.
 
+> **Don't hand-roll the common protections.** The destructive-shell, secret-write, and
+> kill-switch recipes below ship hardened and red-team-tested as one importable policy,
+> `recusal.deny_list.deny_list_policy()` (de-obfuscation, pipe-into-any-interpreter,
+> reverse shells, `cd`/variable indirection, symlink resolution). Use it as your baseline
+> and add the domain-specific recipes on top; the recipes below are here to show the shape
+> and to adapt when you need something the ready-made policy does not cover:
+>
+> ```python
+> from recusal.deny_list import deny_list_policy
+> from recusal.claude_code import run_pretooluse_hook
+>
+> run_pretooluse_hook(deny_list_policy())   # your gate's paths: protected_paths=(".mygate/",)
+> ```
+
 ---
 
 ## 1. Block destructive shell commands

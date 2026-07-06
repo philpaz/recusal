@@ -86,6 +86,7 @@ the gate refuses, the audit log records, the classifier routes.
 | `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
+| `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
 | `recusal.audit` | tamper-evident, hash-chained log of every verdict |
 | `recusal.classify` | deterministic failure classifier + router |
 | `recusal.gates` | staged `G0`-`G8` release-gate adjudication, `compute_verdict` at each checkpoint |

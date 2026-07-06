@@ -111,11 +111,12 @@ Depends on the posture, and the docs refuse to blur the two:
   under `bypassPermissions`, but a literal matcher can be obfuscated past, and `python
   script.py` runs code no string check ever reads (write an innocent script, then run it).
   That limit is pinned as a test, not hidden. Never read a deny-list as "cannot be
-  subverted." A deny-list also only guards what you write into it: the repo's *own* dogfood
-  hook ([`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py)) adds a
-  kill-switch guard that refuses edits to its config, hook, and enforcement package, but the
-  README `my_gate.py` snippet does not, add that guard, or use allowlist mode, if you need
-  it.
+  subverted." A deny-list also only guards what you write into it: the minimal README
+  `my_gate.py` snippet refuses `rm -rf` but not edits to its own config. The hardened
+  reference policy `recusal.deny_list.deny_list_policy()` (the engine behind the repo's own
+  dogfood hook, [`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py)) adds the
+  kill-switch guard that refuses edits to its config, hook, and enforcement package, use it
+  as your baseline, or use allowlist mode, if you need that protection.
 - **Allowlist mode** (`recusal.claude_code.allowlist_policy`, default-deny): nothing runs
   unless affirmatively named; shell metacharacters, runtime-constructed names, and bare
   interpreters are refused, which closes the write-a-script-then-run-it bypass (also pinned
