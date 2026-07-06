@@ -129,14 +129,35 @@ def test_refuses_move_or_remove_of_control_directory():
         "rmdir .git",
         "ren .claude disabled",
         "mv .git .git_bak",
+        # the recusal package dir is a control dir too: renaming/removing it breaks the gate
+        "mv recusal backup",
+        "move recusal backup",
+        "mklink /J notesdir recusal",
     ):
         assert _decide("Bash", {"command": cmd}) == "deny", cmd
 
 
-def test_allows_gitignore_and_github_operations():
-    # `.gitignore` / `.github` must not be mistaken for the `.git` control directory.
+def test_refuses_git_restore_of_a_gate_module():
+    # `git restore` (the modern `git checkout --`) overwrites a path from a ref / the index.
+    assert _decide("Bash", {"command": "git restore --source=abc recusal/claude_code.py"}) == "deny"
+    assert _decide("Bash", {"command": "git restore ."}) == "deny"
+
+
+def test_refuses_trailing_dot_path_into_package():
+    # Windows strips a trailing dot, so `recusal./x` resolves into the `recusal` package;
+    # the path normalizer must not let the dot hide the protected segment.
+    assert _decide("Bash", {"command": "echo evil > recusal./claude_code.py"}) == "deny"
+
+
+def test_allows_gitignore_github_and_similar_named_paths():
+    # `.gitignore` / `.github` / `recusal_*` / `git-restore-mtime` must not be mistaken for
+    # the `.git` or `recusal` control directories, and reads of the package still defer.
     assert _decide("Bash", {"command": "mv .gitignore .gitignore.bak"}) == "defer"
     assert _decide("Bash", {"command": "cp .github/workflows/ci.yml /tmp/x"}) == "defer"
+    assert _decide("Bash", {"command": "mv recusal-docs published"}) == "defer"
+    assert _decide("Bash", {"command": "git restore-mtime"}) == "defer"
+    assert _decide("Bash", {"command": "cat recusal/evidence.py"}) == "defer"
+    assert _decide("Bash", {"command": "grep -rn foo recusal/"}) == "defer"
 
 
 # --- regression: the hook must APPEND the repo to sys.path, never insert it at the front.

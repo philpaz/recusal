@@ -17,8 +17,9 @@ The governance library is the thing governing its own development. That is the d
   `curl … | sh`, writes to `.env` / `*.pem` / `*.key` and shell redirects to them, and edits
   to the gate's own settings/hook so an agent can't disable it). It is a substring/regex
   deny-list, a *baseline*, not a guarantee: an obfuscated command can evade any literal
-  matcher, and an allowlist posture is stronger. What this proves is the seam, not an
-  exhaustive list.
+  matcher, and for a narrow high-stakes channel the refuse-by-default allowlist path fits
+  better (neither is "better" in the abstract; the channel decides). What this proves is the
+  seam, not an exhaustive list.
 - Registration, see [`.claude/settings.json.example`](../.claude/settings.json.example).
   Installing a permission-changing hook is a **deliberate, reviewed step**: Claude Code's
   own auto mode will (correctly) ask you to confirm it. That confirmation *is* the

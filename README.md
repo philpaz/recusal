@@ -150,13 +150,25 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
-A hand-written policy like the above is a **deny-list**: it stops the accidental and common
-cases, but a literal matcher can be obfuscated past, and `python script.py` runs code no
-string check ever reads — don't read it as "cannot be subverted." For high-stakes channels
-use the shipped **allowlist mode** (default-deny): nothing runs unless affirmatively named,
-and bare interpreters are refused, closing the write-a-script-then-run-it bypass (pinned as
-a test). That's the posture that earns *"the agent could not subvert it"* for the routed
-tool channel:
+**Two paths, one principle — pick by your channel, not by a ranking.** The policy above is
+a **deny-list**: name the known-bad calls, *defer everything else*. It drops into a broad,
+open-ended channel with almost no friction and needs no inventory of your tools, which is
+why this repo dogfoods it (a general-purpose dev repo runs an unbounded set of legitimate
+commands). Its boundary is inherent, not a defect: a literal matcher can be obfuscated past,
+and `python script.py` runs code no string check ever reads — so a deny-list never earns
+"cannot be subverted."
+
+The other path is **allowlist mode** (default-deny): name the affirmatively-safe calls,
+*refuse everything else*. It fits a narrow, enumerable, high-stakes channel — nothing runs
+unless listed, and bare interpreters and shell metacharacters are refused, which closes the
+write-a-script-then-run-it bypass by construction (pinned as a test). That closure is what
+lets it earn *"the agent could not subvert it"* for the routed tool channel. The trade is
+friction and maintenance: you enumerate and grow the capability set, and it fails toward
+refusal until you do.
+
+Neither is "better" in the abstract — a deny-list refusing the unknown would grind a broad
+channel to a halt, and an allowlist deferring the unknown would defeat the point of a
+high-stakes one. Choose by the channel. Both ship, both are pinned as tests.
 
 ```python
 from recusal.claude_code import allowlist_policy, run_pretooluse_hook

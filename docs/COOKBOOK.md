@@ -282,13 +282,15 @@ def policy(tool_name, tool_input):
 run_pretooluse_hook(policy)   # one hook, every rule; a clean verdict still defers
 ```
 
-## 11. Allowlist mode (default-deny), the stronger posture
+## 11. Allowlist mode (default-deny), the refuse-by-default path
 
-Every recipe above is a *deny-list*: it refuses known-bad calls and defers the rest. A
-deny-list cannot catch a command whose name is built at runtime (`c=$'\x72\x6d'; $c -rf`,
+Every recipe above is a *deny-list*: it refuses known-bad calls and defers the rest — the
+right path for a broad channel where deferring the unknown keeps friction low. A deny-list
+cannot catch a command whose name is built at runtime (`c=$'\x72\x6d'; $c -rf`,
 `eval $(... | base64 -d)`), no string match ever sees the `rm`, and it cannot see code run
-*inside* an interpreter, `python script.py` executes a program the gate never reads. The
-robust answer inverts it: **deny by default, allow only what you affirmatively vet.** For
+*inside* an interpreter, `python script.py` executes a program the gate never reads. For a
+narrow, high-stakes channel the other path fits: **deny by default, allow only what you
+affirmatively vet** (neither path is "better" in the abstract; the channel decides). For
 `Bash`, reject shell metacharacters (so a command can't chain, substitute, or expand into
 something else) and require a vetted first binary, with interpreters deliberately unvetted.
 That defeats the runtime-construction and bare-interpreter bypasses a deny-list cannot.

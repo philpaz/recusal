@@ -10,10 +10,14 @@ shell commands, writes to
 secret/protected files, and edits *or deletions* of the gate's own configuration
 are refused before they run, even under bypassPermissions.
 
-A substring/regex deny-list is a *baseline*, not a guarantee, a determined command
-can be obfuscated past any literal matcher, and an allowlist posture is stronger. What
-this proves is the seam, an independent gate that refuses before the tool runs and
-that guards its own kill-switch, not that this exact list is exhaustive.
+This is the **deny-list** path (refuse known-bad, defer the rest), used here deliberately:
+a general-purpose dev repo runs an unbounded set of legitimate commands, so a default-deny
+allowlist would be all friction. A deny-list is a *baseline*, not a guarantee, a determined
+command can be obfuscated past any literal matcher, and for a narrow high-stakes channel the
+**allowlist** path (`recusal.claude_code.allowlist_policy`, refuse-by-default) fits better.
+Neither is "better" in the abstract; the channel decides. What this file proves is the seam,
+an independent gate that refuses before the tool runs and guards its own kill-switch, not
+that this exact list is exhaustive.
 
 Hardening notes (what this hook does that a naive deny-list does not):
 
@@ -32,7 +36,8 @@ Hardening notes (what this hook does that a naive deny-list does not):
   filesystem tool) whose innocent-looking path resolves through a symlink onto a protected
   control path is refused (``_resolves_into_protected``), closing the classic
   ``notes.txt`` -> ``.claude/settings.json`` TOCTOU. Best-effort: a not-yet-created link can't
-  be resolved, and ``Bash`` fragments stay string-matched, so an allowlist is still stronger.
+  be resolved, and ``Bash`` fragments stay string-matched, so an allowlist refuses by default
+  where this best-effort resolution cannot reach.
 
 The honest limit is unchanged: a deny-list cannot catch a command whose *name* is
 built at runtime (hex/char-codes/``eval`` of decoded data) or code run inside a bare
@@ -103,6 +108,7 @@ _EXTRA_DESTRUCTIVE = re.compile(
     r"|\bremove-item\b[^|&;]{0,256}-recurse\b"
     r"|\bgit\s+clean\b[^|&;]{0,256}-[a-z]{0,8}f"  # git clean -f / -fd / -fdx (untracked loss)
     r"|\bgit\s+checkout\b[^|&;]{0,256}\s--(\s|$)"  # git checkout -- (discard working tree)
+    r"|\bgit\s+restore(?![\w-])"  # git restore (discard/overwrite tree); not git-restore-mtime
 )
 _MAX_CMD_LEN = 4096  # commands longer than this are refused, not adjudicated (DoS guard)
 # \S{0,256} (bounded), not \S*, so a long run of '>' can't make this O(n^2) (ReDoS guard).
@@ -132,15 +138,16 @@ _SELF_PROTECT_VERB = re.compile(
 # directory -> arbitrary code exec on the next commit/checkout. A gate-disabling vector.
 _GIT_HOOK_REDIRECT = re.compile(r"\bgit\s+config\b[^|&;]{0,256}core\.hookspath\b")
 
-# Moving, renaming, copying over, or removing the *parent* control directory itself
-# (`.claude` or `.git`) disables the gate just like editing its contents, but the bare
-# directory name carries none of the `.claude/hooks`-style segments matched elsewhere.
-# Catch move/remove verbs aimed at the directory token itself. `.gitignore`/`.github` are
-# excluded by the trailing no-word-char lookahead; a longer path like `.claude/hooks` is
-# still (harmlessly) re-matched here and by the segment guard.
+# Moving, renaming, copying over, or removing a *control directory* itself -- `.claude`,
+# `.git`, or the `recusal` enforcement package -- disables the gate just like editing its
+# contents, but the bare directory name carries none of the `.claude/hooks`- or `recusal/`
+# -style segments matched elsewhere. Catch move/remove verbs aimed at the directory token
+# itself. `.gitignore`/`.github`/`recusal_foo` are excluded by the trailing lookahead (which
+# also rejects a following `.`, so `recusal.egg-info` is not matched); a longer path like
+# `.claude/hooks` is still (harmlessly) re-matched here and by the segment guard.
 _CONTROL_DIR_OP = re.compile(
     r"\b(mv|move|ren|rename|cp|copy|xcopy|robocopy|rm|rmdir|rd|del|remove-item|ln|mklink)\b"
-    r"[^|&;]{0,256}(?<![\w./])\.(claude|git)(?![\w])"
+    r"[^|&;]{0,256}(?<![\w./])(?:\.(?:claude|git)|recusal)(?![\w./-])"
 )
 
 _SECRET_BASENAMES = {".env", "id_rsa", "id_ed25519"}
@@ -180,8 +187,13 @@ def _deobfuscate(cmd: str) -> str:
 
 
 def _norm_path(s: str) -> str:
-    """Path-normalize a command string: backslash -> slash, collapse repeated slashes."""
-    return re.sub(r"/+", "/", s.replace("\\", "/"))
+    """Path-normalize a command string: backslash -> slash, collapse repeated slashes, and
+    drop trailing dots/spaces from each path component. Windows strips trailing dots and
+    spaces from a name, so `recusal./x` and `recusal /x` both resolve into the `recusal`
+    package; normalizing them keeps a protected segment from being hidden behind a trailing
+    dot (biases toward refusal, never away)."""
+    s = re.sub(r"/+", "/", s.replace("\\", "/"))
+    return re.sub(r"[ .]+(?=/)", "", s)
 
 
 def _deobf_path(s: str) -> str:

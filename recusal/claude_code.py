@@ -167,10 +167,21 @@ def run_pretooluse_hook(
 # Tools that only read; they defer regardless of arguments.
 DEFAULT_READ_ONLY_TOOLS: FrozenSet[str] = frozenset({"Read", "Grep", "Glob"})
 
-# First binaries safe regardless of arguments. Mutating tools (git, sed, find, rm) and
-# interpreters (python, node, sh, ...) are deliberately absent: an interpreter's argument
+# First binaries safe *regardless of their arguments* -- read/inspect tools with no flag
+# that spawns a process, imports code, or writes a file. Mutating tools (git, sed, find, rm)
+# and interpreters (python, node, sh, ...) are deliberately absent: an interpreter's argument
 # IS a program, so `python script.py` executes code no string check ever vets. Matched as
-# the exact first argv token — `./pytest` or `/opt/x/pytest` is NOT the vetted `pytest`.
+# the exact first argv token -- `./cat` or `/opt/x/cat` is NOT the vetted `cat`.
+#
+# NOT here, and why -- these run arbitrary code THROUGH an argument, so allowlisting the
+# binary name would reopen the exact bypass this mode exists to close:
+#   pytest  -> auto-imports conftest.py from the working tree
+#   mypy    -> imports `[tool.mypy] plugins` from pyproject.toml
+#   rg      -> `--pre <cmd>` / `--hostname-bin <cmd>` spawn an arbitrary binary
+#   git     -> `-c core.pager=`, `-c alias.x='!sh'`, `-c core.sshCommand=` all execute
+# If you add a binary, it must be safe under EVERY argument the agent could pass; a tool
+# that reads a config/plugin/hook or has an exec flag does not qualify. Gate those with an
+# `allow=` predicate that vets the arguments instead.
 DEFAULT_SAFE_BINARIES: FrozenSet[str] = frozenset(
     {
         "ls",
@@ -178,14 +189,10 @@ DEFAULT_SAFE_BINARIES: FrozenSet[str] = frozenset(
         "head",
         "tail",
         "grep",
-        "rg",
         "wc",
         "pwd",
         "stat",
         "diff",
-        "pytest",
-        "ruff",
-        "mypy",
     }  # fmt: skip
 )
 
@@ -232,8 +239,11 @@ def _is_interpreter(argv0: str) -> bool:
 
 
 def _under_root(root: str, path: str) -> bool:
+    # realpath both sides so a symlink INSIDE the writable root that points outside it does
+    # not escape confinement (commonpath alone would compare the innocent-looking link path).
     try:
-        return os.path.commonpath([root, os.path.abspath(path)]) == root
+        root_real = os.path.realpath(root)
+        return os.path.commonpath([root_real, os.path.realpath(path)]) == root_real
     except ValueError:  # different drives on Windows
         return False
 

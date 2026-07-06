@@ -88,17 +88,30 @@ def test_empty_command_is_denied():
 
 
 def test_path_qualified_binary_is_not_the_vetted_one():
-    assert bash("./pytest -q")[0] == "deny"  # a local script named pytest is unvetted
-    assert bash("/opt/x/pytest -q")[0] == "deny"
+    assert bash("./cat file")[0] == "deny"  # a local script named cat is unvetted
+    assert bash("/opt/x/cat file")[0] == "deny"
 
 
 # --- what the allowlist affirmatively permits still works --------------------------------
 
 
 def test_vetted_binaries_defer():
-    assert bash("pytest -q")[0] == "defer"
+    assert bash("cat README.md")[0] == "defer"
     assert bash("ls -la src")[0] == "defer"
     assert bash("diff a.txt b.txt")[0] == "defer"
+    assert bash("grep -n foo src/x.py")[0] == "defer"
+
+
+# --- code-executing binaries are NOT default-safe (they run code through an argument) -----
+# rg `--pre`, pytest's conftest.py auto-import, and mypy plugins each execute arbitrary code
+# via an argument, which would reopen the write-a-script-then-run-it bypass the allowlist
+# exists to close. Keeping them out of the default set is what makes the "could not subvert
+# it" claim true; a user who needs one adds it via an `allow=` predicate that vets the args.
+
+
+def test_code_executing_binaries_are_not_default_safe():
+    for cmd in ("pytest -q", "mypy .", "rg --pre sh -e x .", "rg foo ."):
+        assert bash(cmd)[0] == "deny", cmd
 
 
 def test_read_only_tools_defer():
@@ -127,6 +140,24 @@ def test_writes_are_scoped_to_the_writable_root(tmp_path):
     assert d("Edit", {"file_path": outside, "old_string": "a", "new_string": "b"}, scoped) == "deny"
 
 
+def test_writable_root_symlink_escape_is_denied(tmp_path):
+    # A symlink INSIDE the writable root that points outside must not let a write escape:
+    # _under_root realpath-resolves both sides, so the write is judged at the link target.
+    import pytest
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = root / "escape"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform")
+    scoped = allowlist_policy(writable_root=str(root))
+    assert d("Write", {"file_path": str(link / "secret.txt"), "content": "x"}, scoped) == "deny"
+
+
 # --- extension points --------------------------------------------------------------------
 
 
@@ -139,9 +170,13 @@ def test_allow_predicate_overrides_builtin_vetting():
 
 
 def test_extra_safe_binary_is_honored():
-    wider = allowlist_policy(safe_binaries={"ls", "git"})
-    assert bash("git status", wider)[0] == "defer"
-    assert bash("pytest -q", wider)[0] == "deny"  # the default list was replaced, not merged
+    # A binary you add is honored, and the default set is REPLACED, not merged. Only add a
+    # binary that is safe under EVERY argument: `tree` inspects and cannot exec or write.
+    # (Deliberately not `git` — `git -c core.pager=`/`alias.x='!sh'` is a code-exec surface;
+    # gate a tool like that with an `allow=` predicate that vets its arguments instead.)
+    wider = allowlist_policy(safe_binaries={"ls", "tree"})
+    assert bash("tree src", wider)[0] == "defer"
+    assert bash("cat x", wider)[0] == "deny"  # default `cat` was replaced, not merged
 
 
 # --- end to end: the hook emits a real PreToolUse deny for the pinned bypass -------------
