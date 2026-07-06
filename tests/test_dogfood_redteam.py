@@ -175,7 +175,22 @@ def test_redirect_regex_is_not_quadratic():
 
     start = time.perf_counter()
     _mod._REDIRECT_TO_SECRET.search(">" * 50_000)
-    assert time.perf_counter() - start < 0.5  # old quadratic form took minutes
+    # Linear is ~0.2s for 50k chars; the old quadratic form took *minutes*. The 2s bound
+    # cleanly separates the two while tolerating a slow/loaded CI runner (real inputs are
+    # capped at _MAX_CMD_LEN long before this regex sees them).
+    assert time.perf_counter() - start < 2.0
+
+
+def test_norm_path_is_linear_on_long_dotted_input():
+    # `_norm_path` trailing-dot stripping must be linear: a lookahead form backtracked
+    # quadratically on a long run of dots/spaces (ReDoS). rstrip-per-component is O(n).
+    import time
+
+    start = time.perf_counter()
+    _mod._norm_path("." * 200_000 + "/recusal/x")
+    assert time.perf_counter() - start < 2.0
+    # and it still surfaces the segment it is meant to normalize
+    assert "recusal/" in _mod._norm_path("recusal./claude_code.py")
 
 
 def test_policy_on_huge_adversarial_input_is_instant():

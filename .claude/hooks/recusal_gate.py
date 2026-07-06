@@ -116,7 +116,7 @@ _REDIRECT_TO_SECRET = re.compile(
     r">>?\s*\S{0,256}(\.env(?:\.[^\s'\"/\\]{1,64})?|\.pem|\.key|\.p12|id_rsa|id_ed25519)"
 )
 _WRITE_LIKE = re.compile(
-    r"\b(tee|sed\s+-i|python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e|cp|mv|copy|xcopy|robocopy|install|rsync|truncate|set-content|add-content|clear-content|out-file|new-item)\b|\[?io\.file\]?::\w*(write|append)|>>?"
+    r"\b(tee|sed\s+-i|python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e|cp|mv|copy|xcopy|robocopy|install|rsync|truncate|set-content|add-content|clear-content|out-file|new-item)\b|\[?io\.file\]?::\w{0,64}(write|append)|>>?"
 )
 _SECRET_PATH_IN_CMD = re.compile(
     r"(\.env(?:\.[^\s'\"/\\]+)?|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b)"
@@ -130,7 +130,7 @@ _SELF_PROTECT_VERB = re.compile(
     r"|install|rsync|ln|mklink|set-content|add-content|clear-content|out-file|new-item"
     r"|set-itemproperty|remove-item|del|rd|rmdir|chmod|chown|chattr|attrib|takeown|icacls)\b"
     r"|\b(python\d*\s+-c|perl\s+-e|ruby\s+-e|node\s+-e)\b"
-    r"|\[?io\.file\]?::\w*(write|append)"
+    r"|\[?io\.file\]?::\w{0,64}(write|append)"
     r"|>>?"
 )
 
@@ -193,7 +193,9 @@ def _norm_path(s: str) -> str:
     package; normalizing them keeps a protected segment from being hidden behind a trailing
     dot (biases toward refusal, never away)."""
     s = re.sub(r"/+", "/", s.replace("\\", "/"))
-    return re.sub(r"[ .]+(?=/)", "", s)
+    # rstrip each '/'-delimited component: linear, unlike a lookahead like `[ .]+(?=/)`
+    # which backtracks quadratically on a long run of dots/spaces (a ReDoS foot-gun).
+    return "/".join(part.rstrip(" .") for part in s.split("/"))
 
 
 def _deobf_path(s: str) -> str:
