@@ -21,3 +21,40 @@ def test_explicit_passed_key_is_honored_in_both_modes():
     assert compute_verdict([{"severity": "CRITICAL", "passed": False}]).refused
     assert compute_verdict([{"severity": "CRITICAL", "passed": False}], strict=True).refused
     assert compute_verdict([{"severity": "CRITICAL", "passed": True}], strict=True).passed
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "fail",
+        "failed",
+        "failure",
+        "false",
+        "0",
+        "no",
+        "n",
+        "off",
+        "error",
+        "denied",
+        "rejected",
+        "blocked",
+        "fatal",
+        "warn",
+        "",
+        "unknown",
+        "borked",
+    ],
+)
+def test_status_field_fails_closed_on_any_non_pass_token(status):
+    # Regression: the `status` branch once used a hardcoded {"fail","error","warn"}
+    # blocklist, so a CRITICAL finding with status "failed"/"false"/"denied"/… coerced
+    # to PASS through every strict adapter (the exact bool("false")==True footgun this
+    # library exists to prevent, on the status path). It is now a pass ALLOWLIST: any
+    # token not affirmatively "passed" fails closed.
+    assert not Finding.coerce({"severity": "CRITICAL", "status": status}).passed
+    assert compute_verdict([{"severity": "CRITICAL", "status": status}], strict=True).refused
+
+
+@pytest.mark.parametrize("status", ["pass", "passed", "ok", "okay", "success", "PASS", " Pass "])
+def test_status_field_still_passes_affirmative_tokens(status):
+    assert Finding.coerce({"severity": "INFO", "status": status}).passed

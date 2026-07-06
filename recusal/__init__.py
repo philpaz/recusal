@@ -17,10 +17,10 @@ Everything hangs off it:
 
 - ``evidence``, ``Finding`` / ``Verdict`` / ``Severity`` / ``Decision`` and
                  ``compute_verdict(findings)`` (the typed core).
-- ``checks``  , built-in deterministic checks that turn raw data into Findings.
-- ``claude``  , drop the gate in front of a Claude agent's tool calls so it can
+- ``checks``, built-in deterministic checks that turn raw data into Findings.
+- ``claude``, drop the gate in front of a Claude agent's tool calls so it can
                  refuse *before* a tool runs.
-- ``gates``   , staged release checkpoints (G0-G8) rolled into release evidence.
+- ``gates``, staged release checkpoints (G0-G8) rolled into release evidence.
 
 The constitution it encodes: **builders cannot grade their own work** ·
 deterministic before AI · the judge owns evidence, not progression · no shadow
@@ -66,4 +66,4 @@ __all__ = [
     "DEFAULT_TAXONOMY",
 ]
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

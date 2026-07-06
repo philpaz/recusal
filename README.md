@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/banner-gate-strip.png">
-    <img alt="recusal — deterministic governance for Claude agents" src="assets/banner-gate-strip-light.png" width="880">
+    <img alt="recusal, deterministic governance for Claude agents" src="assets/banner-gate-strip-light.png" width="880">
   </picture>
 </p>
 
@@ -128,7 +128,7 @@ Register a hook in `.claude/settings.json`:
 The command runs the first `python3` → `python` → `py` that is `>=3.9` (macOS / Linux /
 Windows) and **fails closed**: Claude Code treats a hook whose command can't launch, or
 that exits with anything other than `2`, as a *non-blocking* error and lets the tool call
-proceed — so a bare `python3` on a Windows machine (no `python3` on PATH), a `python` that
+proceed, so a bare `python3` on a Windows machine (no `python3` on PATH), a `python` that
 is Python 2, or a hook that raises at import would each silently disable the gate. The loop
 coerces every one of those into `exit 2`, the one *blocking* hook exit code, so a broken or
 absent interpreter refuses the tool call instead of waving it through. (On Windows, Claude
@@ -150,23 +150,23 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
-**Two paths, one principle — pick by your channel, not by a ranking.** The policy above is
+**Two paths, one principle, pick by your channel, not by a ranking.** The policy above is
 a **deny-list**: name the known-bad calls, *defer everything else*. It drops into a broad,
 open-ended channel with almost no friction and needs no inventory of your tools, which is
 why this repo dogfoods it (a general-purpose dev repo runs an unbounded set of legitimate
 commands). Its boundary is inherent, not a defect: a literal matcher can be obfuscated past,
-and `python script.py` runs code no string check ever reads — so a deny-list never earns
+and `python script.py` runs code no string check ever reads, so a deny-list never earns
 "cannot be subverted."
 
 The other path is **allowlist mode** (default-deny): name the affirmatively-safe calls,
-*refuse everything else*. It fits a narrow, enumerable, high-stakes channel — nothing runs
+*refuse everything else*. It fits a narrow, enumerable, high-stakes channel, nothing runs
 unless listed, and bare interpreters and shell metacharacters are refused, which closes the
 write-a-script-then-run-it bypass by construction (pinned as a test). That closure is what
 lets it earn *"the agent could not subvert it"* for the routed tool channel. The trade is
 friction and maintenance: you enumerate and grow the capability set, and it fails toward
 refusal until you do.
 
-Neither is "better" in the abstract — a deny-list refusing the unknown would grind a broad
+Neither is "better" in the abstract, a deny-list refusing the unknown would grind a broad
 channel to a halt, and an allowlist deferring the unknown would defeat the point of a
 high-stakes one. Choose by the channel. Both ship, both are pinned as tests.
 
@@ -256,15 +256,16 @@ if verdict.refused:
 ## Tamper-evident audit
 
 Pair any verdict with an append-only, hash-chained log: every decision on the record, and
-in-place edits or reordering of existing entries detectable (catching tail-truncation or a
-full re-hash by a write-access attacker needs an external anchor, see `recusal.audit`):
+an in-place edit or reordering of any entry with a surviving successor is detectable
+(catching tail-truncation, a tail-suffix rewrite, or a forged append by a write-access
+attacker needs an external anchor, see `recusal.audit`):
 
 ```python
 from recusal import AuditLog, verify
 
 audit = AuditLog(path="audit.jsonl")
 audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
-ok, problems = verify(audit.entries)   # False if an existing entry was edited or reordered
+ok, problems = verify(audit.entries)   # False if an entry with a later entry was edited/reordered
 ```
 
 Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).

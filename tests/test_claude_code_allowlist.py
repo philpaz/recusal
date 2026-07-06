@@ -3,10 +3,10 @@ Allowlist mode (default-deny) as shipped library API: `recusal.claude_code.allow
 
 The load-bearing pin here is the **bare interpreter**: a deny-list gate allows
 `Write innocent.py` and then `python innocent.py`, executing a program no string check
-ever saw — the documented bypass in `tests/test_subversion_hook.py::PINNED_LIMIT`. The
+ever saw, the documented bypass in `tests/test_subversion_hook.py::PINNED_LIMIT`. The
 allowlist closes it by construction (deny-by-default, interpreters unlisted), and this
-file pins that closure so the two-tier claim in the docs — "could not subvert it" is
-earned only by allowlist mode, for the routed tool channel — stays a tested fact.
+file pins that closure so the two-tier claim in the docs, "could not subvert it" is
+earned only by allowlist mode, for the routed tool channel, stays a tested fact.
 """
 
 import io
@@ -56,7 +56,7 @@ def test_inline_interpreter_code_is_denied():
 
 
 def test_interpreter_recognition_never_widens_the_allowlist():
-    # An unrecognized binary is refused too — recognition only sharpens the message.
+    # An unrecognized binary is refused too, recognition only sharpens the message.
     decision, reason = bash("somebinary --do-things")
     assert decision == "deny"
     assert "not on the allowlist" in reason
@@ -172,7 +172,7 @@ def test_allow_predicate_overrides_builtin_vetting():
 def test_extra_safe_binary_is_honored():
     # A binary you add is honored, and the default set is REPLACED, not merged. Only add a
     # binary that is safe under EVERY argument: `tree` inspects and cannot exec or write.
-    # (Deliberately not `git` — `git -c core.pager=`/`alias.x='!sh'` is a code-exec surface;
+    # (Deliberately not `git`, `git -c core.pager=`/`alias.x='!sh'` is a code-exec surface;
     # gate a tool like that with an `allow=` predicate that vets its arguments instead.)
     wider = allowlist_policy(safe_binaries={"ls", "tree"})
     assert bash("tree src", wider)[0] == "defer"

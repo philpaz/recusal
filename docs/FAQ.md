@@ -108,18 +108,18 @@ trade-off. See [`../SECURITY.md`](../SECURITY.md).
 Depends on the posture, and the docs refuse to blur the two:
 
 - **Deny-list** (the drop-in examples): stops the accidental and common cases and holds even
-  under `bypassPermissions` — but a literal matcher can be obfuscated past, and `python
+  under `bypassPermissions`, but a literal matcher can be obfuscated past, and `python
   script.py` runs code no string check ever reads (write an innocent script, then run it).
   That limit is pinned as a test, not hidden. Never read a deny-list as "cannot be
   subverted." A deny-list also only guards what you write into it: the repo's *own* dogfood
   hook ([`.claude/hooks/recusal_gate.py`](../.claude/hooks/recusal_gate.py)) adds a
   kill-switch guard that refuses edits to its config, hook, and enforcement package, but the
-  README `my_gate.py` snippet does not — add that guard, or use allowlist mode, if you need
+  README `my_gate.py` snippet does not, add that guard, or use allowlist mode, if you need
   it.
 - **Allowlist mode** (`recusal.claude_code.allowlist_policy`, default-deny): nothing runs
   unless affirmatively named; shell metacharacters, runtime-constructed names, and bare
   interpreters are refused, which closes the write-a-script-then-run-it bypass (also pinned
-  as a test). This earns *"the agent could not subvert it"* — scoped to the tool channel
+  as a test). This earns *"the agent could not subvert it"*, scoped to the tool channel
   routed through the hook. It still says nothing about what happens outside that loop (a
   human pasting a suggested command, an unrouted side channel, a bug in your predicates).
 

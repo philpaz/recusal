@@ -276,3 +276,60 @@ def test_refuses_secret_write_case_variants():
 
 def test_refuses_multiedit_to_secret():
     assert _decide("MultiEdit", {"file_path": "/repo/.env"}) == "deny"
+
+
+# --- regression: self-protect via cwd / variable indirection (red-team HIGH) -----------
+#     `cd .claude && rm settings.json` splits the protected path across the `&&`, so the
+#     contiguous-substring self-protect check never saw `.claude/settings`. A `cd`/`pushd`
+#     into a control dir (or binding it to a variable) plus a write verb is now refused.
+
+
+def test_refuses_cd_into_control_dir_then_remove_settings():
+    assert _decide("Bash", {"command": "cd .claude && rm settings.json"}) == "deny"
+
+
+def test_refuses_cd_into_control_dir_then_remove_hook():
+    assert _decide("Bash", {"command": "cd .claude && cd hooks && rm recusal_gate.py"}) == "deny"
+
+
+def test_refuses_cd_into_recusal_package_then_remove():
+    assert _decide("Bash", {"command": "cd recusal && rm __init__.py"}) == "deny"
+
+
+def test_refuses_variable_indirected_write_to_settings():
+    assert _decide("Bash", {"command": "d=.claude; rm $d/settings.json"}) == "deny"
+
+
+def test_cd_into_control_dir_then_read_still_defers():
+    # A read after cd carries no write verb; the gate must not over-block reads.
+    assert _decide("Bash", {"command": "cd .claude && cat settings.json"}) == "defer"
+    assert _decide("Bash", {"command": "cd recusal && python -m pytest"}) == "defer"
+
+
+def test_cd_into_non_control_dir_then_remove_defers():
+    assert _decide("Bash", {"command": "cd src && rm old.py"}) == "defer"
+
+
+# --- regression: more inline-exec interpreters can write the kill-switch (red-team MED) --
+
+
+def test_refuses_php_inline_write_to_settings():
+    cmd = 'php -r \'file_put_contents(".claude/settings.json","");\''
+    assert _decide("Bash", {"command": cmd}) == "deny"
+
+
+def test_refuses_lua_inline_write_to_settings():
+    assert _decide("Bash", {"command": 'lua -e \'io.open(".claude/settings.json","w")\''}) == "deny"
+
+
+def test_refuses_rscript_inline_write_to_hook():
+    cmd = 'Rscript -e \'writeLines("", ".claude/hooks/recusal_gate.py")\''
+    assert _decide("Bash", {"command": cmd}) == "deny"
+
+
+# --- regression: spaced fork bomb (the literal ":(){" marker missed the spaced form) ----
+
+
+def test_refuses_spaced_fork_bomb():
+    assert _decide("Bash", {"command": ": () { : | : & } ; :"}) == "deny"
+    assert _decide("Bash", {"command": ":(){ :|:& };:"}) == "deny"

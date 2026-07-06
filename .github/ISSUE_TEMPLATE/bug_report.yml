@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for reporting. Recusal is a *governance* library, so correctness bugs
-        are high priority — a wrong `PASS` or a wrong `FAIL` is the worst thing it can do.
+        are high priority, a wrong `PASS` or a wrong `FAIL` is the worst thing it can do.
         A minimal, runnable reproduction gets a fix fastest.
   - type: textarea
     id: what-happened

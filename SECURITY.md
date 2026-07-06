@@ -25,13 +25,13 @@ any public disclosure.
   security control and review changes to it, and to the hook settings, with that rigor.
 - **Two postures, two claims.** A substring **deny-list** is a baseline: it stops the
   accidental and common cases, but a determined command can be obfuscated past a literal
-  matcher and `python script.py` executes code no string check ever reads — never describe
+  matcher and `python script.py` executes code no string check ever reads, never describe
   a deny-list as "cannot be subverted." **Allowlist mode** (default-deny) ships as
   `recusal.claude_code.allowlist_policy`: nothing runs unless affirmatively named, shell
   metacharacters and **bare interpreters** are refused (closing the
   write-a-script-then-run-it bypass; pinned in `tests/test_claude_code_allowlist.py`), and
   it defeats the runtime-constructed names a deny-list cannot. That posture earns "the
-  agent could not subvert it" **for the tool channel routed through the hook** — it says
+  agent could not subvert it" **for the tool channel routed through the hook**, it says
   nothing about side channels outside that loop, a mis-registered hook, or a bug in your
   predicates. Runnable comparison: [`examples/allowlist_gate.py`](examples/allowlist_gate.py).
   Protect the hook's own config in either posture so an agent cannot disable it. **`safe_binaries`
@@ -42,9 +42,9 @@ any public disclosure.
   gate a tool like that with an `allow=` predicate that vets the arguments.
 - **The gate governs tool calls in *this repo*, not the whole machine.** The hook runs under
   the ambient Python interpreter, whose `site-packages` / user-site directories sit outside
-  the repo and outrank it on `sys.path`. An actor who can write there — a `.pth` file (executed
-  at interpreter startup), `sitecustomize`/`usercustomize`, or a trojaned `recusal` distribution
-  — controls the gate, and the hook's control-path guard does **not** cover paths outside the
+  the repo and outrank it on `sys.path`. An actor who can write there, a `.pth` file (executed
+  at interpreter startup), `sitecustomize`/`usercustomize`, or a trojaned `recusal`
+  distribution, controls the gate, and the hook's control-path guard does **not** cover paths outside the
   repo. This is the documented scope boundary, not a bug: for stronger isolation run the hook
   from a repo-local virtualenv (its `site-packages` then lives inside the protected tree) or
   under an interpreter started with `-I`/`-S` to disable `.pth`/user-site/`PYTHON*` env at
@@ -64,7 +64,7 @@ any public disclosure.
   both limits are pinned as tests.
 - **The deny-list over-refuses in the safe direction.** Because it strips quotes/backticks
   before matching (so `r""m -rf` can't hide), it also matches a dangerous string that appears
-  as *text* rather than a command — e.g. `git commit -m "remove the rm -rf call"` or
+  as *text* rather than a command, e.g. `git commit -m "remove the rm -rf call"` or
   `echo "do not run rm -rf /"` are refused, and a `cp`/`sed -i`/`python -c` that merely
   *reads* a protected path is refused too. This is deliberate: the gate fails toward refusal,
   never toward silently allowing. Rephrase the command, or use allowlist mode where reads are
@@ -89,7 +89,7 @@ architectural response, and the honest limit you own. Where a row cites a recipe
 | **Destructive tool call** (`rm -rf`, unscoped `DELETE`, secret-file write) | A `PreToolUse` hook adjudicates every call and denies before it runs; the deny holds even under `bypassPermissions`. | You define the policy; the shipped ones are examples. |
 | **Obfuscated / evasive shell** (spacing, quoting, escapes, `$IFS`, `base64 -d \| sh`, pipe into `python`/`perl`/`ruby`/`node`, reverse shells `/dev/tcp` / `nc -e` / `socat EXEC:`, Windows `rd`/`del`/`Remove-Item`) | The hook normalizes and de-obfuscates the command, matches alternate forms uniformly (destructive, secret, *and* self-protect checks all run against the de-obfuscated command and three path readings), and refuses recursive `rm` even without `-f`; red-team tested in `tests/test_dogfood_redteam.py` and the wider `tests/test_subversion_hook.py`. | A deny-list **cannot** catch a command whose name is built at runtime (hex/char-codes/`eval`/variable indirection) or run inside an interpreter (`python -c`, `python script.py`). Use **allowlist mode** (`recusal.claude_code.allowlist_policy`; [`COOKBOOK.md`](docs/COOKBOOK.md) recipe 11), which *does* defeat these, for high-stakes tools. Both the deny-list limit and the allowlist's closure of it are pinned as tests. |
 | **Denial of service** (huge or pathological command, ReDoS) | A length cap refuses an over-long command rather than adjudicating it, and the matchers are bounded so a long adversarial input can't trigger catastrophic backtracking; both are timed in the red-team suite. | A length cap is blunt; tune it to your commands. |
-| **Disabling the gate itself** | The hook refuses edits *and deletions* of its own kill-switch — the settings and hook scripts (`.claude/settings*`, `.claude/hooks/**`), the in-repo `recusal/` **enforcement package** the hook imports and delegates every decision to (poisoning `recusal/*.py` would neutralize the gate on the next tool call), `.git/hooks/**` / `git config core.hooksPath`, *and* moving or removing the `.claude` / `.git` control directory itself — via `Write`/`Edit`, via Bash (`rm`/`mv`/`del`/redirects/inline-script writes), *and* via any other non-read tool: a generic guard refuses any non-read-only tool (an MCP filesystem tool) whose inputs reference a protected control path, matched against the de-obfuscated command and three path readings so quote-splitting, a backslash-escape, or a Windows separator cannot slip past. Pinned in `tests/test_dogfood.py`. | Same deny-list caveat; the allowlist path refuses by default (choose it for narrow high-stakes channels — see the posture note in the README). This covers the dogfood hook, which runs the gate from in-repo source; an adopter who `pip install`s `recusal` into site-packages keeps the enforcement code outside the governed tree entirely. A bare interpreter (`python file.py`) is allowed to *run* the hook; only its inline-code forms (`python -c`) are gated. Allowlist mode refuses bare interpreters outright. |
+| **Disabling the gate itself** | The hook refuses edits *and deletions* of its own kill-switch, the settings and hook scripts (`.claude/settings*`, `.claude/hooks/**`), the in-repo `recusal/` **enforcement package** the hook imports and delegates every decision to (poisoning `recusal/*.py` would neutralize the gate on the next tool call), `.git/hooks/**` / `git config core.hooksPath`, *and* moving or removing the `.claude` / `.git` control directory itself, via `Write`/`Edit`, via Bash (`rm`/`mv`/`del`/redirects/inline-script writes), *and* via any other non-read tool: a generic guard refuses any non-read-only tool (an MCP filesystem tool) whose inputs reference a protected control path, matched against the de-obfuscated command and three path readings so quote-splitting, a backslash-escape, or a Windows separator cannot slip past. Pinned in `tests/test_dogfood.py`. | Same deny-list caveat; the allowlist path refuses by default (choose it for narrow high-stakes channels, see the posture note in the README). This covers the dogfood hook, which runs the gate from in-repo source; an adopter who `pip install`s `recusal` into site-packages keeps the enforcement code outside the governed tree entirely. A bare interpreter (`python file.py`) is allowed to *run* the hook; only its inline-code forms (`python -c`) are gated. Allowlist mode refuses bare interpreters outright. |
 | **Ungated side-channel tool** (an MCP shell / filesystem tool used instead of `Bash`/`Write`) | Any tool carrying a command under a command-like key (`command`/`cmd`/`shell`/`script`, matched **case-insensitively and at any nesting depth**, with argv-array values joined) gets the exact same command analysis as `Bash`; the kill-switch guard above covers filesystem-style tools. | The command-key *names* and the read-only-tool allowlist are conventions; map *your* MCP tools to the policy explicitly. A read-only MCP tool that references a protected path is refused (safe-side false positive). |
 | **Malformed / drifted hook envelope** (non-object JSON, missing `tool_name`, non-dict `tool_input`) | Fails **closed** to `deny` by default instead of normalizing and continuing. | `fail_closed=False` opts out. |
 | **Ambiguous / buggy policy evidence** (a finding dict with no status degrading to PASS; a stringified `"passed": "false"` reading as truthy; a policy that raises) | The enforcement adapters adjudicate with `strict=True` and fail closed; `Finding.coerce` reads a stringified `"false"`/`"no"`/`"0"` as a *failure* (not raw truthiness); a raising policy fails closed too. | The lenient no-status default applies only to `compute_verdict` called directly, not at the adapters. |
@@ -97,7 +97,7 @@ architectural response, and the honest limit you own. Where a row cites a recipe
 | **Data exfiltration** | Egress-allowlist policy refuses outbound calls to non-allowlisted destinations (recipe). | Define the allowlist. |
 | **Wrong-subject write** | Subject-guard policy: a write must target the session's active subject (the signature recipe; a real catch in `docs/PROVEN.md`). | Bind the active subject per turn. |
 | **Runaway loop / cost** | Tiered action-budget policy (recipe). | The hook is per-call; persist the counter. |
-| **Tampering with the audit record** | Hash-chained log detects in-place edits and reordering. | Truncation / full re-hash need an external head anchor (`verify(expected_head=...)`); unkeyed, single-writer. |
+| **Tampering with the audit record** | Hash-chained log detects an edit or reorder of any entry with a surviving successor. | Tail truncation, tail-suffix rewrite (down to the last entry), and forged appends need an external head anchor (`verify(expected_head=...)`); unkeyed, single-writer. |
 | **Supply chain (CI)** | Actions are tag-pinned (reference-architecture convention; documented in the workflows). | Pin to immutable commit SHAs for production. |
 
 The through-line: the design gives you an **independent, deterministic seam that fails

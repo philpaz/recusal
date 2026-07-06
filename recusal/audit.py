@@ -4,18 +4,24 @@ Hash-chained audit log, a linked record of every verdict.
 A gate that can refuse is only half of an auditable control; the other half is a
 record you can replay and an auditor can read. ``recusal.audit`` appends each verdict to an
 append-only, hash-chained log: every entry carries the SHA-256 hash of the entry
-before it, so an **in-place edit or a reordering** of existing entries breaks the
-chain and ``verify`` catches it, naming the entry and the reason.
+before it, so an **in-place edit or a reordering** of any entry that has at least one
+untampered successor breaks the chain, and ``verify`` catches it, naming the entry and
+the reason.
 
 What this does and does not guarantee (read before relying on it):
 
-- It detects in-place edits and reordering. It is tamper-**evident**, not tamper-proof.
+- It detects in-place edits and reordering **of any entry that still has an untampered
+  entry after it**. It is tamper-**evident**, not tamper-proof.
 - The digest is **unkeyed** and the head is **unanchored**, so an attacker with write
-  access to the file can truncate the tail, or rewrite the whole chain and recompute every
-  hash, and still pass ``verify``. To catch those, commit the head ``(count, last_hash)``
-  somewhere the attacker cannot also rewrite (a witness, a WORM store, a signature) and
-  pass it as ``verify(..., expected_head=...)``.
+  access to the file can rewrite any **tail suffix** (in the limit, just the last entry,
+  the most recently recorded action), recomputing only that suffix's hashes, or truncate
+  the tail, and still pass ``verify``. Anyone with write access can also append a valid new
+  entry; the log proves chain consistency, not who wrote it. To catch all of these, commit
+  the head ``(count, last_hash)`` somewhere the attacker cannot also rewrite (a witness, a
+  WORM store, a signature) and pass it as ``verify(..., expected_head=...)``.
 - It is **single-writer**: two processes appending to the same file will fork the chain.
+- Resuming an existing file does **not** re-verify it; run ``verify_file`` first if you
+  need to know the log you are extending is intact.
 
 Deterministic and dependency-free: SHA-256 over canonical JSON, standard library only.
 The record shape maps cleanly onto OWASP Agentic logging and EU AI Act Article 12
@@ -143,11 +149,12 @@ def verify(
     """Check the hash chain. Returns ``(intact, problems)``, ``problems`` is empty when the
     log is intact, otherwise it names each broken entry and why.
 
-    This detects in-place edits and reordering of existing entries. It does **not**, on its
-    own, detect truncation of the tail or a full re-hash by an attacker with write access
-    (the digest is unkeyed and the head is unanchored). Pass ``expected_head=(count,
-    last_hash)``, a value committed somewhere the attacker cannot also rewrite, to catch
-    truncation and whole-chain forgery.
+    This detects in-place edits and reordering of any entry that still has an untampered
+    successor. It does **not**, on its own, detect truncation of the tail, a rewrite of any
+    tail suffix (in the limit, just the last entry, recomputing only that suffix's hashes),
+    or a valid forged append (the digest is unkeyed and the head is unanchored). Pass
+    ``expected_head=(count, last_hash)``, a value committed somewhere the attacker cannot
+    also rewrite, to catch truncation, tail-suffix rewrite, and forged appends.
     """
     problems: List[str] = []
     prev: str = GENESIS

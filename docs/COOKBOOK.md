@@ -294,7 +294,7 @@ run_pretooluse_hook(policy)   # one hook, every rule; a clean verdict still defe
 
 ## 11. Allowlist mode (default-deny), the refuse-by-default path
 
-Every recipe above is a *deny-list*: it refuses known-bad calls and defers the rest — the
+Every recipe above is a *deny-list*: it refuses known-bad calls and defers the rest, the
 right path for a broad channel where deferring the unknown keeps friction low. A deny-list
 cannot catch a command whose name is built at runtime (`c=$'\x72\x6d'; $c -rf`,
 `eval $(... | base64 -d)`), no string match ever sees the `rm`, and it cannot see code run

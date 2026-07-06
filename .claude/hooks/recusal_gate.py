@@ -79,6 +79,10 @@ _DESTRUCTIVE = (
     "dd of=",
     "> /dev/sd",
 )
+# Fork bomb, tolerant of the spacing the literal ":(){" marker misses: a function
+# whose body pipes itself into a backgrounded copy (":(){ :|:& };:" and its spaced
+# "\: () { : | : & } ; :" form). A *renamed* bomb is a runtime-name deny-list ceiling.
+_FORK_BOMB = re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&")
 _CHMOD_WORLD = re.compile(
     r"\bchmod\b[^|&;]{0,256}-\w*r[^|&;]{0,256}\b0?777\b"
 )  # recursive chmod to 777
@@ -139,6 +143,13 @@ _SELF_PROTECT_VERB = re.compile(
     r"|\b(?:deno|bun)\s+eval\b"
     r"|\b(?:pwsh|powershell)\s+-[ce]\w*\b"
     r"|\bosascript\s+-e\b"
+    # More inline-exec interpreters with a no-redirect file-write builtin (php
+    # file_put_contents, lua io.open('w'), R writeLines): same primitive as
+    # `python -c`, so a `php -r '...'` writing the kill-switch is covered too.
+    r"|\bphp\s+-\w*r\b"
+    r"|\b(?:lua|luajit)\s+-\w*e\b"
+    r"|\brscript\s+-\w*e\b"
+    r"|\b(?:groovy|elixir)\s+-\w*e\b"
     r"|\[?io\.file\]?::\w{0,64}(write|append)"
     r"|>>?"
 )
@@ -160,6 +171,19 @@ _CONTROL_DIR_OP = re.compile(
     # (`mv ./recusal x`, `mv .claude/ x`) no longer exempts the control-dir token; `.` stays
     # excluded so `foo.recusal`/`recusal.egg-info` don't match, `-` so `recusal-docs` doesn't.
     r"[^|&;]{0,256}(?<![\w.])(?:\.(?:claude|git)|recusal)(?![\w.-])"
+)
+
+# `cd .claude && rm settings.json` splits the protected path across the `&&`: the
+# self-protect check matches `.claude/settings` as a contiguous substring, but here the
+# directory and the filename never touch. Catch the two ways the control dir becomes the
+# (implicit) write target without appearing as one token: changing INTO it (`cd`/`pushd`)
+# or binding it to a variable (`d=.claude; rm $d/settings.json`). Combined with a write
+# verb elsewhere in the command (see the self_protection check), that is a kill-switch
+# edit. A read after `cd` (`cd .claude && cat settings.json`) carries no write verb and
+# still defers. Fully computed paths (command substitution) remain the deny-list ceiling.
+_CD_INTO_CONTROL = re.compile(
+    r"\b(?:cd|pushd)\s+[\"']?\.?/?(?:\.(?:claude|git)|recusal)(?![\w.-])"
+    r"|(?:^|[\s;&|(])\w+=[\"']?\.?/?(?:\.(?:claude|git)|recusal)(?![\w.-])"
 )
 
 _SECRET_BASENAMES = {".env", "id_rsa", "id_ed25519"}
@@ -320,6 +344,8 @@ def _analyze_command(raw: str) -> list:
     markers = [m for m in _DESTRUCTIVE if any(m in v for v in variants)]
     if any(_rm_recursive(v) for v in variants):
         markers.append("rm -r")
+    if _search_any(_FORK_BOMB, variants):
+        markers.append("fork bomb")
     if _search_any(_CHMOD_WORLD, variants):
         markers.append("chmod -R 777")
     if _search_any(_GIT_FORCE_REFSPEC, variants):
@@ -379,9 +405,10 @@ def _analyze_command(raw: str) -> list:
                 command=raw,
             )
         )
-    if _search_any(_SELF_PROTECT_VERB, variants) and any(
+    targets_protected = any(
         seg in pv for pv in path_variants for seg in _PROTECTED_PATHS
-    ):
+    ) or _search_any(_CD_INTO_CONTROL, variants)
+    if _search_any(_SELF_PROTECT_VERB, variants) and targets_protected:
         findings.append(
             Finding.fail(
                 "self_protection",

@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-07-06
+
+### Security
+- **Fail-closed on a `status` failure token (HIGH).** `Finding.coerce` read the `status`
+  field against a hardcoded `{"fail","error","warn"}` blocklist, so a CRITICAL finding with
+  `status` of `"failed"`, `"false"`, `"0"`, `"no"`, `"denied"`, `"fatal"`, … coerced to
+  **PASS**, even under `strict=True`, and passed through every enforcement adapter as
+  allow/defer. This was the exact `bool("false")==True` silent-pass this library exists to
+  prevent, on the `status` path. The field is now read against a pass **allowlist**: any
+  token not affirmatively passing (`pass`/`passed`/`ok`/…) fails closed.
+- **Empty gate evidence no longer passes vacuously (MED).** `GateAdjudicator.adjudicate`
+  with an empty findings set returned a PASS, letting a gate that proved nothing count
+  toward `release_ready`. It is now a CRITICAL `evidence_error`, matching the module's
+  "absence of evidence is not a pass" contract.
+- **Dogfood hook: closed a self-protection bypass and enumeration gaps.** `cd .claude && rm
+  settings.json` (and variable-indirected `d=.claude; rm $d/settings.json`) split the
+  protected path across the `&&`, so the contiguous-substring self-protect never matched;
+  a `cd`/`pushd` into, or variable binding of, a control dir plus a write verb is now
+  refused. Added `php -r` / `lua -e` / `Rscript -e` / `groovy`/`elixir` inline-exec forms to
+  the kill-switch write guard, and caught the spaced form of the classic fork bomb.
+
+### Fixed
+- Audit-log claims corrected across README, SECURITY, HOWTO, WHY, CHANGELOG, and the module
+  docstrings: an in-place edit is caught only for an entry that still has an untampered
+  successor; a tail-suffix rewrite (down to the last entry) and a forged append pass
+  unanchored `verify` and need the `expected_head` anchor. Pinned by a new regression test.
+- Purged em/en-dashes from all shipped files (regressed in the 0.1.1 copy pass).
+
 ## [0.1.1] - 2026-07-06
 
 ### Security
@@ -51,8 +79,10 @@ All notable changes to this project are documented here. The format follows
   only allowlist mode earns "the agent could not subvert it," scoped to the routed tool
   channel (HOWTO §1, README, SECURITY, FAQ).
 - **Tamper-evident audit log**: `recusal.audit` (`AuditLog`, `verify`): a hash-chained,
-  append-only JSONL record of every verdict; any later edit, deletion, or reorder is
-  detected. Maps to OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
+  append-only JSONL record of every verdict; an edit or reorder of any entry with a
+  surviving successor is detected, and tail truncation, tail-suffix rewrite, or a forged
+  append are caught with the `expected_head` anchor. Maps to OWASP Agentic logging / EU AI
+  Act Article 12 (record-keeping).
 - **Deterministic failure classifier**: `recusal.classify` (`classify_failure`,
   `classify_verdict`): routes a failure to a class + remediation channel (policy_violation,
   prompt_injection, transient, code_bug, data_shape, data_missing, spec_ambiguity)

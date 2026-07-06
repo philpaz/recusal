@@ -47,7 +47,7 @@ def gate_tool_use(
     finding shape.
 
     Returns ``(allow, refusal_block)``:
-      * ``(True, None)`` , verdict is PASS; execute the tool.
+      * ``(True, None)``, verdict is PASS; execute the tool.
       * ``(False, block)``, verdict is RETRY/FAIL; do **not** execute. Append
         ``block`` (a ``tool_result`` with ``is_error: true``) to your next user
         message so Claude sees the refusal and adapts.

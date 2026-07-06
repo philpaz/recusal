@@ -157,11 +157,11 @@ def run_pretooluse_hook(
 #
 # Every deny-list shares one ceiling: it cannot catch a command whose name is built at
 # runtime (`c=$'\x72\x6d'; $c -rf /`), and it cannot see code executed *inside* an
-# interpreter — `python script.py` is one innocent-looking token followed by a program the
+# interpreter, `python script.py` is one innocent-looking token followed by a program the
 # gate never reads. Allowlist mode inverts the default: **nothing runs unless affirmatively
 # named.** Unlisted tools, shell metacharacters (chaining/substitution/expansion), and bare
 # interpreters are refused, which closes the write-a-script-then-run-it bypass a deny-list
-# cannot. This is the posture behind the strong claim — "the agent could not subvert it" —
+# cannot. This is the posture behind the strong claim, "the agent could not subvert it",
 # scoped, honestly, to the tool channel routed through the hook.
 
 # Tools that only read; they defer regardless of arguments.
@@ -201,7 +201,7 @@ DEFAULT_SAFE_BINARIES: FrozenSet[str] = frozenset(
 _SHELL_META: FrozenSet[str] = frozenset(";|&`$<>(){}\n\\")
 
 # Interpreter names, recognized only to make the refusal reason precise (an unrecognized
-# binary is refused anyway — recognition never widens what is allowed).
+# binary is refused anyway, recognition never widens what is allowed).
 _INTERPRETER_NAMES: FrozenSet[str] = frozenset(
     {
         "sh",
@@ -291,7 +291,7 @@ def allowlist_policy(
     - ``allow`` maps a tool name to a predicate ``tool_input -> bool`` and **overrides**
       the built-in vetting for that tool (your predicate is the whole decision).
 
-    Everything else — unlisted tools, MCP tools, anything unnamed — is refused. Plug the
+    Everything else, unlisted tools, MCP tools, anything unnamed, is refused. Plug the
     result into :func:`run_pretooluse_hook`. A vetted call still *defers* to Claude Code's
     normal permission flow; this policy only ever adds refusals.
     """

@@ -95,4 +95,17 @@ def test_default_gates_are_domain_neutral():
 def test_custom_gate_staging():
     adj = GateAdjudicator(gates=(("CHECK", "my one gate"),))
     assert adj.describe("CHECK") == "my one gate"
-    assert adj.adjudicate("CHECK", []).passed
+    # A gate adjudicated with real passing evidence passes.
+    assert adj.adjudicate("CHECK", [Finding.ok("c", severity="INFO")]).passed
+
+
+def test_empty_findings_gate_fails_closed():
+    # A gate given NO evidence proved nothing: it must fail closed, not pass
+    # vacuously (absence of evidence is not a pass). Regression for the empty-
+    # findings vacuous-pass footgun that let an empty gate ship release_ready.
+    adj = GateAdjudicator(gates=(("CHECK", "my one gate"),))
+    result = adj.adjudicate("CHECK", [])
+    assert not result.passed
+    assert result.decision.value == "FAIL"
+    rel = adj.release("m", [result], required=("CHECK",))
+    assert rel.release_ready is False

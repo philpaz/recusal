@@ -23,14 +23,14 @@ Claude Code runs them, even under `bypassPermissions` (a `PreToolUse` `deny` ove
 ```
 
 **Why the interpreter loop, and why `exit 2`:** Claude Code treats a hook whose command
-does anything other than exit `2` — fails to *launch* (`python3` not found, the default on
+does anything other than exit `2`, fails to *launch* (`python3` not found, the default on
 Windows, where only `python` or the `py` launcher exists), or launches but *crashes* (a
-Python 2 `python`, a syntax/import error in the hook) — as a **non-blocking** error: the
+Python 2 `python`, a syntax/import error in the hook), as a **non-blocking** error: the
 tool call proceeds and the gate is silently disabled. The loop runs the first
 `python3` → `python` → `py` that is `>=3.9`, executes the hook, and coerces **any** nonzero
 exit into `exit 2`, the one exit code Claude Code treats as **blocking**. So a missing
 interpreter, a too-old one, *and* a hook that fails to run all refuse the tool call instead
-of waving it through — it fails **closed** on every failure mode, not just the absent-python
+of waving it through, it fails **closed** on every failure mode, not just the absent-python
 one. (Deny and defer both exit `0`, so any nonzero genuinely means "the hook did not run.")
 On Windows, Claude Code runs hook commands under Git Bash, so this POSIX one-liner is
 portable. Verify your install end-to-end before trusting it:
@@ -44,7 +44,7 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python .claude
 The hook must run under the **same interpreter `recusal` is installed in**. The launcher
 picks the first `python3`/`python`/`py` on `PATH`; if that is a system Python while you
 `pip install`ed `recusal` into a venv, the hook raises `ImportError` and (correctly) fails
-closed — blocking *every* tool call. For a venv, point the command at the venv's interpreter
+closed, blocking *every* tool call. For a venv, point the command at the venv's interpreter
 explicitly (e.g. `.venv/bin/python` / `.venv\Scripts\python.exe`) instead of the bare probe.
 
 ```python
@@ -66,7 +66,7 @@ prompts). A non-clean verdict **denies**, with the reasons. See `examples/claude
 ### Two postures, two claims
 
 The policy above is a **deny-list**: refuse known-bad calls, defer the rest. It stops the
-accidental and common cases and its `deny` holds even in auto mode — but a literal matcher
+accidental and common cases and its `deny` holds even in auto mode, but a literal matcher
 can be obfuscated past, and `python script.py` runs code no string check ever reads. Never
 read a deny-list as "cannot be subverted."
 
@@ -79,14 +79,14 @@ run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
 ```
 
 Nothing runs unless affirmatively named: unlisted tools, shell metacharacters, and **bare
-interpreters** (`python script.py`) are refused — closing the write-a-script-then-run-it
+interpreters** (`python script.py`) are refused, closing the write-a-script-then-run-it
 bypass no deny-list can see (pinned in `tests/test_claude_code_allowlist.py`). This is the
 posture that earns *"the agent could not subvert it,"* scoped honestly to the tool channel
 routed through the hook; it says nothing about channels outside Claude Code's tool loop.
 The trade-off is maintenance: you add binaries, roots, and per-tool predicates
 (`safe_binaries=`, `writable_root=`, `allow={...}`) as the agent legitimately needs them,
 and it fails *toward* refusal in the meantime. A vetted call still defers to Claude Code's
-normal permission flow — allowlist mode, too, only ever adds refusals. See
+normal permission flow, allowlist mode, too, only ever adds refusals. See
 `examples/allowlist_gate.py` for the deny-list-vs-allowlist comparison, and
 `docs/COOKBOOK.md` recipe 11 for tuning.
 
@@ -183,7 +183,7 @@ print([r.gate_id for r in release.blocking])   # ['G5']
 ## 6. Audit every decision (tamper-evident)
 
 Pair the gate with an append-only, hash-chained log so every verdict is on the record and
-in-place edits or reordering of existing entries are detectable:
+an in-place edit or reordering of any entry with a surviving successor is detectable:
 
 ```python
 from recusal import compute_verdict, AuditLog, verify
@@ -192,12 +192,13 @@ audit = AuditLog(path="audit.jsonl")   # omit path for in-memory
 verdict = compute_verdict(findings)
 audit.append(verdict, action={"tool": tool.name, "input": tool.input}, actor=session_id)
 
-ok, problems = verify(audit.entries)   # (False, [...reasons]) if an entry was edited or reordered
+ok, problems = verify(audit.entries)   # (False, [...reasons]) if an entry with a later entry was edited
 ```
 
-Each entry carries the SHA-256 of the entry before it, so editing or reordering an existing
-record breaks the chain. Tail-truncation or a full re-hash by a write-access attacker needs
-an external anchor (`verify(..., expected_head=(count, last_hash))`), the chain is
+Each entry carries the SHA-256 of the entry before it, so editing or reordering a record
+that still has an untampered successor breaks the chain. Tail-truncation, a tail-suffix
+rewrite (in the limit just the last entry), or a forged append by a write-access attacker
+needs an external anchor (`verify(..., expected_head=(count, last_hash))`), the chain is
 tamper-evident, not tamper-proof. See `examples/audit_demo.py`.
 
 ## 7. Classify and route a failure

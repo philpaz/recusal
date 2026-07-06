@@ -50,6 +50,13 @@ def _as_severity(value: Union[Severity, str]) -> Severity:
 # this library exists to prevent.
 _FALSE_LIKE = frozenset({"false", "0", "no", "n", "off", "fail", "failed", "error"})
 
+# Strings that affirmatively mean *passed* for the ``status`` field. This is an
+# allowlist on purpose: a ``status`` we do not positively recognize as passing is
+# treated as a failure (fail closed), so a value like ``"failed"``/``"denied"``/
+# ``"0"`` - anything a producer might emit for a bad outcome - cannot slip through
+# as a pass the way a hardcoded fail-blocklist would let it.
+_PASS_LIKE = frozenset({"pass", "passed", "ok", "okay", "success", "succeeded", "green"})
+
 
 def _as_bool(value: Any) -> bool:
     """Interpret a loose ``passed`` value. A genuine ``bool``/``int`` is used directly; a
@@ -115,6 +122,10 @@ class Finding:
         A ``passed`` value is read for intent, not raw truthiness: a *stringified*
         ``"false"``/``"no"``/``"0"`` counts as a failure (a bare ``bool("false")`` is
         ``True``), so a failing check serialized loosely cannot slip through as a pass.
+        A ``status`` value is read the same way, against a pass *allowlist*: only an
+        affirmative token (``"pass"``/``"passed"``/``"ok"``/…) reads as passing, so a
+        ``status`` of ``"failed"``/``"denied"``/``"0"`` - or any token not recognized as
+        passing - fails closed rather than slipping through.
         """
         if isinstance(obj, Finding):
             return obj
@@ -123,7 +134,9 @@ class Finding:
             if "passed" in obj:
                 passed = _as_bool(obj["passed"])
             elif "status" in obj:
-                passed = str(obj["status"]).lower() not in {"fail", "error", "warn"}
+                # Fail closed on any status we do not positively recognize as passing
+                # (see _PASS_LIKE): "failed"/"false"/"denied"/… must not read as a pass.
+                passed = str(obj["status"]).strip().lower() in _PASS_LIKE
             elif strict:
                 raise ValueError(
                     "ambiguous evidence dict: no 'status' or 'passed' key. In strict mode "

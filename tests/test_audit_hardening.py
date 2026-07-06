@@ -4,7 +4,7 @@ external anchor) and the robustness fixes (corrupt-resume, non-serializable acti
 from datetime import datetime, timezone
 
 from recusal import compute_verdict
-from recusal.audit import AuditLog, load, verify
+from recusal.audit import AuditLog, _digest, load, verify
 
 FIXED = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -29,6 +29,27 @@ def test_trailing_truncation_needs_an_anchor_to_detect():
     ok, problems = verify(truncated, expected_head=head)
     assert not ok
     assert any("truncation" in p or "length mismatch" in p for p in problems)
+
+
+def test_editing_the_last_entry_needs_an_anchor_to_detect():
+    # The tightest case of the documented tail-suffix limit: an attacker edits ONLY the
+    # newest entry (the most recently recorded action) and recomputes its single hash.
+    # There is no successor whose prev_hash would break, so plain verify passes; the docs
+    # must not claim "any in-place edit is caught". The head anchor closes it.
+    log = _log()
+    log.append(_fail())
+    log.append(_fail())
+    good_head = (len(log.entries), log.last_hash)
+
+    entries = [dict(e) for e in log.entries]
+    last = entries[-1]
+    last["verdict"] = {"decision": "PASS", "message": "quietly flipped"}  # falsify the record
+    last["hash"] = _digest({k: v for k, v in last.items() if k != "hash"})  # recompute its own hash
+
+    assert verify(entries)[0] is True  # unanchored verify cannot see a last-entry rewrite
+    ok, problems = verify(entries, expected_head=good_head)
+    assert not ok
+    assert any("head mismatch" in p for p in problems)
 
 
 def test_full_rewrite_needs_an_anchor_to_detect():

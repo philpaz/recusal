@@ -8,7 +8,7 @@ body:
         Recusal is deliberately small. Before proposing, please skim the
         [CONSTITUTION](../blob/main/CONSTITUTION.md) and
         [CONTRIBUTING](../blob/main/CONTRIBUTING.md): new capability is almost always a
-        **new check** (a function returning `Finding`s) or a **thin adapter** — not a
+        **new check** (a function returning `Finding`s) or a **thin adapter**, not a
         change to the kernel, and never a model in the decision path.
   - type: textarea
     id: problem

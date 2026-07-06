@@ -12,7 +12,7 @@ dist/
 venv/
 env/
 
-# Secrets — never commit
+# Secrets, never commit
 .env
 .env.*
 *.key
@@ -27,12 +27,12 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local hook activation — the repo ships .claude/settings.json.example only;
+# Local hook activation, the repo ships .claude/settings.json.example only;
 # copying it to settings.json is a deliberate per-clone step, never committed
 .claude/settings.json
 .claude/settings.local.json
 
-# Local working docs — not part of the published project
+# Local working docs, not part of the published project
 linkedin.md
 NOTES.md
 RUNBOOK.local.md

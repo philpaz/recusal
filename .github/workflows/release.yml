@@ -1,6 +1,6 @@
 name: Release
 
-# Publish to PyPI via Trusted Publishing (OIDC) — no API token stored in the repo.
+# Publish to PyPI via Trusted Publishing (OIDC), no API token stored in the repo.
 # One-time setup on PyPI: create the `recusal` project's trusted publisher pointing at
 #   owner: philpaz · repo: recusal · workflow: release.yml · environment: pypi
 # Then publishing is automatic when you publish a GitHub Release (or push a v* tag).

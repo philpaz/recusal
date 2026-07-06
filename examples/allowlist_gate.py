@@ -23,7 +23,7 @@ This file is both a demo and a real policy:
 The trade-off is honest: an allowlist is stricter and needs maintenance (you add
 capabilities as the agent legitimately needs them), but it fails *toward* refusal instead
 of away from it. The policy ships as library API, ``recusal.claude_code.allowlist_policy``;
-this file wires it up and shows *why* it clears the deny-list ceiling — tune the lists to
+this file wires it up and shows *why* it clears the deny-list ceiling, tune the lists to
 your system.
 """
 
@@ -38,7 +38,7 @@ from recusal.claude_code import allowlist_policy, decide, run_pretooluse_hook  #
 WORKSPACE = os.path.abspath("./workspace")
 
 # Default-deny, straight from the library: Read/Grep/Glob defer; `Bash` needs a vetted
-# first binary (ls, cat, grep, diff, ... — read/inspect tools only; interpreters AND
+# first binary (ls, cat, grep, diff, ..., read/inspect tools only; interpreters AND
 # code-through-an-argument tools like pytest/mypy/rg are deliberately unlisted, so
 # `python script.py` and `pytest` are refused: each runs a program the gate never reads)
 # and no shell metacharacters; writes stay under WORKSPACE; every other tool is refused.

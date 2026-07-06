@@ -127,9 +127,27 @@ class GateAdjudicator:
         """Fold a gate's findings into a typed ``Verdict``. ``findings`` may be
         ``Finding`` objects or loose evidence dicts, ``compute_verdict`` coerces
         them. The same kernel, applied at a checkpoint. Strict: ambiguous evidence
-        (a dict with no status/passed) becomes a CRITICAL gate failure, not a pass."""
+        (a dict with no status/passed) becomes a CRITICAL gate failure, not a pass.
+        An *empty* findings set is likewise a CRITICAL failure, not a vacuous pass:
+        a gate that proved nothing has not been satisfied (matches ``release_ready``'s
+        'absence of evidence is not a pass')."""
+        materialized = list(findings)
+        if not materialized:
+            return GateResult(
+                gate_id,
+                compute_verdict(
+                    [
+                        Finding.fail(
+                            "evidence_error",
+                            severity="CRITICAL",
+                            message="no evidence supplied for this gate; a gate that proves "
+                            "nothing is not a pass",
+                        )
+                    ]
+                ),
+            )
         try:
-            verdict = compute_verdict(findings, strict=True)
+            verdict = compute_verdict(materialized, strict=True)
         except Exception as exc:  # noqa: BLE001
             verdict = compute_verdict(
                 [
