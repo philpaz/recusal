@@ -38,6 +38,7 @@ recusal = "recusal.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/philpaz/recusal"
+Author = "https://www.linkedin.com/in/philippaz/"
 Documentation = "https://github.com/philpaz/recusal/tree/main/docs"
 Repository = "https://github.com/philpaz/recusal"
 Issues = "https://github.com/philpaz/recusal/issues"

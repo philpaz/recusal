@@ -356,6 +356,13 @@ way (no model in the verdict path, no runtime dependencies, don't grow the kerne
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 first. Security reports go through [`SECURITY.md`](SECURITY.md), privately.
 
+## Contact
+
+Built by [Philip Paz](https://www.linkedin.com/in/philippaz/). Messages are open,
+especially from teams running agents in regulated environments, and doubly so if you
+wired the gate in and found where it leaks
+([tell me here](https://github.com/philpaz/recusal/discussions/1)).
+
 ## License
 
-Apache-2.0 © Philip Paz
+Apache-2.0 © [Philip Paz](https://www.linkedin.com/in/philippaz/)
