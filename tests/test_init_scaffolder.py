@@ -28,7 +28,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def _run_init(tmp_path, *argv):
     buf = io.StringIO()
-    rc = init(str(tmp_path), stdout=buf) if not argv else main(list(argv) + ["--dir", str(tmp_path)])
+    rc = (
+        init(str(tmp_path), stdout=buf) if not argv else main(list(argv) + ["--dir", str(tmp_path)])
+    )
     return rc, buf.getvalue()
 
 
@@ -188,8 +190,12 @@ def test_merges_into_existing_settings_preserving_content(tmp_path):
     existing = {
         "model": "opus",
         "hooks": {
-            "PostToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "echo done"}]}],
-            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo pre"}]}],
+            "PostToolUse": [
+                {"matcher": ".*", "hooks": [{"type": "command", "command": "echo done"}]}
+            ],
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo pre"}]}
+            ],
         },
     }
     with open(_settings_path(tmp_path), "w", encoding="utf-8") as f:
@@ -223,7 +229,9 @@ def test_refuses_unparseable_settings_and_leaves_bytes_untouched(tmp_path):
     assert pasted["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == LAUNCHER_COMMAND
 
 
-@pytest.mark.parametrize("body", ['["not", "an", "object"]', '{"hooks": []}', '{"hooks": {"PreToolUse": {}}}'])
+@pytest.mark.parametrize(
+    "body", ['["not", "an", "object"]', '{"hooks": []}', '{"hooks": {"PreToolUse": {}}}']
+)
 def test_refuses_unexpected_settings_shape(tmp_path, body):
     claude_dir = os.path.join(str(tmp_path), ".claude")
     os.makedirs(claude_dir)

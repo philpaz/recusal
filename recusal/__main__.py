@@ -37,8 +37,8 @@ from typing import List, Optional, Tuple
 #: interpreter refuses the tool call instead of waving it through. (On Windows, Claude
 #: Code runs hook commands under Git Bash.)
 LAUNCHER_COMMAND = (
-    "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info"
-    " >= (3, 9) else 1)' 2>/dev/null && { \"$p\""
+    'for p in python3 python py; do "$p" -c \'import sys; sys.exit(0 if sys.version_info'
+    ' >= (3, 9) else 1)\' 2>/dev/null && { "$p"'
     ' "$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"; rc=$?; [ "$rc" = 0 ] ||'
     " { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; };"
     " exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing"

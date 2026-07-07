@@ -65,7 +65,10 @@ def test_plugin_manifest_relies_on_the_autoloaded_hooks_file():
     # (verified live against `claude plugin install`, 2026-07-07)
     assert "hooks" not in manifest
     assert os.path.exists(os.path.join(PLUGIN_DIR, "hooks", "hooks.json"))
-    assert "fails closed" in manifest["description"].lower() or "FAILS CLOSED" in manifest["description"]
+    assert (
+        "fails closed" in manifest["description"].lower()
+        or "FAILS CLOSED" in manifest["description"]
+    )
 
 
 def test_marketplace_lists_the_plugin_by_relative_source():
