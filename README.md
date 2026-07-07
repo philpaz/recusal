@@ -16,6 +16,11 @@
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 ![runtime deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
 
+<p align="center">
+  <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then the offline demo refuses a write to the wrong customer and allows the corrected call" src="assets/demo-refusal.gif" width="880">
+</p>
+<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then the offline demo (<code>python examples/claude_refusal.py</code>), no API key.</sub></p>
+
 A judge **recuses** themselves from a case they can't impartially decide. The same
 principle governs autonomous agents: the thing that *generates* the work must never be
 the thing that *certifies* it. Recusal is that independent authority: collect evidence,
@@ -117,7 +122,34 @@ Deterministic and offline, same evidence, same verdict, including the **no**.
 ### Claude Code, drop-in `PreToolUse` hook
 
 Refuse destructive tool calls *before* Claude Code runs them, even in auto / bypass mode.
-Register a hook in `.claude/settings.json`:
+
+**One command:**
+
+```bash
+python -m recusal init          # or: recusal init
+```
+
+scaffolds `.claude/hooks/recusal_gate.py` (the deny-list starter, edit it, it's yours) and
+registers the fail-closed launcher in `.claude/settings.json`, merging with (never
+clobbering) an existing file; re-running is a no-op, and an existing gate file is never
+overwritten. `--posture allowlist` scaffolds the default-deny variant instead. Claude Code
+asks you to confirm the new hook on the next session, a permission-changing hook is a
+deliberate step.
+
+**Or as a plugin** (one gate across every project, no per-project setup):
+
+```bash
+claude plugin marketplace add philpaz/recusal
+claude plugin install recusal-gate@recusal
+pip install recusal        # the plugin fails CLOSED without it
+```
+
+The plugin ships the same deny-list shim; if the `recusal` package is missing it refuses
+every tool call rather than silently disabling itself. For a policy tailored to one
+project, prefer `python -m recusal init` and edit the scaffolded gate.
+
+Prefer to see exactly what it writes? The manual path is the same two pieces. Register a
+hook in `.claude/settings.json`:
 
 ```json
 { "hooks": { "PreToolUse": [

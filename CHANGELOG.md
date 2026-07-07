@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-07-07
+
+### Added
+- **`python -m recusal init`** (also installed as the `recusal` console script): one-command
+  scaffolding of the Claude Code gate. Writes `.claude/hooks/recusal_gate.py` (a thin shim
+  over the shipped `deny_list_policy()`; `--posture allowlist` emits the default-deny
+  variant with `--writable-root`) and registers the fail-closed interpreter-probing
+  launcher in `.claude/settings.json`. Fail-safe by construction, pinned by tests: an
+  existing gate file is never overwritten, an existing `settings.json` is merged (never
+  clobbered) and left byte-for-byte untouched if it does not parse, and re-running is a
+  no-op. A drift-lock test asserts the emitted launcher stays byte-identical to the one
+  this repository registers for itself in `.claude/settings.json.example`.
+- **Claude Code plugin (`recusal-gate`)**: the repo is now a plugin marketplace
+  (`.claude-plugin/marketplace.json` + `claude-plugin/`), so the gate installs user-wide with
+  `claude plugin marketplace add philpaz/recusal && claude plugin install recusal-gate@recusal`.
+  The plugin wires the same deny-list shim through the same fail-closed launcher (drift-locked
+  to the canonical command by `tests/test_claude_plugin.py`); if the `recusal` package is not
+  pip-installed it refuses every tool call rather than silently disabling itself. Verified
+  live: a marketplace-installed plugin refused `rm -rf` in a session running under
+  `--dangerously-skip-permissions`.
+- **README demo GIF** rendered from two verbatim transcripts: a live Claude Code session in
+  which the dogfooded hook refuses `rm -rf` under `--dangerously-skip-permissions`, and the
+  offline `examples/claude_refusal.py` run.
+
 ## [0.1.3] - 2026-07-06
 
 ### Added

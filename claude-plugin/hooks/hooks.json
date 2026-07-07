@@ -1,0 +1,16 @@
+{
+  "_comment": "The same fail-closed launcher the recusal repo registers for itself (.claude/settings.json.example), pointed at the plugin's copy of the gate shim. It probes for a python3/python/py that is >=3.9 (macOS/Linux/Windows) and coerces ANY nonzero exit -- missing interpreter, wrong version, `recusal` not pip-installed -- into exit 2, the one BLOCKING hook exit code, so the gate fails CLOSED rather than open. A drift-lock test (tests/test_claude_plugin.py) keeps this command in lockstep with the canonical launcher.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing closed' >&2; exit 2"
+          }
+        ]
+      }
+    ]
+  }
+}

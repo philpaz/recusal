@@ -1,0 +1,17 @@
+{
+  "name": "recusal",
+  "owner": {
+    "name": "Philip Paz"
+  },
+  "metadata": {
+    "description": "Deterministic governance for Claude agents: an independent verifier that refuses a tool call before it runs.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "recusal-gate",
+      "source": "./claude-plugin",
+      "description": "PreToolUse gate with no model in the decision path: refuses destructive tool calls before they run, even under bypassPermissions. Requires pip install recusal; fails closed without it."
+    }
+  ]
+}
