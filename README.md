@@ -303,6 +303,35 @@ ok, problems = verify(audit.entries)   # False if an entry with a later entry wa
 
 Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
 
+## Gate your CI
+
+CI is, by construction, not the session that did the work — which makes it the natural
+place for a recusal verdict. The same kernel runs as a command line with blocking exit
+codes (`PASS` 0, `RETRY` 1, `FAIL` 2; any operational error exits 2, failing **closed**):
+
+```bash
+recusal verdict findings.json --json   # adjudicate any tool's findings; nonzero blocks the job
+recusal audit verify audit.jsonl --expect-head "42:<hash>"   # a missing log is NOT an intact log
+recusal doctor                         # "the gate silently isn't installed" fails CI, not prod
+```
+
+Or as a GitHub Action ([`action.yml`](action.yml), dogfooded by this repo's own CI,
+including the negative case — a tampered audit log must make the gate refuse):
+
+```yaml
+- uses: actions/setup-python@v5
+  with:
+    python-version: "3.12"
+- uses: philpaz/recusal@v0.3.0
+  with:
+    findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
+    audit-log: reports/audit.jsonl
+    doctor-dir: "."
+```
+
+Given nothing to adjudicate, the action exits 2 rather than pass vacuously — an evidence
+set that proves nothing certifies nothing.
+
 ## Classify and route a failure
 
 A refusal or failure is only useful if you know what to do next. The classifier says

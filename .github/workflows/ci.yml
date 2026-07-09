@@ -29,3 +29,50 @@ jobs:
         run: mypy
       - name: Test
         run: pytest -q
+
+  action-gate:
+    name: Dogfood the GitHub Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install this checkout (the action must gate with THIS code, not PyPI)
+        run: pip install -e .
+      - name: Scaffold the gate (settings.json is deliberately not committed)
+        run: python -m recusal init --dir .
+      - name: Produce evidence to adjudicate
+        run: |
+          python - <<'PY'
+          import json
+          from recusal import AuditLog, Finding, compute_verdict
+
+          log = AuditLog("/tmp/audit.jsonl")
+          for i in range(3):
+              verdict = compute_verdict([Finding.ok("ci_probe", severity="CRITICAL")])
+              log.append(verdict, action={"i": i})
+          with open("/tmp/findings.json", "w") as fh:
+              json.dump([{"check": "suite", "severity": "CRITICAL", "status": "pass"}], fh)
+          with open("/tmp/audit.jsonl") as fh:
+              text = fh.read()
+          with open("/tmp/tampered.jsonl", "w") as fh:
+              fh.write(text.replace('"i": 1', '"i": 9'))
+          PY
+      - name: Gate (doctor + audit verify + verdict must all pass)
+        uses: ./
+        with:
+          doctor-dir: "."
+          audit-log: /tmp/audit.jsonl
+          findings: /tmp/findings.json
+      - name: Gate must refuse a tampered log
+        id: tampered
+        continue-on-error: true
+        uses: ./
+        with:
+          audit-log: /tmp/tampered.jsonl
+      - name: Assert the refusal happened
+        if: steps.tampered.outcome != 'failure'
+        run: |
+          echo "::error::a tampered audit log passed the gate"
+          exit 1

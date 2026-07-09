@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-07-08
+
+### Added
+- **CI adjudication commands.** The `recusal` CLI grew three subcommands that expose the
+  kernel to CI with blocking exit codes (`PASS` → 0, `RETRY` → 1, `FAIL` → 2; every
+  operational error — unreadable file, invalid JSON, malformed anchor — exits 2,
+  indistinguishable from FAIL on purpose: a gate that cannot adjudicate must refuse, not
+  wave the job through). All three take `--json` for a stable machine-readable payload.
+  - **`recusal verdict findings.json`**: adjudicate any tool's findings file (a JSON array,
+    or an object with a `findings` array; `-` reads stdin). Strict by default — a finding
+    that omits `status`/`passed` is rejected rather than read as a silent pass
+    (`--lenient` opts out) — and an *empty* findings set fails closed: an evidence set
+    that proves nothing certifies nothing (the `GateAdjudicator` rule, at the CLI seam).
+  - **`recusal audit verify log.jsonl [--expect-head COUNT:HASH]`**: verify a hash-chained
+    audit log. A **missing log fails closed** (a missing log is not an intact log), and a
+    nonblank line that does not parse counts as a *break*: `recusal.audit.load` skips such
+    a line so a reader survives a half-written tail, but a verifier that ignored it could
+    bless a log whose most recent entries are unreadable.
+  - **`recusal doctor [--dir]`**: health-check a scaffolded gate — gate script present and
+    compiling, hook actually registered in `settings.json`, launcher coercing failures to
+    the blocking exit code — so "the gate silently isn't installed" is caught by CI
+    instead of discovered during an incident. The doctor is adjudicated by the same kernel
+    it checks: its observations are `Finding`s folded through `compute_verdict`.
+- **GitHub Action** (`action.yml`): the same three commands as a composite action
+  (`uses: philpaz/recusal@v0.3.0`), so a refusal blocks a merge, not just a tool call.
+  Inputs flow through `env`, never interpolated into the shell body (no injection seam);
+  given nothing to adjudicate it exits 2 rather than pass vacuously. Dogfooded by this
+  repository's own CI, including the negative case: a tampered audit log must make the
+  gate refuse (`tests/test_cli.py` drift-locks all of these properties).
+- `recusal --version`.
+
 ## [0.2.0] - 2026-07-07
 
 ### Added

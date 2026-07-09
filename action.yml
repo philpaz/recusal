@@ -1,0 +1,116 @@
+# Recusal as a GitHub Action: the same deterministic kernel, gating merges instead of
+# tool calls. CI is, by construction, not the session that did the work - which makes it
+# the natural place for a recusal verdict: the builder cannot grade its own work, and a
+# nonzero exit here blocks the job.
+#
+# Requires a Python >= 3.9 on PATH (add an actions/setup-python step before this one).
+# Each input maps to one CLI command; give at least one, or the action refuses to pass
+# vacuously (a gate that ran nothing must not read as green).
+#
+#   - uses: actions/setup-python@v5
+#     with:
+#       python-version: "3.12"
+#   - uses: philpaz/recusal@v0.3.0
+#     with:
+#       findings: reports/findings.json   # python -m recusal verdict  (RETRY=1, FAIL=2)
+#       audit-log: reports/audit.jsonl    # python -m recusal audit verify
+#       expect-head: "42:abc123..."       # optional external anchor for the audit head
+#       doctor-dir: "."                   # python -m recusal doctor
+
+name: "Recusal Gate"
+description: "Deterministic PASS/RETRY/FAIL adjudication in CI: adjudicate evidence findings, verify a hash-chained audit log, health-check a scaffolded gate. Builders cannot grade their own work."
+author: "Philip Paz"
+branding:
+  icon: "shield"
+  color: "gray-dark"
+
+inputs:
+  findings:
+    description: "Path to a findings JSON file to adjudicate (array of findings, or an object with a 'findings' array). PASS exits 0, RETRY 1, FAIL 2."
+    required: false
+    default: ""
+  lenient:
+    description: "Verdict only: set 'true' to accept findings that omit status/passed instead of failing closed."
+    required: false
+    default: "false"
+  audit-log:
+    description: "Path to a hash-chained JSONL audit log to verify (exit 0 intact, 1 broken, 2 missing/error)."
+    required: false
+    default: ""
+  expect-head:
+    description: "External anchor for the audit head, formatted COUNT:HASH; catches truncation, tail rewrites, and forged appends."
+    required: false
+    default: ""
+  doctor-dir:
+    description: "Project directory whose scaffolded Claude Code gate should be health-checked (exit 0 healthy, 1 degraded, 2 not installed)."
+    required: false
+    default: ""
+  version:
+    description: "recusal version to install from PyPI (default: latest). Skipped entirely if recusal is already importable, so a job that installed a checkout keeps it."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install recusal
+      shell: bash
+      env:
+        RECUSAL_VERSION: ${{ inputs.version }}
+      run: |
+        if python -c "import recusal" 2>/dev/null; then
+          echo "recusal already installed: $(python -m recusal --version)"
+        elif [ -n "$RECUSAL_VERSION" ]; then
+          python -m pip install --quiet "recusal==$RECUSAL_VERSION"
+        else
+          python -m pip install --quiet recusal
+        fi
+
+    - name: Adjudicate
+      shell: bash
+      # Inputs flow through env, never interpolated into the script body, so a
+      # crafted path cannot inject shell into this step.
+      env:
+        FINDINGS: ${{ inputs.findings }}
+        LENIENT: ${{ inputs.lenient }}
+        AUDIT_LOG: ${{ inputs['audit-log'] }}
+        EXPECT_HEAD: ${{ inputs['expect-head'] }}
+        DOCTOR_DIR: ${{ inputs['doctor-dir'] }}
+      run: |
+        set -u
+        ran=0
+        rc=0
+        bump() { ran=1; [ "$1" -gt "$rc" ] && rc=$1 || true; }
+
+        if [ -n "$DOCTOR_DIR" ]; then
+          echo "::group::recusal doctor"
+          python -m recusal doctor --dir "$DOCTOR_DIR"; bump $?
+          echo "::endgroup::"
+        fi
+        if [ -n "$AUDIT_LOG" ]; then
+          echo "::group::recusal audit verify"
+          if [ -n "$EXPECT_HEAD" ]; then
+            python -m recusal audit verify "$AUDIT_LOG" --expect-head "$EXPECT_HEAD"; bump $?
+          else
+            python -m recusal audit verify "$AUDIT_LOG"; bump $?
+          fi
+          echo "::endgroup::"
+        fi
+        if [ -n "$FINDINGS" ]; then
+          echo "::group::recusal verdict"
+          if [ "$LENIENT" = "true" ]; then
+            python -m recusal verdict "$FINDINGS" --lenient; bump $?
+          else
+            python -m recusal verdict "$FINDINGS"; bump $?
+          fi
+          echo "::endgroup::"
+        fi
+
+        if [ "$ran" = 0 ]; then
+          echo "::error::recusal gate ran nothing (no findings / audit-log / doctor-dir input) - refusing to pass vacuously"
+          exit 2
+        fi
+        if [ "$rc" != 0 ]; then
+          echo "::error::recusal gate refused (exit $rc)"
+        fi
+        exit "$rc"
