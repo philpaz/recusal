@@ -7,11 +7,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Full Python sweep on Linux; a cross-platform smoke on macOS and Windows at one
+        # version (the interpreter-probe launcher and the stdio fetcher have OS-specific
+        # paths worth exercising on all three, without paying 3x for every Python).
+        os: [ubuntu-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
     steps:
       # Actions are tag-pinned (reference-architecture convention). For production
       # supply-chain hardening, pin each `uses:` to an immutable commit SHA.
