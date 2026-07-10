@@ -297,7 +297,7 @@ same `PreToolUse` gate and refuses any `mcp__server__tool` call that was never p
 pin, no MCP), composing with the argument-level rules above. A minimal zero-dependency
 stdio client collects `tools/list`; **remote/HTTP servers** are pinned from a JSON dump you
 produce with any MCP client (`--from`, copy-paste recipe:
-[`docs/COOKBOOK.md`](docs/COOKBOOK.md) §13) — recusal owns the deterministic adjudication,
+[`docs/COOKBOOK.md`](docs/COOKBOOK.md) §14; local/`.mcp.json` servers pin directly, §13) — recusal owns the deterministic adjudication,
 not the transport, so it inherits neither the HTTP client's dependencies nor its SSRF
 surface. Collection is never decision, the kernel adjudicates what was observed.
 

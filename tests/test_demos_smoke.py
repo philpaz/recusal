@@ -82,6 +82,19 @@ def test_mcp_governance_demo_governs_mcp_calls():
     assert "CALL-TIME" in out  # the demo states its boundary honestly
 
 
+def test_mcp_full_stack_demo_covers_all_three_boundaries():
+    out = _run_demo("examples/mcp_full_stack.py")
+    for line in out.splitlines():
+        if any(
+            k in line for k in ("out of scope", "NOT pinned", "unpinned server", "manifest missing")
+        ):
+            assert "DENY" in line, line  # discovery + invocation refusals
+        if any(k in line for k in ("no rule -> defer", "in scope -> defer", "not an MCP call")):
+            assert "DEFER" in line, line
+    assert "QUARANTINE (do not trust)" in out  # the response boundary
+    assert "trust as context" in out  # a clean result is allowed through
+
+
 def test_mcp_rugpull_demo_pins_then_refuses_drift():
     out = _run_demo("examples/mcp_manifest_rugpull.py")
     assert "same catalog re-observed" in out and "PASS" in out

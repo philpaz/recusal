@@ -433,15 +433,59 @@ Runnable version with path confinement and allowlist mode:
 > token passthrough, session hijacking) belong to the MCP spec's own Security Best
 > Practices layer, complementary to this gate.
 
-## 13. Pin a remote (HTTP) MCP server
+## 13. Pin your MCP servers and enforce the pin
 
-`recusal mcp pin --stdio ...` fetches a **local stdio** server itself — the zero-dependency
-client it ships speaks stdio only. A **remote/HTTP** server (streamable-HTTP or SSE) is
-governed exactly the same way, but you obtain its `tools/list` with a real MCP client and
-hand recusal the dump via `--from`. That is deliberate: recusal owns the *adjudication*
-(deterministic, no deps), not the *transport* (an HTTP+OAuth client is heavy, and its own
-SSRF/redirect surface is precisely what the MCP spec's Security Best Practices warn about —
-best left to the maintained SDKs).
+Recipe 12 refuses *unexpected* servers and verbs at call time. This is the discovery-boundary
+companion: **pin the exact tool catalog your approved servers declare, then refuse any call to
+a tool that was never pinned** — catching the rug pull (a description quietly rewritten after
+approval) and the tool-that-appeared, deterministically.
+
+**1. Pin once** — the reviewed, human step. recusal fetches local stdio servers for you:
+
+```bash
+recusal mcp pin --claude-config .mcp.json --out mcp-manifest.json   # every stdio server in .mcp.json
+# or a single server:
+recusal mcp pin --stdio github "npx -y @modelcontextprotocol/server-github" --out mcp-manifest.json
+```
+
+The manifest stores **hashes only** (a poisoned description is never embedded) and is
+byte-deterministic. `pin` refuses to write when its screen flags injection phrasing in a
+declaration, until you pass `--force` to record that a human reviewed it. Commit
+`mcp-manifest.json` — it is approved truth.
+
+**2. Enforce at call time** — wire `manifest_policy` into a PreToolUse hook
+(`.claude/hooks/mcp_gate.py`), the same way as any gate in the Wiring section above:
+
+```python
+from recusal.claude_code import run_pretooluse_hook
+from recusal.mcp import manifest_policy
+
+# Refuses any mcp__server__tool call not in the pinned manifest ("no pin, no MCP"), and
+# fails CLOSED if the manifest is missing or unreadable. Non-MCP tools defer untouched.
+run_pretooluse_hook(manifest_policy("mcp-manifest.json"))
+```
+
+**3. Verify in CI / at session start** — catch drift before it reaches an agent:
+
+```bash
+recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json
+# exit 0 = the observed catalog matches the pin; exit 2 = drift, an unpinned tool/server,
+# a pinned server gone unverifiable, or a failed observation. Wire it as a blocking CI step.
+```
+
+A **remote/HTTP** server is pinned the same way, except you supply its `tools/list` yourself
+(recipe 14). To also apply argument-level rules on top of the pin, pass an inner policy —
+recipe 15.
+
+## 14. Pin a remote (HTTP) MCP server
+
+Recipe 13's `--stdio` / `--claude-config` fetch a **local stdio** server for you — the
+zero-dependency client recusal ships speaks stdio only. A **remote/HTTP** server
+(streamable-HTTP or SSE) is governed exactly the same way, but you obtain its `tools/list`
+with a real MCP client and hand recusal the dump via `--from`. That is deliberate: recusal
+owns the *adjudication* (deterministic, no deps), not the *transport* (an HTTP+OAuth client is
+heavy, and its own SSRF/redirect surface is precisely what the MCP spec's Security Best
+Practices warn about — best left to the maintained SDKs).
 
 Dump `tools/list` into recusal's `{server_name: [declaration, ...]}` shape with the
 official [`mcp`](https://pypi.org/project/mcp/) SDK (or `fastmcp`, or any client):
@@ -483,10 +527,42 @@ recusal mcp verify --from example.tools.json --manifest mcp-manifest.json   # or
 > - **Close in time.** `verify` proves the catalog *when it runs*. Run it at session start
 >   (and in CI), not once a week, so the window a rug-pull can hide in stays small.
 
-Local stdio servers skip all of this — `recusal mcp pin --stdio "npx -y @scope/server"` and
-`--claude-config .mcp.json` fetch them for you. Real end-to-end runs against live HTTP
-servers (a FastMCP gateway and Salesforce Hosted MCP) are pinned as
+Local stdio servers skip the dump step (recipe 13 fetches them for you). Real end-to-end
+runs against live HTTP servers (a FastMCP gateway and Salesforce Hosted MCP) are pinned as
 [`tests/test_mcp_live.py`](../tests/test_mcp_live.py).
+
+## 15. The full MCP governance stack
+
+The three MCP boundaries compose into one setup. `manifest_policy` takes an inner `policy=`,
+so the **pin** (discovery) and your **call-time rules** (invocation, recipe 12) run in a
+single hook: an unpinned tool refuses first, then your argument-level rules run on what
+survives. The **response** boundary (recipe 6) is a separate screen on what a tool *returned*,
+before you feed it back as context.
+
+```python
+from recusal.claude_code import run_pretooluse_hook
+from recusal.mcp import manifest_policy
+from recusal import Finding
+
+def call_time_rules(tool_name, tool_input):        # recipe 12's argument-level rules
+    if tool_name == "mcp__github__merge_pull_request" and tool_input.get("repo") not in {"me/repo"}:
+        return [Finding.fail("mcp_repository_scope", severity="CRITICAL",
+                             message=f"repo {tool_input.get('repo')!r} is out of scope")]
+    return []
+
+# discovery + invocation in one hook: unpinned tools refuse first, then your rules run.
+policy = manifest_policy("mcp-manifest.json", policy=call_time_rules)
+run_pretooluse_hook(policy)
+```
+
+| Boundary | What it checks | Recipe |
+|---|---|---|
+| Discovery (`tools/list`) | is this tool in the pinned catalog? | 13 (local) / 14 (HTTP) |
+| Invocation (the call) | are the name + arguments allowed? | 12 |
+| Response (the result) | is the returned content safe to act on? | 6 |
+
+Runnable end-to-end (offline): [`examples/mcp_full_stack.py`](../examples/mcp_full_stack.py),
+pinned by [`tests/test_mcp_cookbook.py`](../tests/test_mcp_cookbook.py).
 
 ---
 
