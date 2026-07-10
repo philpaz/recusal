@@ -8,7 +8,10 @@ Subcommands:
   adjudicates them, and a nonzero exit blocks the merge;
 - ``audit verify``: check a hash-chained audit log's integrity (``recusal.audit``);
 - ``doctor``: health-check a scaffolded gate, so "the gate silently isn't installed"
-  is caught by CI instead of discovered during an incident.
+  is caught by CI instead of discovered during an incident;
+- ``mcp pin`` / ``mcp verify``: pin an MCP server tool catalog to a deterministic
+  manifest, then refuse drift (``recusal.mcp``), the discovery-boundary counterpart
+  of the call-time gate.
 
 The CI commands share one discipline: an operational error (unreadable file, invalid
 JSON, malformed anchor) exits 2, indistinguishable from FAIL on purpose. A gate that
@@ -42,13 +45,26 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional, TextIO, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, TextIO, Tuple
 
 from . import __version__
 from .audit import GENESIS
 from .audit import load as _load_audit_entries
 from .audit import verify as _verify_audit_chain
 from .evidence import Decision, Finding, Verdict, compute_verdict
+from .mcp import (
+    build_manifest,
+    diff_manifest,
+    load_manifest,
+    manifest_to_text,
+    screen_tool_declarations,
+)
+from .mcp_fetch import (
+    McpFetchError,
+    fetch_tools_stdio,
+    servers_from_claude_config,
+    split_command,
+)
 
 #: The fail-closed launcher, verbatim the command this repository registers for itself
 #: (see ``.claude/settings.json.example``). Claude Code treats a hook command that cannot
@@ -559,6 +575,321 @@ def doctor_command(
     return EXIT_BY_DECISION[verdict.decision]
 
 
+# --- MCP discovery governance: pin the tool catalog, refuse drift -------------------------
+
+
+class Observation(NamedTuple):
+    """What a collection pass gathered, named so the parts don't ride on tuple order.
+
+    - ``catalog``: ``{server: [tool declarations]}`` actually observed;
+    - ``notes``: human-readable prose about the collection (printed, never adjudicated);
+    - ``unfetchable``: servers declared in the config but unreachable by this fetcher (a
+      URL/HTTP transport), handed to ``diff_manifest`` which adjudicates a *pinned*
+      unfetchable server into a CRITICAL.
+    """
+
+    catalog: Dict[str, List[dict]]
+    notes: List[str]
+    unfetchable: List[str]
+
+
+def _atomic_write(path: str, text: str) -> None:
+    """Write ``text`` to ``path`` atomically: a crash mid-write never leaves a truncated
+    manifest (a half-written pin is approved truth corrupted). Same-directory temp so the
+    ``os.replace`` is atomic on one filesystem."""
+    directory = os.path.dirname(os.path.abspath(path))
+    tmp = os.path.join(directory, f".{os.path.basename(path)}.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _collect_catalog(
+    *,
+    from_file: Optional[str] = None,
+    server: Optional[str] = None,
+    stdio: Optional[List[List[str]]] = None,
+    claude_config: Optional[str] = None,
+    timeout: float = 30.0,
+) -> Observation:
+    """Assemble an :class:`Observation` from the CLI's sources.
+
+    Raises ``ValueError`` / ``OSError`` / :class:`McpFetchError` on anything that prevents a
+    complete observation, the caller fails closed. A server named by two sources is an
+    error, not a silent override.
+
+    ``Observation.unfetchable`` names servers that ARE declared in the config but this
+    fetcher cannot reach (a URL/HTTP transport). That is load-bearing for ``verify``: a
+    pinned server silently swapped to a URL transport would otherwise read as merely
+    "absent" (a WARNING) and pass; ``diff_manifest`` turns a *pinned* unfetchable server
+    into a refusal.
+    """
+    catalog: Dict[str, List[dict]] = {}
+    notes: List[str] = []
+    unfetchable: List[str] = []
+
+    def _add(name: str, tools: List[dict]) -> None:
+        if name in catalog:
+            raise ValueError(f"server {name!r} is named by more than one source")
+        catalog[name] = tools
+
+    if from_file:
+        with open(from_file, encoding="utf-8") as fh:
+            data = json.load(fh)
+        # The MODE is chosen by --server, not by sniffing a "tools" key: with --server the
+        # file is a single server's raw tools/list result; without it, a {server: tools}
+        # mapping. This removes the ambiguity where a mapping with a server literally named
+        # "tools" was misread as a raw result and its siblings silently dropped.
+        if server:
+            if isinstance(data, dict) and isinstance(data.get("tools"), list):
+                tools = data["tools"]  # a raw tools/list result object
+            elif isinstance(data, list):
+                tools = data  # a bare array of tool declarations
+            else:
+                raise ValueError(
+                    f"{from_file} with --server must be a tools/list result (an object with "
+                    "a 'tools' array) or a bare array of tool declarations"
+                )
+            _add(server, tools)
+        elif isinstance(data, dict) and data:
+            # Every key is a server name (a server literally named "tools" is fine here,
+            # its siblings are never dropped). A bare tools/list result reaches this branch
+            # only if --server was omitted; the per-value list check gives a clear error.
+            for name, tools in data.items():
+                if not isinstance(tools, list):
+                    raise ValueError(
+                        f"{from_file}: server {name!r} must map to a tool list "
+                        "(is this a single server's tools/list result? then pass --server NAME)"
+                    )
+                _add(str(name), tools)
+        else:
+            raise ValueError(
+                f"{from_file} must be a mapping of server -> tools, or (with --server) a "
+                "single server's tools/list result"
+            )
+
+    for name, command_text in stdio or []:
+        _add(name, fetch_tools_stdio(split_command(command_text), timeout=timeout))
+
+    if claude_config:
+        servers, skipped = servers_from_claude_config(claude_config)
+        for name in skipped:
+            unfetchable.append(name)
+            notes.append(
+                f"server {name!r} in {claude_config} is not a stdio server; this fetcher "
+                "cannot reach it - pin it from a JSON dump via --from"
+            )
+        for name, spec in servers.items():
+            _add(name, fetch_tools_stdio(spec["command"], env=spec["env"], timeout=timeout))
+
+    if not catalog and not unfetchable:
+        raise ValueError("no catalog source given (--from, --stdio, or --claude-config)")
+    return Observation(catalog, notes, unfetchable)
+
+
+def mcp_pin_command(
+    out_path: str,
+    *,
+    from_file: Optional[str] = None,
+    server: Optional[str] = None,
+    stdio: Optional[List[List[str]]] = None,
+    claude_config: Optional[str] = None,
+    timeout: float = 30.0,
+    update: bool = False,
+    force: bool = False,
+    as_json: bool = False,
+    stdout: Optional[TextIO] = None,
+) -> int:
+    """Pin the observed catalog to a deterministic manifest. Exit 0 pinned, 1 review, 2 refused.
+
+    The pin is the deliberate, human step, so it fails toward refusal three ways: an
+    incomplete observation refuses (exit 2), a non-clean description screen refuses to
+    write until ``--force`` records that a human reviewed it (exit 1, RETRY semantics),
+    and an existing manifest with different content refuses without ``--update`` (exit 2),
+    a pin is approved truth, never silently replaced. Re-pinning identical content is a
+    no-op (exit 0).
+    """
+    out = stdout if stdout is not None else sys.stdout
+    try:
+        obs = _collect_catalog(
+            from_file=from_file,
+            server=server,
+            stdio=stdio,
+            claude_config=claude_config,
+            timeout=timeout,
+        )
+    except (OSError, ValueError, McpFetchError) as exc:
+        # notes accrued before the failure (e.g. URL-skipped servers) are lost on this
+        # path; fold the most useful one into the refusal so the operator is not misled.
+        return _fail_closed(f"could not observe the catalog: {exc}", as_json, out)
+    catalog = obs.catalog
+    if not as_json:  # notes are prose; under --json they would corrupt the payload
+        for note in obs.notes:
+            out.write(f"note: {note}\n")
+
+    try:
+        text = manifest_to_text(build_manifest(catalog))
+    except (ValueError, UnicodeError) as exc:
+        return _fail_closed(f"catalog cannot be pinned: {exc}", as_json, out)
+
+    screen = screen_tool_declarations(catalog)
+    screen_verdict = compute_verdict(screen)
+    if not screen_verdict.passed and not force:
+        if as_json:
+            payload = _verdict_payload(screen_verdict)
+            payload["pinned"] = False
+            payload["screen"] = [_finding_brief(f) for f in screen]
+            out.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        else:
+            _emit_verdict(screen_verdict, as_json, out)
+            out.write(
+                "not pinned: review the flagged descriptions; re-run with --force to record "
+                "that a human reviewed and accepted them\n"
+            )
+        return EXIT_BY_DECISION[screen_verdict.decision]
+    if not screen_verdict.passed and not as_json:
+        for f in screen_verdict.failures:
+            out.write(f"reviewed (--force): {f.check}: {f.message}\n")
+
+    n_servers = len(catalog)
+    n_tools = sum(len(t) for t in catalog.values())
+    if os.path.exists(out_path):
+        with open(out_path, encoding="utf-8") as fh:
+            existing = fh.read()
+        if existing == text:
+            if as_json:
+                payload = {
+                    "pinned": True,
+                    "changed": False,
+                    "path": out_path,
+                    "servers": n_servers,
+                    "tools": n_tools,
+                    "exit_code": 0,
+                }
+                out.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            else:
+                out.write(f"already pinned, no change: {out_path}\n")
+            return 0
+        if not update:
+            return _fail_closed(
+                f"{out_path} exists with different content - a pin is approved truth; "
+                "run `recusal mcp verify` to see the drift, then re-pin deliberately "
+                "with --update",
+                as_json,
+                out,
+            )
+    _atomic_write(out_path, text)
+    if as_json:
+        payload = {
+            "pinned": True,
+            "changed": True,
+            "path": out_path,
+            "servers": n_servers,
+            "tools": n_tools,
+            "screen": [_finding_brief(f) for f in screen],
+            "exit_code": 0,
+        }
+        out.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    else:
+        out.write(f"pinned {n_tools} tool(s) across {n_servers} server(s) -> {out_path}\n")
+    return 0
+
+
+def mcp_verify_command(
+    manifest_path: str,
+    *,
+    from_file: Optional[str] = None,
+    server: Optional[str] = None,
+    stdio: Optional[List[List[str]]] = None,
+    claude_config: Optional[str] = None,
+    timeout: float = 30.0,
+    as_json: bool = False,
+    stdout: Optional[TextIO] = None,
+) -> int:
+    """Verify the observed catalog against the pin. Exit: 0 match, 2 drift/unpinned/error.
+
+    A missing manifest fails closed (a missing pin is not a clean pin), and an
+    observation that cannot be completed fails closed (a failed fetch must not read as
+    "no drift"). Drift findings are CRITICAL, so drift exits 2, the blocking code.
+
+    A pinned server that is present in the config but *unfetchable* (silently swapped to a
+    URL transport this fetcher cannot reach) is a CRITICAL refusal, not a passing WARNING:
+    a pinned capability that can no longer be integrity-checked must not verify clean.
+    """
+    out = stdout if stdout is not None else sys.stdout
+    try:
+        pinned = load_manifest(manifest_path)
+    except (OSError, ValueError) as exc:
+        return _fail_closed(
+            f"no usable manifest at {manifest_path!r} ({exc}) - run `recusal mcp pin`",
+            as_json,
+            out,
+        )
+    try:
+        obs = _collect_catalog(
+            from_file=from_file,
+            server=server,
+            stdio=stdio,
+            claude_config=claude_config,
+            timeout=timeout,
+        )
+    except (OSError, ValueError, McpFetchError) as exc:
+        return _fail_closed(f"could not observe the catalog: {exc}", as_json, out)
+
+    try:
+        # the kernel owns all adjudication: it turns a pinned-but-unfetchable server (F1)
+        # into a CRITICAL, the CLI only collects the `unverifiable` set and prints.
+        findings = diff_manifest(pinned, obs.catalog, unverifiable=obs.unfetchable)
+    except (ValueError, UnicodeError) as exc:
+        # a malformed observation (e.g. a lone-surrogate string that cannot be canonicalized,
+        # or a corrupt pinned manifest) fails closed, never an uncaught traceback / exit 1
+        return _fail_closed(f"could not adjudicate the catalog: {exc}", as_json, out)
+
+    if not as_json:
+        for note in obs.notes:
+            out.write(f"note: {note}\n")
+        # affirmative evidence is the point; a clean pass says WHAT matched, not just PASS
+        for f in findings:
+            if f.passed:
+                out.write(f"  [ok] {f.check}: {f.message}\n")
+    return _emit_verdict(compute_verdict(findings), as_json, out)
+
+
+def _add_mcp_source_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--from",
+        dest="from_file",
+        metavar="FILE",
+        help="JSON catalog: a mapping of server name -> tool list, or a raw tools/list "
+        "result (then pass --server NAME); the escape hatch for HTTP servers",
+    )
+    p.add_argument(
+        "--server",
+        help="server name for a --from file that is a single raw tools/list result",
+    )
+    p.add_argument(
+        "--stdio",
+        nargs=2,
+        action="append",
+        metavar=("NAME", "COMMAND"),
+        help="observe a stdio MCP server live: --stdio github 'npx -y @modelcontextprotocol/"
+        "server-github' (repeatable)",
+    )
+    p.add_argument(
+        "--claude-config",
+        metavar="PATH",
+        help="observe every stdio server in a Claude Code .mcp.json",
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="seconds to wait for a stdio server's initialize/tools/list (default 30)",
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m recusal",
@@ -623,6 +954,52 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--json", action="store_true", help="emit the result as JSON instead of text"
     )
 
+    p_mcp = sub.add_parser(
+        "mcp",
+        help="pin an MCP server tool catalog and refuse drift (discovery governance)",
+    )
+    mcp_sub = p_mcp.add_subparsers(dest="mcp_command")
+    p_pin = mcp_sub.add_parser(
+        "pin",
+        help="pin the observed catalog to a deterministic manifest "
+        "(exit 0 pinned/no-op, 1 descriptions need review, 2 refused)",
+    )
+    _add_mcp_source_args(p_pin)
+    p_pin.add_argument(
+        "--out",
+        default="mcp-manifest.json",
+        help="manifest path to write (default: mcp-manifest.json)",
+    )
+    p_pin.add_argument(
+        "--update",
+        action="store_true",
+        help="allow replacing an existing manifest whose content differs (a pin is "
+        "approved truth; replacing it is a deliberate step)",
+    )
+    p_pin.add_argument(
+        "--force",
+        action="store_true",
+        help="pin even when the description screen flags injection phrasing, recording "
+        "that a human reviewed and accepted it",
+    )
+    p_pin.add_argument(
+        "--json", action="store_true", help="emit the result as JSON instead of text"
+    )
+    p_mcp_verify = mcp_sub.add_parser(
+        "verify",
+        help="verify the observed catalog against the pinned manifest "
+        "(exit 0 match, 2 drift/unpinned/error)",
+    )
+    _add_mcp_source_args(p_mcp_verify)
+    p_mcp_verify.add_argument(
+        "--manifest",
+        default="mcp-manifest.json",
+        help="pinned manifest to verify against (default: mcp-manifest.json)",
+    )
+    p_mcp_verify.add_argument(
+        "--json", action="store_true", help="emit the result as JSON instead of text"
+    )
+
     p_doctor = sub.add_parser(
         "doctor",
         help="health-check a scaffolded gate (exit 0 healthy, 1 degraded, 2 not installed)",
@@ -646,6 +1023,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.audit_command == "verify":
             return audit_verify_command(args.log, expect_head=args.expect_head, as_json=args.json)
         p_audit.print_help()
+        return 2
+    if args.command == "mcp":
+        if args.mcp_command == "pin":
+            return mcp_pin_command(
+                args.out,
+                from_file=args.from_file,
+                server=args.server,
+                stdio=args.stdio,
+                claude_config=args.claude_config,
+                timeout=args.timeout,
+                update=args.update,
+                force=args.force,
+                as_json=args.json,
+            )
+        if args.mcp_command == "verify":
+            return mcp_verify_command(
+                args.manifest,
+                from_file=args.from_file,
+                server=args.server,
+                stdio=args.stdio,
+                claude_config=args.claude_config,
+                timeout=args.timeout,
+                as_json=args.json,
+            )
+        p_mcp.print_help()
         return 2
     if args.command == "doctor":
         return doctor_command(args.dir, as_json=args.json)

@@ -4,6 +4,93 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-10
+
+### Added
+- **MCP discovery governance (`recusal.mcp`): pin the tool catalog, refuse the rug pull.**
+  The model chooses tools by reading their declared descriptions, so the discovery
+  boundary (`tools/list`) is where a poisoned description or a post-approval definition
+  change steers the agent before any call exists for a call-time policy to see. This
+  release closes that boundary the way the library closes every boundary: deterministic
+  evidence through the same kernel, with the human where the judgment is.
+  - **The kernel**: `build_manifest` pins a reviewed catalog to a deterministic manifest
+    (SHA-256 fingerprints over canonical JSON, byte-exact, no unicode normalization, so a
+    homoglyph swap IS a change; hashes only, a poisoned description is never embedded;
+    no timestamp inside, *when* belongs to the audit log). `diff_manifest` emits Findings:
+    an unpinned server or tool and a changed declaration (the changed fields are named;
+    a changed *description* is called out as the rug-pull vector) are CRITICAL; a removed
+    tool or absent server is a recorded WARNING; an empty or ambiguous observation fails
+    closed. `screen_tool_declarations` is a pin-time review aid (deterministic injection
+    markers + a size cap over the *whole* declaration — title, annotations, schema property
+    names/descriptions, enum values — ERROR → RETRY → a human looks), deliberately not a
+    malice detector: whether a declaration is malicious is semantic judgment, made by the
+    human at pin time; everything after the pin detects *change*, not *intent*.
+  - **CLI**: `recusal mcp pin` / `recusal mcp verify`, same exit-code discipline as the
+    other CI commands (0 clean, 1 needs-review, 2 refused/drift/operational error). The
+    pin fails toward refusal three ways: an incomplete observation refuses, a flagged
+    description screen refuses to write until `--force` records human review, and
+    replacing a differing manifest refuses without `--update`. Sources: a live stdio
+    server (`--stdio NAME COMMAND`), every stdio server in a Claude Code `.mcp.json`
+    (`--claude-config`, URL-based servers are surfaced as unfetchable, never silently
+    dropped), or a JSON dump (`--from`, the escape hatch for HTTP servers).
+  - **Call-time enforcement**: `manifest_policy("mcp-manifest.json")` drops into the same
+    `PreToolUse` gate and refuses any `mcp__server__tool` call that was never pinned
+    ("no pin, no MCP"); a missing or corrupt manifest fails CLOSED for MCP calls; wraps
+    an inner policy so argument-level rules compose on top of the pin.
+  - **The fetcher** (`recusal.mcp_fetch`, a separate module — the one place in the package
+    that spawns a process, kept apart so the decision surface stays pure/stdlib): a minimal
+    zero-dependency stdio MCP client (`fetch_tools_stdio`, newline-delimited JSON-RPC,
+    `initialize` → `notifications/initialized` → paginated `tools/list`). Collection is
+    never decision; every irregularity (timeout, early exit, JSON-RPC error, unparseable
+    line, invalid UTF-8) raises so a failed observation can never read as an empty,
+    clean-looking catalog.
+  - **Proof**: `examples/mcp_manifest_rugpull.py` (offline demo: pin → rug pull → FAIL →
+    unpinned call refused) and 73 new tests across `tests/test_mcp_manifest.py`,
+    `test_mcp_policy_bridge.py`, `test_mcp_fetch.py` (a real fake-server subprocess:
+    pagination, notifications, stderr noise, timeout, early exit, invalid UTF-8), and
+    `test_mcp_cli.py`.
+  - **What this does and does not do (honest scope).** It governs *discovery-time* and
+    *call-time*: `verify` proves the catalog at the moment it runs (wire it into CI and
+    session start), and `manifest_policy` enforces approved-tools-only on each call by
+    name. It is **not** a live tap on every message: a server that serves a clean catalog
+    to `verify` and a poisoned one to the live session (a client- or time-discriminating
+    server) is a residual this layer names, not one it closes. The description screen is a
+    **deny-list** review aid with a deny-list's ceiling (known injection phrasing across
+    the whole declaration, not just `description`), not a malice detector. MCP's flat
+    `mcp__server__tool` runtime naming means a pinned tool whose name contains `__` shares
+    a runtime string with another split; pinning one authorizes either (inherent, not
+    removable at this layer). Transport/authorization threats (confused deputy, token
+    passthrough, session hijacking) remain the MCP spec's own Security Best Practices layer.
+  - **Pre-release hardening** (two independent audits, correctness + adversarial): `verify`
+    fails closed (not an uncaught traceback) on an uncanonicalizable string; the manifest
+    validator rejects a non-object `fields` entry before `diff` dereferences it; a pinned
+    server silently swapped to a URL transport is a CRITICAL refusal (not a WARNING that
+    passes); `--json` output is always valid JSON on every branch (notes and prose no
+    longer interleave with the payload); a server observed with zero tools is a shrunk set
+    (WARNING), consistent with `build_manifest`, not conflated with a failed fetch; a
+    `--from` mapping whose server is literally named `tools` no longer drops its siblings
+    (mode is chosen by `--server`); invalid UTF-8 from a server surfaces a truthful error
+    instead of "server exited"; the manifest write is atomic; the fetch caps tool count;
+    and a killed child is reaped.
+- **MCP tool governance at the call boundary, documented and pinned.** MCP server tools reach Claude Code's
+  `PreToolUse` hook as ordinary tools named `mcp__<server>__<tool>`, so the existing
+  `policy(tool_name, tool_input)` seam and the `.*` matcher already govern MCP calls with
+  no MCP-specific adapter; this makes that capability explicit instead of implied.
+  - README section **"MCP tools, the same gate"**, including the three-boundary model
+    (discovery / invocation / response) with today's coverage stated honestly: invocation
+    is this gate, response is the injection-quarantine recipe, discovery (tool-description
+    poisoning, manifest/schema drift) is named as a boundary Recusal does not collect
+    evidence for yet.
+  - `examples/mcp_governance.py`: runnable demo and real hook (`--hook`) with
+    approved-server pinning, destructive-verb refusal, repo scope, write-path confinement,
+    and allowlist mode (an MCP tool is refused unless affirmatively named).
+  - `tests/test_mcp_governance.py`: pins the claims, deny/defer at the `decide` seam, a
+    real `PreToolUse` event carrying an `mcp__` name end to end, allowlist default-deny
+    for MCP, and fail-closed on a buggy policy adjudicating an MCP event.
+  - Cookbook recipe 12 (**Govern MCP tool calls**) and two verified sources in
+    `docs/REFERENCES.md` (Claude Code hooks reference; MCP spec *Security Best Practices*,
+    noting its authorization/transport scope is complementary, not overlapping).
+
 ## [0.3.0] - 2026-07-08
 
 ### Added

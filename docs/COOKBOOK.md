@@ -380,6 +380,114 @@ The trade-off: an allowlist is stricter and needs maintenance (you add capabilit
 agent legitimately needs them), but it fails *toward* refusal instead of away from it. For
 high-stakes agents prefer this to a deny-list, or compose both (recipe 10).
 
+## 12. Govern MCP tool calls
+
+MCP server tools arrive at the hook as ordinary tools named `mcp__<server>__<tool>`
+(`mcp__github__create_issue`), so every recipe above already applies to them. This one adds
+the MCP-shaped rules: pin the servers you expect (a tool from a server you never installed
+should refuse, not run), refuse destructive verbs, scope the rest.
+
+```python
+import os
+from recusal import Finding
+
+APPROVED_SERVERS = {"github", "salesforce", "filesystem"}
+APPROVED_REPOS = {"philpaz/recusal"}
+DESTRUCTIVE_VERBS = {"delete", "drop", "truncate", "remove", "destroy"}  # tune to your servers
+
+def _mcp(tool_name):
+    parts = tool_name.split("__", 2)   # "mcp__github__create_issue" -> (github, create_issue)
+    return (parts[1], parts[2]) if len(parts) == 3 and parts[0] == "mcp" else None
+
+def policy(tool_name, tool_input):
+    named = _mcp(tool_name)
+    if named is None:
+        return []                      # not an MCP call -> your other recipes' job
+    server, action = named
+    if server not in APPROVED_SERVERS:
+        return [Finding.fail("mcp_unapproved_server", severity="CRITICAL",
+                             message=f"MCP server '{server}' is not on the approved list")]
+    if action.split("_", 1)[0] in DESTRUCTIVE_VERBS:
+        return [Finding.fail("mcp_destructive_action", severity="CRITICAL",
+                             message=f"destructive MCP action `{tool_name}` is not approved")]
+    if tool_name == "mcp__github__merge_pull_request":
+        repo = tool_input.get("repo")
+        if repo not in APPROVED_REPOS:
+            return [Finding.fail("mcp_repository_scope", severity="CRITICAL",
+                                 message=f"repository {repo!r} is outside the approved scope")]
+    return []
+```
+
+Runnable version with path confinement and allowlist mode:
+[`examples/mcp_governance.py`](../examples/mcp_governance.py); pinned:
+[`tests/test_mcp_governance.py`](../tests/test_mcp_governance.py). In allowlist mode
+(recipe 11) MCP tools are refused unless affirmatively named with an `allow=` predicate.
+
+> **Call-time only.** This sees the proposed name and arguments, not what the server
+> declared at discovery (identity, tool descriptions, schemas, `tools/list` changes), and a
+> poisoned tool *description* steers the model before any call is proposed. Screen what an
+> MCP tool *returns* with recipe 6; govern the tool catalog itself with `recusal mcp pin` /
+> `recusal mcp verify` and enforce the pin at call time by wrapping this recipe in
+> `recusal.mcp.manifest_policy("mcp-manifest.json", policy=policy)` — unpinned MCP calls
+> refuse before your rules even run. Transport/authorization threats (confused deputy,
+> token passthrough, session hijacking) belong to the MCP spec's own Security Best
+> Practices layer, complementary to this gate.
+
+## 13. Pin a remote (HTTP) MCP server
+
+`recusal mcp pin --stdio ...` fetches a **local stdio** server itself — the zero-dependency
+client it ships speaks stdio only. A **remote/HTTP** server (streamable-HTTP or SSE) is
+governed exactly the same way, but you obtain its `tools/list` with a real MCP client and
+hand recusal the dump via `--from`. That is deliberate: recusal owns the *adjudication*
+(deterministic, no deps), not the *transport* (an HTTP+OAuth client is heavy, and its own
+SSRF/redirect surface is precisely what the MCP spec's Security Best Practices warn about —
+best left to the maintained SDKs).
+
+Dump `tools/list` into recusal's `{server_name: [declaration, ...]}` shape with the
+official [`mcp`](https://pypi.org/project/mcp/) SDK (or `fastmcp`, or any client):
+
+```python
+# pip install mcp    (NOT a recusal dependency — this is your collection step)
+import anyio, json
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async def dump(url, server_name, out_path, headers=None):
+    async with streamablehttp_client(url, headers=headers) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools = (await session.list_tools()).tools
+    catalog = {server_name: [t.model_dump(exclude_none=True, mode="json") for t in tools]}
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(catalog, fh, indent=2, sort_keys=True)
+
+anyio.run(dump, "https://example.com/mcp", "example", "example.tools.json",
+          {"Authorization": "Bearer <token>"})
+```
+
+Then pin and, in CI or at session start, verify:
+
+```bash
+recusal mcp pin    --from example.tools.json --out mcp-manifest.json   # review once
+recusal mcp verify --from example.tools.json --manifest mcp-manifest.json   # or refuse
+```
+
+> **Three cautions that make the dump trustworthy** (recusal fingerprints exactly the bytes
+> you feed it, so these are on you, not the tool):
+> - **Same dumper for pin and verify.** The fingerprint is over the *serialized* declaration;
+>   if pin uses one client's `model_dump` and verify uses another's, harmless serialization
+>   differences read as drift. Pick one dumper and reuse it.
+> - **Same endpoint the agent session uses.** Point the dumper at the exact URL (and auth)
+>   your agent connects to. A server that serves one catalog to your dumper and another to
+>   the live session defeats the check — see the "honest boundary" note in the README.
+> - **Close in time.** `verify` proves the catalog *when it runs*. Run it at session start
+>   (and in CI), not once a week, so the window a rug-pull can hide in stays small.
+
+Local stdio servers skip all of this — `recusal mcp pin --stdio "npx -y @scope/server"` and
+`--claude-config .mcp.json` fetch them for you. Real end-to-end runs against live HTTP
+servers (a FastMCP gateway and Salesforce Hosted MCP) are pinned as
+[`tests/test_mcp_live.py`](../tests/test_mcp_live.py).
+
 ---
 
 **These are starting points, not turnkey security.** Read each one, tune the lists and

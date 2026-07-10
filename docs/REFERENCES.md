@@ -91,6 +91,30 @@ See [`docs/WHY.md`](WHY.md) §2 and the OWASP-mapped [`examples/gallery.py`](../
     average. This is one specific injection-via-tool-metadata vector, a sibling of tool-output
     injection; both are the tool channel.
 
+- **MCP tools reach Claude Code's hook as ordinary tools.** Grounds the README's
+  "MCP tools, the same gate" section and [`examples/mcp_governance.py`](../examples/mcp_governance.py):
+  MCP server tools "appear as regular tools in tool events (`PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied`)" under the naming pattern
+  `mcp__<server>__<tool>`, e.g. `mcp__github__search_repositories`; per-server matchers like
+  `mcp__memory__.*` are also documented.
+  - Claude Code hooks reference
+    ([code.claude.com/docs/en/hooks](https://code.claude.com/docs/en/hooks)).
+
+- **The MCP specification's own security guidance covers a different, complementary layer.**
+  The spec's *Security Best Practices* page enumerates authorization/transport attacks,
+  confused deputy, token passthrough, SSRF, session hijacking, local-server compromise,
+  OAuth URL validation, and scope minimization (a "progressive, least-privilege scope
+  model"), the layer the README's MCP section defers to for transport threats.
+  - Model Context Protocol, *Security Best Practices* (2025-06-18 spec revision)
+    ([modelcontextprotocol.io](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices)).
+  - **Note:** that page does not enumerate tool-*description* poisoning; the research
+    covering that vector is MCPTox (above), and `recusal.mcp` addresses it as deterministic
+    drift detection (pin the reviewed catalog, refuse post-approval change), never as malice
+    detection. Recusal's gates and the spec's authorization layer are complementary; neither
+    replaces the other, and Recusal claims the discovery, invocation, and response
+    boundaries it implements, never blanket "MCP security coverage" (transport and
+    authorization remain the spec's layer).
+
 - **A concrete, documented case of injection driving an exfiltration tool call.**
   - MITRE ATLAS technique AML.T0086, *Exfiltration via AI Agent Tool Invocation* (Exfiltration
     tactic AML.TA0010), added via the MITRE and Zenity Labs collaboration (Oct 2025). Case

@@ -53,6 +53,51 @@ def test_injection_quarantine_demo_quarantines_poisoned_output():
     assert "2 of 4 observations quarantined" in out
 
 
+def test_mcp_governance_demo_governs_mcp_calls():
+    out = _run_demo("examples/mcp_governance.py")
+    # The claim the demo exists to prove: MCP calls hit the same gate as native tools.
+    assert "mcp__<server>__<tool>" in out
+    body = out.split("Allowlist mode", 1)[0]
+    for line in body.splitlines():
+        if any(
+            k in line
+            for k in ("Salesforce delete", "foreign repo", "unknown server", "outside workspace")
+        ):
+            assert "DENY" in line, (
+                line
+            )  # destructive / out-of-scope / unapproved-server MCP calls refuse
+        if any(
+            k in line for k in ("create an issue", "approved repo", "inside workspace", "not MCP")
+        ):
+            assert "DEFER" in line, (
+                line
+            )  # clean calls defer to Claude Code's own flow, never auto-allow
+    tail = out.split("Allowlist mode", 1)[1]
+    assert "unlisted MCP tool" in tail  # default-deny already covers MCP
+    for line in tail.splitlines():
+        if "unlisted MCP tool" in line or "predicate refuses" in line:
+            assert "DENY" in line, line
+        if "predicate passes" in line:
+            assert "DEFER" in line, line
+    assert "CALL-TIME" in out  # the demo states its boundary honestly
+
+
+def test_mcp_rugpull_demo_pins_then_refuses_drift():
+    out = _run_demo("examples/mcp_manifest_rugpull.py")
+    assert "same catalog re-observed" in out and "PASS" in out
+    for line in out.splitlines():
+        if "rewritten after approval" in line or "unreviewed tool appeared" in line:
+            assert line.rstrip().endswith("FAIL"), line
+    calltime = out.split("enforced at call time", 1)[1]
+    for line in calltime.splitlines():
+        if "create_issue" in line and "missing" not in line:
+            assert "DEFER" in line, line  # pinned -> defers to Claude Code's own flow
+        if "delete_repository" in line or "manifest missing" in line:
+            assert "DENY" in line, line  # unpinned or unpinnable -> refused
+    assert "rug-pull" in out  # the refusal names the vector
+    assert "no pin, no MCP" in out  # a missing manifest fails closed at call time
+
+
 def test_allowlist_gate_demo_clears_the_denylist_ceiling():
     out = _run_demo("examples/allowlist_gate.py")
     # The teaching moment: a de-obfuscating deny-list still DEFERS the runtime-constructed

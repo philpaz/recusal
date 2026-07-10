@@ -1,0 +1,132 @@
+{
+  "salesforce-hosted-mcp": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "returnDirect": false
+      },
+      "description": "Find member person accounts by name fragment. Use when a person is named and no member is resolved yet. Returns up to 6 candidates as JSON.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "properties": {
+                "name": {
+                  "description": "Member name or fragment, 2-80 chars",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "member_search"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "returnDirect": false
+      },
+      "description": "Fetch identity fields and financial-account rollups (count, total balance) for ONE already-resolved member person account by Id. Not a search tool.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "properties": {
+                "memberId": {
+                  "description": "Salesforce Account Id (15/18 chars)",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "memberId"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "member_summary"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "returnDirect": false
+      },
+      "description": "List open service cases for ONE already-resolved member account, newest first. Not a search tool.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "properties": {
+                "memberId": {
+                  "description": "Salesforce Account Id (15/18 chars)",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "memberId"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "member_open_cases"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "returnDirect": false
+      },
+      "description": "List financial accounts (deposits, loans, cards, lines) primarily owned by ONE already-resolved member person account, largest balance first, up to 20. Not a search tool. Never returns account numbers.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "properties": {
+                "memberId": {
+                  "description": "Salesforce Account Id (15/18 chars)",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "memberId"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "member_financial_accounts"
+    }
+  ]
+}
