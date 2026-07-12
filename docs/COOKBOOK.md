@@ -532,12 +532,40 @@ anyio.run(dump, "https://example.com/mcp", "example", "example.tools.json",
           {"Authorization": "Bearer <token>"})
 ```
 
-Then pin and, in CI or at session start, verify:
+Then pin and, in CI or at session start, verify. **Pin the config alongside the dump**:
+the dump supplies the declarations, but the `.mcp.json` entry supplies the *identity* -
+transport, URL template, header value templates, `headersHelper`, and OAuth policy - and
+since 0.5.2 (manifest v4) all of it is pinned and compared, so a same-name credential
+swap, a changed helper command, or a widened scope set is drift:
+
+```json
+{
+  "mcpServers": {
+    "banking": {
+      "type": "http",
+      "url": "${BANK_MCP_URL}",
+      "headers": { "Authorization": "Bearer ${BANK_MCP_TOKEN}" },
+      "oauth": { "scopes": "accounts:read transactions:read" }
+    }
+  }
+}
+```
 
 ```bash
-recusal mcp pin    --from example.tools.json --out mcp-manifest.json   # review once
-recusal mcp verify --from example.tools.json --manifest mcp-manifest.json   # or refuse
+# pin: config supplies identity, dump supplies declarations (no launch, no approval flag)
+recusal mcp pin    --claude-config .mcp.json --from banking.tools.json --out mcp-manifest.json
+# verify: same pair, or refuse - a changed Authorization template (${READ_ONLY_TOKEN} ->
+# ${ADMIN_TOKEN}), an added headersHelper, or widened oauth.scopes exits 2 naming the field
+recusal mcp verify --claude-config .mcp.json --from banking.tools.json --manifest mcp-manifest.json
 ```
+
+Reference secrets as `${VAR}`: the pin records the *reference*, never the resolved value,
+and the pin-time screen warns (`mcp_header_literal`, `mcp_template_default`,
+`mcp_arg_secret`) when a literal or a `${VAR:-default}` default would land a credential in
+the manifest. For short-lived tokens or SSO, use Claude's native `headersHelper` and let
+recusal pin the helper *command template*; recusal never executes the helper and never
+records what it emits. A dump-only pin (no `--claude-config`) still works and records
+`transport: external` - catalog attested, endpoint identity not.
 
 > **Three cautions that make the dump trustworthy** (recusal fingerprints exactly the bytes
 > you feed it, so these are on you, not the tool):
@@ -586,6 +614,40 @@ run_pretooluse_hook(policy)
 
 Runnable end-to-end (offline): [`examples/mcp_full_stack.py`](../examples/mcp_full_stack.py),
 pinned by [`tests/test_mcp_cookbook.py`](../tests/test_mcp_cookbook.py).
+
+## 16. Every decision on the record, with the control that made it
+
+One argument turns the hook into an audited control: every adjudication (defer, allow,
+deny, malformed-event and policy-error denials included) becomes a hash-chained entry.
+Since 0.5.2 each entry also carries **control identity**, because a verdict is replayable
+only when the adjudication rules are identifiable: same evidence is insufficient if the
+policy changed.
+
+```python
+from recusal import AuditLog
+from recusal.claude_code import run_pretooluse_hook
+from recusal.mcp import manifest_policy
+
+policy = manifest_policy("mcp-manifest.json")   # or any policy from this cookbook
+
+run_pretooluse_hook(
+    policy,
+    # tail resume: the hook is a fresh process per call; recover the chain head from
+    # the final record instead of re-reading a grown log every call
+    audit=AuditLog("audit.jsonl", resume="tail"),
+    # YOUR policy's identity, on every entry (recusal_version is added automatically,
+    # and a manifest_policy contributes the manifest digest it enforced)
+    control={"policy_id": "bank-mcp-write-policy", "policy_version": "3"},
+)
+```
+
+What lands in each entry: the tool, the decision and reasons, a SHA-256 fingerprint of
+the proposed `tool_input` (contents never embedded - but finding *messages* are plaintext
+record content, keep secrets out of them), `prompt_id` for transcript linkage, and
+`control` = `{recusal_version, policy_id, policy_version, manifest_sha256}`. Verify the
+file (`recusal audit verify audit.jsonl --expect-head "N:<hash>"`) with the head anchored
+somewhere the agent cannot write. Appends are lock-serialized, so parallel tool calls
+extend one chain.
 
 ---
 

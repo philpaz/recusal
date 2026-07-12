@@ -37,8 +37,11 @@ On Windows, Claude Code runs shell-form hooks under Git Bash when it is installe
 with a non-blocking exit code - the gate silently disables. `recusal init` registers a
 PowerShell-native launcher (explicit `"shell": "powershell"`) on Windows instead; use
 `--launcher both` for a settings.json shared across operating systems, and `recusal
-doctor` validates the registered launcher against the host. Verify your install
-end-to-end before trusting it:
+doctor` validates the registered launcher against the host. An EXISTING install with the
+old POSIX-only launcher migrates with `recusal init --repair-launcher`, which replaces
+exactly the canonical launcher and touches nothing else (plain `init` sees the existing
+gate and deliberately changes nothing). Verify your install end-to-end before trusting
+it:
 
 ```bash
 echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python .claude/hooks/my_gate.py
