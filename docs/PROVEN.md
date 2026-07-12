@@ -102,6 +102,29 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.7, 2026-07-12)
+
+For v0.5.7 (commit `a7fd431`):
+
+- **Workflow evidence is public**: CI run [29210780582](https://github.com/philpaz/recusal/actions/runs/29210780582)
+  (all 10 jobs green) and release run [29210860451](https://github.com/philpaz/recusal/actions/runs/29210860451)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **Acknowledging removal of every pinned server refuses precisely** (verbatim):
+
+```text
+FAILED mcp_full_decommission_unsupported [CRITICAL]: every pinned server is acknowledged as removed and nothing was observed; an empty observation certifies nothing, and the manifest keeps authorizing all pinned runtime names regardless ...
+```
+
+- **An unhashable sequence member raises the documented exception** (verbatim):
+
+```text
+ValueError: observation unverifiable must be unique nonempty server names
+```
+
+The same properties are pinned as deterministic tests in
+[`tests/test_mcp_observation_decommission.py`](../tests/test_mcp_observation_decommission.py).
+
 ## Release proofs on the record (v0.5.6, 2026-07-12)
 
 For v0.5.6 (commit `c5dd3d5`):
