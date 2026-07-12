@@ -4,6 +4,47 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-07-12
+
+The MCP execution-identity release: the pin now covers WHAT PROCESS is asked to declare
+the catalog, not only the declarations it returns, closing the highest-priority trust
+gap every external review named.
+
+### Added
+- **Manifest version 2: launch specifications are pinned and compared BEFORE launch.**
+  Each server pinned from `--stdio`/`--claude-config` records its launch identity - the
+  UNEXPANDED command template, args, cwd, and environment variable *names* (never
+  values, and never hashes of values: a low-entropy secret's hash is an oracle) - plus a
+  `source_fingerprint` over the canonical identity. `recusal mcp verify` compares every
+  configured launch specification against the pin before starting any process: a
+  changed command, changed args, or a server that was never pinned is refused **without
+  executing** the configured command, and one drifted server stops its siblings from
+  launching too. Proven by an adversarial test: the attacker swaps the approved command
+  for one that writes a marker file when executed; verify exits 2 naming the drifted
+  fields and the marker file does not exist. Dump-supplied (`--from`) servers are
+  pinned as `transport: "external"` - recusal never launches them, and that is
+  recorded rather than implied. A version-1 manifest is refused with a re-pin
+  instruction: it certifies the weaker guarantee and must not read as the stronger one.
+- **`--approve-server-launch`: the first pin is an explicit trust event.** Pinning from
+  `--stdio`/`--claude-config` executes the configured commands (there is no other way
+  to ask a process for its catalog), so the pin now refuses without this flag, before
+  anything runs. After the pin, verification never launches an unapproved
+  specification, so the approval is a one-time event per launch spec.
+- **Claude-compatible `.mcp.json` resolution.** `${VAR}` and `${VAR:-default}` expand in
+  `command`, `args`, and `env` values with Claude Code's documented semantics; a
+  referenced variable that is unset with no default fails CLOSED (a partially-expanded
+  command would observe a different server than the live session); `CLAUDE_PROJECT_DIR`
+  is injected into the spawned server's environment exactly as Claude Code injects it;
+  and non-string args/env values are rejected, never silently `str()`-ed. The pinned
+  template stays unexpanded; expansion happens at launch, after the identity check.
+
+### Changed
+- **Minimal environment is the default for `mcp pin`/`mcp verify`.** A server being
+  pinned is by definition not yet trusted, so the full-shell-environment behavior is
+  now the explicit, named opt-out (`--inherit-env`); `--minimal-env` remains accepted
+  as the (now default) compatibility flag. The config's own `env` (expanded) and
+  `CLAUDE_PROJECT_DIR` always ride along.
+
 ## [0.4.2] - 2026-07-12
 
 The audit-integration release plus a hardening pass driven by a third external review,

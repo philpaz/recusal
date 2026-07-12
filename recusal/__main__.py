@@ -56,6 +56,7 @@ from .evidence import Decision, Finding, Verdict, compute_verdict
 from .mcp import (
     build_manifest,
     diff_manifest,
+    diff_source,
     load_manifest,
     manifest_to_text,
     screen_tool_declarations,
@@ -722,12 +723,16 @@ class Observation(NamedTuple):
     - ``notes``: human-readable prose about the collection (printed, never adjudicated);
     - ``unfetchable``: servers declared in the config but unreachable by this fetcher (a
       URL/HTTP transport), handed to ``diff_manifest`` which adjudicates a *pinned*
-      unfetchable server into a CRITICAL.
+      unfetchable server into a CRITICAL;
+    - ``sources``: each observed server's UNEXPANDED launch template
+      (``recusal.mcp.normalize_source`` shape; ``transport: "external"`` for dumps),
+      what a pin records and a verify compares BEFORE launching anything.
     """
 
     catalog: Dict[str, List[dict]]
     notes: List[str]
     unfetchable: List[str]
+    sources: Dict[str, Dict[str, Any]]
 
 
 def _atomic_write(path: str, text: str) -> None:
@@ -750,13 +755,21 @@ def _collect_catalog(
     stdio: Optional[List[List[str]]] = None,
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
-    minimal_env: bool = False,
+    minimal_env: bool = True,
+    pinned: Optional[Dict[str, Any]] = None,
 ) -> Observation:
     """Assemble an :class:`Observation` from the CLI's sources.
 
     Raises ``ValueError`` / ``OSError`` / :class:`McpFetchError` on anything that prevents a
     complete observation, the caller fails closed. A server named by two sources is an
     error, not a silent override.
+
+    **Pre-launch enforcement**: when ``pinned`` (a loaded manifest) is given, every
+    stdio server's launch specification is compared against its pin BEFORE the
+    configured command is executed - a changed or never-pinned launch spec raises,
+    refusing WITHOUT starting the replacement process. A post-execution catalog
+    mismatch proves drift only after the substituted command already ran; this is the
+    boundary that proves it first.
 
     ``Observation.unfetchable`` names servers that ARE declared in the config but this
     fetcher cannot reach (a URL/HTTP transport). That is load-bearing for ``verify``: a
@@ -767,11 +780,22 @@ def _collect_catalog(
     catalog: Dict[str, List[dict]] = {}
     notes: List[str] = []
     unfetchable: List[str] = []
+    sources: Dict[str, Dict[str, Any]] = {}
 
     def _add(name: str, tools: List[dict]) -> None:
         if name in catalog:
             raise ValueError(f"server {name!r} is named by more than one source")
         catalog[name] = tools
+
+    def _gate_launch(name: str, source: Dict[str, Any]) -> None:
+        """Refuse a launch whose specification is not the approved one - BEFORE it runs."""
+        if pinned is None:
+            return
+        entry = pinned.get("servers", {}).get(name, {})
+        findings = diff_source(name, entry if isinstance(entry, dict) else {}, source)
+        failed = [f for f in findings if not f.passed]
+        if failed:
+            raise ValueError(failed[0].message)
 
     if from_file:
         with open(from_file, encoding="utf-8") as fh:
@@ -791,6 +815,7 @@ def _collect_catalog(
                     "a 'tools' array) or a bare array of tool declarations"
                 )
             _add(server, tools)
+            sources[server] = {"transport": "external"}
         elif isinstance(data, dict) and data:
             # Every key is a server name (a server literally named "tools" is fine here,
             # its siblings are never dropped). A bare tools/list result reaches this branch
@@ -802,6 +827,7 @@ def _collect_catalog(
                         "(is this a single server's tools/list result? then pass --server NAME)"
                     )
                 _add(str(name), tools)
+                sources[str(name)] = {"transport": "external"}
         else:
             raise ValueError(
                 f"{from_file} must be a mapping of server -> tools, or (with --server) a "
@@ -809,12 +835,19 @@ def _collect_catalog(
             )
 
     for name, command_text in stdio or []:
-        _add(
-            name,
-            fetch_tools_stdio(
-                split_command(command_text), timeout=timeout, minimal_env=minimal_env
-            ),
-        )
+        argv = split_command(command_text)
+        if not argv:
+            raise ValueError(f"--stdio {name}: empty command")
+        source = {
+            "transport": "stdio",
+            "command": argv[0],
+            "args": argv[1:],
+            "cwd": None,
+            "env_keys": [],
+        }
+        _gate_launch(name, source)
+        _add(name, fetch_tools_stdio(argv, timeout=timeout, minimal_env=minimal_env))
+        sources[name] = source
 
     if claude_config:
         servers, skipped = servers_from_claude_config(claude_config)
@@ -824,17 +857,27 @@ def _collect_catalog(
                 f"server {name!r} in {claude_config} is not a stdio server; this fetcher "
                 "cannot reach it - pin it from a JSON dump via --from"
             )
+        # gate EVERY launch before executing ANY: one drifted server must not let its
+        # siblings run first and only then surface the refusal
+        if pinned is not None:
+            for name, spec in servers.items():
+                _gate_launch(name, spec["source"])
         for name, spec in servers.items():
             _add(
                 name,
                 fetch_tools_stdio(
-                    spec["command"], env=spec["env"], timeout=timeout, minimal_env=minimal_env
+                    spec["command"],
+                    env=spec["env"],
+                    cwd=spec["cwd"],
+                    timeout=timeout,
+                    minimal_env=minimal_env,
                 ),
             )
+            sources[name] = spec["source"]
 
     if not catalog and not unfetchable:
         raise ValueError("no catalog source given (--from, --stdio, or --claude-config)")
-    return Observation(catalog, notes, unfetchable)
+    return Observation(catalog, notes, unfetchable, sources)
 
 
 def mcp_pin_command(
@@ -845,7 +888,8 @@ def mcp_pin_command(
     stdio: Optional[List[List[str]]] = None,
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
-    minimal_env: bool = False,
+    minimal_env: bool = True,
+    approve_server_launch: bool = False,
     update: bool = False,
     force: bool = False,
     as_json: bool = False,
@@ -853,14 +897,30 @@ def mcp_pin_command(
 ) -> int:
     """Pin the observed catalog to a deterministic manifest. Exit 0 pinned, 1 review, 2 refused.
 
-    The pin is the deliberate, human step, so it fails toward refusal three ways: an
-    incomplete observation refuses (exit 2), a non-clean description screen refuses to
-    write until ``--force`` records that a human reviewed it (exit 1, RETRY semantics),
-    and an existing manifest with different content refuses without ``--update`` (exit 2),
-    a pin is approved truth, never silently replaced. Re-pinning identical content is a
+    The pin is the deliberate, human step, so it fails toward refusal: an incomplete
+    observation refuses (exit 2), a non-clean description screen refuses to write until
+    ``--force`` records that a human reviewed it (exit 1, RETRY semantics), and an
+    existing manifest with different content refuses without ``--update`` (exit 2), a
+    pin is approved truth, never silently replaced. Re-pinning identical content is a
     no-op (exit 0).
+
+    Observing a stdio server EXECUTES the configured command - there is no way to ask a
+    process for its catalog without running it - so the first pin is an explicit trust
+    event: ``--approve-server-launch`` must accompany ``--stdio``/``--claude-config``,
+    recording that a human reviewed the commands about to run (exit 2 without it,
+    before anything executes). The pinned manifest then records each server's launch
+    specification, and ``verify`` compares it BEFORE launching, so this approval is a
+    one-time event per launch spec, not a ritual.
     """
     out = stdout if stdout is not None else sys.stdout
+    if (stdio or claude_config) and not approve_server_launch:
+        return _fail_closed(
+            "pinning from --stdio/--claude-config EXECUTES the configured server "
+            "commands; review them, then pass --approve-server-launch to record that a "
+            "human approved launching them (nothing was executed)",
+            as_json,
+            out,
+        )
     try:
         obs = _collect_catalog(
             from_file=from_file,
@@ -880,7 +940,7 @@ def mcp_pin_command(
             out.write(f"note: {note}\n")
 
     try:
-        text = manifest_to_text(build_manifest(catalog))
+        text = manifest_to_text(build_manifest(catalog, sources=obs.sources))
     except (ValueError, UnicodeError, RecursionError) as exc:
         # RecursionError: a declaration nested beyond what canonical JSON can serialize
         # is a hostile catalog; a crash is not a verdict, so it refuses like the rest.
@@ -957,11 +1017,17 @@ def mcp_verify_command(
     stdio: Optional[List[List[str]]] = None,
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
-    minimal_env: bool = False,
+    minimal_env: bool = True,
     as_json: bool = False,
     stdout: Optional[TextIO] = None,
 ) -> int:
     """Verify the observed catalog against the pin. Exit: 0 match, 2 drift/unpinned/error.
+
+    **Launch identity is verified BEFORE execution**: each configured stdio server's
+    launch specification (unexpanded command template, args, cwd, env variable names) is
+    compared against the pin first, and a changed or never-pinned specification refuses
+    WITHOUT starting the configured command - the substituted process never runs. Only
+    approved specifications are then launched to observe their catalogs.
 
     A missing manifest fails closed (a missing pin is not a clean pin), and an
     observation that cannot be completed fails closed (a failed fetch must not read as
@@ -988,6 +1054,7 @@ def mcp_verify_command(
             claude_config=claude_config,
             timeout=timeout,
             minimal_env=minimal_env,
+            pinned=pinned,  # launch specs are compared BEFORE any process starts
         )
     except (OSError, ValueError, McpFetchError) as exc:
         return _fail_closed(f"could not observe the catalog: {exc}", as_json, out)
@@ -995,7 +1062,12 @@ def mcp_verify_command(
     try:
         # the kernel owns all adjudication: it turns a pinned-but-unfetchable server (F1)
         # into a CRITICAL, the CLI only collects the `unverifiable` set and prints.
-        findings = diff_manifest(pinned, obs.catalog, unverifiable=obs.unfetchable)
+        findings = []
+        for name, source in sorted(obs.sources.items()):
+            entry = pinned.get("servers", {}).get(name)
+            if isinstance(entry, dict):
+                findings.extend(diff_source(name, entry, source))
+        findings.extend(diff_manifest(pinned, obs.catalog, unverifiable=obs.unfetchable))
     except (ValueError, UnicodeError, RecursionError) as exc:
         # a malformed observation (e.g. a lone-surrogate string that cannot be canonicalized,
         # or a corrupt pinned manifest) fails closed, never an uncaught traceback / exit 1
@@ -1046,9 +1118,16 @@ def _add_mcp_source_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--minimal-env",
         action="store_true",
-        help="launch stdio servers with a minimal environment (PATH and friends plus any "
-        "env from the config) instead of inheriting the full shell environment; a server "
-        "being pinned is not yet trusted with your API keys",
+        help="the DEFAULT since 0.5.0 (kept for compatibility): launch stdio servers "
+        "with a minimal environment - PATH and friends plus the config's own env - "
+        "instead of the full shell environment",
+    )
+    p.add_argument(
+        "--inherit-env",
+        action="store_true",
+        help="opt OUT of the minimal environment and hand stdio servers the full parent "
+        "environment (matching how Claude Code launches them); a server being pinned is "
+        "not yet trusted with your API keys, so this is the explicit, named trade",
     )
 
 
@@ -1141,6 +1220,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="manifest path to write (default: mcp-manifest.json)",
     )
     p_pin.add_argument(
+        "--approve-server-launch",
+        action="store_true",
+        help="required with --stdio/--claude-config: records that a human reviewed the "
+        "configured commands and approves EXECUTING them to observe their catalogs "
+        "(observation runs the command; there is no other way to ask a process for its "
+        "tools/list). verify then compares each launch spec BEFORE launching.",
+    )
+    p_pin.add_argument(
         "--update",
         action="store_true",
         help="allow replacing an existing manifest whose content differs (a pin is "
@@ -1201,6 +1288,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.command == "mcp":
         if args.mcp_command == "pin":
+            if args.minimal_env and args.inherit_env:
+                parser.error("--minimal-env and --inherit-env are mutually exclusive")
             return mcp_pin_command(
                 args.out,
                 from_file=args.from_file,
@@ -1208,12 +1297,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stdio=args.stdio,
                 claude_config=args.claude_config,
                 timeout=args.timeout,
-                minimal_env=args.minimal_env,
+                minimal_env=not args.inherit_env,
+                approve_server_launch=args.approve_server_launch,
                 update=args.update,
                 force=args.force,
                 as_json=args.json,
             )
         if args.mcp_command == "verify":
+            if args.minimal_env and args.inherit_env:
+                parser.error("--minimal-env and --inherit-env are mutually exclusive")
             return mcp_verify_command(
                 args.manifest,
                 from_file=args.from_file,
@@ -1221,7 +1313,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stdio=args.stdio,
                 claude_config=args.claude_config,
                 timeout=args.timeout,
-                minimal_env=args.minimal_env,
+                minimal_env=not args.inherit_env,
                 as_json=args.json,
             )
         p_mcp.print_help()

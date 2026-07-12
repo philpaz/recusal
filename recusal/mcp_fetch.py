@@ -18,14 +18,17 @@ surfaces them as ``skipped`` so the caller pins them from a JSON dump (``recusal
 
 **The configuration is executable code.** Fetching a stdio catalog EXECUTES the command
 the config declares - there is no way to ask a process for ``tools/list`` without running
-it - and nothing here (yet) pins that the command is the one originally approved. Review
-``command``/``args`` before observing, protect ``.mcp.json`` as a control-plane file, and
-pass ``minimal_env=True`` so a server still being decided about does not inherit secrets.
+it. The layer above pins each launch specification and compares it BEFORE calling this
+fetcher (``recusal.mcp.diff_source``); the FIRST pin is the explicit trust event
+(``--approve-server-launch``). Review ``command``/``args`` before that first observation,
+protect ``.mcp.json`` as a control-plane file, and pass ``minimal_env=True`` (the CLI
+default) so a server still being decided about does not inherit secrets.
 """
 
 import json
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -336,20 +339,64 @@ def fetch_tools_stdio(
             proc.wait()  # reap: a killed child must not linger as a zombie on POSIX
 
 
-def servers_from_claude_config(path: str) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
-    """Read stdio servers from a Claude Code ``.mcp.json``.
+#: Claude Code's documented expansion syntax in ``.mcp.json``: ``${VAR}`` and
+#: ``${VAR:-default}``, in ``command``, ``args``, and ``env`` values.
+_EXPAND_RE = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
 
-    Returns ``(servers, skipped)``: ``servers`` maps a server name to
-    ``{"command": [...], "env": {...}}`` ready for :func:`fetch_tools_stdio`; ``skipped``
-    names servers this fetcher cannot reach (URL-based transports), which must be pinned
-    from a JSON dump instead so they are surfaced, never silently dropped.
-    Raises ``ValueError`` on a config that does not parse or has no servers.
+
+def _expand(text: str, env: Dict[str, str], *, where: str) -> str:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` with Claude Code's semantics, failing
+    CLOSED on a referenced variable that is unset and has no default: launching a
+    partially-expanded command would observe a different server than the live session."""
+
+    def _sub(match: "re.Match[str]") -> str:
+        name, default = match.group(1), match.group(2)
+        if name in env:
+            return env[name]
+        if default is not None:
+            return default
+        raise ValueError(
+            f"{where}: ${{{name}}} is not set and has no default; refusing to launch a "
+            "partially-expanded command"
+        )
+
+    return _EXPAND_RE.sub(_sub, text)
+
+
+def servers_from_claude_config(
+    path: str, *, base_env: Optional[Dict[str, str]] = None
+) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+    """Read stdio servers from a Claude Code ``.mcp.json``, with Claude Code's semantics.
+
+    Returns ``(servers, skipped)``. Each server maps to::
+
+        {
+          "source":  {...},   # the UNEXPANDED launch template (recusal.mcp.normalize_source
+                              #  shape) - what gets pinned and compared BEFORE any launch
+          "command": [...],   # resolved argv: ${VAR} / ${VAR:-default} expanded
+          "env":     {...},   # resolved env for the child, CLAUDE_PROJECT_DIR included
+          "cwd":     None|str,
+        }
+
+    Fidelity notes, matched to current Claude Code behavior: ``${VAR}`` and
+    ``${VAR:-default}`` expand in ``command``, ``args``, and ``env`` values (a referenced
+    variable that is unset with no default fails CLOSED); ``CLAUDE_PROJECT_DIR`` is set
+    in the child environment to the config file's directory, the same value Claude Code
+    injects, unless the config sets it explicitly. Types are rejected, not coerced: a
+    non-string arg or env value is a ``ValueError``, never silently ``str()``-ed into a
+    launch that Claude Code would have refused or run differently.
+
+    ``skipped`` names servers this fetcher cannot reach (URL-based transports), which
+    must be pinned from a JSON dump instead, so they are surfaced, never silently
+    dropped. Raises ``ValueError`` on a config that does not parse or has no servers.
     """
+    env_base = dict(os.environ) if base_env is None else dict(base_env)
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     entries = data.get("mcpServers") if isinstance(data, dict) else None
     if not isinstance(entries, dict) or not entries:
         raise ValueError(f"{path} has no mcpServers")
+    project_dir = os.path.dirname(os.path.abspath(path))
     servers: Dict[str, Dict[str, Any]] = {}
     skipped: List[str] = []
     for name, entry in entries.items():
@@ -358,11 +405,29 @@ def servers_from_claude_config(path: str) -> Tuple[Dict[str, Dict[str, Any]], Li
             continue
         args = entry.get("args") or []
         env = entry.get("env") or {}
-        if not isinstance(args, list) or not isinstance(env, dict):
-            skipped.append(str(name))
-            continue
+        cwd = entry.get("cwd")
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise ValueError(f"{path}: server {name!r} 'args' must be a list of strings")
+        if not isinstance(env, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+        ):
+            raise ValueError(f"{path}: server {name!r} 'env' must map strings to strings")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ValueError(f"{path}: server {name!r} 'cwd' must be a string")
+        where = f"{path}: server {name!r}"
+        resolved_env = {k: _expand(v, env_base, where=where) for k, v in env.items()}
+        resolved_env.setdefault("CLAUDE_PROJECT_DIR", project_dir)
         servers[str(name)] = {
-            "command": [entry["command"]] + [str(a) for a in args],
-            "env": {str(k): str(v) for k, v in env.items()},
+            "source": {
+                "transport": "stdio",
+                "command": entry["command"],
+                "args": list(args),
+                "cwd": cwd,
+                "env_keys": sorted(env.keys()),
+            },
+            "command": [_expand(entry["command"], env_base, where=where)]
+            + [_expand(a, env_base, where=where) for a in args],
+            "env": resolved_env,
+            "cwd": cwd,
         }
     return servers, skipped

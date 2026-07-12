@@ -206,7 +206,19 @@ def test_claude_config_yields_stdio_servers_and_surfaces_the_rest(tmp_path):
         encoding="utf-8",
     )
     servers, skipped = servers_from_claude_config(str(config))
-    assert servers == {"github": {"command": ["npx", "-y", "server-github"], "env": {"TOKEN": "x"}}}
+    github = servers["github"]
+    assert github["command"] == ["npx", "-y", "server-github"]
+    assert github["env"]["TOKEN"] == "x"
+    # Claude Code parity: the project root rides along to the spawned server
+    assert github["env"]["CLAUDE_PROJECT_DIR"] == os.path.dirname(os.path.abspath(config))
+    # the UNEXPANDED launch template, ready to pin and to diff BEFORE a launch
+    assert github["source"] == {
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "server-github"],
+        "cwd": None,
+        "env_keys": ["TOKEN"],
+    }
     assert skipped == ["hosted"]  # surfaced, never silently dropped
 
 
@@ -216,6 +228,62 @@ def test_claude_config_with_no_servers_raises(tmp_path):
         config.write_text(body, encoding="utf-8")
         with pytest.raises(ValueError):
             servers_from_claude_config(str(config))
+
+
+def test_claude_config_expands_vars_with_claude_semantics(tmp_path):
+    # ${VAR} and ${VAR:-default} in command/args/env values, per current Claude Code
+    # docs; the SOURCE template stays unexpanded (that is what gets pinned).
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "banking": {
+                        "command": "${MCP_BIN}",
+                        "args": ["--project", "${CLAUDE_PROJECT_DIR:-.}"],
+                        "env": {"API_KEY": "${BANK_API_KEY}"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    servers, _ = servers_from_claude_config(
+        str(config), base_env={"MCP_BIN": "/opt/mcp/bin/banking", "BANK_API_KEY": "sk-123"}
+    )
+    banking = servers["banking"]
+    assert banking["command"] == ["/opt/mcp/bin/banking", "--project", "."]
+    assert banking["env"]["API_KEY"] == "sk-123"
+    assert banking["source"]["command"] == "${MCP_BIN}"  # template, not the expansion
+    assert banking["source"]["env_keys"] == ["API_KEY"]  # names only, never values
+
+
+def test_claude_config_fails_closed_on_an_unset_variable(tmp_path):
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"s": {"command": "${NOPE_UNSET_VAR}"}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="NOPE_UNSET_VAR"):
+        servers_from_claude_config(str(config), base_env={})
+
+
+def test_claude_config_rejects_non_string_types_instead_of_coercing(tmp_path):
+    # A non-string arg or env value silently str()-ed could launch a command Claude Code
+    # would have refused or run differently; types are rejected, not coerced.
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"s": {"command": "x", "args": ["ok", 42]}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="list of strings"):
+        servers_from_claude_config(str(config))
+    config.write_text(
+        json.dumps({"mcpServers": {"s": {"command": "x", "env": {"N": 1}}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="strings to strings"):
+        servers_from_claude_config(str(config))
 
 
 # --- environment handed to a not-yet-trusted server ---------------------------------------

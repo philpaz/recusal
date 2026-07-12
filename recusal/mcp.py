@@ -37,11 +37,15 @@ Honest limits, stated up front:
 - A PreToolUse event carries the tool *name and input*, not the declaration, so
   ``manifest_policy`` enforces "approved tools only" at call time; description/schema
   *integrity* is checked whenever ``recusal mcp verify`` runs (CI, session start, cron).
-- The manifest pins the *declared catalog*, not the identity of the server process that
-  declares it: observing a stdio server executes the command the config names, so a
-  rewritten ``.mcp.json`` runs at observe time, before its catalog can fail verification.
-  Treat the config as executable code and protect it (and the manifest) as control-plane
-  files; pinning the launch specification itself is a named roadmap item, not shipped.
+- The manifest pins each server's *launch specification* (unexpanded command template,
+  args, cwd, env variable NAMES) alongside the catalog, and verification compares it
+  BEFORE launching - a changed ``.mcp.json`` command is refused without executing the
+  replacement. The identity is template-level: the *values* of referenced environment
+  variables are not pinned, PATH resolves what PATH says (pin package versions in the
+  args for ``npx``/``uvx``-style launchers), and ``transport: "external"`` (dump-supplied
+  catalogs) is out of launch-identity scope by construction. The FIRST pin still
+  executes the commands it observes - ``--approve-server-launch`` records that a human
+  approved exactly that.
 - Fingerprints are byte-exact over canonical JSON (sorted keys, no whitespace, UTF-8,
   no unicode normalization): a homoglyph swap in a description IS a change and fails.
 
@@ -60,12 +64,24 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .evidence import Finding
 
-MANIFEST_VERSION = 1
+#: Version 2 adds server-launch identity (``source`` + ``source_fingerprint``): the pin
+#: covers WHAT PROCESS is asked to declare the catalog, not just the declarations it
+#: returns. A version-1 manifest predates that boundary and is refused with a re-pin
+#: instruction rather than silently accepted at the weaker guarantee.
+MANIFEST_VERSION = 2
 
 #: Declaration fields fingerprinted individually so a drift refusal can name what moved.
 #: The whole declaration is also fingerprinted, so a change in any *other* field still
 #: fails, it is just reported without a field name.
 _TRACKED_FIELDS = ("description", "inputSchema", "annotations", "title", "outputSchema")
+
+#: The launch-identity fields pinned for a server recusal itself launches. Templates are
+#: pinned UNEXPANDED (what the config says, before ``${VAR}`` expansion), and only
+#: environment variable NAMES are pinned - never values, and never hashes of values (a
+#: low-entropy secret's hash is an oracle). ``transport: "external"`` marks a server
+#: whose catalog was supplied as a dump (``--from``): recusal never launches it, so
+#: launch identity is out of scope for it, and that is recorded rather than implied.
+_SOURCE_FIELDS = ("transport", "command", "args", "cwd", "env_keys")
 
 
 # --- canonicalization and fingerprints ---------------------------------------------------
@@ -104,7 +120,120 @@ def split_mcp_tool_name(tool_name: str) -> Optional[Tuple[str, str]]:
 # --- the pin: catalog -> deterministic manifest -------------------------------------------
 
 
-def build_manifest(catalog: Dict[str, List[dict]]) -> Dict[str, Any]:
+def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a server-launch specification to the pinned identity shape.
+
+    ``transport`` is ``"stdio"`` for a server recusal launches, or ``"external"`` for a
+    catalog supplied as a dump (``--from``): recusal never launches those, so launch
+    identity is out of scope for them, and that is recorded rather than implied. For
+    stdio, the pinned identity is the UNEXPANDED configuration template: ``command``
+    (nonempty string), ``args`` (list of strings), ``cwd`` (string or null), and
+    ``env_keys`` - the sorted variable NAMES the config passes. Values never appear,
+    and neither do hashes of values: a low-entropy secret's hash is an oracle.
+    Unknown fields are rejected; an identity carrying unpinned baggage is ambiguous.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError(f"a server source must be an object, got {type(spec).__name__}")
+    unknown = set(spec) - set(_SOURCE_FIELDS)
+    if unknown:
+        raise ValueError(f"server source carries unknown fields: {sorted(unknown)}")
+    transport = spec.get("transport")
+    if transport == "external":
+        return {"transport": "external"}
+    if transport != "stdio":
+        raise ValueError(
+            f"server source transport must be 'stdio' or 'external', got {transport!r}"
+        )
+    command = spec.get("command")
+    if not isinstance(command, str) or not command:
+        raise ValueError("a stdio source needs a nonempty string 'command' template")
+    args = spec.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ValueError("a stdio source's 'args' must be a list of strings")
+    cwd = spec.get("cwd")
+    if cwd is not None and not isinstance(cwd, str):
+        raise ValueError("a stdio source's 'cwd' must be a string or null")
+    env_keys = spec.get("env_keys", [])
+    if not isinstance(env_keys, list) or not all(isinstance(k, str) and k for k in env_keys):
+        raise ValueError("a stdio source's 'env_keys' must be a list of variable names")
+    return {
+        "transport": "stdio",
+        "command": command,
+        "args": list(args),
+        "cwd": cwd,
+        "env_keys": sorted(env_keys),
+    }
+
+
+def source_fingerprint(spec: Dict[str, Any]) -> str:
+    """Fingerprint a launch specification: SHA-256 over its canonical normalized form."""
+    return _sha256(normalize_source(spec))
+
+
+def diff_source(
+    server: str, pinned_entry: Dict[str, Any], observed: Dict[str, Any]
+) -> List[Finding]:
+    """Compare a server's observed launch specification against its pin, BEFORE launch.
+
+    This is the pre-execution half of verification: a changed ``.mcp.json`` command must
+    be refused *without starting the replacement process* - a post-execution catalog
+    mismatch proves drift only after the substituted command already ran. CRITICAL on
+    any mismatch (the changed fields are named), CRITICAL on a pin whose stored
+    fingerprint does not match its own source (a hand-edited pin certifies nothing),
+    and an affirmative ok finding when the identity holds.
+    """
+    pinned_source = pinned_entry.get("source")
+    if not isinstance(pinned_source, dict):
+        return [
+            Finding.fail(
+                "mcp_launch_spec_unpinned",
+                severity="CRITICAL",
+                message=f"server {server!r} has no pinned launch specification; refusing "
+                "to launch what was never approved (re-pin with --approve-server-launch)",
+                server=server,
+            )
+        ]
+    pinned_norm = normalize_source(pinned_source)
+    if pinned_entry.get("source_fingerprint") != _sha256(pinned_norm):
+        return [
+            Finding.fail(
+                "mcp_launch_spec_corrupt",
+                severity="CRITICAL",
+                message=f"server {server!r}: source_fingerprint does not match the pinned "
+                "source - a hand-edited or corrupt pin certifies nothing",
+                server=server,
+            )
+        ]
+    observed_norm = normalize_source(observed)
+    if observed_norm == pinned_norm:
+        return [
+            Finding.ok(
+                "mcp_launch_spec",
+                severity="CRITICAL",
+                message=f"server {server!r} launch specification matches the pin",
+                server=server,
+            )
+        ]
+    changed = [
+        field for field in _SOURCE_FIELDS if pinned_norm.get(field) != observed_norm.get(field)
+    ]
+    return [
+        Finding.fail(
+            "mcp_launch_spec_changed",
+            severity="CRITICAL",
+            message=f"server {server!r} launch specification changed since the pin "
+            f"(fields: {', '.join(changed)}); refusing WITHOUT executing the configured "
+            "command - re-pin deliberately if this change is yours",
+            server=server,
+            changed_fields=changed,
+        )
+    ]
+
+
+def build_manifest(
+    catalog: Dict[str, List[dict]],
+    sources: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Build a manifest from ``{server_name: [tool declarations]}``.
 
     Deterministic: the same catalog always produces the same manifest (there is no
@@ -112,6 +241,10 @@ def build_manifest(catalog: Dict[str, List[dict]]) -> Dict[str, Any]:
     Hashes only, never the declarations themselves. Raises ``ValueError`` on a catalog
     that cannot be pinned unambiguously: empty, a nameless tool, or two tools with the
     same name on one server (an ambiguous catalog certifies nothing).
+
+    ``sources`` maps a server name to its launch specification (see
+    :func:`normalize_source`); a server without one is pinned as ``transport:
+    "external"`` - its catalog is governed, its launch is not recusal's to govern.
     """
     if not isinstance(catalog, dict) or not catalog:
         raise ValueError("an empty catalog certifies nothing; nothing to pin")
@@ -135,7 +268,12 @@ def build_manifest(catalog: Dict[str, List[dict]]) -> Dict[str, Any]:
                 "fingerprint": tool_fingerprint(tool),
                 "fields": {k: _sha256(tool[k]) for k in _TRACKED_FIELDS if k in tool},
             }
-        servers[server] = {"tools": pinned_tools}
+        source = normalize_source((sources or {}).get(server) or {"transport": "external"})
+        servers[server] = {
+            "source": source,
+            "source_fingerprint": _sha256(source),
+            "tools": pinned_tools,
+        }
     return {"manifest_version": MANIFEST_VERSION, "servers": servers}
 
 
@@ -160,6 +298,12 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 def _validate_manifest(data: Any) -> None:
     if not isinstance(data, dict):
         raise ValueError("manifest is not a JSON object")
+    if data.get("manifest_version") == 1:
+        raise ValueError(
+            "manifest_version 1 predates launch-identity pinning (it covers the declared "
+            "catalog but not the process that declares it); re-pin with `recusal mcp pin` "
+            "to record the launch specifications"
+        )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
             f"manifest_version {data.get('manifest_version')!r} is not {MANIFEST_VERSION}"
@@ -170,7 +314,23 @@ def _validate_manifest(data: Any) -> None:
     for server, entry in servers.items():
         if not isinstance(server, str) or not server:
             raise ValueError(f"manifest server name must be a nonempty string, got {server!r}")
-        tools = entry.get("tools") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            raise ValueError(f"manifest server {server!r} entry is not an object")
+        try:
+            source = normalize_source(entry.get("source") or {})
+        except ValueError as exc:
+            raise ValueError(f"manifest server {server!r}: {exc}") from exc
+        fingerprint = entry.get("source_fingerprint")
+        if not isinstance(fingerprint, str) or not _DIGEST_RE.fullmatch(fingerprint):
+            raise ValueError(
+                f"manifest server {server!r} source_fingerprint is not sha256:<64 lowercase hex>"
+            )
+        if fingerprint != _sha256(source):
+            raise ValueError(
+                f"manifest server {server!r}: source_fingerprint does not match the "
+                "pinned source - a hand-edited or corrupt pin certifies nothing"
+            )
+        tools = entry.get("tools")
         if not isinstance(tools, dict):
             raise ValueError(f"manifest server {server!r} has no tools object")
         for name, pin in tools.items():

@@ -275,10 +275,13 @@ recusal mcp pin --claude-config .mcp.json    # review once, pin the approved cat
 recusal mcp verify --claude-config .mcp.json # CI / session start: same catalog, or refuse
 ```
 
-> **`--claude-config` and `--stdio` execute the declared server commands** to ask them for
-> `tools/list`. Treat `.mcp.json` as executable code: review its `command`/`args` lines
-> like you review the declarations, and pass `--minimal-env` so a server you are still
-> deciding about does not inherit the API keys in your shell.
+> **`--claude-config` and `--stdio` execute the declared server commands** to ask them
+> for `tools/list`; there is no other way to ask a process for its catalog. The first
+> pin is therefore an explicit trust event: review the `command`/`args` lines like you
+> review the declarations, then pass `--approve-server-launch` to record it. After the
+> pin, `verify` compares each launch specification against the manifest **before**
+> launching anything, and stdio servers run with a minimal environment by default
+> (`--inherit-env` is the named opt-out).
 
 Recusal does not judge whether a description is *malicious*: that is semantic judgment, a
 human's call at pin time (a deterministic marker screen surfaces the obvious, and `pin`
@@ -307,12 +310,18 @@ every message. `verify` proves the catalog at the moment it runs (wire it into C
 session start); the call-time gate then enforces *approved tools only*. A server that
 serves one catalog to `verify` and a different one to the live session (a client- or
 time-discriminating server) is a residual this layer names rather than claims to close:
-run `verify` against the same endpoint the session uses, close in time. And the manifest
-pins the **declared catalog, not the identity of the process that declares it**: a
-rewritten `.mcp.json` command runs at observe time, before the catalog it returns can
-fail verification. Until server-launch specifications are pinned (a named roadmap item),
-protect `.mcp.json` and `mcp-manifest.json` as control-plane files - the default
-deny-list does - and treat the config as executable code.
+run `verify` against the same endpoint the session uses, close in time. The manifest
+pins the **launch specification as well as the declared catalog**: the unexpanded
+command template, args, cwd, and environment variable *names* (never values), compared
+by `verify` **before** any process starts, so a rewritten `.mcp.json` command is refused
+without the replacement ever executing (pinned by an adversarial test proving the
+substituted command's marker file is never written). The remaining residuals, named:
+identity is template-level, so the *values* of referenced environment variables are not
+pinned; `npx`/`uvx`-style launchers resolve through PATH and fetch what the registry
+serves (pin package versions in the args); and dump-supplied (`--from`) servers are
+pinned as `transport: external`, their launch being outside recusal's control. Keep
+protecting `.mcp.json` and `mcp-manifest.json` as control-plane files - the default
+deny-list does.
 
 See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py)
 (offline). Pinned as tests: [`tests/test_mcp_manifest.py`](tests/test_mcp_manifest.py),
