@@ -229,6 +229,18 @@ def run_pretooluse_hook(
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
 
+    # Clear invocation-local control identity BEFORE the envelope is parsed: a
+    # malformed event never reaches the policy (whose own clear runs when it executes),
+    # and in a reused process its audit record would otherwise inherit the manifest
+    # digest of the last valid adjudication in this context. An event that never
+    # reached the policy must never carry the policy's provenance.
+    reset = getattr(policy, "reset_control_identity", None)
+    if callable(reset):
+        try:
+            reset()
+        except Exception:  # noqa: BLE001, a broken reset must not take down the gate
+            pass
+
     tool_name: Optional[str] = None
     input_sha256: Optional[str] = None
     event_ids: Dict[str, Any] = {}

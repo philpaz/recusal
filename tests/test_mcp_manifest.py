@@ -241,14 +241,23 @@ def test_a_wholly_empty_observation_fails_closed():
 
 
 def test_a_server_observed_with_zero_tools_is_a_shrunk_set_not_an_empty_observation():
-    # A server present but declaring no tools is a legitimately shrunk capability set (its
-    # pinned tools read as removed WARNINGs), consistent with build_manifest accepting an
-    # empty tool list; it must NOT be conflated with a failed fetch. (Regression for C5.)
-    for shrunk in ({"github": []}, {"github": None}):
-        findings = diff_manifest(build_manifest(_catalog()), shrunk)
-        assert not _fails(findings, "mcp_manifest")  # not the "empty observation" refusal
-        assert _fails(findings, "mcp_tool_removed")  # its pinned tools are recorded gone
-        assert compute_verdict(findings).passed  # shrunk is recorded, not refused
+    # A server present with an EXPLICIT empty tool list is a legitimately shrunk
+    # capability set (its pinned tools read as removed WARNINGs), consistent with
+    # build_manifest accepting an empty tool list; it must NOT be conflated with a
+    # failed fetch. (Regression for C5.)
+    findings = diff_manifest(build_manifest(_catalog()), {"github": []})
+    assert not _fails(findings, "mcp_manifest")  # not the "empty observation" refusal
+    assert _fails(findings, "mcp_tool_removed")  # its pinned tools are recorded gone
+    assert compute_verdict(findings).passed  # shrunk is recorded, not refused
+
+
+def test_a_malformed_catalog_value_refuses_never_normalizes_to_empty():
+    # `None`, "", {} and numbers are NOT zero-tool servers: truthiness-normalizing them
+    # to [] would turn a malformed observation into a mere shrunk-set WARNING (review 8).
+    for malformed in ({"github": None}, {"github": ""}, {"github": {}}, {"github": 7}):
+        findings = diff_manifest(build_manifest(_catalog()), malformed)
+        assert _fails(findings, "mcp_malformed_catalog")
+        assert not compute_verdict(findings).passed
 
 
 def test_pin_then_verify_of_an_empty_server_is_consistent():

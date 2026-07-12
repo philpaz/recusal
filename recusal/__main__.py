@@ -1096,7 +1096,8 @@ def mcp_pin_command(
     """Pin the observed catalog to a deterministic manifest. Exit 0 pinned, 1 review, 2 refused.
 
     The pin is the deliberate, human step, so it fails toward refusal: an incomplete
-    observation refuses (exit 2), a non-clean description screen refuses to write until
+    observation refuses (exit 2), a non-clean review screen (tool declarations, server
+    instructions, source configuration warnings) refuses to write until
     ``--force`` records that a human reviewed it (exit 1, RETRY semantics), and an
     existing manifest with different content refuses without ``--update`` (exit 2), a
     pin is approved truth, never silently replaced. Re-pinning identical content is a
@@ -1459,8 +1460,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command")
     p_pin = mcp_sub.add_parser(
         "pin",
-        help="pin the observed catalog to a deterministic manifest "
-        "(exit 0 pinned/no-op, 1 descriptions need review, 2 refused)",
+        help="pin the observed catalog to a deterministic manifest (exit 0 pinned/"
+        "no-op, 1 when tool declarations or server instructions require review, "
+        "2 refused)",
     )
     _add_mcp_source_args(p_pin)
     p_pin.add_argument(
@@ -1485,8 +1487,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_pin.add_argument(
         "--force",
         action="store_true",
-        help="pin even when the description screen flags injection phrasing, recording "
-        "that a human reviewed and accepted it",
+        help="proceed after deliberate review: pin even when the screen flags tool "
+        "declarations, server instructions, or source configuration warnings, "
+        "recording that a human reviewed and accepted them",
     )
     p_pin.add_argument(
         "--json", action="store_true", help="emit the result as JSON instead of text"

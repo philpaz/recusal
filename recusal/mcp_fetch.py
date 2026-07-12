@@ -571,6 +571,13 @@ def servers_from_claude_config(
                     f"stdio launch fields {conflicting}; a contradictory entry is refused, "
                     "and a command in a remote entry is never executed"
                 )
+            if _REMOTE_TYPES[transport_type] == "ws" and "oauth" in entry:
+                raise ValueError(
+                    f"{where}: Claude Code documents WebSocket MCP authentication as "
+                    "header-only (HTTP supports OAuth, WebSocket does not); 'oauth' is "
+                    "not a supported ws field, and a shape Claude does not support must "
+                    "not be represented as faithful configuration"
+                )
             unknown = set(entry) - _REMOTE_ENTRY_FIELDS - _RUNTIME_ONLY_FIELDS
             if unknown:
                 raise ValueError(
@@ -602,7 +609,7 @@ def servers_from_claude_config(
                     "auth_server_metadata_url_template": oauth_entry.get("authServerMetadataUrl"),
                     "scopes": oauth_entry.get("scopes"),
                 }
-            remote_servers[str(name)] = {
+            remote_source: Dict[str, Any] = {
                 "transport": _REMOTE_TYPES[transport_type],
                 "url_template": url,  # unexpanded: the pinned identity is the template
                 # header value TEMPLATES as written: a same-name Authorization swap
@@ -612,8 +619,12 @@ def servers_from_claude_config(
                 # Claude EXECUTES this command at connect time; it is executable
                 # configuration, previously invisible to verification
                 "headers_helper_template": helper,
-                "oauth": oauth,
             }
+            if _REMOTE_TYPES[transport_type] != "ws":
+                # ws is header-only per the documented Claude surface: no oauth member
+                # in its canonical source shape (an entry carrying one refused above)
+                remote_source["oauth"] = oauth
+            remote_servers[str(name)] = remote_source
             continue
 
         if transport_type not in (None, "stdio"):

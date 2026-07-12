@@ -68,6 +68,7 @@ def test_matching_instructions_pass_the_unified_api():
     pinned = _pinned(instructions={"srv": "approved instructions"})
     obs = McpObservation(
         catalog=CATALOG,
+        sources={"srv": {"transport": "external"}},
         instructions={"srv": {"observed": True, "text": "approved instructions"}},
     )
     verdict = compute_verdict(diff_observation(pinned, obs))
@@ -75,8 +76,15 @@ def test_matching_instructions_pass_the_unified_api():
 
 
 def test_legacy_unobserved_pin_stays_explicitly_weaker_not_blocking():
+    # the weaker claims are EXPLICIT records, never omissions (review 8): the legacy
+    # dump path supplies {'transport': 'external'} and {'observed': False, 'text': None}
     pinned = _pinned()  # no instructions observed at pin
-    findings = diff_observation(pinned, McpObservation(catalog=CATALOG))
+    obs = McpObservation(
+        catalog=CATALOG,
+        sources={"srv": {"transport": "external"}},
+        instructions={"srv": {"observed": False, "text": None}},
+    )
+    findings = diff_observation(pinned, obs)
     assert compute_verdict(findings).passed
     boundary = [f for f in findings if f.check == "mcp_instructions" and f.passed]
     assert boundary and "does not cover" in boundary[0].message
@@ -227,7 +235,7 @@ def test_noncanonical_instruction_records_are_refused(tmp_path, record):
         (lambda m: m["servers"]["srv"].update({"note": "x"}), "undefined fields"),
         (
             lambda m: m["servers"]["srv"]["tools"]["t"].update({"reviewed": True}),
-            "undefined fields",
+            "not canonical",
         ),
     ],
 )

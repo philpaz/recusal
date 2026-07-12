@@ -49,10 +49,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Hash-locked: the COMPLETE transitive build+publish toolchain installs from
-      # release-requirements.txt with --require-hashes (exact versions, sha256 of every
-      # distribution file PyPI serves), and the build runs --no-isolation so no second,
-      # uncontrolled PEP 517 dependency resolution happens. Regenerate the lock
+      # Hash-locked: the Python BUILD and METADATA-CHECK dependency environment
+      # installs from release-requirements.txt with --require-hashes (exact versions,
+      # sha256 of every distribution file PyPI serves), and the build runs
+      # --no-isolation so no second, uncontrolled PEP 517 dependency resolution
+      # happens. Publishing is NOT in this lock: the publish job uses a separately
+      # SHA-pinned GitHub Action via Trusted Publishing. Regenerate the lock
       # deliberately (scripted PyPI-metadata walk for ubuntu/cp312), review the diff,
       # commit. Stated narrowly: this pins what installs here; it does not make the
       # build output byte-reproducible (untested), and pip/setuptools on the runner

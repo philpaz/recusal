@@ -114,7 +114,7 @@ the gate refuses, the audit log records, the classifier routes.
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
 | `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
-| `recusal.mcp` · `recusal.mcp_fetch` | MCP tool-catalog governance: pin a server's tool catalog, refuse drift, enforce the pin at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process) |
+| `recusal.mcp` · `recusal.mcp_fetch` | MCP tool and server-instruction integrity: pin supported source templates, observed server instructions, and complete tool declarations; refuse represented drift (`diff_observation`); enforce approved runtime tool names at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process). Prompts, resources, channels, elicitation, live-session divergence, and Claude's effective server selection stay outside the manifest |
 | `recusal.audit` | tamper-evident, hash-chained log of every verdict |
 | `recusal.classify` | deterministic failure classifier + router |
 | `recusal.gates` | staged `G0`-`G8` release-gate adjudication, `compute_verdict` at each checkpoint |
@@ -138,8 +138,9 @@ python examples/claude_refusal.py   # a Claude agent stages a write to the WRONG
 python examples/gallery.py          # the same gate across the OWASP agentic failure modes
 ```
 
-Deterministic and offline: same evidence, same policy, same version, same verdict,
-including the **no**.
+Deterministic and offline: the same normalized evidence and explicit policy inputs,
+under the same recusal implementation version, produce the same verdict, including
+the **no**.
 
 ## Plug it into Claude
 
@@ -165,7 +166,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.4"   # the plugin is version-bound; fails CLOSED without it
+pip install "recusal==0.5.5"   # the plugin is version-bound; fails CLOSED without it
                                # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
@@ -407,7 +408,9 @@ single-server object); legacy `{server: [tools]}` dumps stay supported but recor
 *configured* policy fields in `.mcp.json` (including the configured `scopes` string,
 whose change is drift); it does not observe the final authorization request, scopes
 Claude appends (such as `offline_access` when the server advertises it), the issued
-token, granted authority, or the server-side authorization result. Prompts, resources,
+token, granted authority, or the server-side authorization result. OAuth applies to
+`http` entries; Claude documents WebSocket authentication as header-only, so a `ws`
+entry carrying `oauth` is refused as a shape Claude does not support. Prompts, resources,
 resource templates, channels, and elicitation can still introduce context without a
 tool invocation and are outside `manifest_policy`. Claude Code supports dynamic `list_changed`
 updates: a NEW tool name stays blocked at call time, but a changed description under
@@ -553,7 +556,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.4   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.5   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

@@ -44,8 +44,9 @@ Honest limits, stated up front:
   *integrity* is checked whenever ``recusal mcp verify`` runs (CI, session start, cron).
 - The manifest pins each server's *source specification* (for stdio: unexpanded command
   template, args, cwd, and env value TEMPLATES as written; for remote transports:
-  url_template, header value templates, the headersHelper command template, and the
-  represented OAuth policy fields) plus its initialize-result INSTRUCTIONS (as a hash)
+  url_template, header value templates, the headersHelper command template, and - for
+  http/sse - the represented OAuth policy fields; ws is header-only per Claude's
+  documented surface) plus its initialize-result INSTRUCTIONS (as a hash)
   alongside the catalog, and verification compares it all BEFORE launching - a changed
   command, a same-key env value swap, a same-name header-template swap, a changed
   helper command, a widened OAuth scope set, changed instructions, or an added server
@@ -110,12 +111,23 @@ _REMOTE_SOURCE_FIELDS: Tuple[str, ...] = (
     "headers_helper_template",
     "oauth",
 )
+#: WebSocket is header-only: Claude Code documents that "HTTP supports OAuth ... while
+#: WebSocket supports neither", so a ws source carrying oauth is a configuration Claude
+#: does not support and pinning it would misrepresent the config surface. (The docs
+#: establish OAuth for HTTP and are silent on SSE; sse keeps the http shape until the
+#: documentation says otherwise, and ws refuses.)
+_WS_SOURCE_FIELDS: Tuple[str, ...] = (
+    "transport",
+    "url_template",
+    "header_templates",
+    "headers_helper_template",
+)
 _SOURCE_FIELDS_BY_TRANSPORT: Dict[str, Tuple[str, ...]] = {
     "external": ("transport",),
     "stdio": ("transport", "command", "args", "cwd", "env_templates"),
     "http": _REMOTE_SOURCE_FIELDS,
     "sse": _REMOTE_SOURCE_FIELDS,
-    "ws": _REMOTE_SOURCE_FIELDS,
+    "ws": _WS_SOURCE_FIELDS,
 }
 
 #: The OAuth policy fields pinned inside a remote source's ``oauth`` object. The client
@@ -174,9 +186,10 @@ def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
     swap in the config IS drift); ``"http"``/``"sse"``/``"ws"`` (a remote server;
     identity = ``url_template``, ``header_templates`` (as-written value templates,
     so a same-name credential-reference swap is drift), the ``headers_helper_template``
-    command Claude executes at connect time, and the pinned ``oauth`` policy);
-    ``"external"`` (a dump-supplied catalog; identity out of scope, recorded not
-    implied). Values that resolve from the environment never appear in a pin, and
+    command Claude executes at connect time, and - for ``http``/``sse`` only - the
+    pinned ``oauth`` policy: Claude documents WebSocket authentication as header-only,
+    so a ``ws`` source carrying ``oauth`` refuses); ``"external"`` (a dump-supplied
+    catalog; identity out of scope, recorded not implied). Values that resolve from the environment never appear in a pin, and
     neither do hashes of values: a low-entropy secret's hash is an oracle. Fields
     outside the transport's own set are contradictory and refused, never trimmed.
     """
@@ -188,6 +201,12 @@ def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             f"server source transport must be one of "
             f"{sorted(_SOURCE_FIELDS_BY_TRANSPORT)}, got {transport!r}"
+        )
+    if transport == "ws" and "oauth" in spec:
+        raise ValueError(
+            "a ws source cannot carry 'oauth': Claude Code documents WebSocket MCP "
+            "authentication as header-only (HTTP supports OAuth, WebSocket does not); "
+            "pinning an unsupported shape would misrepresent the configuration surface"
         )
     unknown = set(spec) - set(allowed)
     if unknown:
@@ -283,13 +302,17 @@ def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
                     "authority set is refused"
                 )
         oauth = {field: oauth.get(field) for field in _OAUTH_FIELDS}
-    return {
+    normalized: Dict[str, Any] = {
         "transport": transport,
         "url_template": url_template,
         "header_templates": {k: header_templates[k] for k in sorted(header_templates)},
         "headers_helper_template": helper,
-        "oauth": oauth,
     }
+    if transport != "ws":
+        # ws is header-only per the documented Claude surface; its canonical pinned
+        # shape carries no oauth member at all (a ws spec with one refused above)
+        normalized["oauth"] = oauth
+    return normalized
 
 
 def source_fingerprint(spec: Dict[str, Any]) -> str:
@@ -666,21 +689,30 @@ def _validate_manifest(data: Any) -> None:
                 )
             if not isinstance(pin, dict) or not isinstance(pin.get("fingerprint"), str):
                 raise ValueError(f"manifest tool {server!r}/{name!r} has no fingerprint")
-            unknown_pin = set(pin) - {"fingerprint", "fields"}
-            if unknown_pin:
+            # canonical pin shape, exactly what the builder emits: BOTH members present
+            # ('fields' may be empty, never absent), nothing else
+            if set(pin) != {"fingerprint", "fields"}:
                 raise ValueError(
-                    f"manifest tool {server!r}/{name!r} carries undefined fields: "
-                    f"{sorted(unknown_pin)}"
+                    f"manifest tool {server!r}/{name!r} is not canonical: a pin is exactly "
+                    "{'fingerprint': ..., 'fields': {...}}"
                 )
             if not _DIGEST_RE.fullmatch(pin["fingerprint"]):
                 raise ValueError(
                     f"manifest tool {server!r}/{name!r} fingerprint is not "
                     "sha256:<64 lowercase hex> - a corrupt pin certifies nothing"
                 )
-            fields = pin.get("fields", {})
+            fields = pin["fields"]
             if not isinstance(fields, dict):
                 raise ValueError(
                     f"manifest tool {server!r}/{name!r} has a non-object 'fields' entry"
+                )
+            unknown_fields = set(fields) - set(_TRACKED_FIELDS)
+            if unknown_fields:
+                raise ValueError(
+                    f"manifest tool {server!r}/{name!r} 'fields' carries names outside the "
+                    f"tracked diagnostic set {sorted(_TRACKED_FIELDS)}: "
+                    f"{sorted(map(repr, unknown_fields))} - an undefined field hash has no "
+                    "defined diagnostic meaning"
                 )
             for field, digest in fields.items():
                 if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
@@ -758,7 +790,20 @@ def diff_manifest(
 
     checked = 0
     for server, tools in observed.items():
-        tools = tools or []
+        if not isinstance(tools, list):
+            # a malformed catalog value must refuse, never be truthiness-normalized to
+            # an empty tool list (which would read as a shrunk set: a mere WARNING)
+            findings.append(
+                Finding.fail(
+                    "mcp_malformed_catalog",
+                    severity="CRITICAL",
+                    message=f"server '{server}' catalog entry is {type(tools).__name__}, "
+                    "not a list of tool declarations; a malformed observation certifies "
+                    "nothing",
+                    server=server,
+                )
+            )
+            continue
         seen: Dict[str, dict] = {}
         for tool in tools:
             name = tool.get("name") if isinstance(tool, dict) else None
@@ -878,15 +923,21 @@ def diff_manifest(
 
 
 class McpObservation(NamedTuple):
-    """One complete observation of the MCP surface a manifest v5 pins.
+    """One COMPLETE observation of the MCP surface a manifest v5 pins.
 
-    ``catalog`` maps a server name to its declared tool list. ``sources`` maps a server
-    name to its launch/source specification (see :func:`normalize_source`); a server
-    absent from it is compared as catalog-only. ``instructions`` maps a server name to
-    ``{"observed": bool, "text": str | None}``; a server absent from it was NOT
-    observed for instructions, and if its pin carries instruction coverage that absence
-    REFUSES (an omitted observation must never read as verified). ``unverifiable``
-    names pinned servers that were declared but could not be observed at all.
+    A strict contract, not a convenience bag: :func:`diff_observation` refuses an
+    observation that is malformed or incomplete rather than comparing the subset it
+    happens to carry, because a partial comparison silently reads as a full one.
+
+    ``catalog`` maps every observed server name to its declared tool list.
+    ``sources`` maps EVERY catalog server to its source specification (see
+    :func:`normalize_source`); a dump-supplied catalog carries the explicit weak claim
+    ``{"transport": "external"}``, never an omission. ``instructions`` maps EVERY
+    catalog server to exactly ``{"observed": bool, "text": str | None}`` (``observed``
+    a real bool; ``text`` None when ``observed`` is false). ``unverifiable`` names
+    pinned servers that were declared but could not be observed at all. The maps may
+    be passed as None only for a wholly component-free call; any represented server
+    missing from ``sources`` or ``instructions`` is a CRITICAL refusal.
     """
 
     catalog: Dict[str, List[dict]]
@@ -895,45 +946,170 @@ class McpObservation(NamedTuple):
     unverifiable: Sequence[str] = ()
 
 
+def _validate_observation(observation: McpObservation) -> None:
+    """Structural validation of the observation itself; raises ``ValueError``.
+
+    A malformed observation is not evidence: comparing it would launder shape bugs
+    (a truthy string ``"false"``, a falsey ``{}`` catalog value) into drift verdicts.
+    Coverage gaps (a server missing a component) are adjudicated as Findings by
+    :func:`diff_observation`; *shape* violations refuse outright here.
+    """
+    if not isinstance(observation.catalog, dict):
+        raise ValueError("observation catalog must be a dict of {server: [tool, ...]}")
+    for server, tools in observation.catalog.items():
+        if not isinstance(server, str) or not server:
+            raise ValueError(
+                f"observation catalog server name must be a nonempty string, got {server!r}"
+            )
+        if not isinstance(tools, list):
+            raise ValueError(
+                f"observation catalog for server {server!r} must be a list of tool "
+                f"declarations, got {type(tools).__name__} - a malformed catalog value "
+                "must refuse, never normalize to an empty tool list"
+            )
+    for label, mapping in (
+        ("sources", observation.sources),
+        ("instructions", observation.instructions),
+    ):
+        if mapping is None:
+            continue
+        if not isinstance(mapping, dict):
+            raise ValueError(f"observation {label} must be a dict or None")
+        for server in mapping:
+            if not isinstance(server, str) or not server:
+                raise ValueError(
+                    f"observation {label} server name must be a nonempty string, got {server!r}"
+                )
+    for server, record in (observation.instructions or {}).items():
+        if not isinstance(record, dict) or set(record) != {"observed", "text"}:
+            raise ValueError(
+                f"instruction observation for server {server!r} must be exactly "
+                "{'observed': bool, 'text': str|None}"
+            )
+        if not isinstance(record["observed"], bool):
+            raise ValueError(
+                f"instruction observation for server {server!r}: 'observed' must be a real "
+                f"boolean, got {record['observed']!r} - truthiness is not observation"
+            )
+        if record["text"] is not None and not isinstance(record["text"], str):
+            raise ValueError(
+                f"instruction observation for server {server!r}: 'text' must be a string or None"
+            )
+        if not record["observed"] and record["text"] is not None:
+            raise ValueError(
+                f"instruction observation for server {server!r} is contradictory: "
+                "unobserved with text"
+            )
+    unverifiable = list(observation.unverifiable)
+    if len(set(unverifiable)) != len(unverifiable) or any(
+        not isinstance(name, str) or not name for name in unverifiable
+    ):
+        raise ValueError("observation unverifiable must be unique nonempty server names")
+
+
 def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> List[Finding]:
-    """The one omission-resistant manifest-v5 verify: every pinned surface, one call.
+    """The complete manifest-v5 verify: every pinned surface, one call, no silent subset.
 
-    Composes the three comparison primitives over a complete
-    :class:`McpObservation` so a programmatic caller cannot accidentally verify a
-    subset and read it as the whole:
+    Omission-resistance, stated exactly: for every server the observation REPRESENTS
+    (in ``catalog``, ``sources``, ``instructions``, or ``unverifiable``), all three
+    surfaces are adjudicated, and a missing component is a CRITICAL refusal, never a
+    weaker comparison. What this cannot see: a server the observation does not
+    represent at all is adjudicated only as the pinned-server-absent WARNING that
+    :func:`diff_manifest` records (an observation cannot prove the absence of servers
+    it never looked at - collect against the full config, as the CLI does).
 
-    1. the manifest itself is validated (:func:`load_manifest` shape rules);
-    2. every observed source specification with a pinned entry is compared
-       (:func:`diff_source`);
-    3. every pinned server that was observed has its instruction state compared
-       (:func:`diff_instructions`) - and a pin WITH instruction coverage verified
-       against an observation that carries none is a CRITICAL refusal, never a
-       silent pass, so leaving ``instructions`` out cannot weaken the verify;
-    4. the tool catalog is compared (:func:`diff_manifest`), including the
+    1. the observation's own shape is validated (:func:`_validate_observation`, a
+       ``ValueError`` on malformation - a truthy non-bool ``observed``, a non-list
+       catalog value, duplicate ``unverifiable`` names);
+    2. the manifest is validated (:func:`load_manifest` shape rules);
+    3. every represented server missing from the pin is a CRITICAL refusal, whichever
+       component it appears in (an unapproved server must not ride in as
+       source-only or instruction-only);
+    4. every catalog server's SOURCE observation is compared (:func:`diff_source`);
+       a catalog server with no source observation is a CRITICAL refusal - supply
+       the explicit weak claim ``{"transport": "external"}`` for dump catalogs;
+    5. every catalog server's INSTRUCTION state is compared
+       (:func:`diff_instructions`); a catalog server with no instruction record is a
+       CRITICAL refusal - the legacy weaker claim is the explicit
+       ``{"observed": False, "text": None}``, never an omission;
+    6. a pinned server represented only by source/instructions (no catalog entry) is
+       a CRITICAL refusal unless it is named ``unverifiable``;
+    7. the tool catalog is compared (:func:`diff_manifest`), including the
        ``unverifiable`` adjudication.
 
     ``recusal mcp verify`` routes through this function; call the lower-level
     primitives directly only when you deliberately want a partial comparison, and
     name that choice in your own claim.
     """
+    _validate_observation(observation)
     _validate_manifest(pinned)
     pinned_servers: Dict[str, Any] = pinned["servers"]
     sources = observation.sources or {}
     instructions = observation.instructions or {}
+    unverifiable = set(observation.unverifiable)
 
     findings: List[Finding] = []
-    for name in sorted(sources):
-        entry = pinned_servers.get(name)
-        if isinstance(entry, dict):
-            findings.extend(diff_source(name, entry, sources[name]))
-    observed_names = set(observation.catalog) | set(sources)
-    for name in sorted(observed_names):
-        entry = pinned_servers.get(name)
-        if isinstance(entry, dict):
-            record = instructions.get(name, {"observed": False, "text": None})
-            findings.extend(
-                diff_instructions(name, entry, bool(record.get("observed")), record.get("text"))
+
+    represented = set(observation.catalog) | set(sources) | set(instructions) | unverifiable
+    for name in sorted(represented - set(pinned_servers) - set(observation.catalog)):
+        # unpinned AND not in the catalog: diff_manifest never sees it, so the refusal
+        # must come from here (catalog-borne unpinned servers get diff_manifest's own)
+        findings.append(
+            Finding.fail(
+                "mcp_unpinned_server",
+                severity="CRITICAL",
+                message=f"server '{name}' appears in the observation "
+                "(source/instructions/unverifiable) but is not in the pinned manifest; "
+                "an unapproved server must not ride in outside the catalog",
+                server=name,
             )
+        )
+
+    for name in sorted(observation.catalog):
+        source = sources.get(name)
+        if source is None:
+            findings.append(
+                Finding.fail(
+                    "mcp_source_unobserved",
+                    severity="CRITICAL",
+                    message=f"server '{name}' was observed with no source observation; a "
+                    "complete manifest-v5 verify requires one (a dump-supplied catalog's "
+                    "explicit weak claim is {'transport': 'external'}, never an omission)",
+                    server=name,
+                )
+            )
+        elif isinstance(pinned_servers.get(name), dict):
+            findings.extend(diff_source(name, pinned_servers[name], source))
+        record = instructions.get(name)
+        if record is None:
+            findings.append(
+                Finding.fail(
+                    "mcp_instructions_unobserved",
+                    severity="CRITICAL",
+                    message=f"server '{name}' was observed with no instruction record; a "
+                    "complete manifest-v5 verify requires one (the legacy weaker claim is "
+                    "the explicit {'observed': False, 'text': None}, never an omission)",
+                    server=name,
+                )
+            )
+        elif isinstance(pinned_servers.get(name), dict):
+            findings.extend(
+                diff_instructions(name, pinned_servers[name], record["observed"], record["text"])
+            )
+
+    for name in sorted((set(sources) | set(instructions)) - set(observation.catalog)):
+        if name in pinned_servers and name not in unverifiable:
+            findings.append(
+                Finding.fail(
+                    "mcp_observation_incomplete",
+                    severity="CRITICAL",
+                    message=f"server '{name}' has a source/instruction observation but no "
+                    "catalog; a pinned server with a partial observation must be named "
+                    "unverifiable or observed completely, never adjudicated as merely absent",
+                    server=name,
+                )
+            )
+
     findings.extend(
         diff_manifest(pinned, observation.catalog, unverifiable=tuple(observation.unverifiable))
     )
@@ -1260,5 +1436,14 @@ def manifest_policy(
         verified (or None when it verified none)."""
         return {"manifest_sha256": _digest_var.get()}
 
+    def _reset_control_identity() -> None:
+        """Called by the hook adapter at the START of an invocation, BEFORE event
+        parsing: a malformed event never reaches ``_policy`` (which also clears), so
+        without this reset its audit record - written from the same reused context -
+        would inherit the digest of the last VALID adjudication. An event that never
+        reached the policy must never carry the policy's provenance."""
+        _digest_var.set(None)
+
     _policy.get_control_identity = _get_control_identity  # type: ignore[attr-defined]
+    _policy.reset_control_identity = _reset_control_identity  # type: ignore[attr-defined]
     return _policy

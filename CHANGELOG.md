@@ -4,18 +4,93 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.5.4] - 2026-07-12
+## [0.5.5] - 2026-07-12
 
-The final 0.5.x correctness patch, mandated by a seventh external review (the first
-whose Claude-behavior claims all verified against the official documentation without
-correction) before 0.6.0 begins. Scope: make the manifest-v5 guarantee
-omission-resistant on every public verification path, make audit provenance safe under
-concurrent library use, complete the rich single-server observation path, hash-lock
-the release toolchain, and correct the remaining statements that exceeded the
-implementation - including 0.5.3's own.
+A narrowly scoped correctness patch mandated by an eighth external review:
+complete-observation validation, malformed-event provenance reset, canonical tool-pin
+fields, and WebSocket configuration fidelity.
 
 ### Fixed
-- **One omission-resistant manifest-v5 verify: `diff_observation` (P0).**
+- **`McpObservation` is a strict complete-observation contract (P0).** As shipped in
+  0.5.4, `diff_observation` compared only the components the caller supplied: omitting
+  `sources` bypassed launch/remote identity entirely (matching catalog plus matching
+  instructions passed against a pin that carries a stdio or HTTP source), a truthy
+  non-bool `observed` was coerced to "observed", falsey catalog values normalized to
+  empty tool lists (a malformed observation read as a mere shrunk-set WARNING), and
+  servers appearing only in `sources`/`instructions`/`unverifiable` escaped
+  adjudication. Now the observation's own shape is validated before any comparison
+  (`ValueError` on malformation: non-list catalog values, non-bool `observed`,
+  records other than exactly `{"observed": bool, "text": str|None}`, duplicate or
+  empty `unverifiable` names), every catalog server requires an explicit source
+  observation (`mcp_source_unobserved` CRITICAL; the dump path's explicit weak claim
+  is `{"transport": "external"}`, never an omission) and an explicit instruction
+  record (the legacy weaker claim is the explicit `{"observed": false, "text": null}`),
+  an unpinned server in ANY component is a CRITICAL refusal, and a pinned server
+  represented only partially must be named `unverifiable` or is refused as an
+  incomplete observation. `diff_manifest` refuses malformed catalog values
+  (`mcp_malformed_catalog`) instead of truthiness-normalizing them. The named
+  boundary: a server the observation does not represent at all is still only the
+  pinned-server-absent WARNING, because an observation cannot prove the absence of
+  servers it never looked at - collect against the full config, as the CLI does.
+- **A malformed hook event cannot inherit prior manifest provenance (P0).** The
+  ContextVar reset ran only when the policy executed, and a malformed event fails
+  BEFORE the policy runs - so in a reused process (one thread, one policy object) a
+  malformed event's audit record inherited the digest of the last valid adjudication.
+  `manifest_policy` now exposes `reset_control_identity()`, and
+  `run_pretooluse_hook` calls it before parsing the envelope: an event that never
+  reached the policy never carries the policy's provenance. Regression-tested across
+  six malformed-envelope shapes, in fail-closed and fail-open modes, and with the
+  first call unaudited. (Claude Code's command hooks run a fresh process per
+  invocation; this affected the reusable library path.)
+- **Tool pins are fully canonical (P1).** A pin is exactly
+  `{"fingerprint": ..., "fields": {...}}` - a missing `fields` member refuses, and
+  `fields` names must come from the tracked diagnostic set (an undefined field hash
+  has no defined diagnostic meaning). Schema integrity: the complete tool fingerprint
+  was already the authoritative declaration-integrity value.
+- **WebSocket sources are header-only (P1).** Claude Code documents that HTTP
+  supports OAuth "while WebSocket supports neither" (ws authentication is
+  header-only), but the parser accepted and pinned `oauth` for `ws` entries - a shape
+  Claude does not support, misrepresenting the mirrored configuration surface. A `ws`
+  entry or source carrying `oauth` now refuses in both `.mcp.json` parsing and
+  `normalize_source`, and the canonical ws source shape carries no `oauth` member at
+  all. (The docs establish OAuth for HTTP and are silent on SSE; `sse` keeps the
+  HTTP shape until the documentation says otherwise.) Existing ws pins, if any,
+  re-pin under the corrected shape.
+
+### Documentation
+- 0.5.4's overstatements amended in place (changelog and published release notes):
+  "the final 0.5.x correctness patch" (history describes, it does not predict),
+  "omission-resistant on every public verification path", the review-7
+  no-corrections claim (this release's own parser carried the ws-oauth mismatch),
+  and "complete transitive build+publish closure" narrowed to the Python build and
+  metadata-check environment (publishing is a separately SHA-pinned action via
+  Trusted Publishing, outside the Python lock - so stated in the lock header and
+  workflow too).
+- The README module table names server-instruction integrity and the outside-manifest
+  list alongside the tool catalog; the ws header-only boundary is stated with the
+  OAuth scope boundary; the last unqualified determinism shorthand ("same evidence,
+  same policy, same version, same verdict" in the demo section) is fully qualified;
+  and the pin CLI help names tool declarations, server instructions, and source
+  configuration warnings instead of "descriptions".
+
+## [0.5.4] - 2026-07-12
+
+A correctness and release-rigor patch mandated by a seventh external review: unified
+manifest-v5 observation verification, rich single-server instruction observations
+preserved, normal manifest-policy provenance made context-local under concurrent
+reuse, manifest schemas tightened, and the Python build environment hash-locked.
+*(Amended 2026-07-12: this introduction originally said "the final 0.5.x correctness
+patch", claimed the verify was "omission-resistant on every public verification path"
+- an eighth review showed source identity could still be omitted and component shapes
+were not validated - and called review 7 "the first whose Claude-behavior claims all
+verified without correction", while 0.5.4's own parser accepted OAuth for WebSocket
+entries, a shape Claude documents as unsupported. Release history describes what
+changed; it does not predict that no further correction will be found. See 0.5.5.)*
+
+### Fixed
+- **A unified manifest-v5 verify: `diff_observation` (P0).** *(Amended 2026-07-12: as
+  shipped in 0.5.4 this was omission-resistant for server-INSTRUCTION coverage only;
+  source-observation omission and component-shape validation were closed in 0.5.5.)*
   `diff_manifest` is catalog-only, so a programmatic caller could verify unchanged
   tools and read the clean result as a full v5 verify while the server's instructions
   had been rewritten - the CLI composed the three primitives correctly, but the public
@@ -55,9 +130,12 @@ implementation - including 0.5.3's own.
   refuse at every level.
 
 ### Changed
-- **The release dependency tree is hash-locked.** `release-requirements.txt` pins the
-  complete transitive build+publish closure for the release runner (ubuntu/cp312, 33
-  packages) with the sha256 of every distribution file PyPI serves per release;
+- **The release build environment is hash-locked.** `release-requirements.txt` pins
+  the Python build and metadata-check dependency environment for the release runner
+  (ubuntu/cp312, 33 packages) with the sha256 of every distribution file PyPI serves
+  per release *(amended 2026-07-12: originally "the complete transitive build+publish
+  closure" - publishing is performed by a separately SHA-pinned GitHub Action via
+  Trusted Publishing, outside this Python lock)*;
   the release workflow installs it with `--require-hashes` and builds with
   `--no-isolation`, so no unpinned PEP 517 resolution happens in the release path. A
   CI job proves the locked environment installs and builds on every push, before any

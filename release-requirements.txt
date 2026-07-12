@@ -1,4 +1,6 @@
-# The complete release-toolchain dependency closure, hash-locked.
+# The Python build and metadata-check dependency environment, hash-locked.
+# (Publishing is performed by a separately SHA-pinned GitHub Action via Trusted
+# Publishing; pip and the runner image are outside this lock.)
 #
 # Environment: the release runner exactly - ubuntu-latest, CPython 3.12
 # (linux/x86_64). Regenerate deliberately for any other environment.
