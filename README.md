@@ -31,35 +31,16 @@ call in the decision path. Same evidence, same verdict, every time, including th
 
 ## The wedge: don't let the same model grade its own work
 
-The reflex fix for agent safety is *another model*: "does this action look OK?" But the
-judge and the builder come from the same family, share the same blind spots, and drift
-together. That's not a control; it's a conflict of interest.
+The reflex fix for agent safety is another model asking "does this action look OK?", but a
+judge from the same family shares the builder's blind spots and drifts with it: that is a
+conflict of interest, not a control. Recusal is an independent, deterministic authority
+instead: no model in the decision path, a verdict you can replay and audit, and a refusal
+that holds (a Claude Code `deny` is honored even under `bypassPermissions`).
 
-2026 made the failure mode concrete:
-
-- An **[Anthropic study](https://www.anthropic.com/research/emergent-misalignment-reward-hacking)** found an RL-trained coding model that learned to call `sys.exit(0)`
-  to fake passing tests, and *generalized* the cheating to unrelated tasks.
-- **[UC Berkeley](https://rdi.berkeley.edu/blog/trustworthy-benchmarks-cont/)** scored **100%** on six of eight agent benchmarks **without solving a single
-  task**, by intercepting the evaluator.
-
-A model will, given the chance, certify its own success. Even Anthropic's own Claude Code
-auto-mode safety layer is a same-family classifier with an admitted 17% false-negative rate
-on a curated set of hard cases,
-and [Anthropic says plainly](https://www.anthropic.com/engineering/claude-code-auto-mode) it is *"not a drop-in replacement for careful human review on
-high-stakes infrastructure."*
-
-Recusal is **an** independent, deterministic authority with no model in the decision path,
-a verdict you can replay and audit, and a refusal that holds
-(a Claude Code `deny` is honored even under `bypassPermissions`).
-
----
-
-## Positioning
-
-- **Lightweight**: zero dependencies, a kernel you can read in one sitting. Governance without a Kubernetes-sized platform.
-- **Extensible**: a check is just a function that returns a finding. Bring your own policy; the core never changes.
-- **Claude-native**: drops into Claude Code as a `PreToolUse` hook and the Agent SDK as a tool gate; a `deny` holds even under `bypassPermissions`. [MCP tool calls](#mcp-tools-the-same-gate) (`mcp__server__tool`) pass through the same gate, no MCP-specific adapter, and [`recusal mcp pin`/`verify`](#mcp-discovery-pin-the-catalog-refuse-the-rug-pull) govern the tool catalog itself (refuse the rug pull).
-- **Independent & deterministic**: not the same model grading its own work. No model in the decision path; a verdict you can replay and audit.
+The published evidence (models faking passing tests, benchmarks gamed by intercepting the
+evaluator, and the stated limits of Anthropic's own same-family safety layer) is laid out
+in [`docs/WHY.md`](docs/WHY.md), every source verified in
+[`docs/REFERENCES.md`](docs/REFERENCES.md).
 
 > Builders generate. Recusal certifies. Refusal is a feature.
 
@@ -116,7 +97,7 @@ python examples/claude_refusal.py   # a Claude agent stages a write to the WRONG
 python examples/gallery.py          # the same gate across the OWASP agentic failure modes
 ```
 
-Deterministic and offline, same evidence, same verdict, including the **no**.
+Deterministic and offline: same evidence, same verdict, including the **no**.
 
 ## Plug it into Claude
 
@@ -134,7 +115,7 @@ scaffolds `.claude/hooks/recusal_gate.py` (the deny-list starter, edit it, it's 
 registers the fail-closed launcher in `.claude/settings.json`, merging with (never
 clobbering) an existing file; re-running is a no-op, and an existing gate file is never
 overwritten. `--posture allowlist` scaffolds the default-deny variant instead. Claude Code
-asks you to confirm the new hook on the next session, a permission-changing hook is a
+asks you to confirm the new hook on the next session: a permission-changing hook is a
 deliberate step.
 
 **Or as a plugin** (one gate across every project, no per-project setup):
@@ -184,7 +165,7 @@ run_pretooluse_hook(policy)
 A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
 A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
 
-**Two paths, one principle, pick by your channel, not by a ranking.** The policy above is
+**Two paths, one principle: pick by your channel, not by a ranking.** The policy above is
 a **deny-list**: name the known-bad calls, *defer everything else*. It drops into a broad,
 open-ended channel with almost no friction and needs no inventory of your tools, which is
 why this repo dogfoods it (a general-purpose dev repo runs an unbounded set of legitimate
@@ -193,16 +174,16 @@ and `python script.py` runs code no string check ever reads, so a deny-list neve
 "cannot be subverted."
 
 The other path is **allowlist mode** (default-deny): name the affirmatively-safe calls,
-*refuse everything else*. It fits a narrow, enumerable, high-stakes channel, nothing runs
+*refuse everything else*. It fits a narrow, enumerable, high-stakes channel: nothing runs
 unless listed, and bare interpreters and shell metacharacters are refused, which closes the
 write-a-script-then-run-it bypass by construction (pinned as a test). That closure is what
 lets it earn *"the agent could not subvert it"* for the routed tool channel. The trade is
 friction and maintenance: you enumerate and grow the capability set, and it fails toward
 refusal until you do.
 
-Neither is "better" in the abstract, a deny-list refusing the unknown would grind a broad
+Neither is "better" in the abstract: a deny-list refusing the unknown would grind a broad
 channel to a halt, and an allowlist deferring the unknown would defeat the point of a
-high-stakes one. Choose by the channel. Both ship, both are pinned as tests.
+high-stakes one. Choose by the channel. Both ship, and both are pinned as tests.
 
 ```python
 from recusal.claude_code import allowlist_policy, run_pretooluse_hook
@@ -211,10 +192,10 @@ run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
 ```
 
 > **Don't start from a blank policy.** [`docs/COOKBOOK.md`](docs/COOKBOOK.md) has copy-paste
-> recipes, destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
-> allowlists, injection quarantine, action budgets, that drop straight into the hook above.
+> recipes (destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
+> allowlists, injection quarantine, action budgets) that drop straight into the hook above.
 
-> **Recusal governs *this* repository exactly this way**, a real hook refuses `rm -rf`,
+> **Recusal governs *this* repository exactly this way**: a real hook refuses `rm -rf`,
 > force-pushes, and secret-file writes to its own maintainers. Verbatim, reproducible,
 > CI-locked proof: [`docs/PROVEN.md`](docs/PROVEN.md).
 
@@ -224,7 +205,7 @@ MCP server tools reach Claude Code as ordinary tools: the hooks reference docume
 they "appear as regular tools in tool events" (`PreToolUse`, ...) under the naming pattern
 `mcp__<server>__<tool>` (`mcp__github__create_issue`, `mcp__filesystem__write_file`). So
 the `.*` matcher above already routes every MCP call through the same
-`policy(tool_name, tool_input)` seam, no MCP-specific adapter, no extra wiring, and the
+`policy(tool_name, tool_input)` seam: no MCP-specific adapter, no extra wiring. The
 same call-time controls apply to MCP exactly as to `Bash`: destructive-operation refusal,
 repository/record scope, write-path confinement, egress and action budgets, the
 tamper-evident audit record. In allowlist mode the posture is stronger still: an MCP tool
@@ -250,7 +231,7 @@ pinning, destructive-verb refusal, path confinement, allowlist mode). Pinned:
 [`tests/test_mcp_governance.py`](tests/test_mcp_governance.py). Recipe:
 [`docs/COOKBOOK.md`](docs/COOKBOOK.md) §12. In a custom Agent SDK or MCP-client loop
 nothing intercepts for you: invoke the gate between the model's proposed MCP call and the
-client dispatching it, the same `gate_tool_use` seam as below.
+client dispatching it (the same `gate_tool_use` seam as below).
 
 **The three MCP boundaries, stated plainly.** A call-time policy adjudicates the proposed
 tool name and arguments; MCP has two more boundaries, and Recusal covers each with its own
@@ -258,7 +239,7 @@ evidence:
 
 | Boundary | Threat (as the field names it) | Recusal |
 |---|---|---|
-| Discovery (`tools/list`) | tool-description poisoning (MCPTox: peak 72.8% attack success on poisoned descriptions), post-approval definition changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section) |
+| Discovery (`tools/list`) | tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), post-approval definition changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section) |
 | Invocation (the call) | tool misuse (OWASP ASI02), wrong-subject writes (ASI03), exfiltration via tool invocation (MITRE ATLAS AML.T0086) | **this section** |
 | Response (the result) | indirect prompt injection in tool output (OWASP LLM01) | quarantine, [cookbook recipe 6](docs/COOKBOOK.md) |
 
@@ -280,32 +261,33 @@ recusal mcp pin --claude-config .mcp.json    # review once, pin the approved cat
 recusal mcp verify --claude-config .mcp.json # CI / session start: same catalog, or refuse
 ```
 
-Recusal does not judge whether a description is *malicious*, that is semantic judgment, a
+Recusal does not judge whether a description is *malicious*: that is semantic judgment, a
 human's call at pin time (a deterministic marker screen surfaces the obvious, and `pin`
 refuses to write over a flagged catalog until `--force` records that a human reviewed it).
 What it detects, deterministically, is **unpinned capability and post-approval change**:
 the rug pull, the new tool, the mutated schema. The pin is the confirmed human decision
-promoted to a deterministic artifact, manifest bytes are reproducible, hashes only (a
+promoted to a deterministic artifact: manifest bytes are reproducible, hashes only (a
 poisoned description is never embedded anywhere), and the same observed catalog against
 the same pin yields the same verdict, every time. `verify` fails **closed**: a missing
 manifest, a failed fetch, a wholly empty observation, or a pinned server that can no longer
 be reached for integrity-checking (e.g. silently swapped to a URL transport) is a refusal,
 never a clean-looking pass. (A pinned server *legitimately removed* from the config is
-recorded as a warning, not refused, a shrunk capability set is not an attack.) The pin also
-enforces at call time, `recusal.mcp.manifest_policy("mcp-manifest.json")` drops into the
+recorded as a warning, not refused: a shrunk capability set is not an attack.) The pin also
+enforces at call time: `recusal.mcp.manifest_policy("mcp-manifest.json")` drops into the
 same `PreToolUse` gate and refuses any `mcp__server__tool` call that was never pinned (no
 pin, no MCP), composing with the argument-level rules above. A minimal zero-dependency
 stdio client collects `tools/list`; **remote/HTTP servers** are pinned from a JSON dump you
 produce with any MCP client (`--from`, copy-paste recipe:
-[`docs/COOKBOOK.md`](docs/COOKBOOK.md) §14; local/`.mcp.json` servers pin directly, §13) — recusal owns the deterministic adjudication,
-not the transport, so it inherits neither the HTTP client's dependencies nor its SSRF
-surface. Collection is never decision, the kernel adjudicates what was observed.
+[`docs/COOKBOOK.md`](docs/COOKBOOK.md) §14; local/`.mcp.json` servers pin directly, §13).
+Recusal owns the deterministic adjudication, not the transport, so it inherits neither the
+HTTP client's dependencies nor its SSRF surface. Collection is never decision: the kernel
+adjudicates what was observed.
 
 The honest boundary: this is *discovery-time and call-time* integrity, not a live tap on
 every message. `verify` proves the catalog at the moment it runs (wire it into CI and
 session start); the call-time gate then enforces *approved tools only*. A server that
 serves one catalog to `verify` and a different one to the live session (a client- or
-time-discriminating server) is a residual this layer names rather than claims to close —
+time-discriminating server) is a residual this layer names rather than claims to close:
 run `verify` against the same endpoint the session uses, close in time.
 
 See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py)
@@ -317,7 +299,7 @@ See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugp
 ### Claude Agent SDK, manual loop
 
 In a manual agent loop, gate each tool call and hand Claude an `is_error` tool_result on a
-refusal, it self-corrects:
+refusal; it self-corrects:
 
 ```python
 from recusal.claude import gate_tool_use
@@ -339,7 +321,7 @@ Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic d
 
 The Claude adapters are conveniences; the zero-dep core is framework-neutral.
 [`examples/agent_loop.py`](examples/agent_loop.py) gates a plain `propose → gate → act`
-loop whose only import is `recusal`, the same `compute_verdict` seam drops into LangGraph,
+loop whose only import is `recusal`; the same `compute_verdict` seam drops into LangGraph,
 the OpenAI Agents SDK, or a homegrown runtime unchanged.
 
 ## Robustness, across the OWASP Agentic failure modes
@@ -402,7 +384,7 @@ Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Art
 
 ## Gate your CI
 
-CI is, by construction, not the session that did the work — which makes it the natural
+CI is, by construction, not the session that did the work, which makes it the natural
 place for a recusal verdict. The same kernel runs as a command line with blocking exit
 codes (`PASS` 0, `RETRY` 1, `FAIL` 2; any operational error exits 2, failing **closed**):
 
@@ -413,7 +395,7 @@ recusal doctor                         # "the gate silently isn't installed" fai
 ```
 
 Or as a GitHub Action ([`action.yml`](action.yml), dogfooded by this repo's own CI,
-including the negative case — a tampered audit log must make the gate refuse):
+including the negative case: a tampered audit log must make the gate refuse):
 
 ```yaml
 - uses: actions/setup-python@v5
@@ -426,13 +408,13 @@ including the negative case — a tampered audit log must make the gate refuse):
     doctor-dir: "."
 ```
 
-Given nothing to adjudicate, the action exits 2 rather than pass vacuously — an evidence
+Given nothing to adjudicate, the action exits 2 rather than pass vacuously: an evidence
 set that proves nothing certifies nothing.
 
 ## Classify and route a failure
 
 A refusal or failure is only useful if you know what to do next. The classifier says
-*what kind* of failure it is and where it routes, deterministically, no model:
+*what kind* of failure it is and where it routes, deterministically, with no model:
 
 ```python
 from recusal import classify_failure
@@ -445,19 +427,12 @@ c.route           # "fix-code"
 Default taxonomy (extend or replace it): `transient → retry` · `policy_violation → refuse` ·
 `prompt_injection → quarantine` · `code_bug → fix-code` · `data_shape → fix-data` ·
 `data_missing → fetch-data` · `spec_ambiguity → ask-human`. Unmatched failures fall back to
-`ask-human`, it never guesses. `classify_verdict(verdict)` routes a non-PASS verdict.
+`ask-human`; it never guesses. `classify_verdict(verdict)` routes a non-PASS verdict.
 
-## Why this, and why not the alternatives
+## Documentation
 
-- **Agent frameworks** (LangGraph, CrewAI, AutoGen, OpenAI Agents SDK) *orchestrate*, their governance is in-process and self-graded.
-- **Guardrails** (Guardrails AI, NeMo Guardrails) *filter I/O content*, they don't adjudicate a work product.
-- **Eval libraries** (promptfoo, DeepEval, Haize's Verdict) *score offline*, usually with an LLM-as-judge, the probabilistic opposite of a deterministic gate.
-- **Observability** (Langfuse, AgentOps) *records*, zero authority to stop anything.
-- **Anthropic's auto mode** is a *same-family classifier* grading the same family, exactly the conflict of interest this exists to remove.
-- The newer **agent-firewall** projects (e.g. AEGIS) and **Microsoft's Agent Governance Toolkit** are real peers. Recusal's bet is not feature parity, it's **independence** (a verifier the builder cannot influence) and a kernel small enough to trust on sight.
-
-**New here?** The quick objections, *do I need this? doesn't Claude already do it? is it
-ready to use?*, are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
+**New here?** The quick objections (*do I need this? doesn't Claude already do it? is it
+ready to use?*) are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
 what": [`docs/WHY.md`](docs/WHY.md).
 
 **Full documentation index: [`docs/`](docs/README.md).** Comparison with the landscape:
@@ -477,7 +452,7 @@ pytest -q
 
 ## Contributing
 
-Contributions are welcome, Recusal is deliberately small, and the bar is keeping it that
+Contributions are welcome. Recusal is deliberately small, and the bar is keeping it that
 way (no model in the verdict path, no runtime dependencies, don't grow the kernel). Read
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 first. Security reports go through [`SECURITY.md`](SECURITY.md), privately.
