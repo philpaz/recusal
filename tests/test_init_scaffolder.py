@@ -15,8 +15,12 @@ import sys
 import pytest
 
 from recusal.__main__ import (
+    _WINDOWS,
     GATE_FILENAME,
     LAUNCHER_COMMAND,
+    LAUNCHER_COMMAND_POSIX,
+    LAUNCHER_COMMAND_POWERSHELL,
+    _launcher_platform_findings,
     gate_source,
     init,
     main,
@@ -24,6 +28,10 @@ from recusal.__main__ import (
 )
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: What `launcher="auto"` (the default) registers on THIS host: PowerShell on Windows
+#: (present with or without Git Bash), the POSIX loop everywhere else.
+HOST_LAUNCHER = LAUNCHER_COMMAND_POWERSHELL if _WINDOWS else LAUNCHER_COMMAND_POSIX
 
 
 def _run_init(tmp_path, *argv):
@@ -90,7 +98,7 @@ def test_fresh_scaffold_creates_gate_and_settings(tmp_path):
     assert rc == 0
     with open(_settings_path(tmp_path), encoding="utf-8") as f:
         settings = json.load(f)
-    assert settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == LAUNCHER_COMMAND
+    assert settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == HOST_LAUNCHER
     with open(_gate_path(tmp_path), encoding="utf-8") as f:
         src = f.read()
     assert "deny_list_policy" in src
@@ -208,7 +216,7 @@ def test_merges_into_existing_settings_preserving_content(tmp_path):
     assert merged["model"] == "opus"
     assert merged["hooks"]["PostToolUse"] == existing["hooks"]["PostToolUse"]
     assert merged["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo pre"
-    assert merged["hooks"]["PreToolUse"][1]["hooks"][0]["command"] == LAUNCHER_COMMAND
+    assert merged["hooks"]["PreToolUse"][1]["hooks"][0]["command"] == HOST_LAUNCHER
 
 
 def test_refuses_unparseable_settings_and_leaves_bytes_untouched(tmp_path):
@@ -226,7 +234,7 @@ def test_refuses_unparseable_settings_and_leaves_bytes_untouched(tmp_path):
     # the manual snippet is complete enough to paste: valid JSON carrying the launcher
     snippet = out[out.index("{") :].strip()
     pasted = json.loads(snippet)
-    assert pasted["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == LAUNCHER_COMMAND
+    assert pasted["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == HOST_LAUNCHER
 
 
 @pytest.mark.parametrize(
@@ -255,7 +263,87 @@ def test_merge_settings_statuses():
     assert merge_settings('"a string"') == (None, "unexpected-shape")
     merged, status3 = merge_settings("{}")
     assert status3 == "merged"
-    assert json.loads(merged)["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == LAUNCHER_COMMAND
+    assert json.loads(merged)["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == HOST_LAUNCHER
+
+
+# --- launcher selection: the P0 this exists for (POSIX under PowerShell fails OPEN) --------
+
+
+def test_explicit_launcher_modes():
+    posix = json.loads(merge_settings(None, launcher="posix")[0])["hooks"]["PreToolUse"]
+    assert len(posix) == 1
+    assert posix[0]["hooks"][0]["command"] == LAUNCHER_COMMAND_POSIX
+    assert "shell" not in posix[0]["hooks"][0]
+
+    ps = json.loads(merge_settings(None, launcher="powershell")[0])["hooks"]["PreToolUse"]
+    assert len(ps) == 1
+    assert ps[0]["hooks"][0]["command"] == LAUNCHER_COMMAND_POWERSHELL
+    # load-bearing: without the explicit shell, Git Bash (when installed) would try to
+    # parse PowerShell and fail with a NON-blocking exit code.
+    assert ps[0]["hooks"][0]["shell"] == "powershell"
+
+    both = json.loads(merge_settings(None, launcher="both")[0])["hooks"]["PreToolUse"]
+    assert [g["hooks"][0]["command"] for g in both] == [
+        LAUNCHER_COMMAND_POSIX,
+        LAUNCHER_COMMAND_POWERSHELL,
+    ]
+
+
+def test_both_launchers_coerce_every_failure_to_the_blocking_exit_code():
+    for launcher in (LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL):
+        assert launcher.count("exit 2") == 2  # gate-crash path AND no-interpreter path
+        assert "recusal_gate.py" in launcher
+
+
+def _hook(command, **extra):
+    return {"type": "command", "command": command, **extra}
+
+
+def test_doctor_flags_a_powershell_launcher_without_the_shell_key():
+    findings = _launcher_platform_findings(
+        [_hook(LAUNCHER_COMMAND_POWERSHELL)]  # no "shell": "powershell"
+    )
+    assert any(
+        f.check == "launcher_shell_strategy" and not f.passed and f.severity.value == "CRITICAL"
+        for f in findings
+    )
+
+
+def test_doctor_flags_posix_only_on_windows_without_bash(monkeypatch):
+    import recusal.__main__ as m
+
+    monkeypatch.setattr(m, "_WINDOWS", True)
+    monkeypatch.setattr(m.shutil, "which", lambda name: None)
+    findings = _launcher_platform_findings([_hook(LAUNCHER_COMMAND_POSIX)])
+    bad = [f for f in findings if f.check == "launcher_shell_strategy" and not f.passed]
+    assert bad and bad[0].severity.value == "CRITICAL" and "FAILS OPEN" in bad[0].message
+
+
+def test_doctor_warns_posix_only_on_windows_with_bash(monkeypatch):
+    import recusal.__main__ as m
+
+    monkeypatch.setattr(m, "_WINDOWS", True)
+    monkeypatch.setattr(m.shutil, "which", lambda name: "C:/Program Files/Git/bin/bash.exe")
+    findings = _launcher_platform_findings([_hook(LAUNCHER_COMMAND_POSIX)])
+    bad = [f for f in findings if f.check == "launcher_shell_strategy" and not f.passed]
+    assert bad and bad[0].severity.value == "WARNING"
+
+
+def test_doctor_flags_powershell_only_on_posix(monkeypatch):
+    import recusal.__main__ as m
+
+    monkeypatch.setattr(m, "_WINDOWS", False)
+    findings = _launcher_platform_findings([_hook(LAUNCHER_COMMAND_POWERSHELL, shell="powershell")])
+    bad = [f for f in findings if f.check == "launcher_shell_strategy" and not f.passed]
+    assert bad and bad[0].severity.value == "CRITICAL"
+
+
+def test_doctor_accepts_a_matched_strategy(monkeypatch):
+    import recusal.__main__ as m
+
+    monkeypatch.setattr(m, "_WINDOWS", True)
+    findings = _launcher_platform_findings([_hook(LAUNCHER_COMMAND_POWERSHELL, shell="powershell")])
+    assert all(f.passed for f in findings if f.check == "launcher_shell_strategy")
 
 
 # --- CLI surface -----------------------------------------------------------------------------

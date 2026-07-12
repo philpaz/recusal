@@ -49,27 +49,33 @@ inputs:
     description: "Deliberate override: install this recusal version from PyPI instead of the source bundled with the selected action ref. Leave empty for the default provenance (action ref = implementation)."
     required: false
     default: ""
+  use-installed:
+    description: "Deliberate override: set 'true' to keep an already-importable recusal (e.g. a checkout installed with `pip install -e .`) instead of the action ref's bundled source. Names the provenance trade explicitly; default false."
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
   steps:
-    # Provenance: `uses: philpaz/recusal@<ref>` must select the implementation that runs.
-    # The default installs the package bundled with the selected action ref
-    # ($GITHUB_ACTION_PATH is that ref's checkout), never "latest from PyPI", so pinning
-    # the action pins the code and a rollback of the ref rolls back the gate. A job that
-    # already installed recusal (e.g. `pip install -e .` on a checkout) keeps it; an
-    # explicit `version:` input beats both, as the one deliberate escape hatch.
+    # Provenance: `uses: philpaz/recusal@<ref>` selects the implementation that runs.
+    # The default FORCE-installs the package bundled with the selected action ref
+    # ($GITHUB_ACTION_PATH is that ref's checkout) - never "latest from PyPI", and never
+    # a package that happened to be lying on the runner - so pinning the action pins the
+    # code and a rollback of the ref rolls back the gate. The two escape hatches are
+    # explicit inputs: `version:` (a named PyPI release) and `use-installed: "true"`
+    # (keep a deliberately preinstalled checkout, e.g. this repo's own dogfood job).
     - name: Install recusal
       shell: bash
       env:
         RECUSAL_VERSION: ${{ inputs.version }}
+        USE_INSTALLED: ${{ inputs['use-installed'] }}
       run: |
         if [ -n "$RECUSAL_VERSION" ]; then
-          python -m pip install --quiet "recusal==$RECUSAL_VERSION"
-        elif python -c "import recusal" 2>/dev/null; then
-          echo "recusal already installed: $(python -m recusal --version)"
+          python -m pip install --quiet --force-reinstall "recusal==$RECUSAL_VERSION"
+        elif [ "$USE_INSTALLED" = "true" ] && python -c "import recusal" 2>/dev/null; then
+          echo "use-installed: keeping $(python -m recusal --version)"
         else
-          python -m pip install --quiet "$GITHUB_ACTION_PATH"
+          python -m pip install --quiet --force-reinstall --no-deps "$GITHUB_ACTION_PATH"
         fi
 
     - name: Adjudicate

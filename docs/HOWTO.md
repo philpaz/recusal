@@ -32,8 +32,13 @@ exit into `exit 2`, the one exit code Claude Code treats as **blocking**. So a m
 interpreter, a too-old one, *and* a hook that fails to run all refuse the tool call instead
 of waving it through, it fails **closed** on every failure mode, not just the absent-python
 one. (Deny and defer both exit `0`, so any nonzero genuinely means "the hook did not run.")
-On Windows, Claude Code runs hook commands under Git Bash, so this POSIX one-liner is
-portable. Verify your install end-to-end before trusting it:
+On Windows, Claude Code runs shell-form hooks under Git Bash when it is installed and
+**falls back to PowerShell when it is not**, where this POSIX one-liner is a parse error
+with a non-blocking exit code - the gate silently disables. `recusal init` registers a
+PowerShell-native launcher (explicit `"shell": "powershell"`) on Windows instead; use
+`--launcher both` for a settings.json shared across operating systems, and `recusal
+doctor` validates the registered launcher against the host. Verify your install
+end-to-end before trusting it:
 
 ```bash
 echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python .claude/hooks/my_gate.py

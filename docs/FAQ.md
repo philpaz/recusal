@@ -55,9 +55,9 @@ action is refused terminally. The loop keeps its autonomy; it just can't certify
 An LLM judge is a *probabilistic* verifier: it gives different answers to the same input
 on a different day or model version, can be prompt-injected, and can't be replayed. For
 the thing empowered to **refuse**, that's the wrong trade. A deterministic verdict can be
-unit-tested, diffed, logged, and explained to an auditor or an on-call engineer at 3am,
-*same evidence in, same verdict out, forever.* You can still use a model **upstream** to
-gather evidence; you just don't let it sit **inside** the decision.
+unit-tested, diffed, logged, and explained to an auditor or an on-call engineer at 3am:
+*same evidence, same policy, same version, same verdict.* You can still use a model
+**upstream** to gather evidence; you just don't let it sit **inside** the decision.
 
 ## Where does the "evidence" come from? Does Recusal gather it?
 

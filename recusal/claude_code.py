@@ -21,7 +21,13 @@ than a bare ``python3 ...``: Claude Code treats a hook whose command fails to *l
 gate on any host without a ``python3`` on PATH (Windows, and any box where the py3 is
 ``python``). The loop runs the first ``python3``/``python``/``py`` that is >=3.9 and coerces
 ANY nonzero exit -- missing interpreter, wrong version, or a hook that fails to run -- into
-``exit 2``, the one exit code Claude Code treats as *blocking*, so it fails **closed**::
+``exit 2``, the one exit code Claude Code treats as *blocking*, so it fails **closed**.
+
+**Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
+falls back to PowerShell when it is not - where this POSIX loop is a *parse error* with a
+non-blocking exit code, i.e. the gate silently disables. ``python -m recusal init``
+therefore registers a PowerShell-native launcher (explicit ``"shell": "powershell"``) on
+Windows; the POSIX form below is for macOS/Linux and Windows-with-Git-Bash only::
 
     {
       "hooks": {
@@ -176,17 +182,27 @@ def run_pretooluse_hook(
 
     tool_name: Optional[str] = None
     input_sha256: Optional[str] = None
+    event_ids: Dict[str, Any] = {}
     try:
         event = json.load(stdin)
         if not isinstance(event, dict):
             raise ValueError("PreToolUse event is not a JSON object")
         if "tool_name" not in event:
             raise ValueError("PreToolUse event missing 'tool_name'")
+        if not isinstance(event["tool_name"], str) or not event["tool_name"]:
+            # a null/empty/non-string tool name is a malformed envelope, not something a
+            # policy should be asked to reason about (fail-closed posture, same as above)
+            raise ValueError("PreToolUse 'tool_name' must be a nonempty string")
         tool_input = event.get("tool_input", {})
         if not isinstance(tool_input, dict):
             raise ValueError("PreToolUse 'tool_input' is not an object")
         tool_name = event["tool_name"]
         input_sha256 = _input_fingerprint(tool_input)
+        # transcript linkage for the audit record: prompt_id is in the documented event
+        # shape; tool_use_id is recorded defensively should the event ever carry one.
+        for key in ("prompt_id", "tool_use_id"):
+            if isinstance(event.get(key), str) and event[key]:
+                event_ids[key] = event[key]
         if actor is None and isinstance(event.get("session_id"), str):
             actor = event["session_id"]
         decision, reason, verdict = _adjudicate(
@@ -238,6 +254,7 @@ def run_pretooluse_hook(
         }
         if input_sha256 is not None:
             action["input_sha256"] = input_sha256
+        action.update(event_ids)
         try:
             audit.append(verdict, action=action, actor=actor)
         except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed

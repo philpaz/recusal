@@ -4,7 +4,65 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.2] - 2026-07-12
+
+The audit-integration release plus a hardening pass driven by a third external review,
+which found (and live Windows validation confirmed) that the POSIX launcher fails OPEN
+under Claude Code's documented PowerShell fallback, and that the shared-file audit
+pattern was unsafe under Claude Code's documented parallel hook execution.
+
+### Fixed
+- **The gate no longer fails open on Windows without Git Bash (P0).** Claude Code runs
+  shell-form hooks under Git Bash and falls back to PowerShell when it is absent, where
+  the POSIX launcher is a parse error with exit 1 - a NON-blocking code, i.e. the gate
+  silently disabled (live-verified). `recusal init` is now platform-aware: on Windows it
+  registers a PowerShell-native launcher with an explicit `"shell": "powershell"`
+  (PowerShell is always present; the explicit shell also keeps Git Bash from trying to
+  parse it), POSIX elsewhere, `--launcher both` for a settings.json shared across OSes.
+  The PowerShell launcher was validated end to end on a real Windows host: deny emits
+  the JSON and exits 0, a broken gate and a missing interpreter each coerce to exit 2.
+  `recusal doctor` now validates the registered launcher's shell strategy against the
+  host instead of grepping for "exit 2"; the plugin's POSIX launcher is scoped honestly
+  (macOS/Linux/Windows-with-Git-Bash) in its own manifest.
+- **File-backed audit appends are one serialized transaction.** Claude Code runs hooks
+  for parallel tool calls concurrently; two hook processes could read the same head and
+  write sibling entries, forking the chain with neither append reporting an error. An
+  append now holds an inter-process lock (`<path>.lock`), re-reads the chain head from
+  the END of the file, writes, and only then commits in-memory state - so a failed write
+  never advances the chain (previously state advanced before persistence). `fsync=True`
+  opts into durability past the OS cache. Proven by a test that hammers one file from
+  four real processes and verifies one gapless chain.
+- **`resume="tail"` now actually recovers the head from the final record** (backward
+  seek, corrupt-tail tolerant, full-scan fallback for pathological logs) instead of
+  streaming the whole file - making it O(final record) in time as well as memory. The
+  README's "flat per-call cost" claim was wrong for the old implementation and was
+  corrected along with the code.
+- **`verify` and `verify_file` return verdicts on garbage, never crash out of one.** A
+  valid-JSON line that is not an object (`[]`, `null`, a string, a number) is a named
+  verification failure instead of an uncaught exception; hash/seq/decision shapes are
+  validated; unreadable files (permissions, a directory, invalid UTF-8) return a
+  structured failure; and the CLI now routes through the same strict verifier instead of
+  duplicating the logic (unreadable stays exit 2, broken chain stays exit 1).
+- **The manifest cache cannot serve stale authorization.** The (mtime, size) signature
+  missed a same-size, timestamp-preserved replacement - exactly how a REVOCATION might
+  land via deployment tooling - and had a stat-then-open race. `manifest_policy` now
+  reads the manifest bytes every call and reparses only when their SHA-256 changes;
+  pinned with a test that revokes a tool under a preserved mtime and identical size.
+- **The stdio observer bounds aggregate hostile input.** Bounded reader queue, a total
+  character budget (`MAX_TOTAL_CHARS`) and an unrelated-message budget
+  (`MAX_UNRELATED_MESSAGES`) across the observation; a non-object entry in `tools`
+  refuses the whole catalog (silently filtering would certify a subset as the declared
+  surface); JSON nested beyond parseable depth on the wire is an `McpFetchError`, not a
+  RecursionError; `NaN`/`Infinity` are rejected as unparseable; `nextCursor` must be a
+  bounded string.
+- **The GitHub Action ref now selects the implementation unconditionally.** The install
+  step force-installs the action ref's bundled source, replacing whatever is on the
+  runner; `use-installed: "true"` is the explicit escape hatch for a deliberately
+  preinstalled checkout (the dogfood job names it now). CI gained a provenance job that
+  proves both the clean-runner install and that a deliberately conflicting preinstalled
+  recusal gets replaced.
+- **A null/empty/non-string `tool_name` is a malformed envelope**, failing closed before
+  any policy is asked to reason about it.
 
 ### Added
 - **`run_pretooluse_hook(audit=...)`: every adjudication on the record, one wire.**
@@ -16,10 +74,21 @@ All notable changes to this project are documented here. The format follows
   of the control - unless `fail_closed=False`. Malformed-event and policy-error denials
   are on the record too, with synthesized findings saying what happened.
 - **`AuditLog(path, resume="tail")`: resume the chain without holding the log in memory.**
-  Streams the file once to recover the chain head (last hash, next seq) and retains no
-  entries, before or after; appends go to disk only. The default `resume="full"` is
-  unchanged. Tail is the right mode for a per-call hook over a growing log and for
-  long-running gates; verify with `verify_file(path)`.
+  Recovers the chain head from the final record and retains no entries, before or after;
+  appends go to disk only. The default `resume="full"` is unchanged. Tail is the right
+  mode for a per-call hook over a growing log and for long-running gates; verify with
+  `verify_file(path)`.
+- Audit records carry `prompt_id` (transcript linkage, from the documented PreToolUse
+  event; a `tool_use_id` is recorded defensively should the event ever include one), and
+  `verify_file` takes the same `expected_head=` anchor as `verify`.
+
+### Documentation
+- Claims squared with implementation: "same evidence, same verdict, forever" is now
+  "same evidence, same policy, same version, same verdict" (FAQ, CONSTITUTION); the
+  Windows launcher scope is stated everywhere the launcher appears; prompt-time `@file`
+  references are named as outside PreToolUse (SECURITY.md); and the audit docs state
+  plainly that finding messages are plaintext record content - keep secrets out of
+  messages.
 
 ## [0.4.1] - 2026-07-12
 

@@ -39,7 +39,7 @@ intercepting the evaluator. A model will, given the chance, certify its own succ
 
 **The rule:** verdicts come from explicit rules, not judgment. A model may be involved
 *upstream* of the gate (gathering evidence, proposing a fix), but never *inside* the
-decision. Same evidence in, same verdict out, forever.
+decision. Same evidence, same policy, same version, same verdict.
 
 **Why it helps:** an LLM-as-judge is a probabilistic verifier, it can be prompted,
 drifts between versions, and can't be replayed. A deterministic gate can be audited,

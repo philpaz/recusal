@@ -55,7 +55,7 @@ pinned from a JSON dump instead (``recusal mcp pin --from``).
 
 import hashlib
 import json
-import os
+import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .evidence import Finding
@@ -152,6 +152,11 @@ def load_manifest(path: str) -> Dict[str, Any]:
     return data
 
 
+#: Exact shape of every stored digest: the algorithm prefix and 64 lowercase hex chars.
+#: Anything else in a digest position is corruption or hand-editing, both refused.
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
 def _validate_manifest(data: Any) -> None:
     if not isinstance(data, dict):
         raise ValueError("manifest is not a JSON object")
@@ -163,17 +168,34 @@ def _validate_manifest(data: Any) -> None:
     if not isinstance(servers, dict) or not servers:
         raise ValueError("manifest has no servers")
     for server, entry in servers.items():
+        if not isinstance(server, str) or not server:
+            raise ValueError(f"manifest server name must be a nonempty string, got {server!r}")
         tools = entry.get("tools") if isinstance(entry, dict) else None
         if not isinstance(tools, dict):
             raise ValueError(f"manifest server {server!r} has no tools object")
         for name, pin in tools.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"manifest server {server!r} pins a tool with a non-string/empty name"
+                )
             if not isinstance(pin, dict) or not isinstance(pin.get("fingerprint"), str):
                 raise ValueError(f"manifest tool {server!r}/{name!r} has no fingerprint")
+            if not _DIGEST_RE.fullmatch(pin["fingerprint"]):
+                raise ValueError(
+                    f"manifest tool {server!r}/{name!r} fingerprint is not "
+                    "sha256:<64 lowercase hex> - a corrupt pin certifies nothing"
+                )
             fields = pin.get("fields", {})
             if not isinstance(fields, dict):
                 raise ValueError(
                     f"manifest tool {server!r}/{name!r} has a non-object 'fields' entry"
                 )
+            for field, digest in fields.items():
+                if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+                    raise ValueError(
+                        f"manifest tool {server!r}/{name!r} field {field!r} hash is not "
+                        "sha256:<64 lowercase hex>"
+                    )
 
 
 # --- the verify: observed catalog vs pin -> Findings --------------------------------------
@@ -524,8 +546,10 @@ def manifest_policy(
     - a pinned call is then ALSO handed to the wrapped ``policy``, so argument-level rules
       (repo scope, path confinement, cookbook recipe 12) compose on top of the pin;
     - a missing or malformed manifest fails CLOSED for MCP calls: no pin, no MCP;
-    - the manifest is re-read only when the file changes on disk (mtime+size signature),
-      so a chatty session pays a set lookup per call and a re-pin is still picked up live.
+    - the manifest bytes are read on every MCP call and reparsed only when their SHA-256
+      changes: a re-pin (or a REVOCATION) is picked up on the very next call, even one
+      written with a preserved timestamp and identical size, and there is no
+      stat-then-open race - authorization is keyed on the exact bytes read.
 
     Membership is checked by the *full* runtime name (``mcp__{server}__{tool}``,
     reconstructed from the pin), never by re-splitting the incoming name, so this never
@@ -546,23 +570,28 @@ def manifest_policy(
       case, and both readings collapse to the same capability.
     """
 
-    # (mtime, size)-keyed cache: a long-running loop calls this per tool call, and
-    # re-reading + re-validating an unchanged manifest each time is pure cost. A re-pin
-    # changes the signature and reloads live; a failed reload is never cached, and a
-    # changed-but-unreadable file refuses (the stale pin is never served past its file).
-    _cache: Dict[str, Any] = {"sig": None, "names": frozenset()}
+    # Content-digest cache: the manifest BYTES are read on every MCP call (the file is
+    # small by design) and reparsed only when their SHA-256 changes. Unlike an
+    # (mtime, size) signature, this can never serve stale authorization: a same-size
+    # replacement with a preserved timestamp - exactly how a REVOCATION might land via
+    # deployment tooling - is a different digest, and there is no stat-then-open race
+    # because the decision is keyed on the exact bytes that were read. A failed parse is
+    # never cached, so a changed-but-corrupt file refuses on this call and every next one.
+    _cache: Dict[str, Any] = {"digest": None, "names": frozenset()}
 
     def _pinned_names() -> "frozenset[str]":
-        stat = os.stat(manifest_path)
-        sig = (stat.st_mtime_ns, stat.st_size)
-        if _cache["sig"] != sig:
-            manifest = load_manifest(manifest_path)
+        with open(manifest_path, "rb") as fh:
+            raw = fh.read()
+        digest = hashlib.sha256(raw).hexdigest()
+        if _cache["digest"] != digest:
+            data = json.loads(raw.decode("utf-8"))
+            _validate_manifest(data)
             _cache["names"] = frozenset(
                 f"mcp__{server}__{tool}"
-                for server, entry in manifest["servers"].items()
+                for server, entry in data["servers"].items()
                 for tool in entry["tools"]
             )
-            _cache["sig"] = sig
+            _cache["digest"] = digest
         return _cache["names"]
 
     def _policy(tool_name: str, tool_input: dict) -> List[Any]:

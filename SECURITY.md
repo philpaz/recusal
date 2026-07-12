@@ -43,6 +43,10 @@ any public disclosure.
   `pytest` (auto-imports `conftest.py`), `mypy` (loads plugins), `rg` (`--pre` spawns a
   command), and `git` (`-c core.pager=` / `alias.x='!sh'`) are deliberately **not** default-safe;
   gate a tool like that with an `allow=` predicate that vets the arguments.
+- **PreToolUse governs tool calls, not every way content enters context.** A direct
+  prompt-time `@file` reference can load a file without a `Read` tool event, so it never
+  reaches this hook; govern those paths with Claude Code permission rules or separate
+  controls.
 - **The gate governs tool calls in *this repo*, not the whole machine.** The hook runs under
   the ambient Python interpreter, whose `site-packages` / user-site directories sit outside
   the repo and outrank it on `sys.path`. An actor who can write there, a `.pth` file (executed

@@ -142,14 +142,21 @@ hook in `.claude/settings.json`:
 ]}}
 ```
 
-The command runs the first `python3` → `python` → `py` that is `>=3.9` (macOS / Linux /
-Windows) and **fails closed**: Claude Code treats a hook whose command can't launch, or
-that exits with anything other than `2`, as a *non-blocking* error and lets the tool call
-proceed, so a bare `python3` on a Windows machine (no `python3` on PATH), a `python` that
-is Python 2, or a hook that raises at import would each silently disable the gate. The loop
-coerces every one of those into `exit 2`, the one *blocking* hook exit code, so a broken or
-absent interpreter refuses the tool call instead of waving it through. (On Windows, Claude
-Code runs hook commands under Git Bash.)
+The command runs the first `python3` → `python` → `py` that is `>=3.9` and **fails
+closed**: Claude Code treats a hook whose command can't launch, or that exits with
+anything other than `2`, as a *non-blocking* error and lets the tool call proceed, so a
+bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is Python 2,
+or a hook that raises at import would each silently disable the gate. The loop coerces
+every one of those into `exit 2`, the one *blocking* hook exit code, so a broken or
+absent interpreter refuses the tool call instead of waving it through.
+
+**Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
+*falls back to PowerShell* when it is not - where this POSIX loop is a parse error with a
+non-blocking exit code, i.e. the gate silently disables (live-verified). `recusal init`
+therefore registers a PowerShell-native launcher with an explicit `"shell": "powershell"`
+on Windows; the POSIX form above is for macOS/Linux and Windows-with-Git-Bash. For a
+`settings.json` shared across operating systems, `recusal init --launcher both` registers
+the pair, and `recusal doctor` validates the registered launcher against the host.
 
 ```python
 # my_gate.py
@@ -401,7 +408,10 @@ In the Claude Code hook it is one argument: `run_pretooluse_hook(policy,
 audit=AuditLog("audit.jsonl", resume="tail"))` puts every adjudication - defer, allow,
 and deny - on the chain, with the proposed `tool_input` bound by SHA-256 fingerprint,
 never embedded, and an unwritable log failing closed to a deny (the record is part of
-the control). `resume="tail"` keeps the per-call cost flat as the log grows.
+the control). `resume="tail"` recovers the chain head from the final record without
+loading or scanning the full log, and file-backed appends are serialized with an
+inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
+it.
 
 Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
 
@@ -431,9 +441,12 @@ including the negative case: a tampered audit log must make the gate refuse):
     doctor-dir: "."
 ```
 
-The action ref selects the implementation: it installs the recusal bundled with the
-selected ref, so pinning the action pins the code (an explicit `version:` input is the
-one deliberate override).
+The action ref selects the implementation: the action force-installs the recusal bundled
+with the selected ref, replacing whatever happens to be on the runner, so pinning the
+action pins the code (proven in CI on a clean runner and against a deliberately
+conflicting preinstall). The two escape hatches are explicit inputs that name the
+provenance trade: `version:` installs a named PyPI release, and `use-installed: "true"`
+keeps a deliberately preinstalled checkout.
 
 Given nothing to adjudicate, the action exits 2 rather than pass vacuously: an evidence
 set that proves nothing certifies nothing.

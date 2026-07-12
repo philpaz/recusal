@@ -71,3 +71,17 @@ def test_hook_malformed_event_fail_open_is_opt_in():
         _deny_rm, stdin=io.StringIO("not json"), stdout=out, fail_closed=False
     )
     assert res is None and out.getvalue() == ""
+
+
+def test_hook_rejects_a_tool_name_that_is_not_a_nonempty_string():
+    # A null/empty/non-string tool name is a malformed envelope; asking a policy to
+    # reason about it invites an accidental defer, so it fails closed before the policy.
+    for tool_name in (None, "", 7, ["Bash"], {"name": "Bash"}):
+        out = io.StringIO()
+        res = run_pretooluse_hook(
+            _deny_rm,
+            stdin=io.StringIO(json.dumps({"tool_name": tool_name, "tool_input": {}})),
+            stdout=out,
+        )
+        assert res["hookSpecificOutput"]["permissionDecision"] == "deny", tool_name
+        assert "malformed" in out.getvalue().lower()

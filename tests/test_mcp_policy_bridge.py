@@ -125,19 +125,21 @@ def test_a_repin_is_picked_up_live_without_a_new_policy(tmp_path):
     assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"
 
 
-def test_an_unchanged_manifest_is_loaded_once_across_calls(tmp_path, monkeypatch):
+def test_an_unchanged_manifest_is_parsed_once_across_calls(tmp_path, monkeypatch):
+    # The bytes are read every call (no staleness); the parse+validate work happens only
+    # when the content digest changes.
     import recusal.mcp as mcp_mod
 
     path = tmp_path / "mcp-manifest.json"
     path.write_text(manifest_to_text(build_manifest({"github": [_tool()]})), encoding="utf-8")
     calls = {"n": 0}
-    real = mcp_mod.load_manifest
+    real = mcp_mod._validate_manifest
 
-    def _counting(p):
+    def _counting(data):
         calls["n"] += 1
-        return real(p)
+        return real(data)
 
-    monkeypatch.setattr(mcp_mod, "load_manifest", _counting)
+    monkeypatch.setattr(mcp_mod, "_validate_manifest", _counting)
     policy = manifest_policy(str(path))
     for _ in range(5):
         assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
@@ -163,3 +165,28 @@ def test_a_manifest_corrupted_after_caching_fails_closed(tmp_path):
     assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
     path.write_text("{ not json", encoding="utf-8")
     assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"
+
+
+def test_a_revocation_with_preserved_mtime_and_size_is_seen(tmp_path):
+    # An (mtime, size) signature would miss this exact case: same byte length, same
+    # timestamp, different content - a REVOCATION landing via deployment tooling. The
+    # cache is keyed on the content digest, so stale authorization cannot be served.
+    import os
+
+    path = tmp_path / "mcp-manifest.json"
+    original = manifest_to_text(build_manifest({"github": [_tool("create_issue")]}))
+    path.write_text(original, encoding="utf-8")
+    stat = os.stat(path)
+    policy = manifest_policy(str(path))
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
+
+    # revoke create_issue in favor of an equal-length name, so the file size is identical
+    # (both writes get the same newline translation, so equal text = equal st_size)
+    replacement = manifest_to_text(build_manifest({"github": [_tool("delete_issue")]}))
+    assert len(replacement) == len(original)  # the signature-busting premise
+    path.write_text(replacement, encoding="utf-8")
+    assert os.path.getsize(path) == stat.st_size
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # preserve the timestamp
+
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"  # revoked
+    assert decide("mcp__github__delete_issue", {}, policy)[0] == "defer"

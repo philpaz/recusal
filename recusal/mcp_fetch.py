@@ -57,6 +57,17 @@ SUPPORTED_PROTOCOL_VERSIONS: Tuple[str, ...] = (
 #: full MAX_TOOLS catalog of oversized declarations fits well inside it.
 MAX_LINE_CHARS = 10_000_000
 
+#: Aggregate budget across the whole observation: total characters read from the server
+#: and total messages that were not the awaited response (notifications, unrelated ids).
+#: The per-line cap bounds one line; these bound what a chatty or hostile server can make
+#: the observer buffer and churn through in total before it refuses.
+MAX_TOTAL_CHARS = 50_000_000
+MAX_UNRELATED_MESSAGES = 1_000
+
+#: Reader-to-adjudicator queue depth. Bounded so a server flooding notifications faster
+#: than they are consumed exerts backpressure on the pipe instead of growing memory.
+_QUEUE_MAXSIZE = 256
+
 #: Environment variables a child process needs merely to *launch and run* - what
 #: ``minimal_env=True`` keeps. Paths and locale only; nothing here carries a secret.
 _LAUNCH_ENV: Tuple[str, ...] = (
@@ -77,6 +88,23 @@ _LAUNCH_ENV: Tuple[str, ...] = (
 
 class McpFetchError(RuntimeError):
     """The catalog could not be observed; callers must fail closed, never assume clean."""
+
+
+def _reject_constant(name: str) -> Any:
+    # Python's json accepts NaN/Infinity/-Infinity by default; JSON-RPC is strict JSON,
+    # so a peer emitting them is out of contract and the line is refused as unparseable.
+    raise ValueError(f"nonstandard JSON constant {name!r} is not valid JSON-RPC")
+
+
+def _loads_strict(line: str) -> Any:
+    """``json.loads`` for wire input: strict constants, and hostile nesting depth is an
+    :class:`McpFetchError` (a crash escaping the error contract is not a refusal)."""
+    try:
+        return json.loads(line, parse_constant=_reject_constant)
+    except RecursionError as exc:
+        raise McpFetchError(
+            "MCP server sent JSON nested beyond parseable depth; refusing a hostile message"
+        ) from exc
 
 
 def split_command(text: str) -> List[str]:
@@ -149,7 +177,9 @@ def fetch_tools_stdio(
     # The queue carries a line (str), an EOF sentinel (None), or the exception the reader
     # hit, so a decode/read failure surfaces as a TRUTHFUL McpFetchError instead of the
     # main thread misreporting "server exited" while Python dumps the thread's traceback.
-    lines: "queue.Queue[Any]" = queue.Queue()
+    # Bounded: a flood of notifications backpressures the pipe instead of growing memory.
+    lines: "queue.Queue[Any]" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+    budget = {"chars": 0, "unrelated": 0}  # aggregate caps across the whole observation
 
     def _reader() -> None:
         try:
@@ -206,15 +236,29 @@ def fetch_tools_stdio(
                 ) from line
             if line is None:
                 raise McpFetchError(f"MCP server exited before answering {method!r}")
+            budget["chars"] += len(line)
+            if budget["chars"] > MAX_TOTAL_CHARS:
+                raise McpFetchError(
+                    f"MCP server sent more than {MAX_TOTAL_CHARS} characters in one "
+                    "observation; refusing a runaway catalog"
+                )
             line = line.strip()
             if not line:
                 continue
             try:
-                message = json.loads(line)
+                message = _loads_strict(line)
             except ValueError as exc:
                 raise McpFetchError(f"unparseable line from MCP server: {line[:200]!r}") from exc
             if not isinstance(message, dict) or message.get("id") != rid:
-                continue  # a notification or an unrelated message; not ours
+                # a notification or an unrelated message; not ours - but a flood of them
+                # is a resource attack on the observer, so they are budgeted, not free
+                budget["unrelated"] += 1
+                if budget["unrelated"] > MAX_UNRELATED_MESSAGES:
+                    raise McpFetchError(
+                        f"MCP server sent more than {MAX_UNRELATED_MESSAGES} messages that "
+                        f"were not the awaited response; refusing a message flood"
+                    )
+                continue
             if "error" in message:
                 raise McpFetchError(
                     f"MCP server returned an error for {method!r}: {message['error']!r}"
@@ -260,7 +304,15 @@ def fetch_tools_stdio(
             page = result.get("tools")
             if not isinstance(page, list):
                 raise McpFetchError("tools/list result has no 'tools' array")
-            tools.extend(t for t in page if isinstance(t, dict))
+            for item in page:
+                if not isinstance(item, dict):
+                    # fail-closed collection: silently filtering a malformed entry would
+                    # certify a SUBSET as if it were the declared surface
+                    raise McpFetchError(
+                        f"tools/list returned a non-object tool declaration "
+                        f"({type(item).__name__}); refusing the catalog"
+                    )
+            tools.extend(page)
             if len(tools) > MAX_TOOLS:  # bound memory/CPU a hostile server could amplify
                 raise McpFetchError(
                     f"MCP server declared more than {MAX_TOOLS} tools; refusing a runaway catalog"
@@ -268,6 +320,8 @@ def fetch_tools_stdio(
             cursor = result.get("nextCursor")
             if not cursor:
                 return tools
+            if not isinstance(cursor, str) or len(cursor) > 10_000:
+                raise McpFetchError("tools/list returned an invalid nextCursor; refusing")
         raise McpFetchError("tools/list paginated past 100 pages; refusing a runaway catalog")
     finally:
         try:

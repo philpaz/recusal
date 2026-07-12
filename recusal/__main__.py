@@ -44,13 +44,14 @@ standard library only, and nothing here participates in verdict computation.
 import argparse
 import json
 import os
+import shutil
 import sys
 from typing import Any, Dict, List, NamedTuple, Optional, TextIO, Tuple
 
 from . import __version__
 from .audit import GENESIS
 from .audit import load as _load_audit_entries
-from .audit import verify as _verify_audit_chain
+from .audit import verify_file as _verify_audit_file
 from .evidence import Decision, Finding, Verdict, compute_verdict
 from .mcp import (
     build_manifest,
@@ -66,13 +67,18 @@ from .mcp_fetch import (
     split_command,
 )
 
-#: The fail-closed launcher, verbatim the command this repository registers for itself
-#: (see ``.claude/settings.json.example``). Claude Code treats a hook command that cannot
-#: launch, or exits with anything other than 2, as a NON-blocking error and lets the tool
-#: call proceed; this loop coerces every failure into exit 2 so a broken or absent
-#: interpreter refuses the tool call instead of waving it through. (On Windows, Claude
-#: Code runs hook commands under Git Bash.)
-LAUNCHER_COMMAND = (
+#: The fail-closed POSIX launcher, verbatim the command this repository registers for
+#: itself (see ``.claude/settings.json.example``). Claude Code treats a hook command that
+#: cannot launch, or exits with anything other than 2, as a NON-blocking error and lets
+#: the tool call proceed; this loop coerces every failure into exit 2 so a broken or
+#: absent interpreter refuses the tool call instead of waving it through.
+#:
+#: Shell reality on Windows: hook commands run under Git Bash when it is installed, and
+#: Claude Code FALLS BACK TO POWERSHELL when it is not - where this POSIX loop is a parse
+#: error, exit 1, a NON-blocking code, i.e. the gate silently disables (live-verified).
+#: That is why ``init`` registers the PowerShell launcher below, with an explicit
+#: ``"shell": "powershell"``, on Windows.
+LAUNCHER_COMMAND_POSIX = (
     'for p in python3 python py; do "$p" -c \'import sys; sys.exit(0 if sys.version_info'
     ' >= (3, 9) else 1)\' 2>/dev/null && { "$p"'
     ' "$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"; rc=$?; [ "$rc" = 0 ] ||'
@@ -80,6 +86,67 @@ LAUNCHER_COMMAND = (
     " exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing"
     " closed' >&2; exit 2"
 )
+
+#: Back-compat alias (the POSIX form was previously the only launcher).
+LAUNCHER_COMMAND = LAUNCHER_COMMAND_POSIX
+
+#: The same semantics in PowerShell, for Windows hosts: probe ``py``/``python``/
+#: ``python3`` for >=3.9, run the gate, and coerce EVERY failure (no interpreter, wrong
+#: version, gate crash) into exit 2, the one blocking hook code. PowerShell is always
+#: present on Windows, so this launcher does not depend on Git Bash being installed.
+#: Registered with an explicit ``"shell": "powershell"`` so Git Bash, when present, never
+#: tries (and fails) to parse it.
+LAUNCHER_COMMAND_POWERSHELL = (
+    "$ErrorActionPreference = 'Continue'; foreach ($p in @('py', 'python', 'python3')) {"
+    " if (-not (Get-Command $p -ErrorAction SilentlyContinue)) { continue };"
+    " & $p -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' *> $null;"
+    " if ($LASTEXITCODE -ne 0) { continue };"
+    ' & $p "$env:CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py";'
+    " if ($LASTEXITCODE -eq 0) { exit 0 };"
+    " [Console]::Error.WriteLine('recusal gate: hook did not run cleanly; failing closed');"
+    " exit 2 };"
+    " [Console]::Error.WriteLine("
+    "'recusal gate: no working python>=3.9 interpreter; failing closed'); exit 2"
+)
+
+_WINDOWS = os.name == "nt"
+
+
+def _hook_entries(launcher: str = "auto") -> List[dict]:
+    """The PreToolUse entries to register for ``launcher``.
+
+    ``auto`` picks by host: PowerShell on Windows (present with or without Git Bash),
+    POSIX elsewhere. ``both`` registers the two of them for a settings.json shared
+    across operating systems - on any host at least one launcher is functional and
+    blocking, and a deny from either blocks the call (the caveat: on Windows WITH Git
+    Bash both run, so the gate adjudicates twice per call).
+    """
+    if launcher == "auto":
+        launcher = "powershell" if _WINDOWS else "posix"
+    entries: List[dict] = []
+    if launcher in ("posix", "both"):
+        entries.append(
+            {"matcher": ".*", "hooks": [{"type": "command", "command": LAUNCHER_COMMAND_POSIX}]}
+        )
+    if launcher in ("powershell", "both"):
+        entries.append(
+            {
+                "matcher": ".*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": LAUNCHER_COMMAND_POWERSHELL,
+                        # load-bearing: without it, Git Bash (when installed) would try
+                        # to parse PowerShell and fail with a NON-blocking exit code.
+                        "shell": "powershell",
+                    }
+                ],
+            }
+        )
+    if not entries:
+        raise ValueError(f"unknown launcher: {launcher!r}")
+    return entries
+
 
 #: The marker that makes a re-run idempotent: a PreToolUse hook whose command mentions
 #: this filename is recognized as an already-installed recusal gate.
@@ -134,11 +201,6 @@ if __name__ == "__main__":
 """
 )
 
-_HOOK_ENTRY = {
-    "matcher": ".*",
-    "hooks": [{"type": "command", "command": LAUNCHER_COMMAND}],
-}
-
 
 def gate_source(posture: str, writable_root: str = "./workspace") -> str:
     """Return the gate-script source for ``posture`` (``deny-list`` | ``allowlist``)."""
@@ -149,22 +211,27 @@ def gate_source(posture: str, writable_root: str = "./workspace") -> str:
     raise ValueError(f"unknown posture: {posture!r}")
 
 
-def _recusal_hook_commands(settings: dict) -> List[str]:
-    """Every PreToolUse command in ``settings`` that references the recusal gate."""
-    commands: List[str] = []
+def _recusal_hooks(settings: dict) -> List[dict]:
+    """Every PreToolUse hook dict in ``settings`` that references the recusal gate."""
+    found: List[dict] = []
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
-        return commands
+        return found
     groups = hooks.get("PreToolUse", [])
     if not isinstance(groups, list):
-        return commands
+        return found
     for group in groups:
         if not isinstance(group, dict):
             continue
         for hook in group.get("hooks", []) or []:
             if isinstance(hook, dict) and GATE_FILENAME in str(hook.get("command", "")):
-                commands.append(str(hook["command"]))
-    return commands
+                found.append(hook)
+    return found
+
+
+def _recusal_hook_commands(settings: dict) -> List[str]:
+    """Every PreToolUse command in ``settings`` that references the recusal gate."""
+    return [str(hook["command"]) for hook in _recusal_hooks(settings)]
 
 
 def _has_recusal_hook(settings: dict) -> bool:
@@ -172,7 +239,9 @@ def _has_recusal_hook(settings: dict) -> bool:
     return bool(_recusal_hook_commands(settings))
 
 
-def merge_settings(existing_text: Optional[str]) -> Tuple[Optional[str], str]:
+def merge_settings(
+    existing_text: Optional[str], *, launcher: str = "auto"
+) -> Tuple[Optional[str], str]:
     """Merge the recusal PreToolUse entry into a settings.json body.
 
     Returns ``(new_text, status)`` where status is one of ``created`` / ``merged`` /
@@ -180,8 +249,9 @@ def merge_settings(existing_text: Optional[str]) -> Tuple[Optional[str], str]:
     ``None`` whenever the file must not be written (idempotent no-op or refusal),
     so a caller cannot accidentally clobber a file this function refused to merge.
     """
+    entries = _hook_entries(launcher)
     if existing_text is None:
-        body = {"hooks": {"PreToolUse": [_HOOK_ENTRY]}}
+        body = {"hooks": {"PreToolUse": entries}}
         return json.dumps(body, indent=2) + "\n", "created"
 
     try:
@@ -199,12 +269,12 @@ def merge_settings(existing_text: Optional[str]) -> Tuple[Optional[str], str]:
     pre = hooks.setdefault("PreToolUse", [])
     if not isinstance(pre, list):
         return None, "unexpected-shape"
-    pre.append(_HOOK_ENTRY)
+    pre.extend(entries)
     return json.dumps(settings, indent=2) + "\n", "merged"
 
 
-def _manual_snippet() -> str:
-    entry = {"hooks": {"PreToolUse": [_HOOK_ENTRY]}}
+def _manual_snippet(launcher: str = "auto") -> str:
+    entry = {"hooks": {"PreToolUse": _hook_entries(launcher)}}
     return json.dumps(entry, indent=2)
 
 
@@ -212,6 +282,7 @@ def init(
     project_dir: str,
     posture: str = "deny-list",
     writable_root: str = "./workspace",
+    launcher: str = "auto",
     stdout=None,
 ) -> int:
     """Scaffold the gate into ``project_dir``. Returns a process exit code."""
@@ -235,12 +306,12 @@ def init(
     if os.path.exists(settings_path):
         with open(settings_path, encoding="utf-8") as f:
             existing = f.read()
-    new_text, status = merge_settings(existing)
+    new_text, status = merge_settings(existing, launcher=launcher)
 
     if status in ("unparseable", "unexpected-shape"):
         out.write(
             f"REFUSING to edit {settings_path} ({status}); it was left untouched.\n"
-            "Add this PreToolUse entry by hand:\n" + _manual_snippet() + "\n"
+            "Add this PreToolUse entry by hand:\n" + _manual_snippet(launcher) + "\n"
         )
         return 1
     if status == "already-installed":
@@ -399,21 +470,20 @@ def audit_verify_command(
             as_json,
             out,
         )
+    try:
+        entries = _load_audit_entries(log_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        # operational inability to read is exit 2, not a "broken chain" exit 1
+        return _fail_closed(f"cannot read audit log: {exc}", as_json, out)
 
-    entries = _load_audit_entries(log_path)
-    intact, problems = _verify_audit_chain(entries, expected_head=expected)
+    # ONE strict verifier for the library and the CLI (recusal.audit.verify_file):
+    # malformed nonblank lines, non-object records, and shape violations are failures.
+    intact, problems = _verify_audit_file(log_path, expected_head=expected)
 
-    with open(log_path, encoding="utf-8") as fh:
-        nonblank = sum(1 for line in fh if line.strip())
-    skipped = nonblank - len(entries)
-    if skipped > 0:
-        intact = False
-        problems.append(
-            f"{skipped} nonblank line(s) are not valid JSON - the log's most recent "
-            "entries may be unreadable or tampered"
-        )
-
-    head = entries[-1].get("hash") if entries else GENESIS
+    head = GENESIS
+    for entry in entries:
+        if isinstance(entry, dict) and isinstance(entry.get("hash"), str):
+            head = entry["hash"]
     if as_json:
         payload = {
             "intact": intact,
@@ -430,6 +500,71 @@ def audit_verify_command(
         for problem in problems:
             out.write(f"  {problem}\n")
     return 0 if intact else 1
+
+
+def _launcher_platform_findings(gate_hooks: List[dict]) -> List[Finding]:
+    """Validate the registered launchers' SHELL strategy for the host, not just their text.
+
+    The failure mode this catches (live-verified): Claude Code runs shell-form hooks
+    under Git Bash on Windows and FALLS BACK TO POWERSHELL when Git Bash is absent -
+    where the POSIX launcher is a parse error with exit 1, a NON-blocking code, so the
+    gate silently disables. Searching the command for "exit 2" cannot see that.
+    """
+    findings: List[Finding] = []
+    posix = [h for h in gate_hooks if "for p in" in str(h.get("command", ""))]
+    powershell = [h for h in gate_hooks if "foreach ($p in" in str(h.get("command", ""))]
+    ps_without_shell = [h for h in powershell if h.get("shell") != "powershell"]
+    if ps_without_shell:
+        findings.append(
+            Finding.fail(
+                "launcher_shell_strategy",
+                severity="CRITICAL",
+                message='a PowerShell launcher is registered without "shell": "powershell"; '
+                "under Git Bash it is a parse error with a NON-blocking exit code, i.e. the "
+                "gate fails OPEN there",
+            )
+        )
+    if _WINDOWS and posix and not powershell:
+        if shutil.which("bash"):
+            findings.append(
+                Finding.fail(
+                    "launcher_shell_strategy",
+                    severity="WARNING",
+                    message="only a POSIX launcher is registered; it works under the "
+                    "currently installed Git Bash, but if Git Bash is removed Claude Code "
+                    "falls back to PowerShell where this launcher fails OPEN - re-run "
+                    "`recusal init` (or use --launcher both) for a PowerShell launcher",
+                )
+            )
+        else:
+            findings.append(
+                Finding.fail(
+                    "launcher_shell_strategy",
+                    severity="CRITICAL",
+                    message="only a POSIX launcher is registered and no bash is on PATH: "
+                    "Claude Code will run it under PowerShell, where it is a parse error "
+                    "with a NON-blocking exit code - the gate FAILS OPEN on this host. "
+                    "Re-run `recusal init` to register the PowerShell launcher",
+                )
+            )
+    if not _WINDOWS and powershell and not posix:
+        findings.append(
+            Finding.fail(
+                "launcher_shell_strategy",
+                severity="CRITICAL",
+                message="only a PowerShell launcher is registered on a non-Windows host; "
+                "re-run `recusal init` to register the POSIX launcher",
+            )
+        )
+    if not findings and (posix or powershell):
+        findings.append(
+            Finding.ok(
+                "launcher_shell_strategy",
+                severity="WARNING",
+                message="registered launcher(s) match this host's shell strategy",
+            )
+        )
+    return findings
 
 
 def doctor_findings(project_dir: str) -> List[Finding]:
@@ -508,7 +643,8 @@ def doctor_findings(project_dir: str) -> List[Finding]:
                 )
             )
         else:
-            commands = _recusal_hook_commands(settings if isinstance(settings, dict) else {})
+            gate_hooks = _recusal_hooks(settings if isinstance(settings, dict) else {})
+            commands = [str(h["command"]) for h in gate_hooks]
             if not commands:
                 findings.append(
                     Finding.fail(
@@ -542,6 +678,7 @@ def doctor_findings(project_dir: str) -> List[Finding]:
                             message="launcher coerces every failure to the blocking exit code",
                         )
                     )
+                findings.extend(_launcher_platform_findings(gate_hooks))
 
     findings.append(
         Finding.ok(
@@ -943,6 +1080,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="./workspace",
         help="allowlist posture only: the directory subtree writes are confined to",
     )
+    p_init.add_argument(
+        "--launcher",
+        choices=["auto", "posix", "powershell", "both"],
+        default="auto",
+        help="which fail-closed launcher to register (default auto: PowerShell on "
+        "Windows, POSIX elsewhere; 'both' suits a settings.json shared across OSes, at "
+        "the cost of the gate running twice per call on Windows hosts with Git Bash)",
+    )
 
     p_verdict = sub.add_parser(
         "verdict",
@@ -1041,7 +1186,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "init":
-        return init(args.dir, posture=args.posture, writable_root=args.writable_root)
+        return init(
+            args.dir,
+            posture=args.posture,
+            writable_root=args.writable_root,
+            launcher=args.launcher,
+        )
     if args.command == "verdict":
         return verdict_command(args.findings, as_json=args.json, lenient=args.lenient)
     if args.command == "audit":

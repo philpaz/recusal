@@ -139,8 +139,8 @@ def test_no_audit_means_no_file_and_identical_behavior(tmp_path):
 
 
 def test_the_chain_grows_across_hook_processes(tmp_path):
-    # Each hook invocation is a fresh process; tail resume keeps the per-call cost flat
-    # and the chain unbroken across them.
+    # Each hook invocation is a fresh process; tail resume recovers the head from the
+    # final record (no full scan) and the chain stays unbroken across them.
     path = str(tmp_path / "audit.jsonl")
     for i in range(3):
         _run(
@@ -164,3 +164,28 @@ def test_both_resume_modes_yield_the_same_recorded_chain(tmp_path, mode):
     ok, problems = verify_file(path)
     assert ok, problems
     assert len(load(path)) == 2
+
+
+def test_prompt_id_links_the_record_to_the_transcript(tmp_path):
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {
+            "tool_name": "Read",
+            "tool_input": {},
+            "session_id": "sess-1",
+            "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+        },
+        AuditLog(path=path),
+    )
+    action = load(path)[0]["action"]
+    assert action["prompt_id"] == "550e8400-e29b-41d4-a716-446655440000"
+
+
+def test_a_tool_use_id_is_recorded_defensively_when_present(tmp_path):
+    # Not part of the documented PreToolUse event today; recorded if it ever appears.
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {"tool_name": "Read", "tool_input": {}, "tool_use_id": "toolu_01abc"},
+        AuditLog(path=path),
+    )
+    assert load(path)[0]["action"]["tool_use_id"] == "toolu_01abc"

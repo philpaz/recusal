@@ -401,3 +401,26 @@ def test_self_referencing_declaration_terminates():
     tool["inputSchema"] = {"loop": tool}
     findings = screen_tool_declarations({"srv": [tool]})
     assert any(f.check == "mcp_declaration_depth" for f in findings)
+
+
+# --- digest shape validation: a corrupt pin certifies nothing -------------------------------
+
+
+def test_a_manifest_with_a_malformed_fingerprint_is_refused(tmp_path):
+    manifest = build_manifest({"srv": [_tool()]})
+    tool_name = next(iter(manifest["servers"]["srv"]["tools"]))
+    manifest["servers"]["srv"]["tools"][tool_name]["fingerprint"] = "sha256:nothex"
+    path = tmp_path / "m.json"
+    path.write_text(manifest_to_text(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="lowercase hex"):
+        load_manifest(str(path))
+
+
+def test_a_manifest_with_a_malformed_field_hash_is_refused(tmp_path):
+    manifest = build_manifest({"srv": [_tool()]})
+    tool_name = next(iter(manifest["servers"]["srv"]["tools"]))
+    manifest["servers"]["srv"]["tools"][tool_name]["fields"]["description"] = "md5:abc"
+    path = tmp_path / "m.json"
+    path.write_text(manifest_to_text(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="lowercase hex"):
+        load_manifest(str(path))

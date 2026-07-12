@@ -67,6 +67,23 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": rid, "error": {"code": -1, "message": "boom"}})
         elif MODE == "badjson":
             sys.stdout.write("this is not json\n"); sys.stdout.flush()
+        elif MODE == "flood":
+            for _ in range(1500):  # > MAX_UNRELATED_MESSAGES
+                send({"jsonrpc": "2.0", "method": "notifications/message", "params": {}})
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
+        elif MODE == "non-object-tool":
+            send({"jsonrpc": "2.0", "id": rid,
+                  "result": {"tools": [TOOLS[0], "malformed-entry"]}})
+        elif MODE == "nan":
+            sys.stdout.write('{"jsonrpc": "2.0", "id": %d, "result": {"tools": [], "n": NaN}}\n'
+                             % rid); sys.stdout.flush()
+        elif MODE == "deep":
+            deep = "[" * 5000 + "]" * 5000
+            sys.stdout.write('{"jsonrpc": "2.0", "id": %d, "result": {"tools": %s}}\n'
+                             % (rid, deep)); sys.stdout.flush()
+        elif MODE == "bad-cursor":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [TOOLS[0]],
+                  "nextCursor": 42}})
         elif MODE == "paginate":
             cursor = (msg.get("params") or {}).get("cursor")
             if cursor:
@@ -307,3 +324,51 @@ def test_missing_capabilities_refuse(fake_server):
 def test_a_server_without_the_tools_capability_refuses(fake_server):
     with pytest.raises(McpFetchError, match="did not advertise the 'tools' capability"):
         fetch_tools_stdio(fake_server("no-tools-cap"), timeout=30)
+
+
+# --- aggregate bounds and wire strictness ---------------------------------------------------
+
+
+def test_a_notification_flood_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="message flood"):
+        fetch_tools_stdio(fake_server("flood"), timeout=60)
+
+
+def test_a_non_object_tool_declaration_refuses_the_whole_catalog(fake_server):
+    # Fail-closed collection: silently filtering the malformed entry would certify a
+    # SUBSET as if it were the declared surface.
+    with pytest.raises(McpFetchError, match="non-object tool declaration"):
+        fetch_tools_stdio(fake_server("non-object-tool"), timeout=30)
+
+
+def test_nonstandard_json_constants_are_refused(fake_server):
+    with pytest.raises(McpFetchError, match="unparseable"):
+        fetch_tools_stdio(fake_server("nan"), timeout=30)
+
+
+def test_hostile_nesting_depth_on_the_wire_is_a_refusal_not_a_crash(fake_server):
+    with pytest.raises(McpFetchError, match="nested beyond parseable depth"):
+        fetch_tools_stdio(fake_server("deep"), timeout=30)
+
+
+def test_an_invalid_next_cursor_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="invalid nextCursor"):
+        fetch_tools_stdio(fake_server("bad-cursor"), timeout=30)
+
+
+def test_the_aggregate_character_budget_refuses(tmp_path, monkeypatch):
+    import recusal.mcp_fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "MAX_TOTAL_CHARS", 5000)
+    script = tmp_path / "chatty_server.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "line = json.dumps({'jsonrpc': '2.0', 'method': 'noise', 'params': {'pad': 'x' * 100}})\n"
+        "for _ in range(200):\n"
+        "    sys.stdout.write(line + chr(10))\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(10)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(McpFetchError, match="characters in one observation"):
+        fetch_tools_stdio([sys.executable, str(script)], timeout=30)
