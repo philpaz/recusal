@@ -186,10 +186,12 @@ class AuditLog:
       every new append there too, so ``verify(log.entries)`` works directly. The
       cost is the whole log in memory - fine for a short-lived process (a per-call
       hook), unbounded for a long-running gate over a growing log.
-    - ``"tail"``: stream the file once to recover the chain head (last hash, next
-      seq) and retain **no** entries in memory, before or after - appends go to
-      disk only and ``self.entries`` stays empty. Bounded memory regardless of log
-      size; verify with ``verify_file(path)``. Requires ``path``.
+    - ``"tail"``: recover the chain head (last hash, next seq) from the END of the
+      file (backward seek to the final usable record, full-scan fallback only for
+      pathological logs) and retain **no** entries in memory, before or after -
+      appends go to disk only and ``self.entries`` stays empty. Bounded memory and
+      final-record-proportional time regardless of log size; verify with
+      ``verify_file(path)``. Requires ``path``.
     """
 
     def __init__(

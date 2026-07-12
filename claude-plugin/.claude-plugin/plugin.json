@@ -1,7 +1,7 @@
 {
   "name": "recusal-gate",
   "displayName": "Recusal Gate",
-  "description": "Deterministic PreToolUse governance: an independent verifier (no model in the decision path) that refuses destructive tool calls before they run, even under bypassPermissions. Requires the recusal Python package (pip install recusal, Python >=3.9); without it the gate FAILS CLOSED and blocks tool calls rather than silently disabling itself.",
+  "description": "The recusal deny-list gate as a Claude Code plugin: one PreToolUse gate across every project. Requires pip install recusal; the POSIX launcher fails closed without it on macOS, Linux, and Windows with Git Bash. On Windows without Git Bash use `recusal init` (PowerShell-native launcher).",
   "version": "0.5.0",
   "author": {
     "name": "Philip Paz"
@@ -9,5 +9,11 @@
   "homepage": "https://github.com/philpaz/recusal",
   "repository": "https://github.com/philpaz/recusal",
   "license": "Apache-2.0",
-  "keywords": ["governance", "guardrails", "security", "hooks", "deterministic"]
+  "keywords": [
+    "governance",
+    "guardrails",
+    "security",
+    "hooks",
+    "deterministic"
+  ]
 }

@@ -125,7 +125,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install recusal        # the plugin fails CLOSED without it
+pip install recusal        # plugin fails CLOSED without it (macOS/Linux/Win+Git Bash)
 ```
 
 The plugin ships the same deny-list shim; if the `recusal` package is missing it refuses
@@ -271,8 +271,8 @@ that boundary the way this library governs every boundary: deterministic evidenc
 the human where the judgment is:
 
 ```bash
-recusal mcp pin --claude-config .mcp.json    # review once, pin the approved catalog
-recusal mcp verify --claude-config .mcp.json # CI / session start: same catalog, or refuse
+recusal mcp pin --claude-config .mcp.json --approve-server-launch   # review once, pin
+recusal mcp verify --claude-config .mcp.json  # CI / session start: same source+catalog, or refuse
 ```
 
 > **`--claude-config` and `--stdio` execute the declared server commands** to ask them
@@ -281,7 +281,10 @@ recusal mcp verify --claude-config .mcp.json # CI / session start: same catalog,
 > review the declarations, then pass `--approve-server-launch` to record it. After the
 > pin, `verify` compares each launch specification against the manifest **before**
 > launching anything, and stdio servers run with a minimal environment by default
-> (`--inherit-env` is the named opt-out).
+> (`--inherit-env` is the named opt-out). Minimal environment is not a sandbox: the
+> server still runs with your user's filesystem, process, and network permissions. And
+> `--from` pins the supplied declaration set; it does not attest which remote endpoint
+> produced the dump.
 
 Recusal does not judge whether a description is *malicious*: that is semantic judgment, a
 human's call at pin time (a deterministic marker screen surfaces the obvious, and `pin`
@@ -443,7 +446,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.4.1
+- uses: philpaz/recusal@v0.5.0
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

@@ -6,9 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.5.0] - 2026-07-12
 
-The MCP execution-identity release: the pin now covers WHAT PROCESS is asked to declare
-the catalog, not only the declarations it returns, closing the highest-priority trust
-gap every external review named.
+The MCP launch-template-integrity release: the pin now covers the approved stdio launch
+template used to request the catalog, not only the declarations it returns, closing the
+command and argument substitution path named as the highest-priority trust gap. (This
+section originally said "execution identity" and "WHAT PROCESS"; that overstated it.
+What v2 proves is launch-TEMPLATE integrity: command template, argument templates, cwd,
+and env variable names. Environment values, PATH/registry resolution, executable bytes,
+and remote transport identity are not attested; see the residuals below.)
 
 ### Added
 - **Manifest version 2: launch specifications are pinned and compared BEFORE launch.**

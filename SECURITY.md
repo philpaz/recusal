@@ -80,7 +80,9 @@ any public disclosure.
   edits and reordering, but the digest is unkeyed and the head is unanchored, so an attacker
   with write access can truncate the tail or rewrite the whole chain. Commit the head
   `(count, last_hash)` somewhere they cannot reach and pass `verify(..., expected_head=...)`
-  to catch that. It is single-writer.
+  to catch that. File-backed appends support concurrent processes through an inter-process
+  lock (`<path>.lock`); the in-memory `entries` mirror remains process-local, so under
+  concurrency verify the file, not one process's mirror.
 
 ## Attack surfaces, and how this is architected for them
 
@@ -107,7 +109,7 @@ deny-list engine, which lives in the installable package as `recusal.deny_list`
 | **Data exfiltration** | Egress-allowlist policy refuses outbound calls to non-allowlisted destinations (recipe). | Define the allowlist. |
 | **Wrong-subject write** | Subject-guard policy: a write must target the session's active subject (the signature recipe; a real catch in `docs/PROVEN.md`). | Bind the active subject per turn. |
 | **Runaway loop / cost** | Tiered action-budget policy (recipe). | The hook is per-call; persist the counter. |
-| **Tampering with the audit record** | Hash-chained log detects an edit or reorder of any entry with a surviving successor. | Tail truncation, tail-suffix rewrite (down to the last entry), and forged appends need an external head anchor (`verify(expected_head=...)`); unkeyed, single-writer. |
+| **Tampering with the audit record** | Hash-chained log detects an edit or reorder of any entry with a surviving successor. | Tail truncation, tail-suffix rewrite (down to the last entry), and forged appends need an external head anchor (`verify(expected_head=...)`); the digest is unkeyed, and the in-memory mirror is per-process. |
 | **Supply chain (CI)** | Every third-party action in the CI and release workflows is pinned to an immutable commit SHA (a moving tag is a rug-pull surface), the release workflow reruns the full gate at the exact release commit before building, and the GitHub Action installs the recusal bundled with its own selected ref. | The SHAs are updated deliberately, by hand, when an action is upgraded. |
 
 The through-line: the design gives you an **independent, deterministic seam that fails
