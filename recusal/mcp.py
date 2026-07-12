@@ -1,5 +1,6 @@
 """
-MCP tool-catalog governance: pin the tool catalog a server declares, refuse drift.
+MCP tool and server-instruction integrity: pin supported source templates, observed
+initialize-result instructions, and complete tool declarations; refuse represented drift.
 
 The call-time gate (``recusal.claude_code``) adjudicates a *proposed call*, the tool name
 and arguments. This module governs the boundary before that one: **what the MCP server
@@ -64,8 +65,9 @@ This module is pure: standard library only, no subprocess, no network, spawns no
 threads (a lock guards the policy cache), a function of its inputs. *Collecting* a catalog from a live server (the one place that
 spawns a process) lives in the sibling :mod:`recusal.mcp_fetch`, deliberately apart, so
 the decision surface never touches a process. Collection is nondeterministic I/O;
-adjudication (everything here) is deterministic. Servers reachable only over HTTP can be
-pinned from a JSON dump instead (``recusal mcp pin --from``).
+adjudication (everything here) is deterministic. Remote HTTP/SSE/WebSocket servers are
+not contacted by the stdio-only collector; pin them from a JSON dump instead
+(``recusal mcp pin --from``).
 """
 
 import contextvars
@@ -113,9 +115,10 @@ _REMOTE_SOURCE_FIELDS: Tuple[str, ...] = (
 )
 #: WebSocket is header-only: Claude Code documents that "HTTP supports OAuth ... while
 #: WebSocket supports neither", so a ws source carrying oauth is a configuration Claude
-#: does not support and pinning it would misrepresent the config surface. (The docs
-#: establish OAuth for HTTP and are silent on SSE; sse keeps the http shape until the
-#: documentation says otherwise, and ws refuses.)
+#: does not support and pinning it would misrepresent the config surface. (Claude's
+#: reference applies preconfigured OAuth flags "only ... to HTTP and SSE transports",
+#: so sse keeps the http shape - noting SSE is deprecated upstream in favor of HTTP -
+#: and ws refuses.)
 _WS_SOURCE_FIELDS: Tuple[str, ...] = (
     "transport",
     "url_template",
@@ -931,19 +934,25 @@ class McpObservation(NamedTuple):
 
     ``catalog`` maps every observed server name to its declared tool list.
     ``sources`` maps EVERY catalog server to its source specification (see
-    :func:`normalize_source`); a dump-supplied catalog carries the explicit weak claim
+    :func:`normalize_source`; every value is structurally validated before any
+    comparison); a dump-supplied catalog carries the explicit weak claim
     ``{"transport": "external"}``, never an omission. ``instructions`` maps EVERY
     catalog server to exactly ``{"observed": bool, "text": str | None}`` (``observed``
     a real bool; ``text`` None when ``observed`` is false). ``unverifiable`` names
-    pinned servers that were declared but could not be observed at all. The maps may
-    be passed as None only for a wholly component-free call; any represented server
-    missing from ``sources`` or ``instructions`` is a CRITICAL refusal.
+    pinned servers that were declared but could not be observed at all. ``removed``
+    names pinned servers whose removal a human deliberately acknowledges: a pinned
+    server absent from EVERY component and not named here is a CRITICAL refusal
+    (``mcp_server_unobserved``) - a partial observation must never read as a full
+    one. ``unverifiable`` and ``removed`` must be lists or tuples of unique nonempty
+    names; any represented server missing from ``sources`` or ``instructions`` is a
+    CRITICAL refusal.
     """
 
     catalog: Dict[str, List[dict]]
     sources: Optional[Dict[str, Dict[str, Any]]] = None
     instructions: Optional[Dict[str, Dict[str, Any]]] = None
     unverifiable: Sequence[str] = ()
+    removed: Sequence[str] = ()
 
 
 def _validate_observation(observation: McpObservation) -> None:
@@ -1000,11 +1009,47 @@ def _validate_observation(observation: McpObservation) -> None:
                 f"instruction observation for server {server!r} is contradictory: "
                 "unobserved with text"
             )
-    unverifiable = list(observation.unverifiable)
-    if len(set(unverifiable)) != len(unverifiable) or any(
-        not isinstance(name, str) or not name for name in unverifiable
+    for server, source in (observation.sources or {}).items():
+        if not isinstance(source, dict):
+            raise ValueError(
+                f"source observation for server {server!r} must be an object, got "
+                f"{type(source).__name__}"
+            )
+        try:
+            # structural validity is independent of whether the manifest pins the
+            # server: a malformed source on an unpinned component-only server is
+            # still a malformed observation, not evidence
+            normalize_source(source)
+        except ValueError as exc:
+            raise ValueError(f"source observation for server {server!r}: {exc}") from exc
+    for label, seq in (
+        ("unverifiable", observation.unverifiable),
+        ("removed", observation.removed),
     ):
-        raise ValueError("observation unverifiable must be unique nonempty server names")
+        if not isinstance(seq, (list, tuple)):
+            # a string would iterate to characters, a dict to keys, None to a
+            # TypeError: generic iteration is not the declared contract
+            raise ValueError(
+                f"observation {label} must be a list or tuple of unique nonempty "
+                f"server names, got {type(seq).__name__}"
+            )
+        names = list(seq)
+        if len(set(names)) != len(names) or any(
+            not isinstance(name, str) or not name for name in names
+        ):
+            raise ValueError(f"observation {label} must be unique nonempty server names")
+    represented = (
+        set(observation.catalog)
+        | set(observation.sources or {})
+        | set(observation.instructions or {})
+        | set(observation.unverifiable)
+    )
+    contradictory = set(observation.removed) & represented
+    if contradictory:
+        raise ValueError(
+            f"observation marks server(s) {sorted(contradictory)} as removed while also "
+            "representing them; a removal acknowledgement contradicts an observation"
+        )
 
 
 def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> List[Finding]:
@@ -1013,10 +1058,14 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
     Omission-resistance, stated exactly: for every server the observation REPRESENTS
     (in ``catalog``, ``sources``, ``instructions``, or ``unverifiable``), all three
     surfaces are adjudicated, and a missing component is a CRITICAL refusal, never a
-    weaker comparison. What this cannot see: a server the observation does not
-    represent at all is adjudicated only as the pinned-server-absent WARNING that
-    :func:`diff_manifest` records (an observation cannot prove the absence of servers
-    it never looked at - collect against the full config, as the CLI does).
+    weaker comparison. And a pinned server absent from EVERY component is a CRITICAL
+    refusal too (``mcp_server_unobserved``) unless a human deliberately names it in
+    ``removed``: the manifest is approved truth, so a server-set change is reviewed,
+    never inferred from an incomplete observation. (A ``removed`` acknowledgement is
+    recorded as a passing WARNING naming the deliberate transition; re-pin to make
+    the shrunk server set the new approved truth. The catalog-only
+    :func:`diff_manifest` primitive keeps its absent-server WARNING, because it
+    claims only catalog comparison.)
 
     1. the observation's own shape is validated (:func:`_validate_observation`, a
        ``ValueError`` on malformation - a truthy non-bool ``observed``, a non-list
@@ -1034,7 +1083,10 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
        ``{"observed": False, "text": None}``, never an omission;
     6. a pinned server represented only by source/instructions (no catalog entry) is
        a CRITICAL refusal unless it is named ``unverifiable``;
-    7. the tool catalog is compared (:func:`diff_manifest`), including the
+    7. a pinned server absent from every component is a CRITICAL refusal unless
+       named ``removed`` (whose acknowledgement is a recorded, passing WARNING);
+       ``removed`` may name only pinned servers and contradicts any representation;
+    8. the tool catalog is compared (:func:`diff_manifest`), including the
        ``unverifiable`` adjudication.
 
     ``recusal mcp verify`` routes through this function; call the lower-level
@@ -1047,6 +1099,14 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
     sources = observation.sources or {}
     instructions = observation.instructions or {}
     unverifiable = set(observation.unverifiable)
+    removed = set(observation.removed)
+
+    unknown_removed = removed - set(pinned_servers)
+    if unknown_removed:
+        raise ValueError(
+            f"observation marks server(s) {sorted(unknown_removed)} as removed, but the "
+            "manifest does not pin them; a removal acknowledgement must name a pinned server"
+        )
 
     findings: List[Finding] = []
 
@@ -1109,6 +1169,32 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
                     server=name,
                 )
             )
+
+    represented_all = set(observation.catalog) | set(sources) | set(instructions) | unverifiable
+    for name in sorted(set(pinned_servers) - represented_all - removed):
+        findings.append(
+            Finding.fail(
+                "mcp_server_unobserved",
+                severity="CRITICAL",
+                message=f"pinned server '{name}' is absent from every component of this "
+                "observation and was not explicitly marked removed; a partial observation "
+                "must not verify clean while the manifest keeps authorizing the server's "
+                "pinned runtime names - observe it, name it unverifiable, or acknowledge "
+                "its removal and re-pin",
+                server=name,
+            )
+        )
+    for name in sorted(removed):
+        findings.append(
+            Finding.fail(
+                "mcp_server_removed",
+                severity="WARNING",
+                message=f"pinned server '{name}' is acknowledged as deliberately removed "
+                "(recorded, not blocking); re-pin so the manifest stops authorizing its "
+                "runtime names",
+                server=name,
+            )
+        )
 
     findings.extend(
         diff_manifest(pinned, observation.catalog, unverifiable=tuple(observation.unverifiable))
@@ -1322,8 +1408,11 @@ def manifest_policy(
 
     - a non-MCP tool name (one that does not start with ``mcp__``) is handed to the wrapped
       ``policy`` (or deferred if none);
-    - an ``mcp__server__tool`` call not present in the pinned manifest → CRITICAL refusal;
-    - a pinned call is then ALSO handed to the wrapped ``policy``, so argument-level rules
+    - an ``mcp__server__tool`` call not present in the pinned manifest → CRITICAL refusal,
+      and the wrapped ``policy`` is NOT invoked for it (nor when the manifest is missing
+      or corrupt): membership is established first, so an unapproved capability never
+      triggers downstream policy work or its side effects;
+    - a pinned call is then handed to the wrapped ``policy``, so argument-level rules
       (repo scope, path confinement, cookbook recipe 12) compose on top of the pin;
     - a missing or malformed manifest fails CLOSED for MCP calls: no pin, no MCP;
     - the manifest bytes are read on every MCP call and reparsed only when their SHA-256
@@ -1403,9 +1492,15 @@ def manifest_policy(
         # manifest read) never inherits a PREVIOUS call's manifest digest in its audit
         # record - and cleared in THIS invocation's context only, never another's
         _digest_var.set(None)
-        inner = policy(tool_name, tool_input) if policy else []
         if not str(tool_name).startswith("mcp__"):
-            return inner  # not an MCP call -> the wrapped policy's business
+            # not an MCP call -> the wrapped policy's business
+            return list(policy(tool_name, tool_input)) if policy else []
+        # Least-authority ORDER: manifest availability and runtime-name membership are
+        # established BEFORE the wrapped business policy runs. Adopter policies are
+        # not required to be side-effect-free (subject lookups, file reads, network
+        # evidence-gathering), and an unapproved capability must not trigger that
+        # downstream work - the membership check is the cheapest and most fundamental
+        # refusal, so it goes first.
         try:
             pinned_names = _pinned_names()
         except (OSError, ValueError) as exc:
@@ -1427,8 +1522,8 @@ def manifest_policy(
                     "that was never approved must not run",
                     tool=tool_name,
                 )
-            ] + list(inner)
-        return list(inner)
+            ]
+        return list(policy(tool_name, tool_input)) if policy else []
 
     def _get_control_identity() -> Dict[str, Any]:
         """Invocation-local audit provenance, read by the audit layer AFTER the policy

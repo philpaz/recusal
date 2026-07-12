@@ -1250,6 +1250,7 @@ def mcp_verify_command(
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
     minimal_env: bool = True,
+    removed: Optional[List[str]] = None,
     as_json: bool = False,
     stdout: Optional[TextIO] = None,
 ) -> int:
@@ -1265,6 +1266,12 @@ def mcp_verify_command(
     A missing manifest fails closed (a missing pin is not a clean pin), and an
     observation that cannot be completed fails closed (a failed fetch must not read as
     "no drift"). Drift findings are CRITICAL, so drift exits 2, the blocking code.
+
+    **Whole-server inventory**: a pinned server absent from the ENTIRE observation is a
+    CRITICAL refusal (``mcp_server_unobserved``), because a partial observation must
+    not verify clean while the manifest keeps authorizing that server's runtime names.
+    A deliberate removal is acknowledged explicitly with ``--removed NAME`` (recorded
+    as a passing WARNING); re-pin to make the shrunk server set the approved truth.
 
     A pinned server that is present in the config but *unfetchable* (silently swapped to a
     URL transport this fetcher cannot reach) is a CRITICAL refusal, not a passing WARNING:
@@ -1303,6 +1310,7 @@ def mcp_verify_command(
                 sources=obs.sources,
                 instructions=obs.instructions,
                 unverifiable=tuple(obs.unfetchable),
+                removed=tuple(removed or ()),
             ),
         )
     except (ValueError, UnicodeError, RecursionError) as exc:
@@ -1496,14 +1504,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     p_mcp_verify = mcp_sub.add_parser(
         "verify",
-        help="verify the observed catalog against the pinned manifest "
-        "(exit 0 match, 2 drift/unpinned/error)",
+        help="verify the observed sources, server instructions, and tool declarations "
+        "against the pinned manifest (exit 0 match, 2 drift/unpinned/unobserved/error)",
     )
     _add_mcp_source_args(p_mcp_verify)
     p_mcp_verify.add_argument(
         "--manifest",
         default="mcp-manifest.json",
         help="pinned manifest to verify against (default: mcp-manifest.json)",
+    )
+    p_mcp_verify.add_argument(
+        "--removed",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="acknowledge that this pinned server was deliberately removed (repeatable); "
+        "without it, a pinned server absent from the whole observation refuses - re-pin "
+        "after removal to make the shrunk server set the approved truth",
     )
     p_mcp_verify.add_argument(
         "--json", action="store_true", help="emit the result as JSON instead of text"
@@ -1568,6 +1585,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 claude_config=args.claude_config,
                 timeout=args.timeout,
                 minimal_env=not args.inherit_env,
+                removed=args.removed,
                 as_json=args.json,
             )
         p_mcp.print_help()

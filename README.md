@@ -166,7 +166,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.5"   # the plugin is version-bound; fails CLOSED without it
+pip install "recusal==0.5.6"   # the plugin is version-bound; fails CLOSED without it
                                # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
@@ -309,7 +309,7 @@ hijacking) are the MCP specification's own
 layer, complementary to this gate, neither replaces the other. Every source here is
 verified in [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
-### MCP discovery, pin the catalog, refuse the rug pull
+### MCP discovery integrity: pin server instructions and tool declarations, refuse represented drift
 
 The model chooses tools by reading their declared descriptions, so a poisoned declaration
 steers the agent *before any call exists* for a call-time policy to see, and the call that
@@ -319,7 +319,7 @@ the human where the judgment is:
 
 ```bash
 recusal mcp pin --claude-config .mcp.json --approve-server-launch   # review once, pin
-recusal mcp verify --claude-config .mcp.json  # CI / session start: same source+catalog, or refuse
+recusal mcp verify --claude-config .mcp.json  # CI / session start: same represented source, server instructions, and tool declarations, or refuse
 ```
 
 > **`--claude-config` and `--stdio` execute the declared server commands** to ask them
@@ -359,8 +359,14 @@ HTTP client's dependencies nor its SSRF surface. Collection is never decision: t
 adjudicates what was observed.
 
 The honest boundary: this is *discovery-time and call-time* integrity, not a live tap on
-every message. `verify` proves the catalog at the moment it runs (wire it into CI and
-session start); the call-time gate then enforces *approved tools only*. A server that
+every message. `verify` compares the represented source templates, observed
+server-instruction state, and tool declarations at the moment it runs (wire it into CI
+and session start); the call-time gate then enforces *approved tools only*. And the
+server SET is inventory-checked: a pinned server absent from the entire observation is
+a CRITICAL refusal (`mcp_server_unobserved`), never a silent pass - a partial
+observation must not verify clean while the manifest keeps authorizing that server's
+pinned runtime names. Acknowledge a deliberate removal with `--removed NAME`
+(recorded, not blocking), then re-pin to make the shrunk set the approved truth. A server that
 serves one catalog to `verify` and a different one to the live session (a client- or
 time-discriminating server) is a residual this layer names rather than claims to close:
 run `verify` against the same endpoint the session uses, close in time. The manifest
@@ -371,10 +377,16 @@ a rewritten command, a same-key env value swap (`NODE_OPTIONS`, `LD_PRELOAD`), o
 `${VAR}` reference rename is refused without the replacement ever executing (each pinned
 by an adversarial test proving the substituted command's marker file is never written).
 Every server entry in the SUPPLIED `.mcp.json` is represented or the operation
-refuses: a remote (`http`/`sse`/`ws`) entry pins its
-`url_template`, header value *templates*, `headersHelper` command template, and
-OAuth policy fields; an added or transport-swapped server of any kind is
-drift, and a config entry the parser cannot faithfully represent fails closed. The
+refuses: a remote entry pins its `url_template`, header value *templates*, and
+`headersHelper` command template, plus - for `http`/`sse`, the transports Claude
+applies its preconfigured OAuth flags to (SSE is deprecated upstream in favor of
+HTTP) - the OAuth policy fields; `ws` is header-only and an entry carrying `oauth`
+refuses; a server name Claude reserves for its built-ins (`workspace`,
+`claude-in-chrome`, `computer-use`, `Claude Preview`, `Claude Browser`) refuses
+before anything launches, since Claude skips such entries and representing one would
+misdescribe the effective configuration; an added or transport-swapped server of any
+kind is drift, and a config entry the parser cannot faithfully represent fails
+closed. The
 remaining residuals, named: the operator-shell *values* behind `${VAR}` references are
 not pinned (the reference is); `npx`/`uvx`-style launchers resolve through PATH and
 fetch what the registry serves (pin package versions in the args); executable bytes are
@@ -408,11 +420,17 @@ single-server object); legacy `{server: [tools]}` dumps stay supported but recor
 *configured* policy fields in `.mcp.json` (including the configured `scopes` string,
 whose change is drift); it does not observe the final authorization request, scopes
 Claude appends (such as `offline_access` when the server advertises it), the issued
-token, granted authority, or the server-side authorization result. OAuth applies to
-`http` entries; Claude documents WebSocket authentication as header-only, so a `ws`
+token, granted authority, or the server-side authorization result. Claude's reference applies
+preconfigured OAuth flags to the `http` and `sse` transports (SSE deprecated upstream
+in favor of HTTP), and documents WebSocket authentication as header-only, so a `ws`
 entry carrying `oauth` is refused as a shape Claude does not support. Prompts, resources,
 resource templates, channels, and elicitation can still introduce context without a
-tool invocation and are outside `manifest_policy`. Claude Code supports dynamic `list_changed`
+tool invocation and are outside `manifest_policy`. So are MCP *roots*: Recusal does
+not pin or govern `roots/list` responses (the session launch directory plus
+additional working directories Claude answers with) or
+`notifications/roots/list_changed`; Claude working-directory permissions,
+additional-directory configuration, server-side root enforcement, and
+operating-system controls own that boundary. Claude Code supports dynamic `list_changed`
 updates: a NEW tool name stays blocked at call time, but a changed description under
 an already-pinned name is invisible to the call-time hook until you verify again -
 verification is point-in-time, not continuous attestation. And Recusal never
@@ -556,7 +574,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.5   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.6   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

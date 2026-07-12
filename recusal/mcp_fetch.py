@@ -12,7 +12,8 @@ JSON-RPC error, an unparseable or non-UTF-8 line, a missing binary, raises
 :class:`McpFetchError`. A failed observation must be an *error*, never an empty
 (clean-looking) catalog that a verify could misread as "no drift".
 
-Servers reachable only over HTTP are not fetched here; :func:`servers_from_claude_config`
+Remote HTTP, SSE, and WebSocket servers are not contacted by this stdio-only
+collector; :func:`servers_from_claude_config`
 surfaces them as ``skipped`` so the caller pins them from a JSON dump (``recusal mcp pin
 --from``) rather than silently dropping them. No model, no network in any verdict.
 
@@ -472,6 +473,16 @@ _REMOTE_TYPES = {"http": "http", "streamable-http": "http", "sse": "sse", "ws": 
 #: cannot classify could be executable configuration it would otherwise silently drop
 #: (exactly how ``headersHelper`` was once invisible to verification).
 _STDIO_ENTRY_FIELDS = {"type", "command", "args", "env", "cwd"}
+
+#: Server names Claude Code reserves for its built-in servers (documented list,
+#: case-sensitive). Claude SKIPS a user config entry using one of these at load time
+#: and warns; `claude mcp add` rejects them. Representing (or LAUNCHING) such an entry
+#: here would misdescribe the effective configuration surface, so it refuses instead -
+#: before any command executes. Mirrors current Claude behavior; maintained as Claude
+#: adds reserved names.
+_CLAUDE_RESERVED_MCP_NAMES = frozenset(
+    {"workspace", "claude-in-chrome", "computer-use", "Claude Preview", "Claude Browser"}
+)
 _REMOTE_ENTRY_FIELDS = {"type", "url", "headers", "headersHelper", "oauth"}
 _RUNTIME_ONLY_FIELDS = {"timeout", "alwaysLoad"}
 _OAUTH_ENTRY_FIELDS = {"clientId", "callbackPort", "authServerMetadataUrl", "scopes"}
@@ -520,11 +531,13 @@ def servers_from_claude_config(
           "cwd":     None|str,
         }
 
-    Each remote server maps to its identity source (``{transport, url_template,
-    header_templates, headers_helper_template, oauth}``, per
-    ``recusal.mcp.normalize_source``); this fetcher never contacts it - supply its
-    catalog via ``--from`` (the rich ``{"instructions": ..., "tools": [...]}`` shape
-    carries the discovery-content surface too).
+    Each remote server maps to its identity source per ``recusal.mcp.normalize_source``:
+    ``{transport, url_template, header_templates, headers_helper_template}`` plus, for
+    ``http``/``sse`` only, ``oauth`` (Claude applies preconfigured OAuth flags to HTTP
+    and SSE transports; WebSocket is header-only and a ws entry carrying ``oauth``
+    refuses). This fetcher never contacts remote servers - supply the catalog via
+    ``--from`` (the rich ``{"instructions": ..., "tools": [...]}`` shape carries the
+    discovery-content surface too).
 
     Classification mirrors Claude Code's rules and fails CLOSED on anything else: no
     ``type`` with a string ``command`` is stdio; ``type: "stdio"`` requires a command;
@@ -553,6 +566,13 @@ def servers_from_claude_config(
     remote_servers: Dict[str, Dict[str, Any]] = {}
     for name, entry in entries.items():
         where = f"{path}: server {name!r}"
+        if name in _CLAUDE_RESERVED_MCP_NAMES:
+            raise ValueError(
+                f"{where}: this name is reserved by Claude Code for a built-in server "
+                "(Claude skips such an entry at load time and warns); it is not a "
+                "loadable user MCP server name, so representing or launching it would "
+                "misdescribe the effective configuration - rename the server"
+            )
         if not isinstance(entry, dict):
             raise ValueError(f"{where} is not an object")
         transport_type = entry.get("type")

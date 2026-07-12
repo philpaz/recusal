@@ -4,6 +4,74 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.6] - 2026-07-12
+
+A narrowly scoped correctness patch mandated by a ninth external review: whole-server
+observation completeness, strict observation-container validation,
+manifest-before-business-policy ordering, reserved Claude server-name fidelity, and
+the remaining MCP documentation corrections.
+
+### Fixed
+- **A wholly omitted pinned server refuses (P0).** `diff_observation` inherited
+  `diff_manifest`'s absent-server WARNING for a pinned server missing from EVERY
+  observation component, so a partial multi-server observation could verify clean
+  while the manifest kept authorizing that server's pinned runtime names - a
+  verification-coverage bypass for an existing pinned server (never a call-time
+  name-authorization bypass). Now: a pinned server absent from every component is a
+  CRITICAL refusal (`mcp_server_unobserved`); a deliberate removal is acknowledged
+  explicitly (`McpObservation(removed=...)`, CLI `--removed NAME`), recorded as a
+  passing WARNING naming the transition; `removed` may name only pinned servers and
+  contradicts any representation; re-pinning without the server is the clean end
+  state. The catalog-only `diff_manifest` primitive keeps its documented WARNING,
+  because it claims only catalog comparison. A regression test demonstrates WHY: the
+  omitted server's runtime tool name stays authorized by `manifest_policy` while the
+  partial verification would have passed.
+- **The observation structural contract is fully strict (P1).** `unverifiable` (and
+  `removed`) accepted any iterable: a string iterated to characters, a dict to its
+  keys, None raised `TypeError` instead of the documented `ValueError`. Both now
+  require a list or tuple of unique nonempty names. Every source observation VALUE is
+  structurally validated (`normalize_source`) before any comparison - including on
+  unpinned, source-only, or catalog-less servers: the observation's structural
+  contract does not depend on whether the manifest pins the server.
+- **Manifest membership is established before the wrapped business policy runs (P1).**
+  `manifest_policy` invoked the wrapped argument-level policy first, so an unapproved
+  MCP capability (or a missing/corrupt manifest) still triggered downstream policy
+  work - and adopter policies are not required to be side-effect-free (subject
+  lookups, file reads, network evidence-gathering). Order now: non-MCP calls run the
+  wrapped policy as before; MCP calls establish manifest availability and
+  runtime-name membership FIRST; the wrapped policy runs only for pinned calls.
+  Matches the docstring, which now also states that an unpinned call never invokes
+  the wrapped policy.
+- **Reserved Claude server names refuse before anything launches (P1).** Claude Code
+  reserves `workspace`, `claude-in-chrome`, `computer-use`, `Claude Preview`, and
+  `Claude Browser` for built-in servers, skips user config entries using them (with a
+  warning), and rejects them in `claude mcp add`. The parser represented - and the
+  pin path would launch - such entries. `servers_from_claude_config` now refuses a
+  reserved name before classification or any command execution, one regression test
+  per documented name proving no marker command runs. The list mirrors current
+  documented Claude behavior and is maintained as Claude adds reserved names.
+
+### Documentation
+- **SSE OAuth corrected**: 0.5.5 said Claude's docs "are silent on SSE" - the
+  reference states its preconfigured OAuth flags "only apply to HTTP and SSE
+  transports". The affirmative form now appears in the source comments, README, and
+  the amended 0.5.5 changelog entry, with SSE's upstream deprecation in favor of
+  HTTP noted; the README's earlier http/sse/ws-all-pin-OAuth phrasing and the later
+  http-only phrasing were internally inconsistent and both now read: OAuth policy
+  fields pin for `http`/`sse`; `ws` is header-only and refuses.
+- **MCP roots named out of scope**: Recusal does not pin or govern `roots/list`
+  responses (the session launch directory plus additional working directories) or
+  `notifications/roots/list_changed`; Claude working-directory permissions,
+  additional-directory configuration, server-side root enforcement, and OS controls
+  own that boundary (README and SECURITY).
+- **Manifest-v5 terminology finished**: the `recusal.mcp` module heading reads "tool
+  and server-instruction integrity" (not "tool-catalog governance"); the README
+  discovery heading and verify comment name instructions alongside declarations;
+  "verify proves the catalog" reads as the full represented source, instruction, and
+  declaration scope plus the new whole-server inventory rule; the stdio collector
+  states it contacts no HTTP/SSE/WebSocket server; `servers_from_claude_config`
+  documents OAuth as transport-specific.
+
 ## [0.5.5] - 2026-07-12
 
 A narrowly scoped correctness patch mandated by an eighth external review:
@@ -53,9 +121,11 @@ fields, and WebSocket configuration fidelity.
   Claude does not support, misrepresenting the mirrored configuration surface. A `ws`
   entry or source carrying `oauth` now refuses in both `.mcp.json` parsing and
   `normalize_source`, and the canonical ws source shape carries no `oauth` member at
-  all. (The docs establish OAuth for HTTP and are silent on SSE; `sse` keeps the
-  HTTP shape until the documentation says otherwise.) Existing ws pins, if any,
-  re-pin under the corrected shape.
+  all. *(Amended 2026-07-12: this originally said the docs "are silent on SSE".
+  Claude's reference states its preconfigured OAuth flags "only apply to HTTP and
+  SSE transports", so `sse` keeps the OAuth shape affirmatively, noting SSE is
+  deprecated upstream in favor of HTTP.)* Existing ws pins, if any, re-pin under the
+  corrected shape.
 
 ### Documentation
 - 0.5.4's overstatements amended in place (changelog and published release notes):
