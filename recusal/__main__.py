@@ -55,9 +55,9 @@ from .audit import load as _load_audit_entries
 from .audit import verify_file as _verify_audit_file
 from .evidence import Decision, Finding, Verdict, compute_verdict
 from .mcp import (
+    McpObservation,
     build_manifest,
-    diff_instructions,
-    diff_manifest,
+    diff_observation,
     diff_source,
     load_manifest,
     manifest_to_text,
@@ -72,10 +72,12 @@ from .mcp_fetch import (
 )
 
 #: The fail-closed POSIX launcher, verbatim the command this repository registers for
-#: itself (see ``.claude/settings.json.example``). Claude Code treats a hook command that
-#: cannot launch, or exits with anything other than 2, as a NON-blocking error and lets
-#: the tool call proceed; this loop coerces every failure into exit 2 so a broken or
-#: absent interpreter refuses the tool call instead of waving it through.
+#: itself (see ``.claude/settings.json.example``). A deny is exit 0 with deny JSON and a
+#: defer is exit 0 with no output; exit 2 is Claude's BLOCKING failure signal, and any
+#: OTHER nonzero exit (a command that cannot launch, a crashed hook) is a NON-blocking
+#: error that lets the tool call proceed. This loop coerces every nonzero gate-process
+#: failure into exit 2 so a broken or absent interpreter refuses the tool call instead
+#: of waving it through.
 #:
 #: Shell reality on Windows: hook commands run under Git Bash when it is installed, and
 #: Claude Code FALLS BACK TO POWERSHELL when it is not - where this POSIX loop is a parse
@@ -889,17 +891,30 @@ def _collect_catalog(
         # "tools" was misread as a raw result and its siblings silently dropped.
         if server:
             if isinstance(data, dict) and isinstance(data.get("tools"), list):
-                tools = data["tools"]  # a raw tools/list result object
+                tools = data["tools"]  # a raw tools/list result, or the rich shape
+                # The rich single-server shape carries instructions too; the KEY decides
+                # the claim: absent = not observed (legacy tools/list result, the weaker
+                # claim), present-null = observed and the server declares none, string =
+                # observed. Dropping a supplied observation would silently record the
+                # weaker claim over a stronger one.
+                if "instructions" in data:
+                    text = data["instructions"]
+                    if text is not None and not isinstance(text, str):
+                        raise ValueError(f"{from_file}: 'instructions' must be a string or null")
+                    instructions[server] = {"observed": True, "text": text}
+                else:
+                    instructions[server] = {"observed": False, "text": None}
             elif isinstance(data, list):
                 tools = data  # a bare array of tool declarations
+                instructions[server] = {"observed": False, "text": None}
             else:
                 raise ValueError(
                     f"{from_file} with --server must be a tools/list result (an object with "
-                    "a 'tools' array) or a bare array of tool declarations"
+                    "a 'tools' array, optionally with 'instructions') or a bare array of "
+                    "tool declarations"
                 )
             _add(server, tools)
             sources[server] = {"transport": "external"}
-            instructions[server] = {"observed": False, "text": None}
         elif isinstance(data, dict) and data:
             # Every key is a server name (a server literally named "tools" is fine here,
             # its siblings are never dropped). A bare tools/list result reaches this branch
@@ -1172,8 +1187,9 @@ def mcp_pin_command(
         else:
             _emit_verdict(screen_verdict, as_json, out)
             out.write(
-                "not pinned: review the flagged descriptions; re-run with --force to record "
-                "that a human reviewed and accepted them\n"
+                "not pinned: review the flagged tool declarations, server instructions, "
+                "and source configuration warnings; re-run with --force to record that a "
+                "human reviewed and accepted them\n"
             )
         return EXIT_BY_DECISION[screen_verdict.decision]
     if not screen_verdict.passed and not as_json:
@@ -1276,16 +1292,18 @@ def mcp_verify_command(
         return _fail_closed(f"could not observe the catalog: {exc}", as_json, out)
 
     try:
-        # the kernel owns all adjudication: it turns a pinned-but-unfetchable server (F1)
-        # into a CRITICAL, the CLI only collects the `unverifiable` set and prints.
-        findings = []
-        for name, source in sorted(obs.sources.items()):
-            entry = pinned.get("servers", {}).get(name)
-            if isinstance(entry, dict):
-                findings.extend(diff_source(name, entry, source))
-                record = obs.instructions.get(name, {"observed": False, "text": None})
-                findings.extend(diff_instructions(name, entry, record["observed"], record["text"]))
-        findings.extend(diff_manifest(pinned, obs.catalog, unverifiable=obs.unfetchable))
+        # the kernel owns all adjudication AND its composition: diff_observation is the
+        # one omission-resistant v5 verify (sources + instructions + catalog +
+        # unverifiable), so the CLI cannot forget a surface the manifest pins.
+        findings = diff_observation(
+            pinned,
+            McpObservation(
+                catalog=obs.catalog,
+                sources=obs.sources,
+                instructions=obs.instructions,
+                unverifiable=tuple(obs.unfetchable),
+            ),
+        )
     except (ValueError, UnicodeError, RecursionError) as exc:
         # a malformed observation (e.g. a lone-surrogate string that cannot be canonicalized,
         # or a corrupt pinned manifest) fails closed, never an uncaught traceback / exit 1
@@ -1306,12 +1324,17 @@ def _add_mcp_source_args(p: argparse.ArgumentParser) -> None:
         "--from",
         dest="from_file",
         metavar="FILE",
-        help="JSON catalog: a mapping of server name -> tool list, or a raw tools/list "
-        "result (then pass --server NAME); the escape hatch for HTTP servers",
+        help="JSON observation, the escape hatch for HTTP servers. Rich shape (pins "
+        "instructions too): {server: {'instructions': str|null, 'tools': [...]}}. "
+        "Legacy shapes: {server: [tools]} mapping, or a single server's raw tools/list "
+        "result with --server NAME - legacy shapes do NOT establish server-instruction "
+        "coverage (recorded as observed: false)",
     )
     p.add_argument(
         "--server",
-        help="server name for a --from file that is a single raw tools/list result",
+        help="server name when --from is a single server's observation: a raw "
+        "tools/list result, or {'instructions': str|null, 'tools': [...]} to establish "
+        "instruction coverage",
     )
     p.add_argument(
         "--stdio",

@@ -52,12 +52,15 @@ action is refused terminally. The loop keeps its autonomy; it just can't certify
 
 ## Isn't a deterministic gate too rigid? Why not an LLM judge?
 
-An LLM judge is a *probabilistic* verifier: it gives different answers to the same input
-on a different day or model version, can be prompt-injected, and can't be replayed. For
-the thing empowered to **refuse**, that's the wrong trade. A deterministic verdict can be
-unit-tested, diffed, logged, and explained to an auditor or an on-call engineer at 3am:
-*same evidence, same policy, same version, same verdict.* You can still use a model
-**upstream** to gather evidence; you just don't let it sit **inside** the decision.
+An LLM judge is a *probabilistic* verifier: it can give different answers to the same
+input on a different day, and it can be prompt-injected. A logged model evaluation can
+be rerun, but the same output is not guaranteed across model versions, prompts,
+sampling settings, or service behavior. For the thing empowered to **refuse**, that's
+the wrong trade. A deterministic verdict can be unit-tested, diffed, logged, and
+explained to an auditor or an on-call engineer at 3am: the same normalized evidence
+and policy inputs, under the same recusal version, produce the same verdict. You can
+still use a model **upstream** to gather evidence; you just don't let it sit
+**inside** the decision.
 
 ## Where does the "evidence" come from? Does Recusal gather it?
 
@@ -81,8 +84,10 @@ folds those findings into one verdict. See [`HOWTO.md`](HOWTO.md) and
   a different job than recording
   anything.
 
-Recusal aims at the piece those tools leave out: an independent authority *in* the action path
-that can say **no**. Full comparison: [`LANDSCAPE.md`](LANDSCAPE.md).
+Recusal focuses on a deterministic evidence-to-verdict authority in the action path
+that can say **no**. Adjacent products may provide overlapping enforcement features;
+compare current capabilities from their own documentation. Capability notes:
+[`LANDSCAPE.md`](LANDSCAPE.md).
 
 ## Is it ready to use? What's the maturity?
 
@@ -90,8 +95,9 @@ It's early (`0.x`, Alpha) and honest about scope. What's proven end-to-end **tod
 enforcement path on the real wire format, a real Claude Code hook, the real `PreToolUse`
 JSON, a real `deny` Claude Code honors, and it governs *this* repository's own
 development. See [`PROVEN.md`](PROVEN.md). What it does not yet claim: fleet-scale
-deployment. The core is zero-dependency stdlib and frozen/immutable by design,
-which is exactly what you want from the part allowed to refuse.
+deployment. The enforcement core is implemented with the Python standard library, no
+third-party runtime dependencies, and its verdict objects are frozen/immutable by
+design.
 
 ## What are the dependencies? What Python versions?
 

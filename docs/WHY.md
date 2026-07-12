@@ -87,15 +87,17 @@ It is worth being precise about why existing tools do not already solve this:
 - **Evaluation libraries** (promptfoo, DeepEval, and LLM-as-judge tools) *score offline*,
   after the fact, usually with a model judge, the probabilistic opposite of a
   deterministic gate, and not present in the live action path.
-- **Observability** (Langfuse, AgentOps, Phoenix) *records* what happened. It has no
-  authority to stop anything.
+- **Observability** (Langfuse, AgentOps, Phoenix) primarily *records and analyzes*
+  execution; verify each product's current enforcement capabilities from its own
+  documentation before treating this as a categorical difference.
 - **Platform-grade governance suites** (Microsoft's Agent Governance Toolkit) and emerging
   agent-firewall projects are real and capable, but they are heavyweight, multi-package
-  systems. Recusal makes a narrower bet: independence and determinism in a kernel small
-  deliberately small.
+  systems. Recusal makes a narrower bet: independence and determinism in a deliberately
+  small kernel.
 
-What we wanted, and did not find packaged this way, is a small, independent, deterministic
-authority that sits in the action path and can *refuse*. That is the gap Recusal aims at.
+Recusal packages a small deterministic findings-to-verdict contract, plus adapters that
+place it in a live action path where it can *refuse*. Adjacent products may provide
+overlapping enforcement features; compare current capabilities from their documentation.
 
 ## 5. What Recusal actually gives you
 
@@ -113,17 +115,21 @@ Recusal is that authority. Operationally, adopting it changes five things:
    the same reasoning that produced the action. The builder cannot grade its own work.
 
 3. **An auditable, replayable record.** A verdict is a typed, immutable object: the
-   findings that drove it, the severity tiers, the decision, the reasons. Same evidence in,
-   same verdict out, which is exactly what an incident review or a regulator expects, and
-   what maps cleanly onto frameworks like the OWASP Top 10 for Agentic Applications. And
+   findings that drove it, the severity tiers, the decision, the reasons. Under the same
+   policy inputs and implementation version the verdict is reproducible, and the audit
+   record captures the decision and its findings; whether that evidence satisfies a
+   specific regulator, auditor, control framework, or organizational policy depends on
+   the deployment and the applicable requirements. The evidence model maps onto
+   frameworks like the OWASP Top 10 for Agentic Applications. And
    `recusal.audit` chains those verdicts into a hash-chained log, so an in-place edit or
    reordering of any record with a surviving successor is detectable after the fact
    (catching truncation, a tail-suffix rewrite, or a forged append by a write-access
    attacker needs an external anchor).
 
 4. **It works where you already build.** The enforcement core is zero-dependency and
-   framework-neutral; thin adapters place it in a Claude Code hook, in a Claude Agent SDK
-   manual loop, or behind a Managed Agents confirmation. One policy engine, every surface.
+   framework-neutral; the same findings-and-verdict model is exposed through the
+   included adapters: a Claude Code hook, a Claude Agent SDK manual loop, a Managed
+   Agents confirmation, or the library called directly.
 
 5. **It tells you what to do next.** A refusal is only useful if you know the next move.
    When an action fails, the deterministic classifier routes it, transient (retry), a
@@ -144,9 +150,8 @@ Recusal is deliberately narrow, and it is honest about that.
   control path.
 
 It is also early. The category now has serious participants, and Recusal does not win on
-feature count. Its bet is on the properties that are hardest to retrofit and easiest to
-trust: **independence, determinism, an auditable record, and a kernel small enough to read
-in one sitting.**
+feature count. Its bet is on four properties it implements by construction:
+**independence, determinism, an auditable record, and a deliberately small kernel.**
 
 ## 7. The one-sentence "so what"
 

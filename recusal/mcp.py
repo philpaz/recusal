@@ -20,11 +20,14 @@ The design is the constitution applied to a new evidence surface, nothing more:
    deterministic marker screen first (``screen_tool_declarations``, over the whole
    declaration) so obvious injection phrasing is surfaced for review instead of silently
    blessed.
-2. **Verify** (deterministic, replayable, no model). ``diff_manifest`` compares a freshly
-   observed catalog against the pin and emits Findings: an unpinned server or tool is a
-   CRITICAL failure, a changed declaration is a CRITICAL failure that names the changed
-   fields (a changed *description* is the rug-pull vector), a removed tool is a recorded
-   WARNING. Same catalogs, same kernel version, same verdict, every time.
+2. **Verify** (deterministic, replayable, no model). ``diff_observation`` compares a
+   complete fresh observation (source templates, server instructions, tool catalog)
+   against the pin and emits Findings: an unpinned server or tool is a CRITICAL
+   failure, a changed declaration is a CRITICAL failure that names the changed fields
+   (a changed *description* is the rug-pull vector), a removed tool is a recorded
+   WARNING. The same complete observation, pinned manifest, and recusal implementation
+   version produce the same findings, every time. (``diff_manifest`` alone compares
+   only the tool catalog; use ``diff_observation`` for a full manifest-v5 verify.)
 3. **Enforce at call time.** ``manifest_policy`` bridges the pin into the existing
    PreToolUse gate: an ``mcp__server__tool`` call whose server/tool is not in the pinned
    manifest is refused before the server ever sees it, and a missing or unreadable
@@ -64,19 +67,23 @@ adjudication (everything here) is deterministic. Servers reachable only over HTT
 pinned from a JSON dump instead (``recusal mcp pin --from``).
 """
 
+import contextvars
 import hashlib
 import json
 import re
 import threading
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .evidence import Finding
 
-#: Version 5 pins MCP server INSTRUCTIONS alongside the tool catalog. Claude Code loads
-#: only tool names and server instructions at session start (tool search defers the
-#: rest), which makes the initialize-result ``instructions`` field a discovery-time
-#: influence surface: a server that keeps its tools byte-identical but rewrites its
-#: instructions steers when and why the model reaches for them. Instructions are pinned
+#: Version 5 pins MCP server INSTRUCTIONS alongside the tool catalog. With Claude
+#: Code's default tool-search behavior, tool names and server instructions load at
+#: session start while full tool definitions are deferred (full definitions may load
+#: up front when tool search is disabled or falls back, when a server sets
+#: ``alwaysLoad``, or when a tool declares ``anthropic/alwaysLoad``), which makes the
+#: initialize-result ``instructions`` field a discovery-time influence surface: a
+#: server that keeps its tools byte-identical but rewrites its instructions steers
+#: when and why the model reaches for them. Instructions are pinned
 #: as a hash (never readable text), screened at pin time with the same bounded marker
 #: review as declarations, and added/removed/changed instructions are drift. An
 #: observation that did not carry instructions (a legacy dump) is recorded as
@@ -377,9 +384,12 @@ def diff_instructions(
 ) -> List[Finding]:
     """Compare a server's observed instructions against the pin, as Findings.
 
-    Claude loads server instructions at session start, so they are discovery-time
-    influence: added, removed, or changed instructions under an unchanged tool catalog
-    are CRITICAL drift. A pin whose observation never carried instructions holds the
+    Under Claude's default tool-search behavior server instructions load at session
+    start, so they are discovery-time influence: added, removed, or changed
+    instructions under an unchanged tool catalog are CRITICAL drift. (Recusal
+    fingerprints the COMPLETE observed instruction string; Claude truncates what it
+    loads into context, currently at 2KB, so a change outside the loaded prefix still
+    drifts here - the safe side of that asymmetry.) A pin whose observation never carried instructions holds the
     weaker claim honestly: verifying it with another instruction-blind observation
     passes with the boundary named, while an observation that NOW carries instructions
     refuses with a re-pin instruction - unreviewed influence content must not ride in
@@ -575,6 +585,13 @@ def _validate_manifest(data: Any) -> None:
         raise ValueError(
             f"manifest_version {data.get('manifest_version')!r} is not {MANIFEST_VERSION}"
         )
+    unknown_top = set(data) - {"manifest_version", "servers"}
+    if unknown_top:
+        raise ValueError(
+            f"manifest carries fields this loader does not define: {sorted(unknown_top)} - "
+            "a deterministic control artifact must not carry ignored fields whose "
+            "meaning is undefined"
+        )
     servers = data.get("servers")
     if not isinstance(servers, dict) or not servers:
         raise ValueError("manifest has no servers")
@@ -583,6 +600,16 @@ def _validate_manifest(data: Any) -> None:
             raise ValueError(f"manifest server name must be a nonempty string, got {server!r}")
         if not isinstance(entry, dict):
             raise ValueError(f"manifest server {server!r} entry is not an object")
+        unknown_entry = set(entry) - {
+            "source",
+            "source_fingerprint",
+            "server_instructions",
+            "tools",
+        }
+        if unknown_entry:
+            raise ValueError(
+                f"manifest server {server!r} carries undefined fields: {sorted(unknown_entry)}"
+            )
         try:
             source = normalize_source(entry.get("source") or {})
         except ValueError as exc:
@@ -600,19 +627,35 @@ def _validate_manifest(data: Any) -> None:
         record = entry.get("server_instructions")
         if not isinstance(record, dict) or not isinstance(record.get("observed"), bool):
             raise ValueError(f"manifest server {server!r} has no server_instructions record")
-        if record["observed"]:
-            if not isinstance(record.get("present"), bool):
+        # Exactly the three canonical shapes instructions_record() emits, nothing else:
+        # a contradictory encoding ("present" under observed:false, a fingerprint under
+        # present:false, an extra key) is one the builder never writes, so accepting it
+        # would give an undefined record a defined meaning.
+        if not record["observed"]:
+            if set(record) != {"observed"}:
                 raise ValueError(
-                    f"manifest server {server!r} server_instructions needs a boolean 'present'"
+                    f"manifest server {server!r} server_instructions is not canonical: "
+                    'an unobserved record is exactly {"observed": false}'
                 )
-            if record["present"] and not (
+        elif not isinstance(record.get("present"), bool):
+            raise ValueError(
+                f"manifest server {server!r} server_instructions needs a boolean 'present'"
+            )
+        elif record["present"]:
+            if set(record) != {"observed", "present", "fingerprint"} or not (
                 isinstance(record.get("fingerprint"), str)
                 and _DIGEST_RE.fullmatch(record["fingerprint"])
             ):
                 raise ValueError(
-                    f"manifest server {server!r} server_instructions fingerprint is not "
-                    "sha256:<64 lowercase hex>"
+                    f"manifest server {server!r} server_instructions is not canonical: "
+                    'a present record is exactly {"observed": true, "present": true, '
+                    '"fingerprint": sha256:<64 lowercase hex>}'
                 )
+        elif set(record) != {"observed", "present"}:
+            raise ValueError(
+                f"manifest server {server!r} server_instructions is not canonical: an "
+                'observed-but-absent record is exactly {"observed": true, "present": false}'
+            )
         tools = entry.get("tools")
         if not isinstance(tools, dict):
             raise ValueError(f"manifest server {server!r} has no tools object")
@@ -623,6 +666,12 @@ def _validate_manifest(data: Any) -> None:
                 )
             if not isinstance(pin, dict) or not isinstance(pin.get("fingerprint"), str):
                 raise ValueError(f"manifest tool {server!r}/{name!r} has no fingerprint")
+            unknown_pin = set(pin) - {"fingerprint", "fields"}
+            if unknown_pin:
+                raise ValueError(
+                    f"manifest tool {server!r}/{name!r} carries undefined fields: "
+                    f"{sorted(unknown_pin)}"
+                )
             if not _DIGEST_RE.fullmatch(pin["fingerprint"]):
                 raise ValueError(
                     f"manifest tool {server!r}/{name!r} fingerprint is not "
@@ -650,7 +699,13 @@ def diff_manifest(
     *,
     unverifiable: Sequence[str] = (),
 ) -> List[Finding]:
-    """Compare a freshly observed catalog against the pinned manifest, as Findings.
+    """Compare a freshly observed TOOL CATALOG against the pinned manifest, as Findings.
+
+    **Catalog-only by design**: this compares tool declarations. It does NOT compare
+    source specifications or server instructions, both of which a manifest v5 also
+    pins; a clean result here says "the declared tools match", nothing more. For the
+    complete, omission-resistant v5 verify use :func:`diff_observation`, which is what
+    ``recusal mcp verify`` runs.
 
     - an observed server or tool that was never pinned → CRITICAL (unapproved capability);
     - a pinned tool whose declaration changed → CRITICAL, naming the changed fields (a
@@ -819,6 +874,69 @@ def diff_manifest(
                 "the pinned manifest",
             )
         )
+    return findings
+
+
+class McpObservation(NamedTuple):
+    """One complete observation of the MCP surface a manifest v5 pins.
+
+    ``catalog`` maps a server name to its declared tool list. ``sources`` maps a server
+    name to its launch/source specification (see :func:`normalize_source`); a server
+    absent from it is compared as catalog-only. ``instructions`` maps a server name to
+    ``{"observed": bool, "text": str | None}``; a server absent from it was NOT
+    observed for instructions, and if its pin carries instruction coverage that absence
+    REFUSES (an omitted observation must never read as verified). ``unverifiable``
+    names pinned servers that were declared but could not be observed at all.
+    """
+
+    catalog: Dict[str, List[dict]]
+    sources: Optional[Dict[str, Dict[str, Any]]] = None
+    instructions: Optional[Dict[str, Dict[str, Any]]] = None
+    unverifiable: Sequence[str] = ()
+
+
+def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> List[Finding]:
+    """The one omission-resistant manifest-v5 verify: every pinned surface, one call.
+
+    Composes the three comparison primitives over a complete
+    :class:`McpObservation` so a programmatic caller cannot accidentally verify a
+    subset and read it as the whole:
+
+    1. the manifest itself is validated (:func:`load_manifest` shape rules);
+    2. every observed source specification with a pinned entry is compared
+       (:func:`diff_source`);
+    3. every pinned server that was observed has its instruction state compared
+       (:func:`diff_instructions`) - and a pin WITH instruction coverage verified
+       against an observation that carries none is a CRITICAL refusal, never a
+       silent pass, so leaving ``instructions`` out cannot weaken the verify;
+    4. the tool catalog is compared (:func:`diff_manifest`), including the
+       ``unverifiable`` adjudication.
+
+    ``recusal mcp verify`` routes through this function; call the lower-level
+    primitives directly only when you deliberately want a partial comparison, and
+    name that choice in your own claim.
+    """
+    _validate_manifest(pinned)
+    pinned_servers: Dict[str, Any] = pinned["servers"]
+    sources = observation.sources or {}
+    instructions = observation.instructions or {}
+
+    findings: List[Finding] = []
+    for name in sorted(sources):
+        entry = pinned_servers.get(name)
+        if isinstance(entry, dict):
+            findings.extend(diff_source(name, entry, sources[name]))
+    observed_names = set(observation.catalog) | set(sources)
+    for name in sorted(observed_names):
+        entry = pinned_servers.get(name)
+        if isinstance(entry, dict):
+            record = instructions.get(name, {"observed": False, "text": None})
+            findings.extend(
+                diff_instructions(name, entry, bool(record.get("observed")), record.get("text"))
+            )
+    findings.extend(
+        diff_manifest(pinned, observation.catalog, unverifiable=tuple(observation.unverifiable))
+    )
     return findings
 
 
@@ -1069,6 +1187,16 @@ def manifest_policy(
     # THIS call read, never from the cache of a racing call.
     _cache_lock = threading.Lock()
     _cache: List[Tuple[Optional[str], "frozenset[str]"]] = [(None, frozenset())]
+    # Audit provenance is INVOCATION-local, carried in a ContextVar rather than a
+    # mutable attribute on the policy object: an attribute would be shared state, and
+    # under concurrent reuse of one policy object (threads, asyncio) invocation A's
+    # audit record could read invocation B's digest, or a clear could erase a digest
+    # another invocation was about to record. A ContextVar isolates per thread and per
+    # asyncio task, so each adjudication's audit record sees exactly the digest THAT
+    # adjudication verified. The audit layer reads it through ``get_control_identity``.
+    _digest_var: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+        f"recusal_manifest_digest_{id(_cache)}", default=None
+    )
 
     def _pinned_names() -> "frozenset[str]":
         with open(manifest_path, "rb") as fh:
@@ -1078,13 +1206,13 @@ def manifest_policy(
             cached_digest, cached_names = _cache[0]
         if cached_digest == digest:
             # a cache hit means these exact bytes were validated before
-            setattr(_policy, "last_manifest_digest", f"sha256:{digest}")
+            _digest_var.set(f"sha256:{digest}")
             return cached_names
         data = json.loads(raw.decode("utf-8"))  # parse outside the lock
         _validate_manifest(data)
         # audit control identity, recorded ONLY after successful parse + validation: a
         # corrupt manifest must never be recorded as a successfully enforced one
-        setattr(_policy, "last_manifest_digest", f"sha256:{digest}")
+        _digest_var.set(f"sha256:{digest}")
         names = frozenset(
             f"mcp__{server}__{tool}"
             for server, entry in data["servers"].items()
@@ -1097,8 +1225,8 @@ def manifest_policy(
     def _policy(tool_name: str, tool_input: dict) -> List[Any]:
         # invocation-local provenance: cleared up front, so a non-MCP call (or a refused
         # manifest read) never inherits a PREVIOUS call's manifest digest in its audit
-        # record when the same policy object lives in a long-running process
-        setattr(_policy, "last_manifest_digest", None)
+        # record - and cleared in THIS invocation's context only, never another's
+        _digest_var.set(None)
         inner = policy(tool_name, tool_input) if policy else []
         if not str(tool_name).startswith("mcp__"):
             return inner  # not an MCP call -> the wrapped policy's business
@@ -1126,4 +1254,11 @@ def manifest_policy(
             ] + list(inner)
         return list(inner)
 
+    def _get_control_identity() -> Dict[str, Any]:
+        """Invocation-local audit provenance, read by the audit layer AFTER the policy
+        call in the same thread/task context, so it is the digest THIS adjudication
+        verified (or None when it verified none)."""
+        return {"manifest_sha256": _digest_var.get()}
+
+    _policy.get_control_identity = _get_control_identity  # type: ignore[attr-defined]
     return _policy

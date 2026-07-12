@@ -39,10 +39,12 @@ intercepting the evaluator. A model will, given the chance, certify its own succ
 
 **The rule:** verdicts come from explicit rules, not judgment. A model may be involved
 *upstream* of the gate (gathering evidence, proposing a fix), but never *inside* the
-decision. Same evidence, same policy, same version, same verdict.
+decision. The same normalized evidence and policy inputs, under the same recusal
+version, produce the same verdict.
 
-**Why it helps:** an LLM-as-judge is a probabilistic verifier, it can be prompted,
-drifts between versions, and can't be replayed. A deterministic gate can be audited,
+**Why it helps:** an LLM-as-judge is a probabilistic verifier: it can be prompted,
+and a logged evaluation can be rerun but the same output is not guaranteed across model
+versions, prompts, or sampling. A deterministic gate can be audited,
 diffed, unit-tested, and explained to a regulator or an on-call engineer at 3am. The
 thing empowered to *refuse* must itself be the most trustworthy part of the system.
 

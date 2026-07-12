@@ -524,10 +524,11 @@ async def dump(url, server_name, out_path, headers=None):
         async with ClientSession(read, write) as session:
             init = await session.initialize()
             tools = (await session.list_tools()).tools
-    # the RICH shape: instructions are discovery content Claude loads at session
-    # start, so the dump carries them alongside the tools (manifest v5 pins both);
-    # a legacy {server: [tools]} dump still works but records instructions as
-    # unobserved, the weaker claim
+    # the RICH shape: under Claude's default tool-search behavior, instructions are
+    # discovery content loaded at session start, so the dump carries them alongside
+    # the tools (manifest v5 pins both); a legacy {server: [tools]} dump still works
+    # but records instructions as unobserved, the weaker claim (a single-server dump
+    # with --server takes the same {"instructions": ..., "tools": [...]} object)
     catalog = {server_name: {
         "instructions": getattr(init, "instructions", None),
         "tools": [t.model_dump(exclude_none=True, mode="json") for t in tools],
@@ -565,6 +566,11 @@ recusal mcp pin    --claude-config .mcp.json --from banking.tools.json --out mcp
 # ${ADMIN_TOKEN}), an added headersHelper, or widened oauth.scopes exits 2 naming the field
 recusal mcp verify --claude-config .mcp.json --from banking.tools.json --manifest mcp-manifest.json
 ```
+
+OAuth boundary, stated exactly: the pin records the *configured* policy fields
+(including the configured `scopes` string, whose change is drift); it does not observe
+the final authorization request, scopes Claude appends (such as `offline_access`), the
+issued token, granted authority, or the server-side authorization result.
 
 Reference secrets as `${VAR}`: the pin records the *reference*, never the resolved value,
 and the pin-time screen warns (`mcp_header_literal`, `mcp_template_default`,
@@ -651,7 +657,11 @@ run_pretooluse_hook(
 What lands in each entry: the tool, the decision and reasons, a SHA-256 fingerprint of
 the proposed `tool_input` (contents never embedded - but finding *messages* are plaintext
 record content, keep secrets out of them), `prompt_id` for transcript linkage, and
-`control` = `{recusal_version, policy_id, policy_version, manifest_sha256}`. Verify the
+`control` = `{recusal_version, policy_id, policy_version, manifest_sha256}`.
+`recusal_version` and `manifest_sha256` are implementation-owned: caller-supplied values
+for them are stripped, and the digest is invocation-local (a `ContextVar` inside
+`manifest_policy`), so concurrent adjudications through one policy object each record
+the digest their own invocation verified. Verify the
 file (`recusal audit verify audit.jsonl --expect-head "N:<hash>"`) with the head anchored
 somewhere the agent cannot write. Appends are lock-serialized, so parallel tool calls
 extend one chain.

@@ -2,7 +2,7 @@
   "name": "recusal-gate",
   "displayName": "Recusal Gate",
   "description": "The recusal deny-list gate as a Claude Code plugin: one PreToolUse gate across every project. Requires pip install recusal; the POSIX launcher fails closed without it on macOS, Linux, and Windows with Git Bash. On Windows without Git Bash use `recusal init` (PowerShell-native launcher). Plugin version is bound to the exact recusal package version that adjudicates; a mismatch fails closed.",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "author": {
     "name": "Philip Paz"
   },

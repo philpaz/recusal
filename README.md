@@ -25,8 +25,8 @@ A judge **recuses** themselves from a case they can't impartially decide. The sa
 principle governs autonomous agents: the thing that *generates* the work must never be
 the thing that *certifies* it. Recusal is that independent authority: collect evidence,
 adjudicate it into **`PASS` / `RETRY` / `FAIL`**, and let the gate **refuse**. No model
-call in the decision path. Same evidence, same policy, same version, same verdict,
-including the "no".
+call in the decision path: the same normalized evidence and policy inputs, under the
+same recusal version, produce the same verdict, including the "no".
 
 ---
 
@@ -165,7 +165,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.3"   # the plugin is version-bound; fails CLOSED without it
+pip install "recusal==0.5.4"   # the plugin is version-bound; fails CLOSED without it
                                # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
@@ -184,15 +184,17 @@ hook in `.claude/settings.json`:
 ```
 
 The command runs the first `python3` → `python` → `py` that is `>=3.9` and **fails
-closed**: Claude Code treats a hook whose command can't launch, or that exits with
-anything other than `2`, as a *non-blocking* error and lets the tool call proceed, so a
-bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is Python 2,
-or a hook that raises at import would each silently disable the gate. The loop coerces
-every one of those into `exit 2`, the one *blocking* hook exit code, so a broken or
-absent interpreter refuses the tool call instead of waving it through. (For clarity:
-Recusal's normal deny is exit `0` with `permissionDecision: "deny"` JSON, which Claude
-honors as a block; a clean verdict is exit `0` with no output, deferring to the normal
-permission flow; the launcher's exit-2 coercion covers gate-process FAILURES.)
+closed**. The exit-code semantics, stated exactly: Recusal's normal refusal exits `0`
+with `permissionDecision: "deny"` JSON, which Claude honors as a block; a clean verdict
+exits `0` with no output and defers to Claude's normal permission flow; exit `2` is
+Claude's *blocking failure* signal, and any *other* nonzero exit is a non-blocking
+error that lets the tool call proceed. That last rule is why the launcher exists: a
+bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is Python
+2, or a hook that raises at import would each be a nonzero-but-not-2 failure, i.e. a
+silently disabled gate. The loop coerces exactly those gate-process failure modes -
+missing interpreter, unsupported interpreter, import failure, nonzero gate-process
+exit - into `exit 2`, so they refuse instead of waving the call through. It does not
+cover Claude-level hook cancellation or the hook-timeout outcome (below).
 
 **Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
 *falls back to PowerShell* when it is not - where this POSIX loop is a parse error with a
@@ -296,7 +298,7 @@ evidence:
 
 | Boundary | Threat (as the field names it) | Recusal |
 |---|---|---|
-| Discovery (`tools/list`) | tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), post-approval definition changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section) |
+| Discovery (`initialize.instructions` + `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section); legacy tools-only observations keep an explicitly weaker instruction claim |
 | Invocation (the call) | tool misuse (OWASP ASI02), wrong-subject writes (ASI03), exfiltration via tool invocation (MITRE ATLAS AML.T0086) | **this section** |
 | Response (the result) | indirect prompt injection in tool output (OWASP LLM01) | quarantine, [cookbook recipe 6](docs/COOKBOOK.md) |
 
@@ -338,9 +340,9 @@ the rug pull, the new tool, the mutated schema. The pin is the confirmed human d
 promoted to a deterministic artifact: manifest bytes are reproducible, tool
 declarations and server instructions are stored as hashes only (poisoned text is
 never embedded anywhere) while source templates are stored readable so drift can be
-explained - keep secrets out of them, the pin warns - and the same observed catalog
-against
-the same pin yields the same verdict, every time. `verify` fails **closed**: a missing
+explained - keep secrets out of them, the pin warns - and the same complete
+observation against the same pin, under the same recusal version, yields the same
+verification result, every time. `verify` fails **closed**: a missing
 manifest, a failed fetch, a wholly empty observation, or a pinned server that can no longer
 be reached for integrity-checking (e.g. silently swapped to a URL transport) is a refusal,
 never a clean-looking pass. (A pinned server *legitimately removed* from the config is
@@ -387,10 +389,27 @@ verification does not prove Claude accepted, enabled, connected to, or selected 
 supplied entry as the effective definition - use Claude managed MCP policy
 (`allowedMcpServers`) to constrain the effective server set, then pin what it allows.
 Recusal governs MCP *tools* and, since manifest v5, the initialize-result server
-*instructions* Claude loads at session start (pinned as a hash; added, removed, or
-changed instructions are drift): prompts, resources, resource templates, channels, and
-elicitation can still introduce context without a tool invocation and are outside
-`manifest_policy`. Claude Code supports dynamic `list_changed`
+*instructions* (pinned as a hash; added, removed, or changed instructions are drift).
+With Claude Code's default tool-search behavior those instructions and the tool names
+load at session start while full tool definitions are deferred; full definitions load
+up front when tool search is disabled or falls back, when a server sets `alwaysLoad`,
+or when a tool declares `anthropic/alwaysLoad` (that tool-level flag lives inside the
+declaration, so it IS part of the declaration fingerprint; the server-level
+`alwaysLoad`/`timeout` fields are shape-validated but deliberately not source
+identity - recusal pins declaration content, not Claude's loading strategy). Recusal
+fingerprints the complete observed instruction string while Claude truncates what it
+loads into context (currently 2KB each for instructions and tool descriptions), so a
+change outside the loaded prefix still drifts - the safe side of that asymmetry.
+**Instruction coverage for remote servers requires the rich `--from` shape**
+(`{server: {"instructions": ..., "tools": [...]}}`, or `--server` with the same
+single-server object); legacy `{server: [tools]}` dumps stay supported but record
+`observed: false` and establish no instruction claim. For OAuth, Recusal pins the
+*configured* policy fields in `.mcp.json` (including the configured `scopes` string,
+whose change is drift); it does not observe the final authorization request, scopes
+Claude appends (such as `offline_access` when the server advertises it), the issued
+token, granted authority, or the server-side authorization result. Prompts, resources,
+resource templates, channels, and elicitation can still introduce context without a
+tool invocation and are outside `manifest_policy`. Claude Code supports dynamic `list_changed`
 updates: a NEW tool name stays blocked at call time, but a changed description under
 an already-pinned name is invisible to the call-time hook until you verify again -
 verification is point-in-time, not continuous attestation. And Recusal never
@@ -534,7 +553,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.3   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.4   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

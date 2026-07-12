@@ -49,10 +49,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Pinned exactly: a floating build toolchain is unreviewed code in the release
-      # path. Versions are reviewed and bumped deliberately, like the action SHAs.
-      - name: Install build tooling (pinned)
-        run: python -m pip install build==1.5.1 twine==6.2.0
+      # Hash-locked: the COMPLETE transitive build+publish toolchain installs from
+      # release-requirements.txt with --require-hashes (exact versions, sha256 of every
+      # distribution file PyPI serves), and the build runs --no-isolation so no second,
+      # uncontrolled PEP 517 dependency resolution happens. Regenerate the lock
+      # deliberately (scripted PyPI-metadata walk for ubuntu/cp312), review the diff,
+      # commit. Stated narrowly: this pins what installs here; it does not make the
+      # build output byte-reproducible (untested), and pip/setuptools on the runner
+      # image are outside the lock.
+      - name: Install build tooling (hash-locked)
+        run: python -m pip install --require-hashes -r release-requirements.txt
 
       - name: Verify the tag matches the package version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -60,16 +66,31 @@ jobs:
           PKG_VERSION="$(python -c 'import re; print(re.search(r"__version__ = \"([^\"]+)\"", open("recusal/__init__.py").read()).group(1))')"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME ($TAG_VERSION) does not match pyproject version $PKG_VERSION"
+            echo "::error::Tag $GITHUB_REF_NAME ($TAG_VERSION) does not match the package version source (recusal/__init__.py: $PKG_VERSION)"
             exit 1
           fi
           echo "Version $PKG_VERSION matches tag $GITHUB_REF_NAME."
 
-      - name: Build sdist and wheel
-        run: python -m build
+      - name: Build sdist and wheel (no uncontrolled isolation env)
+        run: python -m build --no-isolation
 
       - name: Check metadata
         run: python -m twine check dist/*
+
+      # The artifact that ships must import and name itself correctly OUTSIDE the
+      # source tree (from the repo root, `import recusal` finds the checkout and the
+      # check proves nothing about the wheel).
+      - name: Verify the built wheel from a neutral directory
+        run: |
+          python -m venv /tmp/wheelcheck
+          /tmp/wheelcheck/bin/pip install --quiet dist/*.whl
+          PKG_VERSION="$(python -c 'import re; print(re.search(r"__version__ = \"([^\"]+)\"", open("recusal/__init__.py").read()).group(1))')"
+          GOT="$(cd /tmp && /tmp/wheelcheck/bin/python -c 'import recusal; print(recusal.__version__)')"
+          if [ "$GOT" != "$PKG_VERSION" ]; then
+            echo "::error::built wheel reports $GOT but the version source says $PKG_VERSION"
+            exit 1
+          fi
+          (cd /tmp && /tmp/wheelcheck/bin/python -m recusal --version)
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

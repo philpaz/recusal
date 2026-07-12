@@ -22,18 +22,22 @@ Claude Code runs them, even under `bypassPermissions` (a `PreToolUse` `deny` ove
 ]}}
 ```
 
-**Why the interpreter loop, and why `exit 2`:** Claude Code treats a hook whose command
-does anything other than exit `2`, fails to *launch* (`python3` not found, the default on
-Windows, where only `python` or the `py` launcher exists), or launches but *crashes* (a
-Python 2 `python`, a syntax/import error in the hook), as a **non-blocking** error: the
-tool call proceeds and the gate is silently disabled. The loop runs the first
-`python3` → `python` → `py` that is `>=3.9`, executes the hook, and coerces **any** nonzero
-exit into `exit 2`, the one exit code Claude Code treats as **blocking**. So a missing
-interpreter, a too-old one, *and* a hook that fails to run all refuse the tool call instead
-of waving it through. Stated precisely: the launcher closes the missing-interpreter,
-wrong-interpreter, import-error, and nonzero gate-process failure modes; it does not
-cover Claude-level hook cancellation, the hook-timeout outcome (not independently
-established), or a broken gate that exits 0 with irrelevant output. (Deny and defer both exit `0`, so any nonzero genuinely means "the hook did not run.")
+**Why the interpreter loop, and why `exit 2`:** the exit-code semantics, stated
+exactly: Recusal's normal refusal exits `0` with valid `permissionDecision: "deny"`
+JSON, which Claude honors as a block; a clean verdict exits `0` with no output and
+defers to Claude's normal permission flow; exit `2` is Claude's **blocking failure**
+signal; and any *other* nonzero exit is a **non-blocking** error, the tool call
+proceeds. That last rule is the trap: a hook whose command fails to *launch*
+(`python3` not found, the default on Windows, where only `python` or the `py`
+launcher exists) or launches but *crashes* (a Python 2 `python`, a syntax/import
+error in the hook) is nonzero-but-not-2, so the gate silently disables. The loop runs
+the first `python3` → `python` → `py` that is `>=3.9`, executes the hook, and coerces
+**any** nonzero exit into `exit 2`. Stated precisely: the launcher closes the
+missing-interpreter, wrong-interpreter, import-error, and nonzero gate-process
+failure modes; it does not cover Claude-level hook cancellation, the hook-timeout
+outcome (not independently established), or a broken gate that exits 0 with
+irrelevant output. (Deny and defer both exit `0`, so any nonzero genuinely means
+"the hook did not run.")
 On Windows, Claude Code runs shell-form hooks under Git Bash when it is installed and
 **falls back to PowerShell when it is not**, where this POSIX one-liner is a parse error
 with a non-blocking exit code - the gate silently disables. `recusal init` registers a

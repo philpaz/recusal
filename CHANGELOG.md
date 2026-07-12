@@ -4,12 +4,120 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] - 2026-07-12
+
+The final 0.5.x correctness patch, mandated by a seventh external review (the first
+whose Claude-behavior claims all verified against the official documentation without
+correction) before 0.6.0 begins. Scope: make the manifest-v5 guarantee
+omission-resistant on every public verification path, make audit provenance safe under
+concurrent library use, complete the rich single-server observation path, hash-lock
+the release toolchain, and correct the remaining statements that exceeded the
+implementation - including 0.5.3's own.
+
+### Fixed
+- **One omission-resistant manifest-v5 verify: `diff_observation` (P0).**
+  `diff_manifest` is catalog-only, so a programmatic caller could verify unchanged
+  tools and read the clean result as a full v5 verify while the server's instructions
+  had been rewritten - the CLI composed the three primitives correctly, but the public
+  library path did not guarantee it. `diff_observation(pinned, McpObservation(...))`
+  now validates the manifest and compares sources, instruction state, tool catalog,
+  and unverifiable servers in one call; a pin WITH instruction coverage verified
+  against an observation carrying none is a CRITICAL refusal
+  (`mcp_instructions_unobserved`), never a silent pass, so omitting the instruction
+  observation cannot weaken the verify. `recusal mcp verify` routes through it, the
+  CLI and library are pinned to agree on blocking outcomes, and `diff_manifest` is
+  documented as the deliberate catalog-only primitive.
+- **Rich single-server `--from` observations keep their instructions (P0).** With
+  `--server NAME`, a dump carrying `{"instructions": ..., "tools": [...]}` had its
+  instructions silently discarded and recorded as `observed: false` - a supplied
+  stronger observation downgraded to the weaker claim. The key now decides: absent =
+  not observed (legacy tools/list result), present-null = observed and the server
+  declares none, string = observed and pinned; a non-string refuses. Added, changed,
+  and removed instructions are each regression-tested through the single-server path,
+  and the CLI help documents the rich shape and the weaker legacy claim.
+- **Audit manifest provenance is invocation-local under concurrency (P0).**
+  `manifest_policy` carried its verified digest on a mutable policy-object attribute:
+  correct sequentially, but two threads sharing one policy object could
+  cross-contaminate audit provenance (one invocation's clear erasing the digest
+  another was about to record). The digest now lives in a `ContextVar` (isolated per
+  thread and per asyncio task), read by the audit layer through the policy's
+  `get_control_identity()`; a plain `last_manifest_digest` attribute is still honored
+  for custom policy objects and documented as a sequential-only seam. Deterministic
+  barrier-interleaved tests prove each audit record sees exactly the digest its own
+  invocation verified, that a concurrent non-MCP call records none, and that a
+  concurrently-corrupted manifest is never recorded as enforced.
+- **Only canonical manifest shapes load (P1).** The loader accepted
+  `server_instructions` encodings the builder never emits (`present` under
+  `observed: false`, a fingerprint under `present: false`, extra keys) and ignored
+  unknown fields at the manifest top level, server entries, and tool pins. A
+  deterministic control artifact must not carry fields whose meaning is undefined:
+  exactly the three canonical instruction shapes are accepted, and undefined fields
+  refuse at every level.
+
+### Changed
+- **The release dependency tree is hash-locked.** `release-requirements.txt` pins the
+  complete transitive build+publish closure for the release runner (ubuntu/cp312, 33
+  packages) with the sha256 of every distribution file PyPI serves per release;
+  the release workflow installs it with `--require-hashes` and builds with
+  `--no-isolation`, so no unpinned PEP 517 resolution happens in the release path. A
+  CI job proves the locked environment installs and builds on every push, before any
+  tag exists. Drift locks pin the lock to pyproject's hatchling and the workflows to
+  the lock. Stated narrowly: this pins what installs in the release environment; it
+  does not make the build byte-reproducible (untested), and pip on the runner image is
+  outside the lock.
+- The release workflow verifies the built wheel from a neutral directory (from the
+  repo root, `import recusal` finds the checkout and proves nothing about the wheel),
+  and its version-mismatch message names the actual version source
+  (`recusal/__init__.py`, not "pyproject").
+
+### Documentation
+- **0.5.3's own overstatements corrected in place** (changelog and published release
+  notes): "the last uncovered MCP discovery-content surface" and "every statement
+  that exceeded the implementation corrected" were absolute completion language of
+  exactly the kind that release existed to remove.
+- **Tool Search qualified everywhere**: tool names and server instructions load at
+  session start *under Claude Code's default tool-search behavior*, and full
+  definitions may load up front when tool search is disabled or falls back, when a
+  server sets `alwaysLoad`, or when a tool declares `anthropic/alwaysLoad`.
+  `alwaysLoad` is named a context-loading policy field (it changes what enters model
+  context), shape-validated but deliberately excluded from source identity; a
+  tool-level `anthropic/alwaysLoad` inside a declaration IS part of its fingerprint.
+- **Instruction hashing vs Claude truncation documented**: Recusal fingerprints the
+  complete observed instruction string while Claude truncates loaded context
+  (currently 2KB each for instructions and tool descriptions), so a change outside
+  the loaded prefix still drifts - the safe side of the asymmetry.
+- **The hook exit-code contradiction removed**: the normal refusal is exit 0 WITH
+  `permissionDecision: "deny"` JSON (honored as a block); exit 2 is the blocking
+  failure signal; only *other* nonzero exits are non-blocking, which is precisely the
+  gap the launcher's coercion closes. "Anything other than exit 2 is non-blocking" no
+  longer appears.
+- **OAuth boundary stated exactly**: the pin records configured policy fields
+  (including the configured `scopes` string, whose change is drift); it does not
+  observe the final authorization request, scopes Claude appends (such as
+  `offline_access`), the issued token, granted authority, or server-side
+  authorization results.
+- The discovery boundary row reads `initialize.instructions` + `tools/list`; the
+  remote instruction-coverage requirement (rich `--from` shape) is stated prominently;
+  SECURITY.md's MCP row covers manifest v5, the full outside-the-artifact list, and
+  the call-time name-membership boundary; the 0.5.2 changelog's plugin
+  exact-implementation and hook-timeout-non-blocking claims are amended in place; the
+  remaining "same evidence, same verdict" shorthand is fully qualified (same
+  normalized evidence and policy inputs, same recusal version) in README,
+  CONSTITUTION, FAQ, WHY, and the package docstring; LANDSCAPE is scoped as a dated
+  documentation review with no market-exhaustiveness or absence claims; and the
+  pin-refusal operator message names declarations, instructions, AND source warnings.
+
 ## [0.5.3] - 2026-07-12
 
 The correctness and claim-boundary release mandated by a sixth external review, before
-any 0.6.0 work: audit provenance made authoritative, the last uncovered MCP
-discovery-content surface pinned, and every statement that exceeded the implementation
-corrected.
+any 0.6.0 work: audit provenance made authoritative, the server-instruction gap that
+review identified added to manifest v5, and the specific overstatements it named
+corrected (the completion language, the stale v3 shapes, the layered-diagram order,
+the timeout claim, the exit-code semantics, the scope lists; the itemized list is the
+Documentation section below). *(Amended 2026-07-12: this introduction originally said
+"the last uncovered MCP discovery-content surface" and "every statement that exceeded
+the implementation corrected" - absolute completion language of exactly the kind this
+release existed to remove. A seventh review found further gaps; see 0.5.4.)*
 
 ### Fixed
 - **Audit control identity is authoritative (P0).** Caller-supplied `control=` values
@@ -21,10 +129,13 @@ corrected.
   parse and validation (a corrupt manifest is never recorded as enforced) and clears it
   per invocation (a non-MCP call through the same policy object never inherits a
   previous call's manifest provenance). Each failure mode is regression-tested.
-- **Manifest v5: server instructions are pinned (P0).** Claude Code loads only tool
-  names and server INSTRUCTIONS at session start (tool search defers the rest), so a
-  server that keeps `tools/list` byte-identical and rewrites only its
-  initialize-result `instructions` steers discovery invisibly to v4. The fetcher now
+- **Manifest v5: server instructions are pinned (P0).** With Claude Code's default
+  tool-search behavior, tool names and server INSTRUCTIONS load at session start while
+  full tool definitions are deferred (full definitions may load up front when tool
+  search is disabled or falls back, when a server sets `alwaysLoad`, or when a tool
+  declares `anthropic/alwaysLoad`), so a server that keeps `tools/list` byte-identical
+  and rewrites only its initialize-result `instructions` steers discovery invisibly to
+  v4. The fetcher now
   observes instructions, the pin screens them with the same bounded marker/size review
   as declarations, they are stored as a hash (never readable text), and added, removed,
   or changed instructions are CRITICAL drift. A legacy `{server: [tools]}` dump is
@@ -105,11 +216,13 @@ declared-version, not byte attestation. 0.5.3 addresses each.)
   manifest content digest a `manifest_policy` enforced. A verdict is replayable only
   when the adjudication rules are identifiable: same evidence is insufficient if the
   policy changed.
-- **The plugin is bound to its adjudicator.** The plugin gate refuses (fail closed,
-  versions named) when the importable recusal package version differs from the
-  plugin's expected version, so the installed plugin identity names the exact
-  implementation that decides; a drift-lock test keeps shim, plugin manifest, and
-  package versions equal.
+- **The plugin is bound to its adjudicator's declared version.** The plugin gate
+  refuses (fail closed, versions named) when the importable recusal package version
+  differs from the plugin's expected version; a drift-lock test keeps shim, plugin
+  manifest, and package versions equal. *(Amended 2026-07-12: this originally said the
+  plugin identity "names the exact implementation that decides". The control is
+  declared-version binding: it detects a version-string mismatch but does not attest
+  package bytes or installation provenance.)*
 - **Secret-template review screen.** Pin-time machine-readable WARNINGs for literal
   header values (`mcp_header_literal`), secret-bearing `${VAR:-default}` defaults
   (`mcp_template_default`), and literal values following credential-shaped argument
@@ -123,8 +236,10 @@ declared-version, not byte attestation. 0.5.3 addresses each.)
 - **Terminology narrowed to what is implemented**: "MCP tool-catalog governance" (not
   "MCP discovery governance"), "the three MCP tool-call boundaries", and "the manifest
   stores tool declarations as hashes; source templates are stored readable" (not
-  "hashes only"). "Same evidence, same policy, same version, same verdict" is now the
-  wording everywhere.
+  "hashes only"). "Same evidence, same policy, same version, same verdict" became the
+  wording everywhere. *(Since 0.5.4 the fully qualified form is used: the same
+  normalized evidence and policy inputs, under the same recusal version, produce the
+  same verdict.)*
 
 ### Documentation
 - **The layered Claude architecture is stated up front**: Recusal is the deterministic
@@ -137,10 +252,12 @@ declared-version, not byte attestation. 0.5.3 addresses each.)
   `list_changed`; remote authentication and transport belong to Claude or the client
   producing the `--from` dump; plugin-bundled MCP servers use scoped runtime names
   (`mcp__plugin_<plugin>_<server>__<tool>`) and are governed by pinning that full name.
-- **The hook-timeout residual is named**: Claude kills a hook at the platform timeout
-  (default 600s) and the documentation treats timeouts as non-blocking, so a policy
-  hung that long would not block; shipped policies adjudicate in milliseconds, and a
-  SHORT per-hook timeout would widen the window, not close it.
+- **The hook-timeout residual is named**: Claude cancels a hook at the configured
+  timeout (default 600s); shipped policies adjudicate in milliseconds, and a SHORT
+  per-hook timeout would widen any fail-open window, not close it. *(Amended
+  2026-07-12: this originally asserted the documentation "treats timeouts as
+  non-blocking". Claude documents the cancellation, but this repository has not
+  independently established the resulting authorization outcome for the launcher.)*
 - **Production runtime pinning documented**: a dedicated venv with an exact
   `recusal==<version>`, registered explicitly and protected from agent writes.
 - Guardrail and agent-framework comparisons corrected to the precise, defensible form;

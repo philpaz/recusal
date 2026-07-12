@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Deterministic governance for Claude agents: an independent verifier that refuses a tool call before it runs.",
-    "version": "0.5.3"
+    "version": "0.5.4"
   },
   "plugins": [
     {

@@ -16,12 +16,15 @@ Claude Code's own permission prompts. (Pass ``allow_on_pass=True`` only if you t
 want the gate to auto-approve and bypass the prompt.)
 
 Wire it up in ``.claude/settings.json``. Use the interpreter-probe launcher below rather
-than a bare ``python3 ...``: Claude Code treats a hook whose command fails to *launch* as a
-*non-blocking* error (the tool call proceeds), so a bare ``python3`` silently disables the
-gate on any host without a ``python3`` on PATH (Windows, and any box where the py3 is
-``python``). The loop runs the first ``python3``/``python``/``py`` that is >=3.9 and coerces
-ANY nonzero exit -- missing interpreter, wrong version, or a hook that fails to run -- into
-``exit 2``, the one exit code Claude Code treats as *blocking*, so it fails **closed**.
+than a bare ``python3 ...``. Exit-code semantics, exactly: a deny is exit 0 WITH
+``permissionDecision: "deny"`` JSON (honored as a block); a defer is exit 0 with no
+output; exit 2 is Claude's blocking-failure signal; any OTHER nonzero exit is a
+non-blocking error and the tool call proceeds. That last rule means a hook whose command
+fails to *launch* silently disables the gate, so a bare ``python3`` fails open on any
+host without a ``python3`` on PATH (Windows, and any box where the py3 is ``python``).
+The loop runs the first ``python3``/``python``/``py`` that is >=3.9 and coerces ANY
+nonzero exit -- missing interpreter, wrong version, or a hook that fails to run -- into
+``exit 2``, so those gate-process failure modes fail **closed**.
 
 **Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
 falls back to PowerShell when it is not - where this POSIX loop is a *parse error* with a
@@ -148,15 +151,28 @@ def _control_identity(policy: Policy, control: Optional[Dict[str, Any]]) -> Dict
 
     Caller metadata first (reserved keys stripped), then the implementation-owned truth
     written over it: the actual package version always, and the manifest digest a
-    :func:`recusal.mcp.manifest_policy` verified during THIS adjudication when present
-    (the attribute is invocation-local and set only after successful validation, so a
-    corrupt manifest or a non-MCP call never carries manifest provenance).
+    :func:`recusal.mcp.manifest_policy` verified during THIS adjudication when present.
+
+    The digest is read through the policy's ``get_control_identity()`` when it has one:
+    :func:`recusal.mcp.manifest_policy` keeps it in a ``ContextVar``, so under
+    concurrent reuse of one policy object each audit record sees the digest its own
+    invocation verified, set only after successful validation (a corrupt manifest or a
+    non-MCP call never carries manifest provenance). A plain ``last_manifest_digest``
+    attribute is honored as a fallback for custom policy objects; being shared mutable
+    state, that seam is safe for sequential use only.
     """
     from . import __version__ as _recusal_version  # local import: no cycle at load
 
     identity = {k: v for k, v in (control or {}).items() if k not in _AUTHORITATIVE_CONTROL_KEYS}
     identity["recusal_version"] = _recusal_version
-    manifest_digest = getattr(policy, "last_manifest_digest", None)
+    getter = getattr(policy, "get_control_identity", None)
+    if callable(getter):
+        try:
+            manifest_digest = dict(getter()).get("manifest_sha256")
+        except Exception:  # noqa: BLE001, a broken getter must not take down the audit path
+            manifest_digest = None
+    else:
+        manifest_digest = getattr(policy, "last_manifest_digest", None)
     if isinstance(manifest_digest, str):
         identity["manifest_sha256"] = manifest_digest
     return identity

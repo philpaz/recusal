@@ -6,7 +6,8 @@ principle governs autonomous agents: the thing that *generates* the work must
 never be the thing that *certifies* it. Recusal is that independent authority -
 you collect evidence, it adjudicates deterministically into PASS / RETRY / FAIL,
 and it can **refuse to certify**. No model call in the decision path. Zero
-dependencies. Same evidence, same policy, same version, same verdict.
+dependencies. The same normalized evidence and policy inputs, under the same
+recusal version, produce the same verdict.
 
 The spine is the evidence contract (see ``evidence`` and docs/EVIDENCE.md):
 
@@ -66,4 +67,4 @@ __all__ = [
     "DEFAULT_TAXONOMY",
 ]
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"

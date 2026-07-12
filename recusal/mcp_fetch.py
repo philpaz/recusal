@@ -149,8 +149,8 @@ def fetch_server_stdio(
     """Spawn a stdio MCP server; return ``{"tools": [...], "instructions": str|None}``.
 
     The initialize-result ``instructions`` field is discovery-time model-facing content
-    (Claude loads server instructions at session start), so it is observed alongside
-    the tool catalog; a non-string value refuses. Everything else is
+    (under Claude's default tool-search behavior, server instructions load at session
+    start), so it is observed alongside the tool catalog; a non-string value refuses. Everything else is
     :func:`fetch_tools_stdio`'s contract, which remains available for tools-only use.
     """
     return _fetch_stdio(
@@ -462,9 +462,13 @@ def _expand(text: str, env: Dict[str, str], *, where: str) -> str:
 _REMOTE_TYPES = {"http": "http", "streamable-http": "http", "sse": "sse", "ws": "ws"}
 
 #: Per-entry field classification, mirroring Claude Code's documented config surface.
-#: IDENTITY fields participate in the pinned source; RUNTIME fields tune execution
-#: without changing what runs on whose authority (per-call timeout, eager loading) and
-#: are deliberately not identity; anything else FAILS CLOSED - a field this parser
+#: IDENTITY fields participate in the pinned source. ``timeout`` and ``alwaysLoad`` are
+#: known Claude operational and context-loading fields: shape-validated below, but
+#: deliberately excluded from source-template identity, so changing them is not source
+#: drift. (``alwaysLoad`` changes WHEN tool definitions enter model context, not what
+#: the pin certifies: recusal pins declaration content, not Claude's loading strategy;
+#: a tool-level ``anthropic/alwaysLoad`` inside a declaration's ``_meta`` IS part of
+#: the declaration fingerprint.) Anything else FAILS CLOSED - a field this parser
 #: cannot classify could be executable configuration it would otherwise silently drop
 #: (exactly how ``headersHelper`` was once invisible to verification).
 _STDIO_ENTRY_FIELDS = {"type", "command", "args", "env", "cwd"}
@@ -484,7 +488,9 @@ def _validate_runtime_fields(entry: Dict[str, Any], where: str) -> None:
 
     ``timeout`` is Claude's per-server tool-execution timeout in milliseconds; values
     below 1000 are ignored by Claude, so accepting one here would silently misrepresent
-    the configuration. ``alwaysLoad`` loads every tool into context at session start.
+    the configuration. ``alwaysLoad`` is a context-loading policy: it loads the
+    server's full tool definitions at session start instead of deferring them to tool
+    search, so it changes what enters model context, not merely execution tuning.
     Malformed values are refused, never treated as faithfully represented config.
     """
     if "timeout" in entry:
