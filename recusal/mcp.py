@@ -1088,7 +1088,10 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
        a CRITICAL refusal unless it is named ``unverifiable``;
     7. a pinned server absent from every component is a CRITICAL refusal unless
        named ``removed`` (whose acknowledgement is a recorded, passing WARNING);
-       ``removed`` may name only pinned servers and contradicts any representation;
+       ``removed`` may name only pinned servers and contradicts any representation -
+       EXCEPT that naming every pinned server with nothing represented at all refuses
+       with ``mcp_full_decommission_unsupported`` (an empty observation certifies
+       nothing; decommission ALL MCP capability by removing the manifest itself);
     8. the tool catalog is compared (:func:`diff_manifest`), including the
        ``unverifiable`` adjudication.
 

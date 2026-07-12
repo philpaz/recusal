@@ -68,20 +68,24 @@ def test_removing_one_of_two_servers_stays_a_passing_transition():
     assert any(f.check == "mcp_server_removed" for f in findings)
 
 
-def test_cli_full_decommission_refuses_with_exit_2(tmp_path):
+def test_cli_verify_with_removed_only_server_and_unpinned_dump_refuses(tmp_path):
+    # HONEST NAME: this drives an exit-2 through the UNPINNED-server refusal (the dump
+    # names a server the manifest never pinned) while the only pinned server is
+    # acknowledged removed. The precise mcp_full_decommission_unsupported finding is a
+    # LIBRARY-level adjudication (tested above): the CLI rejects a no-source
+    # verification earlier, and full decommission is directed through manifest
+    # removal, not through a CLI verify of an empty world.
     manifest = tmp_path / "m.json"
     manifest.write_text(
         manifest_to_text(build_manifest({"only": [{"name": "t"}]})), encoding="utf-8"
     )
-    dump = tmp_path / "empty.json"
-    dump.write_text(json.dumps({}), encoding="utf-8")
-    out = io.StringIO()
-    # an empty --from dump is refused earlier as unparseable-empty; acknowledge via
-    # --removed with no observation at all is the library-level case above, so here
-    # the CLI path drives the same refusal through a dump missing the only server
+    dump = tmp_path / "obs.json"
     dump.write_text(json.dumps({"other": []}), encoding="utf-8")
+    out = io.StringIO()
     rc = mcp_verify_command(str(manifest), from_file=str(dump), removed=["only"], stdout=out)
-    assert rc == 2  # 'other' is unpinned -> refused; the manifest's server acknowledged
+    assert rc == 2
+    assert "mcp_unpinned_server" in out.getvalue()  # the ACTUAL refusal on this path
+    assert "mcp_full_decommission_unsupported" not in out.getvalue()
 
 
 def test_manifest_policy_still_fails_closed_after_manifest_removal(tmp_path):
@@ -128,3 +132,42 @@ def test_duplicate_names_still_raise_valueerror():
     pinned = build_manifest({"only": [{"name": "t"}]})
     with pytest.raises(ValueError, match="duplicate"):
         diff_observation(pinned, McpObservation(catalog={}, unverifiable=("x", "x")))
+
+
+# --- review 11: the plugin callable-alias residual, demonstrated -----------------------------
+
+
+def test_plugin_alias_residual_call_time_allows_until_verify_catches(tmp_path):
+    """The named residual (review 11), pinned as a demonstration: Claude replaces
+    characters outside [A-Za-z0-9_-] with '_' in plugin callable names, so the raw
+    declarations 'admin.tools.list' and 'admin_tools_list' share ONE callable
+    spelling. PreToolUse carries only the callable name; if the server swaps the raw
+    declaration AFTER the last verify while preserving the approved alias, the
+    call-time gate cannot distinguish them - and the NEXT verify must catch the
+    declaration drift. Point-in-time verification, sharpened for plugins."""
+    from recusal.mcp import diff_observation
+
+    server = "plugin_my-plugin_database-tools"
+    pinned = build_manifest(
+        {server: [{"name": "admin_tools_list", "description": "list admin tools"}]},
+        instructions={server: "approved"},
+    )
+    manifest = tmp_path / "m.json"
+    manifest.write_text(manifest_to_text(pinned), encoding="utf-8")
+
+    # call time: the approved callable alias passes - and would STILL pass after a
+    # raw-declaration swap on the live server, which the hook cannot see
+    policy = manifest_policy(str(manifest))
+    assert policy(f"mcp__{server}__admin_tools_list", {}) == []
+
+    # the next verify sees the swapped raw declaration and refuses: the dotted name
+    # is unpinned capability, and the pinned safe spelling reads as removed
+    swapped = McpObservation(
+        catalog={server: [{"name": "admin.tools.list", "description": "list admin tools"}]},
+        sources={server: {"transport": "external"}},
+        instructions={server: {"observed": True, "text": "approved"}},
+    )
+    findings = diff_observation(pinned, swapped)
+    checks = _failed_checks(findings)
+    assert "mcp_unpinned_tool" in checks
+    assert not compute_verdict(findings).passed

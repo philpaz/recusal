@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.8] - 2026-07-12
+
+A claim-correction patch from an eleventh external review, whose central finding was
+a failure of OUR verification, not of the reviewed code: 0.5.7 published that Claude
+does not document plugin callable-name normalization, when the rule IS explicitly in
+the Claude Code MCP reference ("any character outside A-Z, a-z, 0-9, _, and - is
+replaced with _"). The sweep missed it on the page it read, and the resulting text
+also falsely rejected the tenth review's correct claim.
+
+### Documentation
+- **The plugin callable-name boundary corrected to the documented rule** (README,
+  0.5.7 changelog entry, and published 0.5.7 release notes, all amended in place):
+  plugin call-time mapping is supported only when the raw plugin, server, and tool
+  components already use the callable-safe set; a statically pinned dotted name is
+  refused at call time under Claude's normalized spelling; "false denial, never a
+  false allow" is withdrawn (two raw names can normalize to one callable, so a
+  post-verification raw-declaration swap can alias an already-approved callable name
+  until the next verify reports the drift - the point-in-time boundary, sharpened
+  for plugins and now stated with the `list_changed` residual); and the
+  "observe and pin the exact runtime spelling" advice is withdrawn as not
+  implementable (the manifest keys tools by raw declaration name). Raw-vs-callable
+  identity modeling with collision refusal is required 0.6.0 scope (manifest v6).
+- The `diff_observation` numbered contract states the all-servers-removed exception
+  (`mcp_full_decommission_unsupported`) alongside the removal-warning rule.
+- The CLI decommission test is renamed to what it actually proves (an
+  unpinned-observation refusal) and asserts the precise full-decommission finding is
+  NOT on that path: it is a library-level adjudication, and the CLI directs full
+  decommission through manifest removal (Option B of the review's choice).
+
+### Tests
+- The alias residual is pinned as a demonstration: the approved callable spelling
+  passes at call time (and would still pass after a live raw-declaration swap the
+  hook cannot see), and the next verify refuses the swapped declaration as unpinned
+  capability plus a removed pinned tool.
+
 ## [0.5.7] - 2026-07-12
 
 A small correctness patch from a tenth external review (which found no P0 and
@@ -28,18 +63,21 @@ callable-name boundary stated to exactly what the documentation establishes.
   amended in place.
 
 ### Documentation
-- **The plugin callable-name boundary, stated to what the docs establish (P1).** The
-  README plugin example now names its character assumption: it holds for plugin,
-  server, and tool components within the callable-safe set (`A-Z a-z 0-9 _ -`). The
-  MCP specification permits more (a dotted `admin.tools.list` is spec-valid), and
-  Claude's documentation does not currently specify how such characters appear in
-  the plugin callable name - the tenth review asserted a replace-with-underscore
-  rule, which the official docs do NOT establish (the only documented normalization
-  is the plugin data-directory id, which replaces with a hyphen). Recusal
-  reconstructs runtime names from the raw pinned tool name and models no
-  undocumented normalization; the failure mode is a false denial, never a false
-  allow. Observe and pin the exact runtime spelling for such tools, or keep names
-  in the safe set.
+- **The plugin callable-name boundary (P1).** *(Amended 2026-07-12, same day: as
+  first published, this entry said Claude's docs "do not currently specify" the
+  plugin callable normalization and rejected the tenth review's
+  replace-with-underscore claim. That was OUR verification failure, not the
+  review's error: the rule IS explicitly documented in the Claude Code MCP
+  reference ("any character outside A-Z, a-z, 0-9, _, and - is replaced with _"),
+  and the sweep missed it on the page it read. The eleventh review caught it.
+  Consequences corrected with it: "false denial, never a false allow" was too
+  strong - two raw names can normalize to the same callable, so a
+  post-verification raw-declaration swap can alias an already-approved callable
+  name until the next verify; and "observe and pin the runtime spelling" was not
+  implementable, since the manifest keys tools by raw declaration name. The
+  supported boundary is now stated exactly: plugin call-time mapping only for raw
+  components already in the callable-safe set; raw-vs-callable identity modeling
+  with collision refusal is 0.6.0 scope.)*
 - The unified-verifier composition comment includes removal acknowledgements and
   whole-server inventory; the verify docstring's remote OAuth wording is
   per-transport (http/sse pin OAuth fields; ws is header-only).

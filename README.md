@@ -166,7 +166,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.7"   # the plugin is version-bound; fails CLOSED without it
+pip install "recusal==0.5.8"   # the plugin is version-bound; fails CLOSED without it
                                # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
@@ -431,7 +431,8 @@ additional working directories Claude answers with) or
 `notifications/roots/list_changed`; Claude working-directory permissions,
 additional-directory configuration, server-side root enforcement, and
 operating-system controls own that boundary. Claude Code supports dynamic `list_changed`
-updates: a NEW tool name stays blocked at call time, but a changed description under
+updates: a NEW runtime name stays blocked at call time (for plugin-bundled servers,
+subject to the callable-alias residual below), but a changed description under
 an already-pinned name is invisible to the call-time hook until you verify again -
 verification is point-in-time, not continuous attestation. And Recusal never
 authenticates to a remote endpoint: Claude Code (or the MCP client producing your
@@ -442,16 +443,22 @@ Plugin-bundled MCP servers use scoped runtime names: for plugin `my-plugin`, ser
 `mcp__plugin_my-plugin_database-tools__query`, so the manifest SERVER key must be
 `plugin_my-plugin_database-tools` and the tool key `query` (never the whole tool name
 in the server field). Recusal does not discover plugin metadata; supply the exact
-runtime server segment yourself. A character boundary, stated exactly: this example
-assumes plugin, server, and tool components within the callable-safe set (`A-Z a-z
-0-9 _ -`). The MCP specification permits more (a dotted tool name like
-`admin.tools.list` is spec-valid), and Claude's documentation does not currently
-specify how such characters appear in the plugin callable name - recusal
-reconstructs runtime names from the raw pinned tool name and models no undocumented
-normalization, so a name outside the safe set may be refused at call time under a
-spelling recusal did not predict (a false denial, never a false allow). For such
-tools, observe the exact runtime spelling Claude emits in a live session and pin
-that, or keep plugin tool names within the safe set. Verifying a config that contains remote servers
+runtime server segment yourself. A character boundary, stated exactly: Claude
+documents that any character outside `A-Z`, `a-z`, `0-9`, `_`, and `-` is replaced
+with `_` in the plugin callable name, while the MCP specification permits more in
+raw tool names (a dotted `admin.tools.list` is spec-valid). Recusal stores raw
+declaration names and reconstructs runtime names WITHOUT modeling that
+normalization, so **plugin call-time mapping is supported only when the raw plugin,
+server, and tool components already use the callable-safe set**; a raw name that
+requires normalization is outside the supported plugin call-time boundary (a
+statically pinned dotted name is refused under Claude's normalized spelling). And a
+plugin-specific aliasing residual sharpens the point-in-time boundary: two distinct
+raw names (`admin.tools.list`, `admin_tools_list`) normalize to the SAME callable
+component, and `PreToolUse` carries only the callable name - so a post-verification
+raw-declaration swap that preserves an already-approved callable alias is
+indistinguishable at call time until `verify` runs again and reports the
+declaration-set drift. Modeling raw and callable identity separately, with
+collision refusal, is 0.6.0 scope. Verifying a config that contains remote servers
 needs their fresh catalogs alongside it:
 
 ```bash
@@ -583,7 +590,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.7   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.8   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
