@@ -13,8 +13,10 @@ The design is the constitution applied to a new evidence surface, nothing more:
 
 1. **Pin** (a human decision, promoted to a deterministic artifact). ``build_manifest``
    canonicalizes each declared tool and fingerprints it (SHA-256 over canonical JSON).
-   The manifest stores *hashes only*, so pinning a poisoned declaration never embeds the
-   poison anywhere. Pinning is the reviewed, deliberate step; ``recusal mcp pin`` runs a
+   Tool declarations and server instructions are stored as *hashes*, so pinning a
+   poisoned declaration never embeds the poison anywhere; approved source configuration
+   templates are stored readable, so source drift can be compared and explained (keep
+   secrets out of them - the pin warns). Pinning is the reviewed, deliberate step; ``recusal mcp pin`` runs a
    deterministic marker screen first (``screen_tool_declarations``, over the whole
    declaration) so obvious injection phrasing is surfaced for review instead of silently
    blessed.
@@ -39,8 +41,11 @@ Honest limits, stated up front:
   *integrity* is checked whenever ``recusal mcp verify`` runs (CI, session start, cron).
 - The manifest pins each server's *source specification* (for stdio: unexpanded command
   template, args, cwd, and env value TEMPLATES as written; for remote transports:
-  url_template and header names) alongside the catalog, and verification compares it
-  BEFORE launching - a changed command, a same-key env value swap, or an added server
+  url_template, header value templates, the headersHelper command template, and the
+  represented OAuth policy fields) plus its initialize-result INSTRUCTIONS (as a hash)
+  alongside the catalog, and verification compares it all BEFORE launching - a changed
+  command, a same-key env value swap, a same-name header-template swap, a changed
+  helper command, a widened OAuth scope set, changed instructions, or an added server
   of any transport is refused without executing anything. The identity is
   template-level: the operator-shell *values* behind ``${VAR}`` references are not
   pinned (the references are), PATH resolves what PATH says (pin package versions in
@@ -67,16 +72,17 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .evidence import Finding
 
-#: Version 4 completes remote source identity: header value TEMPLATES (not just names,
-#: so a same-name Authorization swap between ${READ_ONLY_TOKEN} and ${ADMIN_TOKEN} is
-#: drift), the ``headersHelper`` command template (Claude executes it at connect time -
-#: it is executable configuration), and the OAuth policy surface (client_id,
-#: callback_port, auth_server_metadata_url_template, scopes - the scope set is the
-#: native mechanism for constraining requested authority). Runtime-only tuning fields
-#: (``timeout``, ``alwaysLoad``) are deliberately NOT identity. Older manifests are
-#: refused with a re-pin instruction rather than silently accepted at a weaker
-#: guarantee.
-MANIFEST_VERSION = 4
+#: Version 5 pins MCP server INSTRUCTIONS alongside the tool catalog. Claude Code loads
+#: only tool names and server instructions at session start (tool search defers the
+#: rest), which makes the initialize-result ``instructions`` field a discovery-time
+#: influence surface: a server that keeps its tools byte-identical but rewrites its
+#: instructions steers when and why the model reaches for them. Instructions are pinned
+#: as a hash (never readable text), screened at pin time with the same bounded marker
+#: review as declarations, and added/removed/changed instructions are drift. An
+#: observation that did not carry instructions (a legacy dump) is recorded as
+#: ``observed: false`` and never silently receives the stronger claim. Older manifests
+#: are refused with a re-pin instruction rather than accepted at a weaker guarantee.
+MANIFEST_VERSION = 5
 
 #: Declaration fields fingerprinted individually so a drift refusal can name what moved.
 #: The whole declaration is also fingerprinted, so a change in any *other* field still
@@ -239,16 +245,36 @@ def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
         if client_id is not None and (not isinstance(client_id, str) or not client_id):
             raise ValueError("oauth 'client_id' must be a nonempty string or null")
         port = oauth.get("callback_port")
-        if port is not None and (not isinstance(port, int) or isinstance(port, bool)):
-            raise ValueError("oauth 'callback_port' must be an integer or null")
+        if port is not None and (
+            not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
+        ):
+            raise ValueError("oauth 'callback_port' must be a TCP port (1-65535) or null")
         meta = oauth.get("auth_server_metadata_url_template")
-        if meta is not None and (not isinstance(meta, str) or not meta):
-            raise ValueError(
-                "oauth 'auth_server_metadata_url_template' must be a nonempty string or null"
-            )
+        if meta is not None:
+            if not isinstance(meta, str) or not meta:
+                raise ValueError(
+                    "oauth 'auth_server_metadata_url_template' must be a nonempty string or null"
+                )
+            # Claude requires https for the metadata URL. A LITERAL url is checked
+            # here; a ${VAR} template stays unexpanded, and the resolved scheme is
+            # Claude's to enforce - this parser cannot validate what it cannot see.
+            if "${" not in meta and not meta.startswith("https://"):
+                raise ValueError(
+                    "oauth 'auth_server_metadata_url_template' must use https:// "
+                    "(Claude rejects other schemes)"
+                )
         scopes = oauth.get("scopes")
-        if scopes is not None and not isinstance(scopes, str):
-            raise ValueError("oauth 'scopes' must be the space-separated scope string or null")
+        if scopes is not None:
+            if not isinstance(scopes, str) or not scopes.strip():
+                raise ValueError(
+                    "oauth 'scopes' must be the nonempty space-separated scope string or null"
+                )
+            scope_list = scopes.split()
+            if len(scope_list) != len(set(scope_list)):
+                raise ValueError(
+                    "oauth 'scopes' carries duplicate scope entries; an ambiguous "
+                    "authority set is refused"
+                )
         oauth = {field: oauth.get(field) for field in _OAUTH_FIELDS}
     return {
         "transport": transport,
@@ -326,21 +352,130 @@ def diff_source(
     ]
 
 
+def instructions_record(observed: bool, text: Optional[str]) -> Dict[str, Any]:
+    """The pinned shape of one server's initialize-result ``instructions``.
+
+    Three states, never conflated: ``{"observed": false}`` (the observation did not
+    carry instructions - a legacy dump - and the pin claims nothing about them);
+    ``{"observed": true, "present": false}`` (the server was asked and declares none);
+    ``{"observed": true, "present": true, "fingerprint": sha256}`` (declared, pinned as
+    a hash - the text itself never enters the manifest).
+    """
+    if not observed:
+        return {"observed": False}
+    if text is None:
+        return {"observed": True, "present": False}
+    if not isinstance(text, str):
+        raise ValueError(
+            f"server instructions must be a string or absent, got {type(text).__name__}"
+        )
+    return {"observed": True, "present": True, "fingerprint": _sha256(text)}
+
+
+def diff_instructions(
+    server: str, pinned_entry: Dict[str, Any], observed: bool, text: Optional[str]
+) -> List[Finding]:
+    """Compare a server's observed instructions against the pin, as Findings.
+
+    Claude loads server instructions at session start, so they are discovery-time
+    influence: added, removed, or changed instructions under an unchanged tool catalog
+    are CRITICAL drift. A pin whose observation never carried instructions holds the
+    weaker claim honestly: verifying it with another instruction-blind observation
+    passes with the boundary named, while an observation that NOW carries instructions
+    refuses with a re-pin instruction - unreviewed influence content must not ride in
+    on a capability upgrade.
+    """
+    pinned = pinned_entry.get("server_instructions")
+    if not isinstance(pinned, dict):
+        return [
+            Finding.fail(
+                "mcp_instructions_unpinned",
+                severity="CRITICAL",
+                message=f"server {server!r} has no pinned instructions record; re-pin "
+                "with this recusal version",
+                server=server,
+            )
+        ]
+    current = instructions_record(observed, text)
+    if not pinned.get("observed"):
+        if not observed:
+            return [
+                Finding.ok(
+                    "mcp_instructions",
+                    severity="WARNING",
+                    message=f"server {server!r}: instructions were not observed at pin "
+                    "or verify (legacy dump); the pin does not cover them",
+                    server=server,
+                )
+            ]
+        return [
+            Finding.fail(
+                "mcp_instructions_unpinned",
+                severity="CRITICAL",
+                message=f"server {server!r} now presents instructions that were never "
+                "pinned or reviewed; re-pin (with the rich observation format) so a "
+                "human sees them first",
+                server=server,
+            )
+        ]
+    if not observed:
+        return [
+            Finding.fail(
+                "mcp_instructions_unobserved",
+                severity="CRITICAL",
+                message=f"server {server!r} was pinned WITH instruction coverage but "
+                "this observation does not carry instructions (legacy dump format?); "
+                "supply the rich {'instructions': ..., 'tools': [...]} observation",
+                server=server,
+            )
+        ]
+    if current == pinned:
+        return [
+            Finding.ok(
+                "mcp_instructions",
+                severity="CRITICAL",
+                message=f"server {server!r} instructions match the pin",
+                server=server,
+            )
+        ]
+    if pinned.get("present") and not current.get("present"):
+        what = "removed its pinned instructions"
+    elif not pinned.get("present") and current.get("present"):
+        what = "added instructions that were never pinned"
+    else:
+        what = "changed its instructions (the discovery-influence rug pull)"
+    return [
+        Finding.fail(
+            "mcp_instructions_changed",
+            severity="CRITICAL",
+            message=f"server {server!r} {what}; refusing until a human re-reviews and re-pins",
+            server=server,
+        )
+    ]
+
+
 def build_manifest(
     catalog: Dict[str, List[dict]],
     sources: Optional[Dict[str, Dict[str, Any]]] = None,
+    instructions: Optional[Dict[str, Optional[str]]] = None,
 ) -> Dict[str, Any]:
     """Build a manifest from ``{server_name: [tool declarations]}``.
 
     Deterministic: the same catalog always produces the same manifest (there is no
     timestamp inside; *when* a pin happened belongs to the audit log, not the artifact).
-    Hashes only, never the declarations themselves. Raises ``ValueError`` on a catalog
+    Declarations are hashed, never stored; source templates are stored readable.
+    Raises ``ValueError`` on a catalog
     that cannot be pinned unambiguously: empty, a nameless tool, or two tools with the
     same name on one server (an ambiguous catalog certifies nothing).
 
     ``sources`` maps a server name to its launch specification (see
     :func:`normalize_source`); a server without one is pinned as ``transport:
     "external"`` - its catalog is governed, its launch is not recusal's to govern.
+
+    ``instructions`` maps a server name to its observed initialize-result
+    ``instructions`` text (``None`` = the server was asked and declares none). A server
+    absent from the mapping was NOT observed for instructions (a legacy dump), which is
+    recorded as ``observed: false`` rather than silently claiming coverage.
     """
     if not isinstance(catalog, dict) or not catalog:
         raise ValueError("an empty catalog certifies nothing; nothing to pin")
@@ -376,9 +511,14 @@ def build_manifest(
         else:
             source = normalize_source(sources[server])
         source = normalize_source(source)
+        if instructions is not None and server in instructions:
+            server_instructions = instructions_record(True, instructions[server])
+        else:
+            server_instructions = instructions_record(False, None)
         servers[server] = {
             "source": source,
             "source_fingerprint": _sha256(source),
+            "server_instructions": server_instructions,
             "tools": pinned_tools,
         }
     return {"manifest_version": MANIFEST_VERSION, "servers": servers}
@@ -424,6 +564,13 @@ def _validate_manifest(data: Any) -> None:
             "scope set could pass it); re-pin with `recusal mcp pin` to record the "
             "complete remote source identities"
         )
+    if data.get("manifest_version") == 4:
+        raise ValueError(
+            "manifest_version 4 predates server-instruction pinning (a server could "
+            "keep its tools byte-identical and rewrite only its initialize-result "
+            "instructions, a discovery-time influence surface Claude loads at session "
+            "start); re-pin with `recusal mcp pin` to record instruction coverage"
+        )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
             f"manifest_version {data.get('manifest_version')!r} is not {MANIFEST_VERSION}"
@@ -450,6 +597,22 @@ def _validate_manifest(data: Any) -> None:
                 f"manifest server {server!r}: source_fingerprint does not match the "
                 "pinned source - a hand-edited or corrupt pin certifies nothing"
             )
+        record = entry.get("server_instructions")
+        if not isinstance(record, dict) or not isinstance(record.get("observed"), bool):
+            raise ValueError(f"manifest server {server!r} has no server_instructions record")
+        if record["observed"]:
+            if not isinstance(record.get("present"), bool):
+                raise ValueError(
+                    f"manifest server {server!r} server_instructions needs a boolean 'present'"
+                )
+            if record["present"] and not (
+                isinstance(record.get("fingerprint"), str)
+                and _DIGEST_RE.fullmatch(record["fingerprint"])
+            ):
+                raise ValueError(
+                    f"manifest server {server!r} server_instructions fingerprint is not "
+                    "sha256:<64 lowercase hex>"
+                )
         tools = entry.get("tools")
         if not isinstance(tools, dict):
             raise ValueError(f"manifest server {server!r} has no tools object")
@@ -734,6 +897,49 @@ def _declared_text(value: Any, *, max_depth: int = MAX_DECLARED_DEPTH) -> Tuple[
     return out, too_deep
 
 
+def screen_server_instructions(
+    instructions: Dict[str, Optional[str]],
+    *,
+    markers: Sequence[str] = DECLARATION_MARKERS,
+    max_chars: int = MAX_DECLARED_CHARS,
+) -> List[Finding]:
+    """The pin-time review screen for initialize-result server instructions.
+
+    The same bounded deny-list marker scan and size cap as the declaration screen, for
+    the same reason: instructions are discovery-time model-facing text. ERROR routes to
+    human review; this is never semantic malice detection.
+    """
+    findings: List[Finding] = []
+    for server, text in sorted(instructions.items()):
+        if text is None:
+            continue
+        low = text.lower()
+        hits = [m for m in markers if m in low]
+        if hits:
+            findings.append(
+                Finding.fail(
+                    "mcp_instructions_marker",
+                    severity="ERROR",
+                    message=f"server {server!r} instructions carry injection phrasing: "
+                    f"{hits[0]!r}; review before pinning",
+                    server=server,
+                    markers=hits,
+                )
+            )
+        if len(text) > max_chars:
+            findings.append(
+                Finding.fail(
+                    "mcp_instructions_size",
+                    severity="ERROR",
+                    message=f"server {server!r} declares {len(text)} chars of "
+                    f"instructions (cap {max_chars}); too large to plausibly review is "
+                    "itself a review flag",
+                    server=server,
+                )
+            )
+    return findings
+
+
 def screen_tool_declarations(
     catalog: Dict[str, List[dict]],
     *,
@@ -868,14 +1074,17 @@ def manifest_policy(
         with open(manifest_path, "rb") as fh:
             raw = fh.read()
         digest = hashlib.sha256(raw).hexdigest()
-        # audit control identity: the hook records WHICH pin adjudicated this call
-        setattr(_policy, "last_manifest_digest", f"sha256:{digest}")
         with _cache_lock:
             cached_digest, cached_names = _cache[0]
         if cached_digest == digest:
+            # a cache hit means these exact bytes were validated before
+            setattr(_policy, "last_manifest_digest", f"sha256:{digest}")
             return cached_names
         data = json.loads(raw.decode("utf-8"))  # parse outside the lock
         _validate_manifest(data)
+        # audit control identity, recorded ONLY after successful parse + validation: a
+        # corrupt manifest must never be recorded as a successfully enforced one
+        setattr(_policy, "last_manifest_digest", f"sha256:{digest}")
         names = frozenset(
             f"mcp__{server}__{tool}"
             for server, entry in data["servers"].items()
@@ -886,6 +1095,10 @@ def manifest_policy(
         return names
 
     def _policy(tool_name: str, tool_input: dict) -> List[Any]:
+        # invocation-local provenance: cleared up front, so a non-MCP call (or a refused
+        # manifest read) never inherits a PREVIOUS call's manifest digest in its audit
+        # record when the same policy object lives in a long-running process
+        setattr(_policy, "last_manifest_digest", None)
         inner = policy(tool_name, tool_input) if policy else []
         if not str(tool_name).startswith("mcp__"):
             return inner  # not an MCP call -> the wrapped policy's business

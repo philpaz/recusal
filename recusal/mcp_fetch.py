@@ -137,6 +137,32 @@ def _resolve_command(command: Sequence[str]) -> List[str]:
     return [resolved or argv[0]] + argv[1:]
 
 
+def fetch_server_stdio(
+    command: Sequence[str],
+    *,
+    env: Optional[Dict[str, str]] = None,
+    cwd: Optional[str] = None,
+    timeout: float = 30.0,
+    observation_timeout: float = 300.0,
+    minimal_env: bool = False,
+) -> Dict[str, Any]:
+    """Spawn a stdio MCP server; return ``{"tools": [...], "instructions": str|None}``.
+
+    The initialize-result ``instructions`` field is discovery-time model-facing content
+    (Claude loads server instructions at session start), so it is observed alongside
+    the tool catalog; a non-string value refuses. Everything else is
+    :func:`fetch_tools_stdio`'s contract, which remains available for tools-only use.
+    """
+    return _fetch_stdio(
+        command,
+        env=env,
+        cwd=cwd,
+        timeout=timeout,
+        observation_timeout=observation_timeout,
+        minimal_env=minimal_env,
+    )
+
+
 def fetch_tools_stdio(
     command: Sequence[str],
     *,
@@ -146,7 +172,27 @@ def fetch_tools_stdio(
     observation_timeout: float = 300.0,
     minimal_env: bool = False,
 ) -> List[dict]:
-    """Spawn a stdio MCP server, run ``initialize`` → ``tools/list``, return the tools.
+    """Tools-only convenience over :func:`fetch_server_stdio` (same contract)."""
+    return _fetch_stdio(
+        command,
+        env=env,
+        cwd=cwd,
+        timeout=timeout,
+        observation_timeout=observation_timeout,
+        minimal_env=minimal_env,
+    )["tools"]
+
+
+def _fetch_stdio(
+    command: Sequence[str],
+    *,
+    env: Optional[Dict[str, str]] = None,
+    cwd: Optional[str] = None,
+    timeout: float = 30.0,
+    observation_timeout: float = 300.0,
+    minimal_env: bool = False,
+) -> Dict[str, Any]:
+    """Spawn a stdio MCP server, run ``initialize`` → ``tools/list``, return both.
 
     Newline-delimited JSON-RPC 2.0 over the child's stdin/stdout; stderr is discarded
     (servers log there). Messages that are not the awaited response (notifications,
@@ -340,6 +386,12 @@ def fetch_tools_stdio(
                 "MCP server did not advertise the 'tools' capability (as an object); "
                 "there is no tool catalog to observe"
             )
+        instructions = init.get("instructions")
+        if instructions is not None and not isinstance(instructions, str):
+            raise McpFetchError(
+                "MCP server returned non-string initialize instructions; refusing a "
+                "malformed declaration"
+            )
         _send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         tools: List[dict] = []
         cursor: Optional[str] = None
@@ -364,7 +416,7 @@ def fetch_tools_stdio(
                 )
             cursor = result.get("nextCursor")
             if not cursor:
-                return tools
+                return {"tools": tools, "instructions": instructions}
             if not isinstance(cursor, str) or len(cursor) > 10_000:
                 raise McpFetchError("tools/list returned an invalid nextCursor; refusing")
         raise McpFetchError("tools/list paginated past 100 pages; refusing a runaway catalog")
@@ -427,6 +479,25 @@ def _required(entry: Dict[str, Any], key: str, default: Any) -> Any:
     return entry[key] if key in entry else default
 
 
+def _validate_runtime_fields(entry: Dict[str, Any], where: str) -> None:
+    """Validate the KNOWN runtime-only fields' shapes, even though they are not identity.
+
+    ``timeout`` is Claude's per-server tool-execution timeout in milliseconds; values
+    below 1000 are ignored by Claude, so accepting one here would silently misrepresent
+    the configuration. ``alwaysLoad`` loads every tool into context at session start.
+    Malformed values are refused, never treated as faithfully represented config.
+    """
+    if "timeout" in entry:
+        value = entry["timeout"]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1000:
+            raise ValueError(
+                f"{where} 'timeout' must be an integer >= 1000 milliseconds (Claude "
+                f"ignores smaller values), got {value!r}"
+            )
+    if "alwaysLoad" in entry and not isinstance(entry["alwaysLoad"], bool):
+        raise ValueError(f"{where} 'alwaysLoad' must be a boolean, got {entry['alwaysLoad']!r}")
+
+
 def servers_from_claude_config(
     path: str, *, base_env: Optional[Dict[str, str]] = None
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
@@ -444,7 +515,10 @@ def servers_from_claude_config(
         }
 
     Each remote server maps to its identity source (``{transport, url_template,
-    header_keys}``); this fetcher never contacts it - supply its catalog via ``--from``.
+    header_templates, headers_helper_template, oauth}``, per
+    ``recusal.mcp.normalize_source``); this fetcher never contacts it - supply its
+    catalog via ``--from`` (the rich ``{"instructions": ..., "tools": [...]}`` shape
+    carries the discovery-content surface too).
 
     Classification mirrors Claude Code's rules and fails CLOSED on anything else: no
     ``type`` with a string ``command`` is stdio; ``type: "stdio"`` requires a command;
@@ -480,6 +554,7 @@ def servers_from_claude_config(
             raise ValueError(f"{where} 'type' must be a string")
 
         if transport_type in _REMOTE_TYPES:
+            _validate_runtime_fields(entry, where)
             url = entry.get("url")
             if not isinstance(url, str) or not url:
                 raise ValueError(f"{where} ({transport_type}) needs a string 'url'")
@@ -552,6 +627,7 @@ def servers_from_claude_config(
                 "- an unclassified field could be executable configuration, so it fails "
                 "closed instead of being silently dropped"
             )
+        _validate_runtime_fields(entry, where)
 
         args = _required(entry, "args", [])
         env = _required(entry, "env", {})

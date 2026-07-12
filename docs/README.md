@@ -36,7 +36,7 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 ## Evaluate it
 
 - **[LANDSCAPE](LANDSCAPE.md)**: where Recusal sits among frameworks, guardrails, evals,
-  observability, and the real peers (Microsoft's toolkit, AEGIS, Anthropic's auto mode).
+  observability, and the closest documented peers (Microsoft's toolkit, AEGIS, Anthropic's auto mode).
 - **[PROVEN](PROVEN.md)**: Recusal governs its own repository: a real Claude Code hook
   refusing real destructive tool calls, CI-locked and reproducible verbatim.
 - **[REFERENCES](REFERENCES.md)**: primary sources for every empirical claim the docs make

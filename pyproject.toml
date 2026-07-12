@@ -1,10 +1,12 @@
+# Build backend pinned exactly: a floating backend is unreviewed code in the
+# release path (the same rug-pull surface as a moving action tag).
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "recusal"
-version = "0.5.2"
+dynamic = ["version"]
 description = "Lightweight, extensible, Claude-native governance for AI agents: an independent, deterministic verifier that can refuse to certify a tool call before it runs. Builders cannot grade their own work."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -43,6 +45,12 @@ Documentation = "https://github.com/philpaz/recusal/tree/main/docs"
 Repository = "https://github.com/philpaz/recusal"
 Issues = "https://github.com/philpaz/recusal/issues"
 Changelog = "https://github.com/philpaz/recusal/blob/main/CHANGELOG.md"
+
+# ONE source of truth for the Python package version: recusal/__init__.py.
+# (Plugin/marketplace JSON keep literals - JSON cannot import Python - and
+# drift-lock tests keep them equal.)
+[tool.hatch.version]
+path = "recusal/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recusal"]

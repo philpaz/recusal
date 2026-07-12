@@ -78,11 +78,17 @@ def test_marketplace_lists_the_plugin_by_relative_source():
 
 
 def test_all_version_surfaces_agree():
+    # ONE Python source of truth (recusal/__init__.py, read by hatch); pyproject must
+    # stay dynamic so a literal can never drift back in. JSON distribution surfaces
+    # keep literals (JSON cannot import Python) and are drift-locked here.
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), encoding="utf-8") as f:
-        pyproject_version = re.search(r'^version = "([^"]+)"', f.read(), re.M).group(1)
+        pyproject = f.read()
+    assert re.search(r'^version = "', pyproject, re.M) is None  # no literal allowed
+    assert 'dynamic = ["version"]' in pyproject
+    assert 'path = "recusal/__init__.py"' in pyproject
     plugin_version = _load(PLUGIN_DIR, ".claude-plugin", "plugin.json")["version"]
     market_version = _load(REPO_ROOT, ".claude-plugin", "marketplace.json")["metadata"]["version"]
-    assert pyproject_version == recusal.__version__ == plugin_version == market_version
+    assert recusal.__version__ == plugin_version == market_version
 
 
 def test_plugin_gate_wires_the_same_policy_as_the_scaffolder():
@@ -90,7 +96,7 @@ def test_plugin_gate_wires_the_same_policy_as_the_scaffolder():
         src = f.read()
     compile(src, GATE_SCRIPT, "exec")
     assert "deny_list_policy()" in src
-    assert "run_pretooluse_hook(policy" in src  # control identity args allowed
+    assert re.search(r"run_pretooluse_hook\(\s*policy", src)  # control args allowed
     # missing dependency must exit nonzero (launcher coerces to blocking exit 2),
     # never fall through to an ungated pass
     assert "except ImportError" in src and "sys.exit(3)" in src

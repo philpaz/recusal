@@ -227,3 +227,104 @@ def test_a_manifest_policy_contributes_its_manifest_digest(tmp_path):
     control = load(path)[0]["action"]["control"]
     assert control["manifest_sha256"].startswith("sha256:")
     assert len(control["manifest_sha256"]) == len("sha256:") + 64
+
+
+# --- control identity is AUTHORITATIVE: the caller cannot forge provenance ------------------
+
+
+def test_caller_cannot_spoof_the_recusal_version(tmp_path):
+    # P0 regression (review 6): control= was merged AFTER the version insert, so a
+    # caller could replace the actual package version with "9.9.9". Reserved keys are
+    # stripped from caller input and always written by the implementation.
+    import recusal
+
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {"tool_name": "Read", "tool_input": {}},
+        AuditLog(path=path),
+        control={"recusal_version": "9.9.9", "policy_id": "x"},
+    )
+    control = load(path)[0]["action"]["control"]
+    assert control["recusal_version"] == recusal.__version__
+    assert control["policy_id"] == "x"
+
+
+def test_caller_cannot_spoof_the_manifest_digest(tmp_path):
+    from recusal.mcp import build_manifest, manifest_policy, manifest_to_text
+
+    manifest_path = tmp_path / "mcp-manifest.json"
+    manifest_path.write_text(
+        manifest_to_text(build_manifest({"github": [{"name": "create_issue"}]})),
+        encoding="utf-8",
+    )
+    import hashlib
+
+    real = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    policy = manifest_policy(str(manifest_path))
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {"tool_name": "mcp__github__create_issue", "tool_input": {}},
+        AuditLog(path=path),
+        policy=policy,
+        control={"manifest_sha256": "sha256:" + "f" * 64},
+    )
+    assert load(path)[0]["action"]["control"]["manifest_sha256"] == real
+
+
+def test_a_corrupt_manifest_is_never_recorded_as_enforced(tmp_path):
+    from recusal.mcp import manifest_policy
+
+    manifest_path = tmp_path / "mcp-manifest.json"
+    manifest_path.write_text("{ not json", encoding="utf-8")
+    policy = manifest_policy(str(manifest_path))
+    path = str(tmp_path / "audit.jsonl")
+    res, _ = _run(
+        {"tool_name": "mcp__github__create_issue", "tool_input": {}},
+        AuditLog(path=path),
+        policy=policy,
+    )
+    assert res["hookSpecificOutput"]["permissionDecision"] == "deny"  # fails closed
+    control = load(path)[0]["action"]["control"]
+    assert "manifest_sha256" not in control  # refused bytes are not enforced provenance
+
+
+def test_a_non_mcp_call_does_not_inherit_stale_manifest_provenance(tmp_path):
+    from recusal.mcp import build_manifest, manifest_policy, manifest_to_text
+
+    manifest_path = tmp_path / "mcp-manifest.json"
+    manifest_path.write_text(
+        manifest_to_text(build_manifest({"github": [{"name": "create_issue"}]})),
+        encoding="utf-8",
+    )
+    policy = manifest_policy(str(manifest_path))
+    path = str(tmp_path / "audit.jsonl")
+    # first an MCP call (digest attaches), then a non-MCP call THROUGH THE SAME POLICY
+    _run(
+        {"tool_name": "mcp__github__create_issue", "tool_input": {}},
+        AuditLog(path=path),
+        policy=policy,
+    )
+    _run(
+        {"tool_name": "Read", "tool_input": {"file_path": "x"}},
+        AuditLog(path=path),
+        policy=policy,
+    )
+    entries = load(path)
+    assert "manifest_sha256" in entries[0]["action"]["control"]
+    assert "manifest_sha256" not in entries[1]["action"]["control"]  # invocation-local
+
+
+def test_the_fail_open_malformed_path_carries_the_same_control_identity(tmp_path):
+    import recusal
+
+    path = str(tmp_path / "audit.jsonl")
+    res, _ = _run(
+        "not json",
+        AuditLog(path=path),
+        fail_closed=False,
+        control={"policy_id": "x", "recusal_version": "9.9.9"},
+    )
+    assert res is None  # fail-open defers
+    control = load(path)[0]["action"]["control"]
+    assert control["recusal_version"] == recusal.__version__  # spoof stripped here too
+    assert control["policy_id"] == "x"

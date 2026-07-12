@@ -5,14 +5,16 @@ Installed via the recusal-gate Claude Code plugin, every tool call in a session 
 adjudicated here BEFORE it runs; a deny holds even under bypassPermissions. This is the
 same thin shim the recusal repository dogfoods and ``python -m recusal init`` scaffolds.
 
-**Implementation provenance**: a deterministic control must be identifiable, so this
-plugin version is BOUND to the exact ``recusal`` package version that makes the
-decisions. If the importable package's version differs from ``EXPECTED_RECUSAL_VERSION``
-below, the gate fails CLOSED with the versions named - plugin 0.5.2 adjudicating with
-recusal 0.4.1 (old behavior under a new identity) or a future recusal (new behavior
-under an old identity) would make the audit trail lie about what decided. Fix:
-``pip install "recusal==<expected>"``, or update the plugin so the pair advances
-together.
+**Declared-version binding**: a deterministic control must be identifiable, so this
+gate refuses an importable ``recusal`` package whose declared ``__version__`` differs
+from ``EXPECTED_RECUSAL_VERSION`` below, failing CLOSED with both versions named -
+plugin X adjudicating with recusal Y would make the audit trail misname what decided.
+Stated precisely: this binds the plugin to a DECLARED package version. It does not
+attest package bytes, installation provenance, or a modified package that retains the
+expected version string; for stronger assurance install the exact version into a
+dedicated, write-protected virtual environment (hash-locked where required). Fix a
+mismatch with ``pip install "recusal==<expected>"``, or update the plugin so the pair
+advances together.
 
 Claude Code does not automatically install Python packages for a plugin, so the package
 is installed separately, and the failure mode is deliberate: if ``recusal`` is not
@@ -29,7 +31,7 @@ import sys
 
 #: The exact adjudicator this plugin version identifies. A version-drift-lock test keeps
 #: this equal to the plugin manifest version and the package version.
-EXPECTED_RECUSAL_VERSION = "0.5.2"
+EXPECTED_RECUSAL_VERSION = "0.5.3"
 
 try:
     import recusal
@@ -59,4 +61,12 @@ policy = deny_list_policy()
 
 
 if __name__ == "__main__":
-    run_pretooluse_hook(policy, control={"policy_id": "recusal-plugin-deny-list"})
+    run_pretooluse_hook(
+        policy,
+        control={
+            "policy_id": "recusal-plugin-deny-list",
+            # the shipped policy travels with the package, so its version IS the
+            # package version; a custom policy should declare its own
+            "policy_version": EXPECTED_RECUSAL_VERSION,
+        },
+    )

@@ -56,15 +56,17 @@ from .audit import verify_file as _verify_audit_file
 from .evidence import Decision, Finding, Verdict, compute_verdict
 from .mcp import (
     build_manifest,
+    diff_instructions,
     diff_manifest,
     diff_source,
     load_manifest,
     manifest_to_text,
+    screen_server_instructions,
     screen_tool_declarations,
 )
 from .mcp_fetch import (
     McpFetchError,
-    fetch_tools_stdio,
+    fetch_server_stdio,
     servers_from_claude_config,
     split_command,
 )
@@ -801,13 +803,18 @@ class Observation(NamedTuple):
       unfetchable server into a CRITICAL;
     - ``sources``: each observed server's UNEXPANDED launch template
       (``recusal.mcp.normalize_source`` shape; ``transport: "external"`` for dumps),
-      what a pin records and a verify compares BEFORE launching anything.
+      what a pin records and a verify compares BEFORE launching anything;
+    - ``instructions``: per server, ``{"observed": bool, "text": str|None}`` - the
+      initialize-result instructions when the observation carried them, or
+      ``observed: false`` for a legacy dump, which never silently upgrades to the
+      stronger discovery-content claim.
     """
 
     catalog: Dict[str, List[dict]]
     notes: List[str]
     unfetchable: List[str]
     sources: Dict[str, Dict[str, Any]]
+    instructions: Dict[str, Dict[str, Any]]
 
 
 def _atomic_write(path: str, text: str) -> None:
@@ -856,6 +863,7 @@ def _collect_catalog(
     notes: List[str] = []
     unfetchable: List[str] = []
     sources: Dict[str, Dict[str, Any]] = {}
+    instructions: Dict[str, Dict[str, Any]] = {}
 
     def _add(name: str, tools: List[dict]) -> None:
         if name in catalog:
@@ -891,17 +899,33 @@ def _collect_catalog(
                 )
             _add(server, tools)
             sources[server] = {"transport": "external"}
+            instructions[server] = {"observed": False, "text": None}
         elif isinstance(data, dict) and data:
             # Every key is a server name (a server literally named "tools" is fine here,
             # its siblings are never dropped). A bare tools/list result reaches this branch
             # only if --server was omitted; the per-value list check gives a clear error.
-            for name, tools in data.items():
-                if not isinstance(tools, list):
+            for name, value in data.items():
+                if isinstance(value, list):
+                    # legacy shape: tools only - instructions were NOT observed, and
+                    # the pin records exactly that weaker claim
+                    _add(str(name), value)
+                    instructions[str(name)] = {"observed": False, "text": None}
+                elif isinstance(value, dict) and isinstance(value.get("tools"), list):
+                    # rich shape: {"instructions": str|null, "tools": [...]} - the
+                    # observation carries the discovery-content surface too
+                    text = value.get("instructions")
+                    if text is not None and not isinstance(text, str):
+                        raise ValueError(
+                            f"{from_file}: server {name!r} 'instructions' must be a string or null"
+                        )
+                    _add(str(name), value["tools"])
+                    instructions[str(name)] = {"observed": True, "text": text}
+                else:
                     raise ValueError(
-                        f"{from_file}: server {name!r} must map to a tool list "
+                        f"{from_file}: server {name!r} must map to a tool list, or to "
+                        "{'instructions': ..., 'tools': [...]} "
                         "(is this a single server's tools/list result? then pass --server NAME)"
                     )
-                _add(str(name), tools)
                 sources[str(name)] = {"transport": "external"}
         else:
             raise ValueError(
@@ -921,8 +945,10 @@ def _collect_catalog(
             "env_templates": {},
         }
         _gate_launch(name, source)
-        _add(name, fetch_tools_stdio(argv, timeout=timeout, minimal_env=minimal_env))
+        observed = fetch_server_stdio(argv, timeout=timeout, minimal_env=minimal_env)
+        _add(name, observed["tools"])
         sources[name] = source
+        instructions[name] = {"observed": True, "text": observed["instructions"]}
 
     if claude_config:
         stdio_servers, remote_servers = servers_from_claude_config(claude_config)
@@ -935,17 +961,16 @@ def _collect_catalog(
             for name, remote_source in remote_servers.items():
                 _gate_launch(name, remote_source)
         for name, spec in stdio_servers.items():
-            _add(
-                name,
-                fetch_tools_stdio(
-                    spec["command"],
-                    env=spec["env"],
-                    cwd=spec["cwd"],
-                    timeout=timeout,
-                    minimal_env=minimal_env,
-                ),
+            observed = fetch_server_stdio(
+                spec["command"],
+                env=spec["env"],
+                cwd=spec["cwd"],
+                timeout=timeout,
+                minimal_env=minimal_env,
             )
+            _add(name, observed["tools"])
             sources[name] = spec["source"]
+            instructions[name] = {"observed": True, "text": observed["instructions"]}
         for name, remote_source in remote_servers.items():
             if name in catalog:
                 # catalog supplied via --from under the same name: the DUMP provides the
@@ -962,7 +987,7 @@ def _collect_catalog(
 
     if not catalog and not unfetchable:
         raise ValueError("no catalog source given (--from, --stdio, or --claude-config)")
-    return Observation(catalog, notes, unfetchable, sources)
+    return Observation(catalog, notes, unfetchable, sources, instructions)
 
 
 #: Templates whose ``${VAR:-default}`` default value is recorded in the manifest; a
@@ -1064,7 +1089,9 @@ def mcp_pin_command(
 
     Observing a stdio server EXECUTES the configured command - there is no way to ask a
     process for its catalog without running it - so the first pin is an explicit trust
-    event: ``--approve-server-launch`` must accompany ``--stdio``/``--claude-config``,
+    event: ``--approve-server-launch`` is required exactly when the selected sources
+    will execute one or more stdio server commands (a remote-only configuration paired
+    with external catalog observations executes nothing and needs no approval),
     recording that a human reviewed the commands about to run (exit 2 without it,
     before anything executes). The pinned manifest then records each server's launch
     specification, and ``verify`` compares it BEFORE launching, so this approval is a
@@ -1118,14 +1145,23 @@ def mcp_pin_command(
             out,
         )
 
+    observed_instructions = {
+        name: rec["text"] for name, rec in obs.instructions.items() if rec["observed"]
+    }
     try:
-        text = manifest_to_text(build_manifest(catalog, sources=obs.sources))
+        text = manifest_to_text(
+            build_manifest(catalog, sources=obs.sources, instructions=observed_instructions)
+        )
     except (ValueError, UnicodeError, RecursionError) as exc:
         # RecursionError: a declaration nested beyond what canonical JSON can serialize
         # is a hostile catalog; a crash is not a verdict, so it refuses like the rest.
         return _fail_closed(f"catalog cannot be pinned: {exc}", as_json, out)
 
-    screen = list(screen_tool_declarations(catalog)) + _source_review_findings(obs.sources)
+    screen = (
+        list(screen_tool_declarations(catalog))
+        + screen_server_instructions(observed_instructions)
+        + _source_review_findings(obs.sources)
+    )
     screen_verdict = compute_verdict(screen)
     if not screen_verdict.passed and not force:
         if as_json:
@@ -1247,6 +1283,8 @@ def mcp_verify_command(
             entry = pinned.get("servers", {}).get(name)
             if isinstance(entry, dict):
                 findings.extend(diff_source(name, entry, source))
+                record = obs.instructions.get(name, {"observed": False, "text": None})
+                findings.extend(diff_instructions(name, entry, record["observed"], record["text"]))
         findings.extend(diff_manifest(pinned, obs.catalog, unverifiable=obs.unfetchable))
     except (ValueError, UnicodeError, RecursionError) as exc:
         # a malformed observation (e.g. a lone-surrogate string that cannot be canonicalized,

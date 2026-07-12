@@ -4,11 +4,85 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] - 2026-07-12
+
+The correctness and claim-boundary release mandated by a sixth external review, before
+any 0.6.0 work: audit provenance made authoritative, the last uncovered MCP
+discovery-content surface pinned, and every statement that exceeded the implementation
+corrected.
+
+### Fixed
+- **Audit control identity is authoritative (P0).** Caller-supplied `control=` values
+  for `recusal_version` and `manifest_sha256` were merged AFTER the implementation's
+  values, so a caller could forge both - provenance theater, not provenance. Reserved
+  keys are now stripped from caller input and always written by the implementation;
+  one `_control_identity` helper serves every audit path including the fail-open
+  malformed-event record; `manifest_policy` records its digest only AFTER successful
+  parse and validation (a corrupt manifest is never recorded as enforced) and clears it
+  per invocation (a non-MCP call through the same policy object never inherits a
+  previous call's manifest provenance). Each failure mode is regression-tested.
+- **Manifest v5: server instructions are pinned (P0).** Claude Code loads only tool
+  names and server INSTRUCTIONS at session start (tool search defers the rest), so a
+  server that keeps `tools/list` byte-identical and rewrites only its
+  initialize-result `instructions` steers discovery invisibly to v4. The fetcher now
+  observes instructions, the pin screens them with the same bounded marker/size review
+  as declarations, they are stored as a hash (never readable text), and added, removed,
+  or changed instructions are CRITICAL drift. A legacy `{server: [tools]}` dump is
+  recorded as `observed: false`, keeps that weaker claim honestly, and an observation
+  that later carries instructions refuses with a re-pin instruction - unreviewed
+  influence content cannot ride in on a collector upgrade. The rich `--from` shape is
+  `{"instructions": ..., "tools": [...]}`; v4 manifests are refused with a re-pin
+  instruction.
+- **Runtime-only config fields are validated (P1).** `timeout` must be an integer of at
+  least 1000 milliseconds (Claude ignores smaller values, and a silently ignored value
+  must not read as faithfully represented) and `alwaysLoad` a boolean; malformed values
+  refuse. OAuth shapes are tightened: `callback_port` must be a real TCP port, a
+  literal `auth_server_metadata_url_template` must be https (a `${VAR}` template stays
+  unexpanded; the resolved scheme is Claude's to enforce), and `scopes` must be a
+  nonempty, duplicate-free space-separated set.
+
+### Changed
+- **One Python version source.** The package version lives only in
+  `recusal/__init__.py` (hatch reads it via `[tool.hatch.version]`); a literal in
+  pyproject is drift-locked out by test. Plugin/marketplace JSON keep literals (JSON
+  cannot import Python) under the existing drift locks.
+- **The release build toolchain is pinned** (`hatchling==1.31.0`, `build==1.5.1`,
+  `twine==6.2.0`), reviewed and bumped deliberately like the action SHAs. Stated
+  narrowly: this pins the top-level toolchain versions; full hash-locked dependency
+  trees, attestations, and an SBOM remain 0.6.0 supply-chain scope.
+- The plugin's shipped policy declares `policy_version` alongside `policy_id`.
+
+### Documentation
+- **Completion language removed.** 0.5.2's "architecture closure" / "implemented
+  completely" is amended in place and in the published release notes; the accurate
+  description is architecture hardening with named boundaries. The plugin claim is
+  precisely "declared-version binding" (it does not attest package bytes or a modified
+  package retaining the version string), and its quick-start pins the exact version.
+- **Semantics corrected to the documented Claude behavior**: the layered diagram now
+  shows `PreToolUse` running BEFORE the native permission prompt (deny-wins precedence
+  noted); the deny path is exit 0 with `permissionDecision: "deny"` JSON while the
+  launcher's exit-2 coercion covers gate-process failures (the "every failure mode"
+  claim is narrowed to the four modes the launcher actually closes); the hook-timeout
+  authorization outcome is stated as NOT independently established rather than assumed
+  non-blocking; the effective-MCP-environment scope names every Claude state it does
+  not reconstruct; plugin MCP naming gets the exact worked example
+  (`plugin_my-plugin_database-tools` as the server key); declared policy identity is
+  named as caller-supplied labels; stale v3 "header names" descriptions are corrected
+  or labeled historical; "hashes only" reads "declarations and instructions as hashes,
+  source templates readable" everywhere; the remaining "same evidence, same verdict"
+  shorthand carries the policy/version qualifier; categorical competitor claims,
+  percentage estimates, and roadmap language are removed from LANDSCAPE/WHY/FAQ/PROVEN;
+  and the cookbook dumper emits the rich instructions-bearing observation shape.
+
 ## [0.5.2] - 2026-07-12
 
-The architecture-closure release, driven by a fifth external review: the boundary
-between Recusal and Claude Code is now stated exactly and implemented completely within
-it, before 0.6.0 feature work begins.
+The architecture-hardening release, driven by a fifth external review: it closes the
+manifest-v3 remote configuration gaps, adds declared-version binding for the Claude
+plugin, adds audit control metadata, and documents the remaining Claude and MCP
+boundaries. (This section originally said "architecture closure" and "implemented
+completely"; the sixth review showed that overstated it - audit control fields were
+caller-overridable, server instructions were unpinned, and plugin binding is
+declared-version, not byte attestation. 0.5.3 addresses each.)
 
 ### Added
 - **Manifest version 4: remote authentication identity.** Remote sources now pin header
@@ -85,7 +159,8 @@ surface", which overstated v3.)
 - **Every configured server is verified, remote transports included (P0).** `.mcp.json`
   is parsed by transport TYPE with Claude Code's rules: `http`/`streamable-http`/`sse`/
   `ws` entries are first-class identities pinned as `{transport, url_template,
-  header_keys}` (templates and names, never values); an added unpinned remote server, a
+  header_keys}` (manifest v3 behavior at the time of 0.5.1; v4 later replaced
+  header names with header value templates); an added unpinned remote server, a
   transport swap, a URL without a type, an unsupported type, or a remote entry carrying
   stdio launch fields each fail closed - previously a remote entry was a silently
   skipped name, so an attacker could add `{"type": "http"}` exfiltration to the config

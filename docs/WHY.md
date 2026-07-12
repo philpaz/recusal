@@ -63,8 +63,8 @@ infrastructure."* That is a candid and correct statement of the limit of self-gr
 
 **It is not reproducible or auditable.** A model-as-judge gives a different answer to the
 same input on a different day or a different version. In a regulated or high-stakes
-setting, "the model felt this was fine" is not a defensible record. You cannot replay it,
-diff it, or put it in front of an auditor.
+setting, "the model felt this was fine" is not a defensible record. A logged model evaluation can be rerun, but the same output is not guaranteed across
+sampling, model, prompt, or service-version changes, which is what an auditor needs.
 
 **Human-in-the-loop alone does not close the gap.** Where humans approve each action at high
 volume, the failure mode is automation bias and "rubber-stamping": approvers wave
@@ -92,7 +92,7 @@ It is worth being precise about why existing tools do not already solve this:
 - **Platform-grade governance suites** (Microsoft's Agent Governance Toolkit) and emerging
   agent-firewall projects are real and capable, but they are heavyweight, multi-package
   systems. Recusal makes a narrower bet: independence and determinism in a kernel small
-  enough to read in one sitting.
+  deliberately small.
 
 What we wanted, and did not find packaged this way, is a small, independent, deterministic
 authority that sits in the action path and can *refuse*. That is the gap Recusal aims at.
@@ -104,7 +104,7 @@ Recusal is that authority. Operationally, adopting it changes five things:
 1. **A deterministic refusal before the irreversible action.** You gather evidence about a
    proposed action, preconditions, an allowlist, a dry-run, the output of validators you
    already run, and Recusal folds it into a single verdict: `PASS`, `RETRY`, or `FAIL`.
-   On a failing verdict, the action does not happen. In Claude Code this is a `PreToolUse`
+   When Recusal is correctly inserted into an execution path and the adapter's refusal is honored, a non-clean verdict prevents that routed action from executing. In Claude Code this is a `PreToolUse`
    hook whose `deny` is honored *even under bypassPermissions*, a policy your users cannot
    turn off by changing their permission mode.
 

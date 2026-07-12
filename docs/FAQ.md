@@ -27,7 +27,7 @@ agent's actions. Anthropic itself states it is *"not a drop-in replacement for c
 review on high-stakes infrastructure"* and carries an acknowledged 17% false-negative rate
 on a curated hard-case set (see [REFERENCES](REFERENCES.md)).
 In *Trustworthy agents in practice* Anthropic also says the security of agents *"cannot be achieved by any single company"*,
-an explicit invitation for an **independent** verifier.
+a seam where an **independent** verifier fits.
 
 That's the gap Recusal aims at. The builder and an in-family reviewer share training data,
 share blind spots, and can be argued out of a refusal by the same reasoning that produced
@@ -75,7 +75,10 @@ folds those findings into one verdict. See [`HOWTO.md`](HOWTO.md) and
   small, deterministic evidence-to-verdict contract and the independent-refusal framing.
 - **Eval libraries** (promptfoo, DeepEval) score **offline**, usually with an LLM judge,
   not in the live action path.
-- **Observability** (Langfuse, AgentOps) **records** what happened, zero authority to stop
+- **Observability** (Langfuse, AgentOps) primarily records and analyzes execution;
+  verify each product's current enforcement features before a categorical comparison.
+  Recusal's focus is a deterministic evidence-to-verdict authority in the action path,
+  a different job than recording
   anything.
 
 Recusal aims at the piece those tools leave out: an independent authority *in* the action path

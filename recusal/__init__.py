@@ -22,8 +22,8 @@ Everything hangs off it:
                  refuse *before* a tool runs.
 - ``gates``, staged release checkpoints (G0-G8) rolled into release evidence.
 
-The constitution it encodes: **builders cannot grade their own work** Â·
-deterministic before AI Â· the judge owns evidence, not progression Â· no shadow
+The constitution it encodes: **builders cannot grade their own work** ;
+deterministic before AI ; the judge owns evidence, not progression ; no shadow
 authority. (See CONSTITUTION.md.)
 
 Zero runtime dependencies, standard library only.
@@ -66,4 +66,4 @@ __all__ = [
     "DEFAULT_TAXONOMY",
 ]
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"

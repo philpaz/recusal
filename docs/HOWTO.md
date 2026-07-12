@@ -30,8 +30,10 @@ tool call proceeds and the gate is silently disabled. The loop runs the first
 `python3` → `python` → `py` that is `>=3.9`, executes the hook, and coerces **any** nonzero
 exit into `exit 2`, the one exit code Claude Code treats as **blocking**. So a missing
 interpreter, a too-old one, *and* a hook that fails to run all refuse the tool call instead
-of waving it through, it fails **closed** on every failure mode, not just the absent-python
-one. (Deny and defer both exit `0`, so any nonzero genuinely means "the hook did not run.")
+of waving it through. Stated precisely: the launcher closes the missing-interpreter,
+wrong-interpreter, import-error, and nonzero gate-process failure modes; it does not
+cover Claude-level hook cancellation, the hook-timeout outcome (not independently
+established), or a broken gate that exits 0 with irrelevant output. (Deny and defer both exit `0`, so any nonzero genuinely means "the hook did not run.")
 On Windows, Claude Code runs shell-form hooks under Git Bash when it is installed and
 **falls back to PowerShell when it is not**, where this POSIX one-liner is a parse error
 with a non-blocking exit code - the gate silently disables. `recusal init` registers a

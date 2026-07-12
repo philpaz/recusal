@@ -75,7 +75,7 @@ strips your existing prompts.
 ## Locked by CI
 
 [`tests/test_dogfood.py`](../tests/test_dogfood.py) loads this exact policy and asserts the
-refusals (and the defers), so the proof cannot silently rot, every CI run re-proves it.
+refusals (and the defers), so the proof cannot silently rot; the CI workflow is configured to run these regression tests.
 
 ## A reference architecture: catching a real bug
 
@@ -105,8 +105,7 @@ guard catching a real, named wrong-subject bug before the write runs.
 ## Honest scope
 
 This proves the **enforcement path** end to end on the real wire format: a real hook, the
-real PreToolUse JSON, a real `deny` that Claude Code honors. It does not claim
-deployment at fleet scale, that is on the roadmap (tamper-evident
-audit logging already ships in `recusal.audit`). What it does claim is true: Recusal
+real PreToolUse JSON, a real `deny` that Claude Code honors. This repository does not claim fleet-scale
+deployment evidence (tamper-evident audit logging ships in `recusal.audit`). What it does claim is true: Recusal
 refuses real, dangerous tool calls in the tool people actually use, and it does so to its
 own maintainers first.

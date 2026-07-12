@@ -43,14 +43,14 @@ These build and run agents; adjudication is a different job. All are mature, wid
 - [promptfoo](https://github.com/promptfoo/promptfoo), [DeepEval](https://github.com/confident-ai/deepeval), [Inspect AI](https://github.com/UKGovernmentBEIS/inspect_ai), Ragas, OpenAI Evals.
 - ⚠️ [Verdict (Haize Labs)](https://github.com/haizelabs/verdict): "scaling judge-time compute," a compound **LLM-as-judge**. It is the **probabilistic opposite** of Recusal's deterministic verifier (and owns the name "Verdict", which is why this library is not called that).
 
-### Observability, *records; zero authority to stop or refuse*
+### Observability, *primarily records and analyzes execution* (verify each product's current enforcement features before a categorical comparison)
 - [Langfuse](https://github.com/langfuse/langfuse), Arize Phoenix, AgentOps, Helicone. Passive telemetry.
 
-### The real peer
+### The closest documented peers
 - **[Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit)**: a multi-package, multi-language platform (Agent OS / Mesh / Runtime / SRE / Compliance / Marketplace / Lightning / Agent Control Specification; Python/TS/Rust/Go/.NET). It covers **#3** (circuit breakers, SLOs, cascade handling) and partial compliance grading, but per its own docs does **not** package (1) an adjudicator that can *refuse to certify*, (2) deterministic failure-classification→remediator routing, or (4) a constitutional separation-of-powers model. It is OWASP/policy-engine framed (Cedar/OPA Rego) and platform-scale, the opposite of a zero-dependency kernel. It is itself deterministic, so that is shared ground, not a difference.
 
 ### Direct peers, the lane is filling
-- **AEGIS** ([github](https://github.com/Justin0504/Aegis)): an OSS agent-firewall that already ships ~80% of an obvious MVP: pre-execution policy enforcement (YAML/AJV DSL), deterministic blocking, hash-chained + Merkle audit, a kill switch, and Claude Code + MCP adapters. This is the genuine competitor. Recusal does **not** try to out-feature it; it differentiates on **independence** ("a verifier the builder cannot influence"), determinism, and a kernel small enough to read in one sitting.
+- **AEGIS** ([github](https://github.com/Justin0504/Aegis)): an OSS agent-firewall whose documentation describes pre-execution policy enforcement (YAML/AJV DSL), deterministic blocking, hash-chained + Merkle audit, a kill switch, and Claude Code + MCP adapters. Recusal does **not** compete on feature count; the documented difference in scope is Recusal's small zero-dependency evidence-to-verdict contract and independent-refusal framing. Verify AEGIS's current capabilities from its own documentation before comparing.
 - **Anthropic's Claude Code auto mode**: a *same-family* safety layer: an injection probe on tool output plus a Sonnet-class transcript classifier judging actions pre-execution, with an admitted 17% false-negative rate and Anthropic's own note that it is "not a drop-in replacement for careful human review on high-stakes infrastructure." This is the conflict of interest Recusal exists to remove, a model from the same family grading the same family. In "Trustworthy agents in practice" Anthropic also states the security of agents "cannot be achieved by any single company", the ecosystem's explicit invitation for an independent verifier.
 
 ### Academic / niche on the exact thesis (no popular pip-install)
@@ -71,12 +71,12 @@ widely used.
 | Observability | record what happened | can refuse before the action runs |
 | MS Toolkit | enterprise governance platform | a small zero-dependency kernel, not a platform |
 | Anthropic auto mode | same-family safety classifier | no model in the decision path |
-| AEGIS | agent firewall: enforce + audit | the closest peer; the bet is independence and a kernel you can read in one sitting, not feature parity |
+| AEGIS | agent firewall: enforce + audit (per its documentation) | a documented peer; Recusal's difference is the small deterministic evidence-to-verdict contract, not feature parity |
 
 Frameworks build, guardrails filter, evals score, observability records, and the safety
 layer that ships with an agent is, by construction, a model from the same family judging
 that family. Real OSS peers now exist (AEGIS especially), so this is a differentiation
 question, not an empty category. Recusal's bet is narrow: an independent, deterministic
 authority in the action path that can refuse, with no model in the decision and a kernel
-small enough to read in one sitting. Whether that is worth adopting over a more featureful
+deliberately small. Whether that is worth adopting over a more featureful
 peer is a fair question to ask of a new, early-stage library.

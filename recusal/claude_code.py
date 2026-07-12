@@ -137,6 +137,31 @@ def decide(
     return decision, reason
 
 
+#: Control-identity fields the IMPLEMENTATION owns. Caller-supplied values for these are
+#: discarded, never merged: an audit record whose "recusal_version" or "manifest_sha256"
+#: could be written by the caller would be provenance theater, not provenance.
+_AUTHORITATIVE_CONTROL_KEYS = frozenset({"recusal_version", "manifest_sha256"})
+
+
+def _control_identity(policy: Policy, control: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The control identity recorded on EVERY audit path, built in one place.
+
+    Caller metadata first (reserved keys stripped), then the implementation-owned truth
+    written over it: the actual package version always, and the manifest digest a
+    :func:`recusal.mcp.manifest_policy` verified during THIS adjudication when present
+    (the attribute is invocation-local and set only after successful validation, so a
+    corrupt manifest or a non-MCP call never carries manifest provenance).
+    """
+    from . import __version__ as _recusal_version  # local import: no cycle at load
+
+    identity = {k: v for k, v in (control or {}).items() if k not in _AUTHORITATIVE_CONTROL_KEYS}
+    identity["recusal_version"] = _recusal_version
+    manifest_digest = getattr(policy, "last_manifest_digest", None)
+    if isinstance(manifest_digest, str):
+        identity["manifest_sha256"] = manifest_digest
+    return identity
+
+
 def _input_fingerprint(tool_input: dict) -> str:
     """SHA-256 over the canonical JSON of the proposed tool input. The audit entry binds
     to the exact proposed call without embedding its contents (a Write's file body, an
@@ -242,6 +267,9 @@ def run_pretooluse_hook(
                             "tool": tool_name,
                             "decision": "defer",
                             "reason": f"malformed PreToolUse event ignored: {exc}",
+                            # the SAME control-identity construction as every other
+                            # audit path: a fail-open record still names what decided
+                            "control": _control_identity(policy, control),
                         },
                         actor=actor,
                     )
@@ -263,15 +291,7 @@ def run_pretooluse_hook(
         if input_sha256 is not None:
             action["input_sha256"] = input_sha256
         action.update(event_ids)
-        from . import __version__ as _recusal_version  # local import: no cycle at load
-
-        control_identity: Dict[str, Any] = {"recusal_version": _recusal_version}
-        if control:
-            control_identity.update(control)
-        manifest_digest = getattr(policy, "last_manifest_digest", None)
-        if isinstance(manifest_digest, str):
-            control_identity.setdefault("manifest_sha256", manifest_digest)
-        action["control"] = control_identity
+        action["control"] = _control_identity(policy, control)
         try:
             audit.append(verdict, action=action, actor=actor)
         except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed

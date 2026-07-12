@@ -522,9 +522,16 @@ from mcp.client.streamable_http import streamablehttp_client
 async def dump(url, server_name, out_path, headers=None):
     async with streamablehttp_client(url, headers=headers) as (read, write, _):
         async with ClientSession(read, write) as session:
-            await session.initialize()
+            init = await session.initialize()
             tools = (await session.list_tools()).tools
-    catalog = {server_name: [t.model_dump(exclude_none=True, mode="json") for t in tools]}
+    # the RICH shape: instructions are discovery content Claude loads at session
+    # start, so the dump carries them alongside the tools (manifest v5 pins both);
+    # a legacy {server: [tools]} dump still works but records instructions as
+    # unobserved, the weaker claim
+    catalog = {server_name: {
+        "instructions": getattr(init, "instructions", None),
+        "tools": [t.model_dump(exclude_none=True, mode="json") for t in tools],
+    }}
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(catalog, fh, indent=2, sort_keys=True)
 
