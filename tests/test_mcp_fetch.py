@@ -78,7 +78,7 @@ for line in sys.stdin:
             sys.stdout.write('{"jsonrpc": "2.0", "id": %d, "result": {"tools": [], "n": NaN}}\n'
                              % rid); sys.stdout.flush()
         elif MODE == "deep":
-            deep = "[" * 5000 + "]" * 5000
+            deep = "[" * 200000 + "]" * 200000
             sys.stdout.write('{"jsonrpc": "2.0", "id": %d, "result": {"tools": %s}}\n'
                              % (rid, deep)); sys.stdout.flush()
         elif MODE == "bad-cursor":
@@ -347,7 +347,12 @@ def test_nonstandard_json_constants_are_refused(fake_server):
 
 
 def test_hostile_nesting_depth_on_the_wire_is_a_refusal_not_a_crash(fake_server):
-    with pytest.raises(McpFetchError, match="nested beyond parseable depth"):
+    # The property under test: hostile depth yields a NAMED McpFetchError, never a raw
+    # RecursionError escaping the error contract. WHICH named refusal fires depends on
+    # the platform's parse depth (3.12+ on Linux/macOS parses far deeper before the
+    # C-stack guard trips): past the parser's limit it is the depth wrap; within it, the
+    # nested arrays reach the catalog checks and the non-object tool refusal fires.
+    with pytest.raises(McpFetchError, match="nested beyond parseable depth|non-object tool"):
         fetch_tools_stdio(fake_server("deep"), timeout=30)
 
 
