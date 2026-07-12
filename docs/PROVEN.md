@@ -102,6 +102,47 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.9, 2026-07-12)
+
+For v0.5.9 (commit `bc9a722`, manifest v6 runtime identity):
+
+- **Workflow evidence is public**: CI run [29213909534](https://github.com/philpaz/recusal/actions/runs/29213909534)
+  (all 10 jobs green) and release run [29213965813](https://github.com/philpaz/recusal/actions/runs/29213965813)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **A spec-valid dotted plugin tool pins with both identities** (verbatim, CLI with
+  `--claude-plugin`):
+
+```text
+runtime: {'mode': 'claude_plugin'}
+raw key -> callable: {'admin.tools.list': 'admin_tools_list', 'query': 'query'}
+```
+
+- **`PreToolUse` membership uses the callable identity** (verbatim, library):
+
+```text
+normalized callable: AUTHORIZED
+raw dotted spelling: mcp_not_pinned -> REFUSED
+```
+
+- **A callable collision refuses the pin** (exit 2, no manifest written):
+
+```text
+FAIL (failed closed) - catalog cannot be pinned: ... raw tools 'admin.tools.list' and 'admin_tools_list' both normalize to the Claude callable 'admin_tools_list'; ambiguous callable identity cannot be pinned
+```
+
+- **A v5 manifest refuses with the migration message** (exit 2):
+
+```text
+FAIL (failed closed) - no usable manifest ... manifest_version 5 predates runtime-identity modeling ... re-pin with `recusal mcp pin` to record explicit runtime naming modes
+```
+
+- `recusal mcp verify` needs no flag: the mode lives in the manifest (verified PASS
+  against the same dump). The same properties are pinned as 25 deterministic tests in
+  [`tests/test_mcp_runtime_identity.py`](../tests/test_mcp_runtime_identity.py),
+  including digest/audit-provenance coverage of runtime identity and the
+  `list_changed` raw-swap regression.
+
 ## Release proofs on the record (v0.5.8, 2026-07-12)
 
 For v0.5.8 (commit `cb61e9e`, a claim-correction release):
