@@ -30,10 +30,13 @@ any public disclosure.
   `recusal.claude_code.allowlist_policy`: nothing runs unless affirmatively named, shell
   metacharacters and **bare interpreters** are refused (closing the
   write-a-script-then-run-it bypass; pinned in `tests/test_claude_code_allowlist.py`), and
-  it defeats the runtime-constructed names a deny-list cannot. That posture earns "the
-  agent could not subvert it" **for the tool channel routed through the hook**, it says
-  nothing about side channels outside that loop, a mis-registered hook, or a bug in your
-  predicates. Runnable comparison: [`examples/allowlist_gate.py`](examples/allowlist_gate.py).
+  it defeats the runtime-constructed names a deny-list cannot. State that posture's claim
+  precisely: **within a correctly registered routed tool channel, an unapproved capability
+  is refused by default rather than inferred safe.** It says nothing about side channels
+  outside that loop, a mis-registered hook, or a bug in your predicates. And read-only
+  means *nonmutating*, not authorized for all data: the default-safe tools can still read
+  credentials, keys, and regulated data, so add path- and subject-level read rules where
+  confidentiality matters. Runnable comparison: [`examples/allowlist_gate.py`](examples/allowlist_gate.py).
   Protect the hook's own config in either posture so an agent cannot disable it. **`safe_binaries`
   must be arg-safe.** The default set is read/inspect tools only; a binary is safe to add
   *only if it cannot execute code, spawn a process, or write a file under any argument*.
@@ -94,13 +97,14 @@ deny-list engine, which lives in the installable package as `recusal.deny_list`
 | **Disabling the gate itself** | The hook refuses edits *and deletions* of its own kill-switch, the settings and hook scripts (`.claude/settings*`, `.claude/hooks/**`), the in-repo `recusal/` **enforcement package** the hook imports and delegates every decision to (poisoning `recusal/*.py` would neutralize the gate on the next tool call), `.git/hooks/**` / `git config core.hooksPath`, *and* moving or removing the `.claude` / `.git` control directory itself, via `Write`/`Edit`, via Bash (`rm`/`mv`/`del`/redirects/inline-script writes), *and* via any other non-read tool: a generic guard refuses any non-read-only tool (an MCP filesystem tool) whose inputs reference a protected control path, matched against the de-obfuscated command and three path readings so quote-splitting, a backslash-escape, or a Windows separator cannot slip past. Pinned in `tests/test_dogfood.py`. | Same deny-list caveat; the allowlist path refuses by default (choose it for narrow high-stakes channels, see the posture note in the README). This covers the dogfood hook, which runs the gate from in-repo source; an adopter who `pip install`s `recusal` into site-packages keeps the enforcement code outside the governed tree entirely. A bare interpreter (`python file.py`) is allowed to *run* the hook; only its inline-code forms (`python -c`) are gated. Allowlist mode refuses bare interpreters outright. |
 | **Ungated side-channel tool** (an MCP shell / filesystem tool used instead of `Bash`/`Write`) | Any tool carrying a command under a command-like key (`command`/`cmd`/`shell`/`script`, matched **case-insensitively and at any nesting depth**, with argv-array values joined) gets the exact same command analysis as `Bash`; the kill-switch guard above covers filesystem-style tools. | The command-key *names* and the read-only-tool allowlist are conventions; map *your* MCP tools to the policy explicitly. A read-only MCP tool that references a protected path is refused (safe-side false positive). |
 | **Malformed / drifted hook envelope** (non-object JSON, missing `tool_name`, non-dict `tool_input`) | Fails **closed** to `deny` by default instead of normalizing and continuing. | `fail_closed=False` opts out. |
+| **Rewritten MCP control plane** (`.mcp.json` server command swapped, `mcp-manifest.json` rewritten to redefine "approved") | The default deny-list protects `.mcp.json` and `mcp-manifest.json` as kill-switch-rank paths; `manifest_policy` fails closed on a deleted/corrupt manifest; `--minimal-env` keeps shell secrets away from a server being observed. | Observing a stdio catalog **executes the configured command** - the manifest pins declarations, not launch identity (launch-spec pinning is a named roadmap item) - so review the config as executable code before `pin`/`verify` runs it. |
 | **Ambiguous / buggy policy evidence** (a finding dict with no status degrading to PASS; a stringified `"passed": "false"` reading as truthy; a policy that raises) | The enforcement adapters adjudicate with `strict=True` and fail closed; `Finding.coerce` reads a string `passed` or `status` against a pass *allowlist*, so `"false"`/`"no"`/`"0"` and any unrecognized token (`"maybe"`) read as a *failure* (not raw truthiness); a raising policy fails closed too. | The lenient no-status default applies only to `compute_verdict` called directly, not at the adapters. |
 | **Prompt injection via tool output** | Adjudicate the observation before acting; `classify_failure` routes injected content to `quarantine` deterministically (recipe). | You must actually gate on the screen result. |
 | **Data exfiltration** | Egress-allowlist policy refuses outbound calls to non-allowlisted destinations (recipe). | Define the allowlist. |
 | **Wrong-subject write** | Subject-guard policy: a write must target the session's active subject (the signature recipe; a real catch in `docs/PROVEN.md`). | Bind the active subject per turn. |
 | **Runaway loop / cost** | Tiered action-budget policy (recipe). | The hook is per-call; persist the counter. |
 | **Tampering with the audit record** | Hash-chained log detects an edit or reorder of any entry with a surviving successor. | Tail truncation, tail-suffix rewrite (down to the last entry), and forged appends need an external head anchor (`verify(expected_head=...)`); unkeyed, single-writer. |
-| **Supply chain (CI)** | Actions are tag-pinned (reference-architecture convention; documented in the workflows). | Pin to immutable commit SHAs for production. |
+| **Supply chain (CI)** | Every third-party action in the CI and release workflows is pinned to an immutable commit SHA (a moving tag is a rug-pull surface), the release workflow reruns the full gate at the exact release commit before building, and the GitHub Action installs the recusal bundled with its own selected ref. | The SHAs are updated deliberately, by hand, when an action is upgraded. |
 
 The through-line: the design gives you an **independent, deterministic seam that fails
 closed** and an honest account of where a deny-list ends and an allowlist must begin. Harden

@@ -105,3 +105,61 @@ def test_end_to_end_through_the_hook(tmp_path):
     result = run_pretooluse_hook(policy, stdin=io.StringIO(json.dumps(event)), stdout=out)
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "mcp__pastebin__upload" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+# --- the mtime/size-keyed manifest cache: cheap per call, re-pins picked up live ----------
+
+
+def test_a_repin_is_picked_up_live_without_a_new_policy(tmp_path):
+    path = tmp_path / "mcp-manifest.json"
+    path.write_text(manifest_to_text(build_manifest({"github": [_tool()]})), encoding="utf-8")
+    policy = manifest_policy(str(path))
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
+    assert decide("mcp__github__close_issue", {}, policy)[0] == "deny"
+
+    # re-pin with a different catalog; the SAME policy object must see it
+    path.write_text(
+        manifest_to_text(build_manifest({"github": [_tool("close_issue")]})), encoding="utf-8"
+    )
+    assert decide("mcp__github__close_issue", {}, policy)[0] == "defer"
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"
+
+
+def test_an_unchanged_manifest_is_loaded_once_across_calls(tmp_path, monkeypatch):
+    import recusal.mcp as mcp_mod
+
+    path = tmp_path / "mcp-manifest.json"
+    path.write_text(manifest_to_text(build_manifest({"github": [_tool()]})), encoding="utf-8")
+    calls = {"n": 0}
+    real = mcp_mod.load_manifest
+
+    def _counting(p):
+        calls["n"] += 1
+        return real(p)
+
+    monkeypatch.setattr(mcp_mod, "load_manifest", _counting)
+    policy = manifest_policy(str(path))
+    for _ in range(5):
+        assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
+    assert calls["n"] == 1
+
+
+def test_a_manifest_deleted_after_caching_fails_closed(tmp_path):
+    # The cache must never serve a pin past its file: no file, no pin, no MCP.
+    path = tmp_path / "mcp-manifest.json"
+    path.write_text(manifest_to_text(build_manifest({"github": [_tool()]})), encoding="utf-8")
+    policy = manifest_policy(str(path))
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
+    path.unlink()
+    decision, reason = decide("mcp__github__create_issue", {}, policy)
+    assert decision == "deny" and "no pin, no MCP" in reason
+
+
+def test_a_manifest_corrupted_after_caching_fails_closed(tmp_path):
+    # Changed-but-unreadable must refuse, not fall back to the stale cached pin.
+    path = tmp_path / "mcp-manifest.json"
+    path.write_text(manifest_to_text(build_manifest({"github": [_tool()]})), encoding="utf-8")
+    policy = manifest_policy(str(path))
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "defer"
+    path.write_text("{ not json", encoding="utf-8")
+    assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"

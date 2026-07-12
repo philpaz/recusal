@@ -159,10 +159,12 @@ def run_pretooluse_hook(
 # runtime (`c=$'\x72\x6d'; $c -rf /`), and it cannot see code executed *inside* an
 # interpreter, `python script.py` is one innocent-looking token followed by a program the
 # gate never reads. Allowlist mode inverts the default: **nothing runs unless affirmatively
-# named.** Unlisted tools, shell metacharacters (chaining/substitution/expansion), and bare
+# named.** Unlisted tools, shell metacharacters (chaining/substitution/redirection), and bare
 # interpreters are refused, which closes the write-a-script-then-run-it bypass a deny-list
-# cannot. This is the posture behind the strong claim, "the agent could not subvert it",
-# scoped, honestly, to the tool channel routed through the hook.
+# cannot. The claim, stated precisely: within a correctly registered routed tool channel,
+# an unapproved capability is refused by default rather than inferred safe. Read-only means
+# NONMUTATING, not authorized for all data - `cat` reads a credential file as happily as a
+# README - so add path/subject-level read rules where confidentiality matters.
 
 # Tools that only read; they defer regardless of arguments.
 DEFAULT_READ_ONLY_TOOLS: FrozenSet[str] = frozenset({"Read", "Grep", "Glob"})

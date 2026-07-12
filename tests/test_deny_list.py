@@ -92,3 +92,19 @@ def test_policy_honors_custom_read_only_tools():
 def test_policy_analyzes_commands_under_custom_keys():
     policy = deny_list_policy(command_keys={"run"})
     assert _decision(policy, "mcp__runner", {"run": "rm -rf /repo"}) == "deny"
+
+
+def test_default_policy_protects_the_mcp_control_plane():
+    # P1-3: `.mcp.json` decides which server processes launch; `mcp-manifest.json` is the
+    # approved truth manifest_policy reloads at call time. An agent that can rewrite
+    # either changes what "approved" means before its next tool call, so both are
+    # kill-switch-rank paths in the DEFAULT set.
+    policy = deny_list_policy()
+    assert _decision(policy, "Edit", {"file_path": "/repo/.mcp.json"}) == "deny"
+    assert _decision(policy, "Write", {"file_path": "/repo/mcp-manifest.json"}) == "deny"
+    assert _decision(policy, "Bash", {"command": "echo x > .mcp.json"}) == "deny"
+    assert _decision(policy, "Bash", {"command": "rm mcp-manifest.json"}) == "deny"
+    # an MCP filesystem tool is a side channel, not an exemption
+    assert _decision(policy, "mcp__fs__write_file", {"path": "/repo/mcp-manifest.json"}) == "deny"
+    # reading the control plane stays deferred (read-only tools are exempt from the guard)
+    assert _decision(policy, "Read", {"file_path": "/repo/.mcp.json"}) == "defer"

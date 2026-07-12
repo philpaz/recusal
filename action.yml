@@ -7,10 +7,10 @@
 # Each input maps to one CLI command; give at least one, or the action refuses to pass
 # vacuously (a gate that ran nothing must not read as green).
 #
-#   - uses: actions/setup-python@v5
+#   - uses: actions/setup-python@v6
 #     with:
 #       python-version: "3.12"
-#   - uses: philpaz/recusal@v0.3.0
+#   - uses: philpaz/recusal@v0.4.1
 #     with:
 #       findings: reports/findings.json   # python -m recusal verdict  (RETRY=1, FAIL=2)
 #       audit-log: reports/audit.jsonl    # python -m recusal audit verify
@@ -46,24 +46,30 @@ inputs:
     required: false
     default: ""
   version:
-    description: "recusal version to install from PyPI (default: latest). Skipped entirely if recusal is already importable, so a job that installed a checkout keeps it."
+    description: "Deliberate override: install this recusal version from PyPI instead of the source bundled with the selected action ref. Leave empty for the default provenance (action ref = implementation)."
     required: false
     default: ""
 
 runs:
   using: "composite"
   steps:
+    # Provenance: `uses: philpaz/recusal@<ref>` must select the implementation that runs.
+    # The default installs the package bundled with the selected action ref
+    # ($GITHUB_ACTION_PATH is that ref's checkout), never "latest from PyPI", so pinning
+    # the action pins the code and a rollback of the ref rolls back the gate. A job that
+    # already installed recusal (e.g. `pip install -e .` on a checkout) keeps it; an
+    # explicit `version:` input beats both, as the one deliberate escape hatch.
     - name: Install recusal
       shell: bash
       env:
         RECUSAL_VERSION: ${{ inputs.version }}
       run: |
-        if python -c "import recusal" 2>/dev/null; then
-          echo "recusal already installed: $(python -m recusal --version)"
-        elif [ -n "$RECUSAL_VERSION" ]; then
+        if [ -n "$RECUSAL_VERSION" ]; then
           python -m pip install --quiet "recusal==$RECUSAL_VERSION"
+        elif python -c "import recusal" 2>/dev/null; then
+          echo "recusal already installed: $(python -m recusal --version)"
         else
-          python -m pip install --quiet recusal
+          python -m pip install --quiet "$GITHUB_ACTION_PATH"
         fi
 
     - name: Adjudicate

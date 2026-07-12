@@ -15,6 +15,12 @@ JSON-RPC error, an unparseable or non-UTF-8 line, a missing binary, raises
 Servers reachable only over HTTP are not fetched here; :func:`servers_from_claude_config`
 surfaces them as ``skipped`` so the caller pins them from a JSON dump (``recusal mcp pin
 --from``) rather than silently dropping them. No model, no network in any verdict.
+
+**The configuration is executable code.** Fetching a stdio catalog EXECUTES the command
+the config declares - there is no way to ask a process for ``tools/list`` without running
+it - and nothing here (yet) pins that the command is the one originally approved. Review
+``command``/``args`` before observing, protect ``.mcp.json`` as a control-plane file, and
+pass ``minimal_env=True`` so a server still being decided about does not inherit secrets.
 """
 
 import json
@@ -33,6 +39,40 @@ from . import __version__
 #: hostile or broken server otherwise amplifies unbounded memory/CPU into ``build_manifest``
 #: (which canonicalizes every declaration). A real catalog is dozens of tools, not thousands.
 MAX_TOOLS = 5000
+
+#: MCP protocol revisions this client speaks, newest first; the newest is what we request.
+#: The handshake and ``tools/list`` (with cursor pagination) are identical across these.
+#: Negotiation per the spec: the server answers with a version of its choosing, and a
+#: client that does not support the answered version must disconnect - here, refuse.
+SUPPORTED_PROTOCOL_VERSIONS: Tuple[str, ...] = (
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
+
+#: Upper bound on a single stdout line from the server. Without it, a server emitting one
+#: endless line with no newline buffers unboundedly until the timeout; with it, the fetch
+#: refuses. Generous on purpose: a legitimate ``tools/list`` page is one line, and even a
+#: full MAX_TOOLS catalog of oversized declarations fits well inside it.
+MAX_LINE_CHARS = 10_000_000
+
+#: Environment variables a child process needs merely to *launch and run* - what
+#: ``minimal_env=True`` keeps. Paths and locale only; nothing here carries a secret.
+_LAUNCH_ENV: Tuple[str, ...] = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "USERPROFILE",
+    "LANG",
+    "LC_ALL",
+)
 
 
 class McpFetchError(RuntimeError):
@@ -70,6 +110,7 @@ def fetch_tools_stdio(
     env: Optional[Dict[str, str]] = None,
     cwd: Optional[str] = None,
     timeout: float = 30.0,
+    minimal_env: bool = False,
 ) -> List[dict]:
     """Spawn a stdio MCP server, run ``initialize`` → ``tools/list``, return the tools.
 
@@ -78,9 +119,18 @@ def fetch_tools_stdio(
     unrelated ids) are skipped. Any irregularity, timeout, EOF, a JSON-RPC error, an
     unparseable line, raises :class:`McpFetchError`: an observation that cannot be
     completed must be an error, never an empty (clean-looking) catalog.
+
+    By default the child inherits the full parent environment plus ``env`` (matching how
+    Claude Code launches the same server). A server being *pinned* is by definition not
+    yet trusted, so ``minimal_env=True`` hands it only what a process needs to launch
+    (PATH and friends, see ``_LAUNCH_ENV``) plus the explicitly passed ``env`` - an API
+    key in your shell does not ride along to a server you are still deciding about.
     """
     argv = _resolve_command(command)
-    merged_env = dict(os.environ)
+    if minimal_env:
+        merged_env = {k: os.environ[k] for k in _LAUNCH_ENV if k in os.environ}
+    else:
+        merged_env = dict(os.environ)
     merged_env.update(env or {})
     try:
         proc = subprocess.Popen(
@@ -103,7 +153,20 @@ def fetch_tools_stdio(
 
     def _reader() -> None:
         try:
-            for line in proc.stdout:  # type: ignore[union-attr]
+            while True:
+                # bounded readline: one endless newline-less line must refuse, not buffer
+                # until the timeout (readline with a limit returns at most that many chars)
+                line = proc.stdout.readline(MAX_LINE_CHARS)  # type: ignore[union-attr]
+                if not line:
+                    break
+                if len(line) >= MAX_LINE_CHARS and not line.endswith("\n"):
+                    lines.put(
+                        McpFetchError(
+                            f"MCP server emitted a single line longer than {MAX_LINE_CHARS} "
+                            "characters; refusing a runaway stream"
+                        )
+                    )
+                    return
                 lines.put(line)
         except (UnicodeError, OSError, ValueError) as exc:
             lines.put(exc)  # invalid UTF-8 (JSON must be UTF-8) or a broken pipe
@@ -134,6 +197,8 @@ def fetch_tools_stdio(
                 line = lines.get(timeout=remaining)
             except queue.Empty:
                 raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}") from None
+            if isinstance(line, McpFetchError):
+                raise line  # the reader already named the refusal (e.g. runaway line)
             if isinstance(line, BaseException):
                 raise McpFetchError(
                     f"could not read from the MCP server (invalid UTF-8 or I/O error) "
@@ -160,14 +225,32 @@ def fetch_tools_stdio(
             return result
 
     try:
-        _request(
+        init = _request(
             "initialize",
             {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": SUPPORTED_PROTOCOL_VERSIONS[0],
                 "capabilities": {},
                 "clientInfo": {"name": "recusal", "version": __version__},
             },
         )
+        # The negotiated response is a binding compatibility decision, not decoration:
+        # an unsupported or missing version, or a server that does not advertise the
+        # tools capability, is a refusal - proceeding would adjudicate a catalog
+        # obtained under a contract this client never agreed to.
+        negotiated = init.get("protocolVersion")
+        if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
+            raise McpFetchError(
+                f"MCP server negotiated an unsupported protocol version: {negotiated!r} "
+                f"(supported: {', '.join(SUPPORTED_PROTOCOL_VERSIONS)})"
+            )
+        capabilities = init.get("capabilities")
+        if not isinstance(capabilities, dict):
+            raise McpFetchError("MCP server returned no capabilities object on initialize")
+        if "tools" not in capabilities:
+            raise McpFetchError(
+                "MCP server did not advertise the 'tools' capability; there is no tool "
+                "catalog to observe"
+            )
         _send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         tools: List[dict] = []
         cursor: Optional[str] = None

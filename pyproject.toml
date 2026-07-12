@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "recusal"
-version = "0.4.0"
+version = "0.4.1"
 description = "Lightweight, extensible, Claude-native governance for AI agents: an independent, deterministic verifier that can refuse to certify a tool call before it runs. Builders cannot grade their own work."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -62,7 +62,9 @@ ignore = ["E501"]  # long doc/example lines are fine
 "examples/*" = ["E402"]  # sys.path shim must precede imports in runnable examples
 
 [tool.mypy]
-python_version = "3.10"
+# Match the declared minimum runtime (requires-python >=3.9): static analysis must vet
+# the oldest interpreter we claim to support, not a newer one.
+python_version = "3.9"
 files = ["recusal"]
 warn_unused_ignores = true
 warn_redundant_casts = true

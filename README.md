@@ -35,7 +35,9 @@ The reflex fix for agent safety is another model asking "does this action look O
 judge from the same family shares the builder's blind spots and drifts with it: that is a
 conflict of interest, not a control. Recusal is an independent, deterministic authority
 instead: no model in the decision path, a verdict you can replay and audit, and a refusal
-that holds (a Claude Code `deny` is honored even under `bypassPermissions`).
+that holds (a Claude Code `deny` is honored even under `bypassPermissions`). "Independent"
+means the verdict is produced outside the model's decision path; deployment isolation (who
+owns the config, the file permissions, the runtime) remains the adopter's responsibility.
 
 The published evidence (models faking passing tests, benchmarks gamed by intercepting the
 evaluator, and the stated limits of Anthropic's own same-family safety layer) is laid out
@@ -176,10 +178,14 @@ and `python script.py` runs code no string check ever reads, so a deny-list neve
 The other path is **allowlist mode** (default-deny): name the affirmatively-safe calls,
 *refuse everything else*. It fits a narrow, enumerable, high-stakes channel: nothing runs
 unless listed, and bare interpreters and shell metacharacters are refused, which closes the
-write-a-script-then-run-it bypass by construction (pinned as a test). That closure is what
-lets it earn *"the agent could not subvert it"* for the routed tool channel. The trade is
-friction and maintenance: you enumerate and grow the capability set, and it fails toward
-refusal until you do.
+documented command-construction and bare-interpreter bypass classes by construction (pinned
+as tests). Within a correctly registered routed tool channel, an unapproved capability is
+refused by default rather than inferred safe; what sits outside that channel is named in
+[`SECURITY.md`](SECURITY.md). One more honest line: the default-safe tools are *nonmutating*,
+not authorized for all data - `cat` can read a credential file - so add path- and
+subject-level read rules where confidentiality matters. The trade is friction and
+maintenance: you enumerate and grow the capability set, and it fails toward refusal until
+you do.
 
 Neither is "better" in the abstract: a deny-list refusing the unknown would grind a broad
 channel to a halt, and an allowlist deferring the unknown would defeat the point of a
@@ -253,13 +259,19 @@ verified in [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
 The model chooses tools by reading their declared descriptions, so a poisoned declaration
 steers the agent *before any call exists* for a call-time policy to see, and the call that
-follows looks structurally valid. `recusal.mcp` closes that boundary the way this library
-closes every boundary, deterministically, with the human where the judgment is:
+follows looks structurally valid. `recusal.mcp` adds deterministic integrity controls at
+that boundary the way this library governs every boundary: deterministic evidence, with
+the human where the judgment is:
 
 ```bash
 recusal mcp pin --claude-config .mcp.json    # review once, pin the approved catalog
 recusal mcp verify --claude-config .mcp.json # CI / session start: same catalog, or refuse
 ```
+
+> **`--claude-config` and `--stdio` execute the declared server commands** to ask them for
+> `tools/list`. Treat `.mcp.json` as executable code: review its `command`/`args` lines
+> like you review the declarations, and pass `--minimal-env` so a server you are still
+> deciding about does not inherit the API keys in your shell.
 
 Recusal does not judge whether a description is *malicious*: that is semantic judgment, a
 human's call at pin time (a deterministic marker screen surfaces the obvious, and `pin`
@@ -288,7 +300,12 @@ every message. `verify` proves the catalog at the moment it runs (wire it into C
 session start); the call-time gate then enforces *approved tools only*. A server that
 serves one catalog to `verify` and a different one to the live session (a client- or
 time-discriminating server) is a residual this layer names rather than claims to close:
-run `verify` against the same endpoint the session uses, close in time.
+run `verify` against the same endpoint the session uses, close in time. And the manifest
+pins the **declared catalog, not the identity of the process that declares it**: a
+rewritten `.mcp.json` command runs at observe time, before the catalog it returns can
+fail verification. Until server-launch specifications are pinned (a named roadmap item),
+protect `.mcp.json` and `mcp-manifest.json` as control-plane files - the default
+deny-list does - and treat the config as executable code.
 
 See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py)
 (offline). Pinned as tests: [`tests/test_mcp_manifest.py`](tests/test_mcp_manifest.py),
@@ -398,15 +415,19 @@ Or as a GitHub Action ([`action.yml`](action.yml), dogfooded by this repo's own 
 including the negative case: a tampered audit log must make the gate refuse):
 
 ```yaml
-- uses: actions/setup-python@v5
+- uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.3.0
+- uses: philpaz/recusal@v0.4.1
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
     doctor-dir: "."
 ```
+
+The action ref selects the implementation: it installs the recusal bundled with the
+selected ref, so pinning the action pins the code (an explicit `version:` input is the
+one deliberate override).
 
 Given nothing to adjudicate, the action exits 2 rather than pass vacuously: an evidence
 set that proves nothing certifies nothing.

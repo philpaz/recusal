@@ -1,6 +1,6 @@
-"""Pin the cookbook's MCP recipes — the exact code in the docs must behave as documented.
+"""Pin the cookbook's MCP recipes â€” the exact code in the docs must behave as documented.
 
-Recipe 13 (pin your servers + enforce the pin) and recipe 15 (the full stack) are load-
+Recipe 13 (pin your servers + enforce the pin) and recipe 15 (the three-boundary pattern) are load-
 bearing: people copy them verbatim. These tests exercise the *real* example module
 (``examples/mcp_full_stack.py``), not a paraphrase, so a recipe that drifts from its
 promise fails CI.
@@ -60,14 +60,14 @@ def test_recipe13_hook_fails_closed_without_a_manifest(tmp_path):
     assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"
 
 
-# --- recipe 15: the full stack (discovery + invocation composed) --------------------------
+# --- recipe 15: the three-boundary pattern (discovery + invocation composed) --------------------------
 
 
 def test_recipe15_unpinned_refuses_before_the_inner_rule_runs(tmp_path):
     ex = _load_example()
     manifest = _pin(tmp_path, ex.CATALOG)
     policy = manifest_policy(manifest, policy=ex.call_time_rules)
-    # delete_repo is unpinned AND the inner rule has no opinion on it — so if it refuses,
+    # delete_repo is unpinned AND the inner rule has no opinion on it â€” so if it refuses,
     # it MUST be the pin doing it, i.e. discovery runs first.
     decision, reason = decide("mcp__github__delete_repo", {}, policy)
     assert decision == "deny" and "not in the pinned MCP manifest" in reason

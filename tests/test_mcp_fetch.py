@@ -47,8 +47,21 @@ for line in sys.stdin:
         if MODE == "exit-early":
             sys.exit(0)
         send({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info"}})
-        send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-06-18",
-             "capabilities": {}, "serverInfo": {"name": "fake", "version": "0"}}})
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "fake", "version": "0"}}
+        if MODE == "newest-proto":
+            result["protocolVersion"] = "2025-11-25"
+        elif MODE == "old-proto":
+            result["protocolVersion"] = "2024-11-05"
+        elif MODE == "bad-proto":
+            result["protocolVersion"] = "1999-01-01"
+        elif MODE == "no-proto":
+            del result["protocolVersion"]
+        elif MODE == "no-caps":
+            del result["capabilities"]
+        elif MODE == "no-tools-cap":
+            result["capabilities"] = {"prompts": {}}
+        send({"jsonrpc": "2.0", "id": rid, "result": result})
     elif method == "tools/list":
         if MODE == "error":
             send({"jsonrpc": "2.0", "id": rid, "error": {"code": -1, "message": "boom"}})
@@ -186,3 +199,111 @@ def test_claude_config_with_no_servers_raises(tmp_path):
         config.write_text(body, encoding="utf-8")
         with pytest.raises(ValueError):
             servers_from_claude_config(str(config))
+
+
+# --- environment handed to a not-yet-trusted server ---------------------------------------
+
+# A server that declares, as its one tool's description, the value of an env var: exactly
+# what a catalog-collection subprocess could exfiltrate if the parent env rides along.
+ENV_ECHO_SERVER = r"""
+import json, os, sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method, rid = msg.get("method"), msg.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-06-18",
+             "capabilities": {"tools": {}}, "serverInfo": {"name": "env-echo", "version": "0"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
+            {"name": "t", "description": os.environ.get("RECUSAL_TEST_SECRET", "ABSENT"),
+             "inputSchema": {"type": "object"}}]}})
+"""
+
+
+@pytest.fixture()
+def env_echo_server(tmp_path):
+    script = tmp_path / "env_echo_server.py"
+    script.write_text(ENV_ECHO_SERVER, encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_default_env_inherits_the_parent_shell(env_echo_server, monkeypatch):
+    # Documented default: full inheritance, matching how Claude Code launches the server.
+    monkeypatch.setenv("RECUSAL_TEST_SECRET", "hunter2")
+    tools = fetch_tools_stdio(env_echo_server, timeout=30)
+    assert tools[0]["description"] == "hunter2"
+
+
+def test_minimal_env_withholds_parent_secrets(env_echo_server, monkeypatch):
+    # A server being pinned is not yet trusted: with minimal_env=True an API key in the
+    # shell must NOT ride along to it.
+    monkeypatch.setenv("RECUSAL_TEST_SECRET", "hunter2")
+    tools = fetch_tools_stdio(env_echo_server, timeout=30, minimal_env=True)
+    assert tools[0]["description"] == "ABSENT"
+
+
+def test_minimal_env_still_passes_explicit_env(env_echo_server, monkeypatch):
+    # Deliberately handed vars (a server's own config env) are not withheld.
+    monkeypatch.setenv("RECUSAL_TEST_SECRET", "hunter2")
+    tools = fetch_tools_stdio(
+        env_echo_server, timeout=30, minimal_env=True, env={"RECUSAL_TEST_SECRET": "given"}
+    )
+    assert tools[0]["description"] == "given"
+
+
+# --- a single endless line must refuse, not buffer until the timeout ----------------------
+
+
+def test_a_runaway_single_line_refuses(tmp_path, monkeypatch):
+    import recusal.mcp_fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "MAX_LINE_CHARS", 1000)
+    script = tmp_path / "endless_line_server.py"
+    script.write_text(
+        "import sys, time\n"
+        "sys.stdout.write('a' * 5000)\n"  # no newline: would buffer until timeout
+        "sys.stdout.flush()\n"
+        "time.sleep(10)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(McpFetchError, match="runaway stream"):
+        fetch_tools_stdio([sys.executable, str(script)], timeout=30)
+
+
+# --- the initialize negotiation is a binding compatibility decision -----------------------
+
+
+def test_supported_negotiated_versions_are_accepted(fake_server):
+    # The server may answer with any revision it supports; every revision this client
+    # speaks must be accepted (newest, the requested-era one, and the oldest).
+    for mode in ("newest-proto", "normal", "old-proto"):
+        tools = fetch_tools_stdio(fake_server(mode), timeout=30)
+        assert [t["name"] for t in tools] == ["create_issue", "read_file"]
+
+
+def test_an_unsupported_negotiated_version_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="unsupported protocol version.*1999-01-01"):
+        fetch_tools_stdio(fake_server("bad-proto"), timeout=30)
+
+
+def test_a_missing_protocol_version_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="unsupported protocol version"):
+        fetch_tools_stdio(fake_server("no-proto"), timeout=30)
+
+
+def test_missing_capabilities_refuse(fake_server):
+    with pytest.raises(McpFetchError, match="no capabilities object"):
+        fetch_tools_stdio(fake_server("no-caps"), timeout=30)
+
+
+def test_a_server_without_the_tools_capability_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="did not advertise the 'tools' capability"):
+        fetch_tools_stdio(fake_server("no-tools-cap"), timeout=30)

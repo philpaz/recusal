@@ -5,8 +5,9 @@ The load-bearing pin here is the **bare interpreter**: a deny-list gate allows
 `Write innocent.py` and then `python innocent.py`, executing a program no string check
 ever saw, the documented bypass in `tests/test_subversion_hook.py::PINNED_LIMIT`. The
 allowlist closes it by construction (deny-by-default, interpreters unlisted), and this
-file pins that closure so the two-tier claim in the docs, "could not subvert it" is
-earned only by allowlist mode, for the routed tool channel, stays a tested fact.
+file pins that closure so the two-tier claim in the docs (within a correctly registered
+routed tool channel, an unapproved capability is refused by default rather than inferred
+safe; earned only by allowlist mode) stays a tested fact.
 """
 
 import io
@@ -120,8 +121,8 @@ def test_glob_or_tilde_in_argv0_is_not_an_allowlist_match():
 # --- code-executing binaries are NOT default-safe (they run code through an argument) -----
 # rg `--pre`, pytest's conftest.py auto-import, and mypy plugins each execute arbitrary code
 # via an argument, which would reopen the write-a-script-then-run-it bypass the allowlist
-# exists to close. Keeping them out of the default set is what makes the "could not subvert
-# it" claim true; a user who needs one adds it via an `allow=` predicate that vets the args.
+# exists to close. Keeping them out of the default set is what keeps the refused-by-default
+# claim true; a user who needs one adds it via an `allow=` predicate that vets the args.
 
 
 def test_code_executing_binaries_are_not_default_safe():

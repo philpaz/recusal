@@ -119,9 +119,10 @@ Depends on the posture, and the docs refuse to blur the two:
   as your baseline, or use allowlist mode, if you need that protection.
 - **Allowlist mode** (`recusal.claude_code.allowlist_policy`, default-deny): nothing runs
   unless affirmatively named; shell metacharacters, runtime-constructed names, and bare
-  interpreters are refused, which closes the write-a-script-then-run-it bypass (also pinned
-  as a test). This earns *"the agent could not subvert it"*, scoped to the tool channel
-  routed through the hook. It still says nothing about what happens outside that loop (a
+  interpreters are refused, which closes the documented command-construction and
+  bare-interpreter bypass classes (also pinned as tests). Stated precisely: within a
+  correctly registered routed tool channel, an unapproved capability is refused by default
+  rather than inferred safe. It still says nothing about what happens outside that loop (a
   human pasting a suggested command, an unrouted side channel, a bug in your predicates).
 
 An absolute "cannot be subverted," unscoped, is never true, and a governance library that

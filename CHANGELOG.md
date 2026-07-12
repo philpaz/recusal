@@ -4,9 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.1] - 2026-07-12
+
+Hardening and documentation only, driven by two external reviews; no new capabilities.
+
+### Added
+- **`fetch_tools_stdio(minimal_env=True)` and `recusal mcp pin/verify --minimal-env`.**
+  By default the spawned server inherits the full parent environment (matching how Claude
+  Code launches the same server). A server being *pinned* is by definition not yet
+  trusted, so `minimal_env=True` hands it only what a process needs to launch (PATH and
+  friends) plus explicitly passed `env` - an API key in your shell does not ride along.
 
 ### Fixed
+- **`verify_file` is a strict verifier: a malformed nonblank line is a failure, not a
+  skip.** `load()` tolerantly skips a corrupt line (a half-written tail must not brick a
+  *reader*), and `verify_file` verified only what `load()` kept, so a log whose newest
+  records were garbage could read as intact; the CLI already refused this, the library
+  helper now matches it. A missing file is a failure too (a missing log is not an intact
+  log), and `verify_file` now takes the same `expected_head=` anchor as `verify`.
+- **The GitHub Action's ref now selects the implementation that runs.** The install step
+  defaulted to "latest from PyPI" when recusal was not already importable, so
+  `uses: philpaz/recusal@vX` could execute a *later* release than the pinned action. The
+  default now installs the package bundled with the selected action ref
+  (`$GITHUB_ACTION_PATH`); an explicit `version:` input remains as the one deliberate
+  override, and a job that pre-installed a checkout keeps it.
+- **The stdio fetcher treats `initialize` negotiation as binding.** The response's
+  `protocolVersion` must be one this client speaks (`SUPPORTED_PROTOCOL_VERSIONS`:
+  2025-11-25 through 2024-11-05; the newest is now requested), the server must return a
+  capabilities object, and it must advertise the `tools` capability - each failure is a
+  refusal, not a shrug-and-proceed.
+- **The declaration screen returns a verdict on hostile nesting instead of crashing.**
+  A ~3000-deep `inputSchema` blew the recursion limit inside `screen_tool_declarations`,
+  so `recusal mcp pin` died with a RecursionError traceback - fail-closed by accident,
+  but a crash is not a verdict. The walk is iterative now, and nesting past
+  `MAX_DECLARED_DEPTH` (200) is itself an ERROR finding (`mcp_declaration_depth`): too
+  deep to plausibly review gets the same treatment as too long. Depth beyond what
+  canonical JSON can serialize now fails closed (exit 2) in `pin`/`verify` as well.
+- **The stdio reader bounds a single line (`MAX_LINE_CHARS`).** A server emitting one
+  endless line with no newline buffered unboundedly until the timeout; it now refuses
+  with a truthful "runaway stream" error.
 - **String `passed` values now fail closed on unrecognized tokens, matching `status`.**
   `Finding.coerce` read a string `passed` against a false-token blocklist, so an
   unrecognized token (`"passed": "maybe"`) coerced to PASS while `"status": "maybe"`
@@ -14,7 +50,39 @@ All notable changes to this project are documented here. The format follows
   only when it is an affirmative token (`"true"`/`"yes"`/`"1"`/`"pass"`/...); anything
   unrecognized reads as a failure. Genuine booleans and numbers are unchanged.
 
+### Changed
+- **`manifest_policy` caches the pinned names, keyed by the manifest file's
+  (mtime, size).** An unchanged manifest costs a `stat` plus a set lookup per call
+  instead of a read+parse+validate; a re-pin is picked up live, a deleted or corrupted
+  manifest still fails closed (the stale pin is never served past its file).
+- **The MCP control plane is protected by default.** `.mcp.json` decides which server
+  processes launch and `mcp-manifest.json` is what "approved" means at call time, so both
+  join the deny-list's default protected paths (kill-switch rank); cookbook recipe 13 now
+  composes `manifest_policy` over `deny_list_policy()` so the pin protects its own files.
+- **Releases prove the release commit.** `release.yml` runs the full gate (ruff, format,
+  mypy, pytest) at the exact release commit before anything builds or publishes, and every
+  third-party action in CI and release workflows is pinned to an immutable commit SHA (a
+  moving tag is a rug-pull surface). mypy now type-checks against Python 3.9, the declared
+  minimum, instead of 3.10.
+
 ### Documentation
+- **The launch-identity boundary is named everywhere it matters.** Observing a stdio
+  catalog *executes the command the config declares*, and the manifest pins the declared
+  catalog, not the identity of the process that declares it - a rewritten `.mcp.json`
+  runs at observe time, before its catalog can fail verification. README, SECURITY.md,
+  the cookbook, the module docstrings, and the `--stdio`/`--claude-config` CLI help all
+  now say so plainly ("treat the config as executable code"); pinning launch
+  specifications (manifest v2) is a named roadmap item, not shipped.
+- **Claims tightened to what the implementation proves.** "The agent could not subvert
+  it" is restated as: within a correctly registered routed tool channel, an unapproved
+  capability is refused by default rather than inferred safe. "Closes the discovery
+  boundary" becomes "adds deterministic integrity controls at the discovery boundary".
+  Cookbook recipe 15 is "the three-boundary MCP governance pattern", not "the full MCP
+  governance stack". "Independent" is defined once in the README: the verdict is produced
+  outside the model's decision path; deployment isolation remains the adopter's
+  responsibility. And read-only is stated as *nonmutating*, not confidentiality-safe: the
+  default-safe tools can still read credentials, so add path/subject-level read rules
+  where confidentiality matters.
 - The `_SHELL_META` comment in the Claude Code allowlist now states the actual posture:
   glob (`*`, `?`, `[`) and tilde expansion are accepted for allowlisted read-only
   binaries (any literal path is equally readable by design, and expansion can never

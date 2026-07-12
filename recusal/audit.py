@@ -179,6 +179,39 @@ def verify(
     return (not problems), problems
 
 
-def verify_file(path: str) -> Tuple[bool, List[str]]:
-    """Convenience: load a JSONL audit file and verify its chain."""
-    return verify(load(path))
+def verify_file(
+    path: str, *, expected_head: Optional[Tuple[int, str]] = None
+) -> Tuple[bool, List[str]]:
+    """Load a JSONL audit file and verify its chain, **strictly**.
+
+    Reading and verifying have different duties. ``load`` (and a resume) is tolerant: a
+    half-written tail must not brick an application reading the earlier entries. A
+    *verifier* must not share that tolerance - skipping an unreadable line and blessing
+    the rest would certify a log whose most recent entries are unreadable or tampered.
+    So here a nonblank line that does not parse as JSON is a verification failure, and a
+    missing file is a failure too: a missing log is not an intact log.
+    """
+    entries: List[Dict[str, Any]] = []
+    bad_lines: List[int] = []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for lineno, raw in enumerate(fh, 1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    bad_lines.append(lineno)
+    except FileNotFoundError:
+        return False, [f"no audit log at {path!r} - a missing log is not an intact log"]
+    intact, problems = verify(entries, expected_head=expected_head)
+    if bad_lines:
+        intact = False
+        shown = ", ".join(str(n) for n in bad_lines[:5])
+        more = ", ..." if len(bad_lines) > 5 else ""
+        problems.append(
+            f"{len(bad_lines)} nonblank line(s) are not valid JSON (line {shown}{more}) - "
+            "the log's most recent entries may be unreadable or tampered"
+        )
+    return intact, problems

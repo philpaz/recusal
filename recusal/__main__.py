@@ -613,6 +613,7 @@ def _collect_catalog(
     stdio: Optional[List[List[str]]] = None,
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
+    minimal_env: bool = False,
 ) -> Observation:
     """Assemble an :class:`Observation` from the CLI's sources.
 
@@ -671,7 +672,12 @@ def _collect_catalog(
             )
 
     for name, command_text in stdio or []:
-        _add(name, fetch_tools_stdio(split_command(command_text), timeout=timeout))
+        _add(
+            name,
+            fetch_tools_stdio(
+                split_command(command_text), timeout=timeout, minimal_env=minimal_env
+            ),
+        )
 
     if claude_config:
         servers, skipped = servers_from_claude_config(claude_config)
@@ -682,7 +688,12 @@ def _collect_catalog(
                 "cannot reach it - pin it from a JSON dump via --from"
             )
         for name, spec in servers.items():
-            _add(name, fetch_tools_stdio(spec["command"], env=spec["env"], timeout=timeout))
+            _add(
+                name,
+                fetch_tools_stdio(
+                    spec["command"], env=spec["env"], timeout=timeout, minimal_env=minimal_env
+                ),
+            )
 
     if not catalog and not unfetchable:
         raise ValueError("no catalog source given (--from, --stdio, or --claude-config)")
@@ -697,6 +708,7 @@ def mcp_pin_command(
     stdio: Optional[List[List[str]]] = None,
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
+    minimal_env: bool = False,
     update: bool = False,
     force: bool = False,
     as_json: bool = False,
@@ -719,6 +731,7 @@ def mcp_pin_command(
             stdio=stdio,
             claude_config=claude_config,
             timeout=timeout,
+            minimal_env=minimal_env,
         )
     except (OSError, ValueError, McpFetchError) as exc:
         # notes accrued before the failure (e.g. URL-skipped servers) are lost on this
@@ -731,7 +744,9 @@ def mcp_pin_command(
 
     try:
         text = manifest_to_text(build_manifest(catalog))
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        # RecursionError: a declaration nested beyond what canonical JSON can serialize
+        # is a hostile catalog; a crash is not a verdict, so it refuses like the rest.
         return _fail_closed(f"catalog cannot be pinned: {exc}", as_json, out)
 
     screen = screen_tool_declarations(catalog)
@@ -805,6 +820,7 @@ def mcp_verify_command(
     stdio: Optional[List[List[str]]] = None,
     claude_config: Optional[str] = None,
     timeout: float = 30.0,
+    minimal_env: bool = False,
     as_json: bool = False,
     stdout: Optional[TextIO] = None,
 ) -> int:
@@ -834,6 +850,7 @@ def mcp_verify_command(
             stdio=stdio,
             claude_config=claude_config,
             timeout=timeout,
+            minimal_env=minimal_env,
         )
     except (OSError, ValueError, McpFetchError) as exc:
         return _fail_closed(f"could not observe the catalog: {exc}", as_json, out)
@@ -842,7 +859,7 @@ def mcp_verify_command(
         # the kernel owns all adjudication: it turns a pinned-but-unfetchable server (F1)
         # into a CRITICAL, the CLI only collects the `unverifiable` set and prints.
         findings = diff_manifest(pinned, obs.catalog, unverifiable=obs.unfetchable)
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
         # a malformed observation (e.g. a lone-surrogate string that cannot be canonicalized,
         # or a corrupt pinned manifest) fails closed, never an uncaught traceback / exit 1
         return _fail_closed(f"could not adjudicate the catalog: {exc}", as_json, out)
@@ -874,19 +891,27 @@ def _add_mcp_source_args(p: argparse.ArgumentParser) -> None:
         nargs=2,
         action="append",
         metavar=("NAME", "COMMAND"),
-        help="observe a stdio MCP server live: --stdio github 'npx -y @modelcontextprotocol/"
-        "server-github' (repeatable)",
+        help="observe a stdio MCP server live by EXECUTING this command: --stdio github "
+        "'npx -y @modelcontextprotocol/server-github' (repeatable)",
     )
     p.add_argument(
         "--claude-config",
         metavar="PATH",
-        help="observe every stdio server in a Claude Code .mcp.json",
+        help="observe every stdio server in a Claude Code .mcp.json by EXECUTING its "
+        "declared commands - treat the config as executable code and review it first",
     )
     p.add_argument(
         "--timeout",
         type=float,
         default=30.0,
         help="seconds to wait for a stdio server's initialize/tools/list (default 30)",
+    )
+    p.add_argument(
+        "--minimal-env",
+        action="store_true",
+        help="launch stdio servers with a minimal environment (PATH and friends plus any "
+        "env from the config) instead of inheriting the full shell environment; a server "
+        "being pinned is not yet trusted with your API keys",
     )
 
 
@@ -1033,6 +1058,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stdio=args.stdio,
                 claude_config=args.claude_config,
                 timeout=args.timeout,
+                minimal_env=args.minimal_env,
                 update=args.update,
                 force=args.force,
                 as_json=args.json,
@@ -1045,6 +1071,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stdio=args.stdio,
                 claude_config=args.claude_config,
                 timeout=args.timeout,
+                minimal_env=args.minimal_env,
                 as_json=args.json,
             )
         p_mcp.print_help()

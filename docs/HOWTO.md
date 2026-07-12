@@ -95,9 +95,10 @@ run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
 
 Nothing runs unless affirmatively named: unlisted tools, shell metacharacters, and **bare
 interpreters** (`python script.py`) are refused, closing the write-a-script-then-run-it
-bypass no deny-list can see (pinned in `tests/test_claude_code_allowlist.py`). This is the
-posture that earns *"the agent could not subvert it,"* scoped honestly to the tool channel
-routed through the hook; it says nothing about channels outside Claude Code's tool loop.
+bypass no deny-list can see (pinned in `tests/test_claude_code_allowlist.py`). The claim,
+stated precisely: within a correctly registered routed tool channel, an unapproved
+capability is refused by default rather than inferred safe. It says nothing about channels
+outside Claude Code's tool loop.
 The trade-off is maintenance: you add binaries, roots, and per-tool predicates
 (`safe_binaries=`, `writable_root=`, `allow={...}`) as the agent legitimately needs them,
 and it fails *toward* refusal in the meantime. A vetted call still defers to Claude Code's

@@ -448,6 +448,13 @@ recusal mcp pin --claude-config .mcp.json --out mcp-manifest.json   # every stdi
 recusal mcp pin --stdio github "npx -y @modelcontextprotocol/server-github" --out mcp-manifest.json
 ```
 
+> **`--claude-config` and `--stdio` EXECUTE the declared server commands** to ask them for
+> `tools/list`. Treat `.mcp.json` as executable code: review the `command`/`args` lines the
+> same way you review the declarations, because a rewritten config runs whatever it now
+> names at observe time — the manifest pins the *declared catalog*, not (yet) the identity
+> of the process that declares it. Add `--minimal-env` so a server you are still deciding
+> about does not inherit the API keys in your shell.
+
 The manifest stores **hashes only** (a poisoned description is never embedded) and is
 byte-deterministic. `pin` refuses to write when its screen flags injection phrasing in a
 declaration, until you pass `--force` to record that a human reviewed it. Commit
@@ -458,11 +465,16 @@ declaration, until you pass `--force` to record that a human reviewed it. Commit
 
 ```python
 from recusal.claude_code import run_pretooluse_hook
+from recusal.deny_list import deny_list_policy
 from recusal.mcp import manifest_policy
 
-# Refuses any mcp__server__tool call not in the pinned manifest ("no pin, no MCP"), and
-# fails CLOSED if the manifest is missing or unreadable. Non-MCP tools defer untouched.
-run_pretooluse_hook(manifest_policy("mcp-manifest.json"))
+# The pin is only as strong as the files it lives in: .mcp.json decides which server
+# processes launch, and mcp-manifest.json is what "approved" MEANS at call time - so the
+# inner deny-list (whose defaults protect both) refuses the agent rewriting either.
+# manifest_policy composes on top: any mcp__server__tool call not in the pinned manifest
+# is refused ("no pin, no MCP"), failing CLOSED if the manifest is missing or unreadable.
+# Non-MCP tools fall through to the inner policy.
+run_pretooluse_hook(manifest_policy("mcp-manifest.json", policy=deny_list_policy()))
 ```
 
 **3. Verify in CI / at session start** — catch drift before it reaches an agent:
@@ -531,7 +543,7 @@ Local stdio servers skip the dump step (recipe 13 fetches them for you). Real en
 runs against live HTTP servers (a FastMCP gateway and Salesforce Hosted MCP) are pinned as
 [`tests/test_mcp_live.py`](../tests/test_mcp_live.py).
 
-## 15. The full MCP governance stack
+## 15. The three-boundary MCP governance pattern
 
 The three MCP boundaries compose into one setup. `manifest_policy` takes an inner `policy=`,
 so the **pin** (discovery) and your **call-time rules** (invocation, recipe 12) run in a

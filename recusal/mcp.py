@@ -37,6 +37,11 @@ Honest limits, stated up front:
 - A PreToolUse event carries the tool *name and input*, not the declaration, so
   ``manifest_policy`` enforces "approved tools only" at call time; description/schema
   *integrity* is checked whenever ``recusal mcp verify`` runs (CI, session start, cron).
+- The manifest pins the *declared catalog*, not the identity of the server process that
+  declares it: observing a stdio server executes the command the config names, so a
+  rewritten ``.mcp.json`` runs at observe time, before its catalog can fail verification.
+  Treat the config as executable code and protect it (and the manifest) as control-plane
+  files; pinning the launch specification itself is a named roadmap item, not shipped.
 - Fingerprints are byte-exact over canonical JSON (sorted keys, no whitespace, UTF-8,
   no unicode normalization): a homoglyph swap in a description IS a change and fails.
 
@@ -50,6 +55,7 @@ pinned from a JSON dump instead (``recusal mcp pin --from``).
 
 import hashlib
 import json
+import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .evidence import Finding
@@ -379,29 +385,51 @@ DECLARATION_MARKERS: Tuple[str, ...] = (
 #: is itself a finding: oversized declarations are where poisoned instructions hide.
 MAX_DECLARED_CHARS = 4000
 
+#: The depth analogue of the size cap: a declaration nested deeper than this cannot
+#: plausibly be reviewed either, so it is a finding, and the walk stops descending there.
+#: Legitimate JSON Schemas nest tens of levels at the most.
+MAX_DECLARED_DEPTH = 200
 
-def _declared_text(value: Any) -> List[str]:
-    """Every human-language string the model may read in a tool declaration.
+
+def _declared_text(value: Any, *, max_depth: int = MAX_DECLARED_DEPTH) -> Tuple[List[str], bool]:
+    """Every human-language string the model may read in a tool declaration, plus whether
+    the declaration nests past ``max_depth``.
 
     Instructions do not only hide in the top-level ``description``: a poisoned
     ``inputSchema`` property description, an ``enum`` value, a ``title``, an
     ``annotations`` note, or even a property *name* (a dict key the model reads) is seen by
     the model just the same. The screen walks all of it, dict keys and values and list
-    items, recursively, rather than a single field, so a deny-list ceiling is the only
-    limit, not a blind spot.
+    items, rather than a single field, so a deny-list ceiling is the only limit, not a
+    blind spot.
+
+    The walk is iterative (an explicit stack, depth-first in declaration order): a hostile
+    server must not be able to crash the screen out of returning a verdict with a
+    thousands-deep schema, and a crash is not a refusal. Past ``max_depth`` the walk
+    records the excess and stops descending, which also bounds a self-referencing
+    (non-JSON) input instead of looping on it.
     """
     out: List[str] = []
-    if isinstance(value, str):
-        out.append(value)
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            if isinstance(k, str):
-                out.append(k)
-            out.extend(_declared_text(v))
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            out.extend(_declared_text(v))
-    return out
+    too_deep = False
+    stack: List[Tuple[Any, int]] = [(value, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            if depth >= max_depth:
+                too_deep = True
+                continue
+            for k, v in reversed(list(node.items())):
+                stack.append((v, depth + 1))
+                if isinstance(k, str):
+                    stack.append((k, depth + 1))
+        elif isinstance(node, (list, tuple)):
+            if depth >= max_depth:
+                too_deep = True
+                continue
+            for v in reversed(node):
+                stack.append((v, depth + 1))
+    return out, too_deep
 
 
 def screen_tool_declarations(
@@ -429,7 +457,19 @@ def screen_tool_declarations(
                 continue
             name = str(tool.get("name", "?"))
             screened += 1
-            texts = _declared_text(tool)
+            texts, too_deep = _declared_text(tool)
+            if too_deep:
+                findings.append(
+                    Finding.fail(
+                        "mcp_declaration_depth",
+                        severity="ERROR",
+                        message=f"tool '{name}' on server '{server}' nests its declaration "
+                        f"deeper than {MAX_DECLARED_DEPTH} levels; too deep to plausibly "
+                        "review is itself a review flag",
+                        server=server,
+                        tool=name,
+                    )
+                )
             low = "\n".join(texts).lower()
             hits = [m for m in markers if m in low]
             if hits:
@@ -483,7 +523,9 @@ def manifest_policy(
     - an ``mcp__server__tool`` call not present in the pinned manifest → CRITICAL refusal;
     - a pinned call is then ALSO handed to the wrapped ``policy``, so argument-level rules
       (repo scope, path confinement, cookbook recipe 12) compose on top of the pin;
-    - a missing or malformed manifest fails CLOSED for MCP calls: no pin, no MCP.
+    - a missing or malformed manifest fails CLOSED for MCP calls: no pin, no MCP;
+    - the manifest is re-read only when the file changes on disk (mtime+size signature),
+      so a chatty session pays a set lookup per call and a re-pin is still picked up live.
 
     Membership is checked by the *full* runtime name (``mcp__{server}__{tool}``,
     reconstructed from the pin), never by re-splitting the incoming name, so this never
@@ -504,12 +546,31 @@ def manifest_policy(
       case, and both readings collapse to the same capability.
     """
 
+    # (mtime, size)-keyed cache: a long-running loop calls this per tool call, and
+    # re-reading + re-validating an unchanged manifest each time is pure cost. A re-pin
+    # changes the signature and reloads live; a failed reload is never cached, and a
+    # changed-but-unreadable file refuses (the stale pin is never served past its file).
+    _cache: Dict[str, Any] = {"sig": None, "names": frozenset()}
+
+    def _pinned_names() -> "frozenset[str]":
+        stat = os.stat(manifest_path)
+        sig = (stat.st_mtime_ns, stat.st_size)
+        if _cache["sig"] != sig:
+            manifest = load_manifest(manifest_path)
+            _cache["names"] = frozenset(
+                f"mcp__{server}__{tool}"
+                for server, entry in manifest["servers"].items()
+                for tool in entry["tools"]
+            )
+            _cache["sig"] = sig
+        return _cache["names"]
+
     def _policy(tool_name: str, tool_input: dict) -> List[Any]:
         inner = policy(tool_name, tool_input) if policy else []
         if not str(tool_name).startswith("mcp__"):
             return inner  # not an MCP call -> the wrapped policy's business
         try:
-            manifest = load_manifest(manifest_path)
+            pinned_names = _pinned_names()
         except (OSError, ValueError) as exc:
             return [
                 Finding.fail(
@@ -520,11 +581,6 @@ def manifest_policy(
                     tool=tool_name,
                 )
             ]
-        pinned_names = {
-            f"mcp__{server}__{tool}"
-            for server, entry in manifest["servers"].items()
-            for tool in entry["tools"]
-        }
         if tool_name not in pinned_names:
             return [
                 Finding.fail(

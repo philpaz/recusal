@@ -119,3 +119,49 @@ def test_tampered_file_is_detected(tmp_path):
         fh.write("\n".join(lines) + "\n")
     ok, problems = verify_file(p)
     assert not ok and problems
+
+
+# --- verify_file is a STRICT verifier: tolerant reading never blesses a bad log ----------
+
+
+def test_verify_file_rejects_a_malformed_tail(tmp_path):
+    # Regression (P0-2): load() tolerantly skips a corrupt line, and verify_file once
+    # verified only what load() kept, so a log whose newest record was garbage could
+    # read as intact. A verifier must count every nonblank line.
+    p = str(tmp_path / "audit.jsonl")
+    log = _log(path=p)
+    log.append(_pass())
+    with open(p, "a", encoding="utf-8") as fh:
+        fh.write('{"incomplete":\n')
+    intact, problems = verify_file(p)
+    assert not intact
+    assert any("not valid JSON" in x for x in problems)
+
+
+def test_verify_file_rejects_a_malformed_middle_line(tmp_path):
+    p = str(tmp_path / "audit.jsonl")
+    log = _log(path=p)
+    log.append(_pass())
+    log.append(_fail())
+    with open(p, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    lines.insert(1, "THIS RECORD IS CORRUPT")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    intact, problems = verify_file(p)
+    assert not intact
+
+
+def test_verify_file_a_missing_log_is_not_an_intact_log(tmp_path):
+    intact, problems = verify_file(str(tmp_path / "nope.jsonl"))
+    assert not intact
+    assert any("missing log" in x for x in problems)
+
+
+def test_verify_file_accepts_an_expected_head_anchor(tmp_path):
+    p = str(tmp_path / "audit.jsonl")
+    log = _log(path=p)
+    entry = log.append(_pass())
+    assert verify_file(p, expected_head=(1, entry["hash"]))[0]
+    intact, problems = verify_file(p, expected_head=(2, entry["hash"]))
+    assert not intact and any("truncation" in x or "mismatch" in x for x in problems)

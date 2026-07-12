@@ -179,7 +179,15 @@ DEFAULT_SECRET_SUFFIXES: Tuple[str, ...] = (".pem", ".key", ".p12")
 # Editing ``recusal/*.py`` is equivalent to editing the hook; plus ``.git/hooks/`` (writing
 # a git hook is another run-code-on-commit vector). Override for your own gate's paths.
 DEFAULT_SELF_PROTECT: Tuple[str, ...] = (".claude/settings", ".claude/hooks", "recusal/")
-DEFAULT_PROTECTED_PATHS: Tuple[str, ...] = DEFAULT_SELF_PROTECT + (".git/hooks",)
+# `.mcp.json` and `mcp-manifest.json` are control-plane artifacts of the same rank as the
+# hook itself: the config decides which server processes launch, and the manifest is the
+# approved truth `manifest_policy` reloads at call time - an agent that can rewrite
+# either can change what "approved" means before its next tool call.
+DEFAULT_PROTECTED_PATHS: Tuple[str, ...] = DEFAULT_SELF_PROTECT + (
+    ".git/hooks",
+    ".mcp.json",
+    "mcp-manifest.json",
+)
 # A non-Bash tool that carries a shell command under one of these keys (an MCP shell, a
 # task runner) gets the same command analysis as Bash, so it can't be a second, ungated
 # shell. Kept narrow to keys that clearly imply shell execution (low false-positive risk).
@@ -422,7 +430,9 @@ def deny_list_policy(
     touches a protected control path, so the gate cannot be disabled through a side channel.
 
     - ``protected_paths``: control-path substrings whose edit/removal is refused (default:
-      the dogfood gate's ``.claude/settings``, ``.claude/hooks``, ``recusal/``, ``.git/hooks``).
+      the dogfood gate's ``.claude/settings``, ``.claude/hooks``, ``recusal/``, ``.git/hooks``,
+      plus the MCP control plane: ``.mcp.json`` and ``mcp-manifest.json``, since rewriting
+      the server config or the pinned manifest changes what "approved" means).
     - ``secret_basenames`` / ``secret_suffixes``: files a write tool may not create/overwrite.
     - ``command_keys``: keys under which a non-Bash tool's shell command is found and analyzed.
     - ``read_only_tools``: tools exempt from the generic kill-switch guard (they only read).

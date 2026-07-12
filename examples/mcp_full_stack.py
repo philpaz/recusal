@@ -1,5 +1,6 @@
 """
-The full MCP governance stack, offline: discovery + invocation + response in one place.
+The three-boundary MCP governance pattern, offline: discovery + invocation + response
+composed in one place (a reference pattern to wire into your runtime, not a turnkey stack).
 
 Cookbook recipe 15. The three MCP boundaries compose:
 
@@ -79,7 +80,7 @@ def screen_tool_output(text):
 
 
 def main() -> None:
-    print("RECUSAL - the full MCP governance stack (offline)\n")
+    print("RECUSAL - the three-boundary MCP governance pattern (offline)\n")
     with tempfile.TemporaryDirectory() as tmp:
         manifest = os.path.join(tmp, "mcp-manifest.json")
         with open(manifest, "w", encoding="utf-8", newline="\n") as fh:
