@@ -46,8 +46,9 @@ corrected.
   `recusal/__init__.py` (hatch reads it via `[tool.hatch.version]`); a literal in
   pyproject is drift-locked out by test. Plugin/marketplace JSON keep literals (JSON
   cannot import Python) under the existing drift locks.
-- **The release build toolchain is pinned** (`hatchling==1.31.0`, `build==1.5.1`,
-  `twine==6.2.0`), reviewed and bumped deliberately like the action SHAs. Stated
+- **The release build toolchain is pinned** (`hatchling==1.27.0`, the newest that
+  still supports Python 3.9, plus `build==1.5.1` and `twine==6.2.0`), reviewed and
+  bumped deliberately like the action SHAs. Stated
   narrowly: this pins the top-level toolchain versions; full hash-locked dependency
   trees, attestations, and an SBOM remain 0.6.0 supply-chain scope.
 - The plugin's shipped policy declares `policy_version` alongside `policy_id`.

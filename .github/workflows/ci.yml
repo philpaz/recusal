@@ -109,10 +109,14 @@ jobs:
         with:
           findings: /tmp/f.json
       - name: The executed implementation is this checkout's version
+        # The version single-source is recusal/__init__.py (pyproject is dynamic), and
+        # the INSTALLED import is probed from a neutral directory: from the repo root,
+        # `import recusal` finds the checkout's source tree and the comparison proves
+        # nothing about what was installed.
         run: |
-          PKG="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
-          GOT="$(python -c 'import recusal; print(recusal.__version__)')"
-          if [ "$PKG" != "$GOT" ]; then
+          PKG="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' recusal/__init__.py)"
+          GOT="$(cd /tmp && python -c 'import recusal; print(recusal.__version__)')"
+          if [ -z "$PKG" ] || [ "$PKG" != "$GOT" ]; then
             echo "::error::action executed recusal $GOT but the selected ref is $PKG"
             exit 1
           fi
@@ -126,9 +130,9 @@ jobs:
           findings: /tmp/f.json
       - name: The conflicting package did not run the gate
         run: |
-          PKG="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
-          GOT="$(python -c 'import recusal; print(recusal.__version__)')"
-          if [ "$PKG" != "$GOT" ]; then
+          PKG="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' recusal/__init__.py)"
+          GOT="$(cd /tmp && python -c 'import recusal; print(recusal.__version__)')"
+          if [ -z "$PKG" ] || [ "$PKG" != "$GOT" ]; then
             echo "::error::a preinstalled recusal $GOT survived; the ref is $PKG"
             exit 1
           fi

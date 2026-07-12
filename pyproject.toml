@@ -1,7 +1,11 @@
 # Build backend pinned exactly: a floating backend is unreviewed code in the
 # release path (the same rug-pull surface as a moving action tag).
+# 1.27.0 is the newest hatchling that still supports Python 3.9, and this
+# requires clause is evaluated on every supported interpreter (pip install -e
+# on 3.9 builds with it too), so the pin tracks the package floor, not the
+# release runner's Python.
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
