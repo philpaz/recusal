@@ -220,3 +220,76 @@ def test_external_sources_pin_and_roundtrip(tmp_path):
     path = tmp_path / "m.json"
     path.write_text(manifest_to_text(manifest), encoding="utf-8")
     assert load_manifest(str(path))["manifest_version"] == 2
+
+
+# --- more adversarial edges ------------------------------------------------------------------
+
+
+def test_reordered_args_are_a_launch_spec_change(arena):
+    # argv order is meaning; ["-y", "srv"] vs ["srv", "-y"] must not be "the same spec"
+    config = _write_config(arena["tmp"], arena["safe"])
+    _pin(arena, config)
+    swapped = [arena["safe"][0], "-X", arena["safe"][1]]  # inject a flag before the script
+    _write_config(arena["tmp"], swapped)
+    rc, text = _verify(arena, config)
+    assert rc == 2 and "launch specification changed" in text
+
+
+def test_an_added_env_key_is_a_launch_spec_change(arena):
+    config = _write_config(arena["tmp"], arena["safe"])
+    _pin(arena, config)
+    body = json.loads(open(config, encoding="utf-8").read())
+    body["mcpServers"]["srv"]["env"] = {"LD_PRELOAD": "/tmp/evil.so"}
+    open(config, "w", encoding="utf-8").write(json.dumps(body))
+    rc, text = _verify(arena, config)
+    assert rc == 2
+    assert "env_keys" in text
+    assert not arena["marker"].exists()
+
+
+def test_a_renamed_server_is_refused_not_silently_relearned(arena):
+    # rename = the pinned name goes absent AND an unpinned name appears; the unpinned
+    # one must be refused BEFORE it launches.
+    config = _write_config(arena["tmp"], arena["safe"])
+    _pin(arena, config)
+    body = json.loads(open(config, encoding="utf-8").read())
+    body["mcpServers"]["renamed"] = body["mcpServers"].pop("srv")
+    open(config, "w", encoding="utf-8").write(json.dumps(body))
+    rc, text = _verify(arena, config)
+    assert rc == 2 and "no pinned launch specification" in text
+
+
+def test_a_changed_env_value_with_an_unchanged_template_verifies(arena, monkeypatch):
+    # The DOCUMENTED residual, pinned as a test so it cannot silently become a claim:
+    # identity is template-level; the VALUE a referenced variable expands to is the
+    # operator's shell, not the config, and is not pinned.
+    monkeypatch.setenv("SAFE_SERVER_PATH", arena["safe"][1])
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {"mcpServers": {"srv": {"command": arena["safe"][0], "args": ["${SAFE_SERVER_PATH}"]}}}
+        ),
+        encoding="utf-8",
+    )
+    rc, _ = _pin(arena, str(config))
+    assert rc == 0
+    rc, _ = _verify(arena, str(config))
+    assert rc == 0  # same template, same verdict - even though the value could differ
+
+
+def test_pin_and_verify_agree_across_stdio_and_claude_config_forms(arena):
+    # The same server pinned via --stdio and verified via --claude-config: templates
+    # must compare structurally (command + args), not by which flag supplied them.
+    command_text = " ".join(part if " " not in part else f'"{part}"' for part in arena["safe"])
+    out = io.StringIO()
+    rc = mcp_pin_command(
+        arena["manifest"],
+        stdio=[["srv", command_text]],
+        approve_server_launch=True,
+        stdout=out,
+    )
+    assert rc == 0, out.getvalue()
+    config = _write_config(arena["tmp"], arena["safe"])
+    rc, text = _verify(arena, config)
+    # env_keys/cwd match ([] / None both ways); command+args match structurally
+    assert rc == 0, text
