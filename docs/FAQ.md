@@ -70,8 +70,9 @@ folds those findings into one verdict. See [`HOWTO.md`](HOWTO.md) and
 
 ## How is this different from guardrails / evals / observability?
 
-- **Guardrails** (Guardrails AI, NeMo) filter I/O *content*, they don't adjudicate a work
-  product or an action.
+- **Guardrails** (Guardrails AI, NeMo) gate content, and some can gate tool execution.
+  Recusal's distinction is not exclusive blocking capability; it is the deliberately
+  small, deterministic evidence-to-verdict contract and the independent-refusal framing.
 - **Eval libraries** (promptfoo, DeepEval) score **offline**, usually with an LLM judge,
   not in the live action path.
 - **Observability** (Langfuse, AgentOps) **records** what happened, zero authority to stop

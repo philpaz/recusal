@@ -409,6 +409,17 @@ def _expand(text: str, env: Dict[str, str], *, where: str) -> str:
 #: same transport "http" names, so both pin as ``http`` (a rename must not read as drift).
 _REMOTE_TYPES = {"http": "http", "streamable-http": "http", "sse": "sse", "ws": "ws"}
 
+#: Per-entry field classification, mirroring Claude Code's documented config surface.
+#: IDENTITY fields participate in the pinned source; RUNTIME fields tune execution
+#: without changing what runs on whose authority (per-call timeout, eager loading) and
+#: are deliberately not identity; anything else FAILS CLOSED - a field this parser
+#: cannot classify could be executable configuration it would otherwise silently drop
+#: (exactly how ``headersHelper`` was once invisible to verification).
+_STDIO_ENTRY_FIELDS = {"type", "command", "args", "env", "cwd"}
+_REMOTE_ENTRY_FIELDS = {"type", "url", "headers", "headersHelper", "oauth"}
+_RUNTIME_ONLY_FIELDS = {"timeout", "alwaysLoad"}
+_OAUTH_ENTRY_FIELDS = {"clientId", "callbackPort", "authServerMetadataUrl", "scopes"}
+
 
 def _required(entry: Dict[str, Any], key: str, default: Any) -> Any:
     # presence-checked, never `or`-coerced: a falsey INVALID value ("" / 0 / []) must
@@ -479,15 +490,48 @@ def servers_from_claude_config(
                     f"stdio launch fields {conflicting}; a contradictory entry is refused, "
                     "and a command in a remote entry is never executed"
                 )
+            unknown = set(entry) - _REMOTE_ENTRY_FIELDS - _RUNTIME_ONLY_FIELDS
+            if unknown:
+                raise ValueError(
+                    f"{where} carries fields this parser cannot classify: {sorted(unknown)} "
+                    "- an unclassified field could be executable configuration, so it "
+                    "fails closed instead of being silently dropped"
+                )
             headers = _required(entry, "headers", {})
             if not isinstance(headers, dict) or not all(
                 isinstance(k, str) and k and isinstance(v, str) for k, v in headers.items()
             ):
                 raise ValueError(f"{where} 'headers' must map header names to strings")
+            helper = entry.get("headersHelper")
+            if helper is not None and (not isinstance(helper, str) or not helper):
+                raise ValueError(f"{where} 'headersHelper' must be a command string")
+            oauth_entry = entry.get("oauth")
+            oauth = None
+            if oauth_entry is not None:
+                if not isinstance(oauth_entry, dict):
+                    raise ValueError(f"{where} 'oauth' must be an object")
+                unknown_oauth = set(oauth_entry) - _OAUTH_ENTRY_FIELDS
+                if unknown_oauth:
+                    raise ValueError(
+                        f"{where} 'oauth' carries unclassified fields: {sorted(unknown_oauth)}"
+                    )
+                oauth = {
+                    "client_id": oauth_entry.get("clientId"),
+                    "callback_port": oauth_entry.get("callbackPort"),
+                    "auth_server_metadata_url_template": oauth_entry.get("authServerMetadataUrl"),
+                    "scopes": oauth_entry.get("scopes"),
+                }
             remote_servers[str(name)] = {
                 "transport": _REMOTE_TYPES[transport_type],
                 "url_template": url,  # unexpanded: the pinned identity is the template
-                "header_keys": sorted(headers.keys()),
+                # header value TEMPLATES as written: a same-name Authorization swap
+                # between ${READ_ONLY_TOKEN} and ${ADMIN_TOKEN} must be drift, and the
+                # resolved credential never appears in a pin
+                "header_templates": dict(headers),
+                # Claude EXECUTES this command at connect time; it is executable
+                # configuration, previously invisible to verification
+                "headers_helper_template": helper,
+                "oauth": oauth,
             }
             continue
 
@@ -501,6 +545,13 @@ def servers_from_claude_config(
                     "that as a configuration error, and so does this parser"
                 )
             raise ValueError(f"{where} needs a string 'command' (stdio) or a remote 'type'")
+        unknown = set(entry) - _STDIO_ENTRY_FIELDS - _RUNTIME_ONLY_FIELDS
+        if unknown:
+            raise ValueError(
+                f"{where} carries fields this parser cannot classify: {sorted(unknown)} "
+                "- an unclassified field could be executable configuration, so it fails "
+                "closed instead of being silently dropped"
+            )
 
         args = _required(entry, "args", [])
         env = _required(entry, "env", {})

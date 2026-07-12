@@ -154,6 +154,7 @@ def run_pretooluse_hook(
     fail_closed: bool = True,
     audit: Optional["AuditLog"] = None,
     actor: Optional[str] = None,
+    control: Optional[Dict[str, Any]] = None,
     stdin: Any = None,
     stdout: Any = None,
 ) -> Optional[dict]:
@@ -176,6 +177,13 @@ def run_pretooluse_hook(
     fails **closed** to a deny - the record is part of the control - unless
     ``fail_closed=False``. The hook runs as a fresh process per tool call, so open the
     log with ``AuditLog(path, resume="tail")`` to avoid re-reading a grown log each call.
+
+    ``control`` names the CONTROL IDENTITY on each audit entry: a verdict is replayable
+    only when the adjudication rules are identifiable, so "same evidence" is
+    insufficient if the policy changed. The recusal package version is recorded
+    automatically; pass ``{"policy_id": ..., "policy_version": ...}`` (any JSON-safe
+    identity) for the policy; a :func:`recusal.mcp.manifest_policy` contributes the
+    manifest content digest it enforced automatically.
     """
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
@@ -255,6 +263,15 @@ def run_pretooluse_hook(
         if input_sha256 is not None:
             action["input_sha256"] = input_sha256
         action.update(event_ids)
+        from . import __version__ as _recusal_version  # local import: no cycle at load
+
+        control_identity: Dict[str, Any] = {"recusal_version": _recusal_version}
+        if control:
+            control_identity.update(control)
+        manifest_digest = getattr(policy, "last_manifest_digest", None)
+        if isinstance(manifest_digest, str):
+            control_identity.setdefault("manifest_sha256", manifest_digest)
+        action["control"] = control_identity
         try:
             audit.append(verdict, action=action, actor=actor)
         except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed

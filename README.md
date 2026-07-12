@@ -25,7 +25,8 @@ A judge **recuses** themselves from a case they can't impartially decide. The sa
 principle governs autonomous agents: the thing that *generates* the work must never be
 the thing that *certifies* it. Recusal is that independent authority: collect evidence,
 adjudicate it into **`PASS` / `RETRY` / `FAIL`**, and let the gate **refuse**. No model
-call in the decision path. Same evidence, same verdict, every time, including the "no".
+call in the decision path. Same evidence, same policy, same version, same verdict,
+including the "no".
 
 ---
 
@@ -45,6 +46,36 @@ in [`docs/WHY.md`](docs/WHY.md), every source verified in
 [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
 > Builders generate. Recusal certifies. Refusal is a feature.
+
+---
+
+## How Recusal fits into Claude Code
+
+Recusal uses `PreToolUse`, Claude Code's native pre-execution policy seam, and it is
+intentionally ONE layer in a broader control stack, not a replacement for the others.
+Claude native permissions own broad allow/ask/deny rules (a native deny applies
+regardless of any hook decision). Claude sandboxing constrains what an allowed command
+can touch after it runs. Managed settings own organization-controlled policy, hook
+distribution, and MCP server restrictions (`allowedMcpServers` is how an enterprise
+bounds the effective server set). Claude MCP configuration owns transport, OAuth,
+credentials, and endpoint connectivity. Recusal owns deterministic evidence
+adjudication: explicit findings become `PASS`/`RETRY`/`FAIL` with no model in the
+decision path, a clean verdict defers to Claude's remaining permission flow by default,
+and a non-clean verdict denies before execution. The strongest deployment is layered:
+
+```
+  managed policy  ->  native permission rules  ->  Recusal PreToolUse adjudication
+      ->  Claude sandbox / OS boundary  ->  approved tool or MCP execution
+      ->  versioned, externally anchored audit evidence
+```
+
+For production, pin the runtime the gate runs on: a dedicated venv with
+`pip install "recusal==<version>"`, registered explicitly, protected from agent writes.
+`pip install recusal` is the quick start, not the governance deployment. One named
+residual: Claude kills a hook that exceeds the platform hook timeout (default 600s),
+and the docs treat timeouts as non-blocking, so a policy hung that long would not
+block. Recusal's shipped policies adjudicate in milliseconds; keep custom policies fast
+and bounded, and do not set a short per-hook timeout (it would widen this window).
 
 ---
 
@@ -75,7 +106,7 @@ the gate refuses, the audit log records, the classifier routes.
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
 | `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
-| `recusal.mcp` · `recusal.mcp_fetch` | MCP discovery governance: pin a server's tool catalog, refuse drift, enforce the pin at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process) |
+| `recusal.mcp` · `recusal.mcp_fetch` | MCP tool-catalog governance: pin a server's tool catalog, refuse drift, enforce the pin at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process) |
 | `recusal.audit` | tamper-evident, hash-chained log of every verdict |
 | `recusal.classify` | deterministic failure classifier + router |
 | `recusal.gates` | staged `G0`-`G8` release-gate adjudication, `compute_verdict` at each checkpoint |
@@ -246,7 +277,7 @@ pinning, destructive-verb refusal, path confinement, allowlist mode). Pinned:
 nothing intercepts for you: invoke the gate between the model's proposed MCP call and the
 client dispatching it (the same `gate_tool_use` seam as below).
 
-**The three MCP boundaries, stated plainly.** A call-time policy adjudicates the proposed
+**The three MCP tool-call boundaries, stated plainly.** A call-time policy adjudicates the proposed
 tool name and arguments; MCP has two more boundaries, and Recusal covers each with its own
 evidence:
 
@@ -291,8 +322,10 @@ human's call at pin time (a deterministic marker screen surfaces the obvious, an
 refuses to write over a flagged catalog until `--force` records that a human reviewed it).
 What it detects, deterministically, is **unpinned capability and post-approval change**:
 the rug pull, the new tool, the mutated schema. The pin is the confirmed human decision
-promoted to a deterministic artifact: manifest bytes are reproducible, hashes only (a
-poisoned description is never embedded anywhere), and the same observed catalog against
+promoted to a deterministic artifact: manifest bytes are reproducible, tool
+declarations are stored as hashes only (a poisoned description is never embedded
+anywhere) while source templates are stored readable so drift can be explained - keep
+secrets out of them, the pin warns - and the same observed catalog against
 the same pin yields the same verdict, every time. `verify` fails **closed**: a missing
 manifest, a failed fetch, a wholly empty observation, or a pinned server that can no longer
 be reached for integrity-checking (e.g. silently swapped to a URL transport) is a refusal,
@@ -320,7 +353,8 @@ template, args, cwd, and the environment value *templates* as written in the con
 a rewritten command, a same-key env value swap (`NODE_OPTIONS`, `LD_PRELOAD`), or a
 `${VAR}` reference rename is refused without the replacement ever executing (each pinned
 by an adversarial test proving the substituted command's marker file is never written).
-Every configured server is covered: a remote (`http`/`sse`/`ws`) entry pins its
+Every server entry in the SUPPLIED `.mcp.json` is represented or the operation
+refuses: a remote (`http`/`sse`/`ws`) entry pins its
 `url_template` and header *names*, an added or transport-swapped server of any kind is
 drift, and a config entry the parser cannot faithfully represent fails closed. The
 remaining residuals, named: the operator-shell *values* behind `${VAR}` references are
@@ -329,6 +363,29 @@ fetch what the registry serves (pin package versions in the args); executable by
 not attested; and a `--from`-only pin records `transport: external`, attesting the
 declaration set, not the endpoint that produced it. Keep protecting `.mcp.json` and
 `mcp-manifest.json` as control-plane files - the default deny-list does.
+
+Scope, stated exactly: Recusal verifies the configuration artifact YOU supply
+(`--claude-config`/`--stdio`/`--from`); it does not independently inventory Claude
+Code's local, user, plugin, managed, and claude.ai connector scopes - use Claude
+managed MCP policy (`allowedMcpServers`) to constrain the effective server set, then
+pin what it allows. Recusal governs MCP *tools*: prompts, resources, resource
+templates, channels, and elicitation can introduce context without a tool invocation
+and are outside `manifest_policy`. Claude Code supports dynamic `list_changed`
+updates: a NEW tool name stays blocked at call time, but a changed description under
+an already-pinned name is invisible to the call-time hook until you verify again -
+verification is point-in-time, not continuous attestation. And Recusal never
+authenticates to a remote endpoint: Claude Code (or the MCP client producing your
+`--from` dump) owns OAuth, headers, `headersHelper` execution, TLS, and transport;
+Recusal records the approved nonsecret templates and adjudicates the supplied catalog.
+Plugin-bundled MCP servers use scoped runtime names
+(`mcp__plugin_<plugin>_<server>__<tool>`); to govern one with `manifest_policy`, pin it
+under that full runtime server name. Verifying a config that contains remote servers
+needs their fresh catalogs alongside it:
+
+```bash
+recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json          # stdio-only
+recusal mcp verify --claude-config .mcp.json --from remote-catalogs.json     --manifest mcp-manifest.json                                                   # mixed/remote
+```
 
 See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py)
 (offline). Pinned as tests: [`tests/test_mcp_manifest.py`](tests/test_mcp_manifest.py),

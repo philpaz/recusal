@@ -44,6 +44,7 @@ standard library only, and nothing here participates in verdict computation.
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from typing import Any, Dict, List, NamedTuple, Optional, TextIO, Tuple
@@ -787,7 +788,7 @@ def doctor_command(
     return EXIT_BY_DECISION[verdict.decision]
 
 
-# --- MCP discovery governance: pin the tool catalog, refuse drift -------------------------
+# --- MCP tool-catalog governance: pin the tool catalog, refuse drift ----------------------
 
 
 class Observation(NamedTuple):
@@ -964,6 +965,79 @@ def _collect_catalog(
     return Observation(catalog, notes, unfetchable, sources)
 
 
+#: Templates whose ``${VAR:-default}`` default value is recorded in the manifest; a
+#: secret placed in a default is stored just as surely as a literal.
+_TEMPLATE_DEFAULT_RE = re.compile(r"\$\{\w+:-([^}]+)\}")
+
+#: Argument flags that conventionally carry a credential in the NEXT argument. A
+#: deny-list with a deny-list's ceiling: it surfaces the obvious for review; it is not
+#: secret detection, and it never substitutes for reading the source before pinning.
+_SECRET_ARG_MARKERS = frozenset(
+    {"--api-key", "--apikey", "--token", "--auth-token", "--password", "--secret", "--key"}
+)
+
+
+def _source_review_findings(sources: Dict[str, Dict[str, Any]]) -> List[Finding]:
+    """WARNING findings for source material that becomes READABLE manifest content.
+
+    Tool declarations are stored as hashes; source templates are stored in readable
+    form so drift can be explained and compared - which means a literal credential in
+    an env value, a header value, a ``${VAR:-default}`` default, or a secret-bearing
+    command argument is written into the manifest. Each gets a machine-readable
+    WARNING (visible under ``--json``) with the fix: reference secrets as ``${VAR}``,
+    which pins the reference, never the value.
+    """
+    findings: List[Finding] = []
+
+    def _template(server: str, what: str, template: str, literal_check: str) -> None:
+        if "${" not in template:
+            findings.append(
+                Finding.fail(
+                    literal_check,
+                    severity="WARNING",
+                    message=f"server {server!r} {what} is a literal value; it is now "
+                    "recorded in the manifest - use ${VAR} for secrets",
+                    server=server,
+                )
+            )
+            return
+        if _TEMPLATE_DEFAULT_RE.search(template):
+            findings.append(
+                Finding.fail(
+                    "mcp_template_default",
+                    severity="WARNING",
+                    message=f"server {server!r} {what} carries a ${{VAR:-default}} default; "
+                    "the default value is recorded in the manifest - avoid secret-bearing "
+                    "defaults",
+                    server=server,
+                )
+            )
+
+    for server_name, source in sorted(sources.items()):
+        for key, template in sorted(source.get("env_templates", {}).items()):
+            _template(server_name, f"env {key!r}", template, "mcp_env_literal")
+        for key, template in sorted(source.get("header_templates", {}).items()):
+            _template(server_name, f"header {key!r}", template, "mcp_header_literal")
+        args = source.get("args") or []
+        for i, arg in enumerate(args):
+            if (
+                arg.lower() in _SECRET_ARG_MARKERS
+                and i + 1 < len(args)
+                and ("${" not in args[i + 1])
+            ):
+                findings.append(
+                    Finding.fail(
+                        "mcp_arg_secret",
+                        severity="WARNING",
+                        message=f"server {server_name!r} passes a literal value after "
+                        f"{arg!r}; it is recorded in the manifest - use ${{VAR}} for "
+                        "secrets",
+                        server=server_name,
+                    )
+                )
+    return findings
+
+
 def mcp_pin_command(
     out_path: str,
     *,
@@ -997,11 +1071,22 @@ def mcp_pin_command(
     one-time event per launch spec, not a ritual.
     """
     out = stdout if stdout is not None else sys.stdout
-    if (stdio or claude_config) and not approve_server_launch:
+    launches_planned = bool(stdio)
+    if claude_config and not launches_planned:
+        # parsing is safe (no execution); approval is required only when a stdio
+        # process would actually run, so a remote-only config plus --from needs none
+        try:
+            config_stdio, _ = servers_from_claude_config(claude_config)
+        except (OSError, ValueError) as exc:
+            return _fail_closed(f"could not read the configuration: {exc}", as_json, out)
+        launches_planned = bool(config_stdio)
+    if launches_planned and not approve_server_launch:
         return _fail_closed(
             "pinning from --stdio/--claude-config EXECUTES the configured server "
-            "commands; review them, then pass --approve-server-launch to record that a "
-            "human approved launching them (nothing was executed)",
+            "commands; review command, args, env templates (and for remote servers the "
+            "url, headers, headersHelper, and oauth configuration), then pass "
+            "--approve-server-launch to record that a human approved launching them "
+            "(nothing was executed)",
             as_json,
             out,
         )
@@ -1040,24 +1125,7 @@ def mcp_pin_command(
         # is a hostile catalog; a crash is not a verdict, so it refuses like the rest.
         return _fail_closed(f"catalog cannot be pinned: {exc}", as_json, out)
 
-    screen = screen_tool_declarations(catalog)
-    # A literal (non-${VAR}) env value template becomes manifest CONTENT when pinned;
-    # that is the deliberate trade for same-key value-swap detection, and it is named
-    # at pin time - as a WARNING finding, so --json carries it too - with the fix:
-    # reference secrets as ${VAR}, which pins the reference, never the value.
-    for server_name, source in sorted(obs.sources.items()):
-        for key, template in sorted(source.get("env_templates", {}).items()):
-            if "${" not in template:
-                screen = list(screen) + [
-                    Finding.fail(
-                        "mcp_env_literal",
-                        severity="WARNING",
-                        message=f"server {server_name!r} env {key!r} is a literal value; "
-                        "it is now recorded in the manifest - use ${VAR} for secrets",
-                        server=server_name,
-                        env_key=key,
-                    )
-                ]
+    screen = list(screen_tool_declarations(catalog)) + _source_review_findings(obs.sources)
     screen_verdict = compute_verdict(screen)
     if not screen_verdict.passed and not force:
         if as_json:
@@ -1135,7 +1203,8 @@ def mcp_verify_command(
     """Verify the observed catalog against the pin. Exit: 0 match, 2 drift/unpinned/error.
 
     **Launch identity is verified BEFORE execution**: each configured stdio server's
-    launch specification (unexpanded command template, args, cwd, env variable names) is
+    source specification (for stdio: unexpanded command/args/cwd/env value templates;
+    for remote servers: url template, header templates, headersHelper, oauth policy) is
     compared against the pin first, and a changed or never-pinned specification refuses
     WITHOUT starting the configured command - the substituted process never runs. Only
     approved specifications are then launched to observe their catalogs.
@@ -1324,7 +1393,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p_mcp = sub.add_parser(
         "mcp",
-        help="pin an MCP server tool catalog and refuse drift (discovery governance)",
+        help="pin an MCP server tool catalog and refuse drift (tool-catalog governance)",
     )
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command")
     p_pin = mcp_sub.add_parser(

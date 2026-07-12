@@ -189,3 +189,41 @@ def test_a_tool_use_id_is_recorded_defensively_when_present(tmp_path):
         AuditLog(path=path),
     )
     assert load(path)[0]["action"]["tool_use_id"] == "toolu_01abc"
+
+
+def test_the_record_names_the_control_that_decided(tmp_path):
+    # A verdict is replayable only when the adjudication rules are identifiable:
+    # "same evidence" is insufficient if the policy changed. The package version is
+    # automatic; the policy identity is the caller's to declare.
+    import recusal
+
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {"tool_name": "Read", "tool_input": {}},
+        AuditLog(path=path),
+        control={"policy_id": "bank-mcp-write-policy", "policy_version": "3"},
+    )
+    control = load(path)[0]["action"]["control"]
+    assert control["recusal_version"] == recusal.__version__
+    assert control["policy_id"] == "bank-mcp-write-policy"
+    assert control["policy_version"] == "3"
+
+
+def test_a_manifest_policy_contributes_its_manifest_digest(tmp_path):
+    from recusal.mcp import build_manifest, manifest_policy, manifest_to_text
+
+    manifest_path = tmp_path / "mcp-manifest.json"
+    manifest_path.write_text(
+        manifest_to_text(build_manifest({"github": [{"name": "create_issue"}]})),
+        encoding="utf-8",
+    )
+    policy = manifest_policy(str(manifest_path))
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {"tool_name": "mcp__github__create_issue", "tool_input": {}},
+        AuditLog(path=path),
+        policy=policy,
+    )
+    control = load(path)[0]["action"]["control"]
+    assert control["manifest_sha256"].startswith("sha256:")
+    assert len(control["manifest_sha256"]) == len("sha256:") + 64

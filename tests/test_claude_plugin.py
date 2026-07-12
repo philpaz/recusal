@@ -90,7 +90,7 @@ def test_plugin_gate_wires_the_same_policy_as_the_scaffolder():
         src = f.read()
     compile(src, GATE_SCRIPT, "exec")
     assert "deny_list_policy()" in src
-    assert "run_pretooluse_hook(policy)" in src
+    assert "run_pretooluse_hook(policy" in src  # control identity args allowed
     # missing dependency must exit nonzero (launcher coerces to blocking exit 2),
     # never fall through to an ungated pass
     assert "except ImportError" in src and "sys.exit(3)" in src
@@ -117,3 +117,49 @@ def test_plugin_gate_fails_closed_on_malformed_event():
     assert proc.returncode == 0, proc.stderr
     decision = json.loads(proc.stdout)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
+
+
+def test_plugin_version_is_bound_to_the_adjudicator_version():
+    # P0: a deterministic control must be identifiable. The plugin's EXPECTED version,
+    # the plugin manifest version, and the package version must all agree, so the
+    # installed plugin identity names the exact implementation that decides.
+    import json
+    import re
+
+    import recusal
+
+    with open(GATE_SCRIPT, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r'EXPECTED_RECUSAL_VERSION = "([^"]+)"', src)
+    assert m, "the plugin gate must declare EXPECTED_RECUSAL_VERSION"
+    assert m.group(1) == recusal.__version__
+    plugin_dir = os.path.dirname(os.path.dirname(GATE_SCRIPT))
+    with open(os.path.join(plugin_dir, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+        assert json.load(f)["version"] == recusal.__version__
+
+
+def test_plugin_gate_refuses_a_mismatched_adjudicator(tmp_path):
+    # Plugin X adjudicating with recusal Y would make the audit trail lie about what
+    # decided; the shim must fail closed (nonzero -> launcher coerces to blocking 2).
+    import subprocess
+    import sys
+
+    shim = tmp_path / "gate.py"
+    src = open(GATE_SCRIPT, encoding="utf-8").read()
+    patched = re.sub(
+        r'EXPECTED_RECUSAL_VERSION = "[^"]+"',
+        'EXPECTED_RECUSAL_VERSION = "9.9.9-mismatch"',
+        src,
+        count=1,
+    )
+    shim.write_text(patched, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(shim)],
+        input='{"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}',
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "PYTHONPATH": REPO_ROOT},
+    )
+    assert proc.returncode == 3
+    assert "mismatched identity" in proc.stderr

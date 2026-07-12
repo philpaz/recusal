@@ -1,5 +1,5 @@
 """
-MCP discovery governance: pin the tool catalog a server declares, refuse drift.
+MCP tool-catalog governance: pin the tool catalog a server declares, refuse drift.
 
 The call-time gate (``recusal.claude_code``) adjudicates a *proposed call*, the tool name
 and arguments. This module governs the boundary before that one: **what the MCP server
@@ -22,7 +22,7 @@ The design is the constitution applied to a new evidence surface, nothing more:
    observed catalog against the pin and emits Findings: an unpinned server or tool is a
    CRITICAL failure, a changed declaration is a CRITICAL failure that names the changed
    fields (a changed *description* is the rug-pull vector), a removed tool is a recorded
-   WARNING. Same catalogs, same verdict, every time.
+   WARNING. Same catalogs, same kernel version, same verdict, every time.
 3. **Enforce at call time.** ``manifest_policy`` bridges the pin into the existing
    PreToolUse gate: an ``mcp__server__tool`` call whose server/tool is not in the pinned
    manifest is refused before the server ever sees it, and a missing or unreadable
@@ -67,13 +67,16 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .evidence import Finding
 
-#: Version 3 = launch-TEMPLATE integrity, complete: stdio sources pin the unexpanded
-#: environment value templates (not just variable names, so a same-key value swap in the
-#: config - NODE_OPTIONS, LD_PRELOAD - is drift), and remote servers pin their configured
-#: identity ({transport, url_template, header_keys}) so an added or transport-swapped
-#: remote server can never verify clean. Older manifests are refused with a re-pin
-#: instruction rather than silently accepted at a weaker guarantee.
-MANIFEST_VERSION = 3
+#: Version 4 completes remote source identity: header value TEMPLATES (not just names,
+#: so a same-name Authorization swap between ${READ_ONLY_TOKEN} and ${ADMIN_TOKEN} is
+#: drift), the ``headersHelper`` command template (Claude executes it at connect time -
+#: it is executable configuration), and the OAuth policy surface (client_id,
+#: callback_port, auth_server_metadata_url_template, scopes - the scope set is the
+#: native mechanism for constraining requested authority). Runtime-only tuning fields
+#: (``timeout``, ``alwaysLoad``) are deliberately NOT identity. Older manifests are
+#: refused with a re-pin instruction rather than silently accepted at a weaker
+#: guarantee.
+MANIFEST_VERSION = 4
 
 #: Declaration fields fingerprinted individually so a drift refusal can name what moved.
 #: The whole declaration is also fingerprinted, so a change in any *other* field still
@@ -87,13 +90,30 @@ _TRACKED_FIELDS = ("description", "inputSchema", "annotations", "title", "output
 #: and neither do hashes of values (a low-entropy secret's hash is an oracle).
 #: ``transport: "external"`` marks a catalog supplied as a dump (``--from``): recusal
 #: never launches or contacts it, so identity is out of scope, recorded not implied.
+_REMOTE_SOURCE_FIELDS: Tuple[str, ...] = (
+    "transport",
+    "url_template",
+    "header_templates",
+    "headers_helper_template",
+    "oauth",
+)
 _SOURCE_FIELDS_BY_TRANSPORT: Dict[str, Tuple[str, ...]] = {
     "external": ("transport",),
     "stdio": ("transport", "command", "args", "cwd", "env_templates"),
-    "http": ("transport", "url_template", "header_keys"),
-    "sse": ("transport", "url_template", "header_keys"),
-    "ws": ("transport", "url_template", "header_keys"),
+    "http": _REMOTE_SOURCE_FIELDS,
+    "sse": _REMOTE_SOURCE_FIELDS,
+    "ws": _REMOTE_SOURCE_FIELDS,
 }
+
+#: The OAuth policy fields pinned inside a remote source's ``oauth`` object. The client
+#: SECRET is never among them (Claude stores it in the OS keychain; a secret does not
+#: belong in a manifest, and neither does its hash).
+_OAUTH_FIELDS: Tuple[str, ...] = (
+    "client_id",
+    "callback_port",
+    "auth_server_metadata_url_template",
+    "scopes",
+)
 
 
 # --- canonicalization and fingerprints ---------------------------------------------------
@@ -139,7 +159,9 @@ def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
     configuration template: ``command``, ``args``, ``cwd``, and ``env_templates`` - the
     env variable names mapped to their as-written value templates, so a same-key value
     swap in the config IS drift); ``"http"``/``"sse"``/``"ws"`` (a remote server;
-    identity = ``url_template`` and ``header_keys``, names only, never header values);
+    identity = ``url_template``, ``header_templates`` (as-written value templates,
+    so a same-name credential-reference swap is drift), the ``headers_helper_template``
+    command Claude executes at connect time, and the pinned ``oauth`` policy);
     ``"external"`` (a dump-supplied catalog; identity out of scope, recorded not
     implied). Values that resolve from the environment never appear in a pin, and
     neither do hashes of values: a low-entropy secret's hash is an oracle. Fields
@@ -190,13 +212,50 @@ def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
     url_template = spec.get("url_template")
     if not isinstance(url_template, str) or not url_template:
         raise ValueError(f"a {transport} source needs a nonempty string 'url_template'")
-    header_keys = spec["header_keys"] if "header_keys" in spec else []
-    if not isinstance(header_keys, list) or not all(isinstance(k, str) and k for k in header_keys):
-        raise ValueError(f"a {transport} source's 'header_keys' must be header names")
+    header_templates = spec["header_templates"] if "header_templates" in spec else {}
+    if not isinstance(header_templates, dict) or not all(
+        isinstance(k, str) and k and isinstance(v, str) for k, v in header_templates.items()
+    ):
+        raise ValueError(
+            f"a {transport} source's 'header_templates' must map header names to their "
+            "as-written (unexpanded) value templates"
+        )
+    helper = spec.get("headers_helper_template")
+    if helper is not None and (not isinstance(helper, str) or not helper):
+        raise ValueError(
+            f"a {transport} source's 'headers_helper_template' must be the command "
+            "template string, or null"
+        )
+    oauth = spec.get("oauth")
+    if oauth is not None:
+        if not isinstance(oauth, dict):
+            raise ValueError(f"a {transport} source's 'oauth' must be an object or null")
+        unknown_oauth = set(oauth) - set(_OAUTH_FIELDS)
+        if unknown_oauth:
+            raise ValueError(
+                f"a {transport} source's 'oauth' carries unknown fields: {sorted(unknown_oauth)}"
+            )
+        client_id = oauth.get("client_id")
+        if client_id is not None and (not isinstance(client_id, str) or not client_id):
+            raise ValueError("oauth 'client_id' must be a nonempty string or null")
+        port = oauth.get("callback_port")
+        if port is not None and (not isinstance(port, int) or isinstance(port, bool)):
+            raise ValueError("oauth 'callback_port' must be an integer or null")
+        meta = oauth.get("auth_server_metadata_url_template")
+        if meta is not None and (not isinstance(meta, str) or not meta):
+            raise ValueError(
+                "oauth 'auth_server_metadata_url_template' must be a nonempty string or null"
+            )
+        scopes = oauth.get("scopes")
+        if scopes is not None and not isinstance(scopes, str):
+            raise ValueError("oauth 'scopes' must be the space-separated scope string or null")
+        oauth = {field: oauth.get(field) for field in _OAUTH_FIELDS}
     return {
         "transport": transport,
         "url_template": url_template,
-        "header_keys": sorted(header_keys),
+        "header_templates": {k: header_templates[k] for k in sorted(header_templates)},
+        "headers_helper_template": helper,
+        "oauth": oauth,
     }
 
 
@@ -357,6 +416,13 @@ def _validate_manifest(data: Any) -> None:
             "manifest_version 2 predates environment-template and remote-source pinning "
             "(a same-key env value swap or an added remote server could pass it); re-pin "
             "with `recusal mcp pin` to record the complete source identities"
+        )
+    if data.get("manifest_version") == 3:
+        raise ValueError(
+            "manifest_version 3 predates remote authentication identity (a same-name "
+            "header template swap, a changed headersHelper command, or a changed OAuth "
+            "scope set could pass it); re-pin with `recusal mcp pin` to record the "
+            "complete remote source identities"
         )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
@@ -802,6 +868,8 @@ def manifest_policy(
         with open(manifest_path, "rb") as fh:
             raw = fh.read()
         digest = hashlib.sha256(raw).hexdigest()
+        # audit control identity: the hook records WHICH pin adjudicated this call
+        setattr(_policy, "last_manifest_digest", f"sha256:{digest}")
         with _cache_lock:
             cached_digest, cached_names = _cache[0]
         if cached_digest == digest:

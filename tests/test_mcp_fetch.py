@@ -230,7 +230,9 @@ def test_claude_config_yields_stdio_servers_and_surfaces_the_rest(tmp_path):
         "hosted": {
             "transport": "http",
             "url_template": "https://example.com/mcp",
-            "header_keys": [],
+            "header_templates": {},
+            "headers_helper_template": None,
+            "oauth": None,
         }
     }
 

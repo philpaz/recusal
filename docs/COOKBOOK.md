@@ -464,7 +464,9 @@ recusal mcp pin --stdio github "npx -y @modelcontextprotocol/server-github@1.2.3
 > they are asked for. Servers run with a minimal environment by default
 > (`--inherit-env` opts out); minimal environment is not a sandbox.
 
-The manifest stores **hashes only** (a poisoned description is never embedded) and is
+The manifest stores tool declarations as **hashes only** (a poisoned description is
+never embedded); source templates are stored readable so drift can be explained - keep
+secrets out of them (the pin warns). It is
 byte-deterministic. `pin` refuses to write when its screen flags injection phrasing in a
 declaration, until you pass `--force` to record that a human reviewed it. Commit
 `mcp-manifest.json` — it is approved truth.
@@ -554,7 +556,7 @@ runs against live HTTP servers (a FastMCP gateway and Salesforce Hosted MCP) are
 
 ## 15. The three-boundary MCP governance pattern
 
-The three MCP boundaries compose into one setup. `manifest_policy` takes an inner `policy=`,
+The three MCP tool-call boundaries compose into one setup. `manifest_policy` takes an inner `policy=`,
 so the **pin** (discovery) and your **call-time rules** (invocation, recipe 12) run in a
 single hook: an unpinned tool refuses first, then your argument-level rules run on what
 survives. The **response** boundary (recipe 6) is a separate screen on what a tool *returned*,

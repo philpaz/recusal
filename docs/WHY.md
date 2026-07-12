@@ -77,11 +77,13 @@ deterministic, always-on check.
 It is worth being precise about why existing tools do not already solve this:
 
 - **Agent frameworks** (LangGraph, CrewAI, AutoGen, the OpenAI and Claude Agent SDKs)
-  *orchestrate* the work. Any governance they offer is in-process and, in effect,
-  self-graded.
-- **Guardrails libraries** (Guardrails AI, NeMo Guardrails) *filter content* on the way in
-  and out. They validate strings; they do not adjudicate whether a *work product or an
-  action* should proceed.
+  primarily *orchestrate* the work. They may expose guardrail and middleware hooks, but
+  Recusal packages a separate deterministic evidence-and-verdict contract that can be
+  placed in those seams rather than living inside the orchestrator's own loop.
+- **Guardrails libraries** (Guardrails AI, NeMo Guardrails) gate content, and some (NeMo's
+  execution rails) can gate tool calls. Recusal's distinction is not exclusive blocking
+  capability; it is the deliberately small, deterministic evidence-to-verdict contract
+  and the independent-refusal framing (see the comparison notes in REFERENCES).
 - **Evaluation libraries** (promptfoo, DeepEval, and LLM-as-judge tools) *score offline*,
   after the fact, usually with a model judge, the probabilistic opposite of a
   deterministic gate, and not present in the live action path.
