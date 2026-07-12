@@ -102,6 +102,25 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.8, 2026-07-12)
+
+For v0.5.8 (commit `cb61e9e`, a claim-correction release):
+
+- **Workflow evidence is public**: CI run [29211767659](https://github.com/philpaz/recusal/actions/runs/29211767659)
+  (all 10 jobs green) and release run [29211816252](https://github.com/philpaz/recusal/actions/runs/29211816252)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **The correction itself is the record**: 0.5.7 published that Claude does not
+  document plugin callable-name normalization; the rule is explicitly documented,
+  the error was this repository's verification sweep, and the claim (plus its
+  downstream "false denial only" and "observe and pin" statements) is amended in
+  place in the README, the 0.5.7 changelog entry, and the published 0.5.7 release
+  notes rather than silently rewritten.
+- **The alias residual, pinned as a deterministic demonstration**
+  ([`tests/test_mcp_observation_decommission.py`](../tests/test_mcp_observation_decommission.py)):
+  the approved callable spelling passes at call time, and the next verify refuses
+  the swapped raw declaration as unpinned capability plus a removed pinned tool.
+
 ## Release proofs on the record (v0.5.7, 2026-07-12)
 
 For v0.5.7 (commit `a7fd431`):
