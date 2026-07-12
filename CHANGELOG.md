@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.7] - 2026-07-12
+
+A small correctness patch from a tenth external review (which found no P0 and
+recommended folding these into 0.6.0; shipped now as 0.5.7 instead): all-servers-
+removed semantics made deliberate, exception-contract consistency, and the plugin
+callable-name boundary stated to exactly what the documentation establishes.
+
+### Fixed
+- **Full decommission refuses with the precise reason (P1).** Acknowledging removal
+  of EVERY pinned server tripped the generic empty-observation refusal alongside the
+  nonblocking removal warnings - safe-side, never a bypass, but inconsistent with the
+  removal wording. Deliberate now: `removed` supports transitions where at least one
+  pinned server remains observable; acknowledging all of them refuses with
+  `mcp_full_decommission_unsupported`, naming the real decommission path (an empty
+  observation certifies nothing, and the manifest keeps authorizing every pinned
+  runtime name regardless - remove or replace the manifest itself: no pin, no MCP).
+  Stated in the CLI help and verify docstring.
+- **Malformed sequence members raise the documented `ValueError` (P1).** An
+  unhashable member of `unverifiable`/`removed` (a list, a dict, a bytearray) raised
+  `TypeError` from duplicate detection before its type was rejected. Element types
+  now validate before duplicate detection; the 0.5.6 changelog's "fully strict" is
+  amended in place.
+
+### Documentation
+- **The plugin callable-name boundary, stated to what the docs establish (P1).** The
+  README plugin example now names its character assumption: it holds for plugin,
+  server, and tool components within the callable-safe set (`A-Z a-z 0-9 _ -`). The
+  MCP specification permits more (a dotted `admin.tools.list` is spec-valid), and
+  Claude's documentation does not currently specify how such characters appear in
+  the plugin callable name - the tenth review asserted a replace-with-underscore
+  rule, which the official docs do NOT establish (the only documented normalization
+  is the plugin data-directory id, which replaces with a hyphen). Recusal
+  reconstructs runtime names from the raw pinned tool name and models no
+  undocumented normalization; the failure mode is a false denial, never a false
+  allow. Observe and pin the exact runtime spelling for such tools, or keep names
+  in the safe set.
+- The unified-verifier composition comment includes removal acknowledgements and
+  whole-server inventory; the verify docstring's remote OAuth wording is
+  per-transport (http/sse pin OAuth fields; ws is header-only).
+
 ## [0.5.6] - 2026-07-12
 
 A narrowly scoped correctness patch mandated by a ninth external review: whole-server
@@ -26,8 +66,11 @@ the remaining MCP documentation corrections.
   because it claims only catalog comparison. A regression test demonstrates WHY: the
   omitted server's runtime tool name stays authorized by `manifest_policy` while the
   partial verification would have passed.
-- **The observation structural contract is fully strict (P1).** `unverifiable` (and
-  `removed`) accepted any iterable: a string iterated to characters, a dict to its
+- **The observation structural contract validates the documented container types
+  (P1).** *(Amended 2026-07-12: originally "fully strict" - a tenth review found one
+  remaining exception-order edge: an unhashable sequence member raised TypeError from
+  duplicate detection before its type was rejected. ValueError-consistent since
+  0.5.7.)* `unverifiable` (and `removed`) accepted any iterable: a string iterated to characters, a dict to its
   keys, None raised `TypeError` instead of the documented `ValueError`. Both now
   require a list or tuple of unique nonempty names. Every source observation VALUE is
   structurally validated (`normalize_source`) before any comparison - including on

@@ -10,7 +10,7 @@
 #   - uses: actions/setup-python@v6
 #     with:
 #       python-version: "3.12"
-#   - uses: philpaz/recusal@v0.5.6
+#   - uses: philpaz/recusal@v0.5.7
 #     with:
 #       findings: reports/findings.json   # python -m recusal verdict  (RETRY=1, FAIL=2)
 #       audit-log: reports/audit.jsonl    # python -m recusal audit verify

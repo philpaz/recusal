@@ -166,7 +166,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.6"   # the plugin is version-bound; fails CLOSED without it
+pip install "recusal==0.5.7"   # the plugin is version-bound; fails CLOSED without it
                                # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
@@ -442,7 +442,16 @@ Plugin-bundled MCP servers use scoped runtime names: for plugin `my-plugin`, ser
 `mcp__plugin_my-plugin_database-tools__query`, so the manifest SERVER key must be
 `plugin_my-plugin_database-tools` and the tool key `query` (never the whole tool name
 in the server field). Recusal does not discover plugin metadata; supply the exact
-runtime server segment yourself. Verifying a config that contains remote servers
+runtime server segment yourself. A character boundary, stated exactly: this example
+assumes plugin, server, and tool components within the callable-safe set (`A-Z a-z
+0-9 _ -`). The MCP specification permits more (a dotted tool name like
+`admin.tools.list` is spec-valid), and Claude's documentation does not currently
+specify how such characters appear in the plugin callable name - recusal
+reconstructs runtime names from the raw pinned tool name and models no undocumented
+normalization, so a name outside the safe set may be refused at call time under a
+spelling recusal did not predict (a false denial, never a false allow). For such
+tools, observe the exact runtime spelling Claude emits in a live session and pin
+that, or keep plugin tool names within the safe set. Verifying a config that contains remote servers
 needs their fresh catalogs alongside it:
 
 ```bash
@@ -574,7 +583,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.6   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.7   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

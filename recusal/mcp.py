@@ -1034,10 +1034,13 @@ def _validate_observation(observation: McpObservation) -> None:
                 f"server names, got {type(seq).__name__}"
             )
         names = list(seq)
-        if len(set(names)) != len(names) or any(
-            not isinstance(name, str) or not name for name in names
-        ):
+        # element types BEFORE duplicate detection: an unhashable member (a list, a
+        # dict) would raise TypeError from set() before its type was rejected, leaking
+        # a generic container error where the contract promises ValueError
+        if any(not isinstance(name, str) or not name for name in names):
             raise ValueError(f"observation {label} must be unique nonempty server names")
+        if len(set(names)) != len(names):
+            raise ValueError(f"observation {label} carries duplicate server names")
     represented = (
         set(observation.catalog)
         | set(observation.sources or {})
@@ -1195,6 +1198,26 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
                 server=name,
             )
         )
+
+    if removed and removed == set(pinned_servers) and not represented_all:
+        # Full decommission: every pinned server acknowledged removed, nothing observed.
+        # ``removed`` supports transitions where at least one pinned server remains
+        # observable; an empty observation certifies nothing, so this refuses with the
+        # PRECISE reason instead of the generic empty-observation message (and instead
+        # of a passing verdict a stale manifest would keep contradicting: the old
+        # manifest still authorizes every runtime name until it is replaced or gone).
+        findings.append(
+            Finding.fail(
+                "mcp_full_decommission_unsupported",
+                severity="CRITICAL",
+                message="every pinned server is acknowledged as removed and nothing was "
+                "observed; an empty observation certifies nothing, and the manifest keeps "
+                "authorizing all pinned runtime names regardless of this acknowledgement - "
+                "to decommission ALL MCP capability, remove or replace the manifest itself "
+                "(manifest_policy fails closed: no pin, no MCP)",
+            )
+        )
+        return findings
 
     findings.extend(
         diff_manifest(pinned, observation.catalog, unverifiable=tuple(observation.unverifiable))

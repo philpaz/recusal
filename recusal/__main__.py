@@ -1258,7 +1258,8 @@ def mcp_verify_command(
 
     **Launch identity is verified BEFORE execution**: each configured stdio server's
     source specification (for stdio: unexpanded command/args/cwd/env value templates;
-    for remote servers: url template, header templates, headersHelper, oauth policy) is
+    for remote servers: url template, header templates, and headersHelper, plus - for
+    http/sse - the represented OAuth policy fields; ws is header-only) is
     compared against the pin first, and a changed or never-pinned specification refuses
     WITHOUT starting the configured command - the substituted process never runs. Only
     approved specifications are then launched to observe their catalogs.
@@ -1272,6 +1273,11 @@ def mcp_verify_command(
     not verify clean while the manifest keeps authorizing that server's runtime names.
     A deliberate removal is acknowledged explicitly with ``--removed NAME`` (recorded
     as a passing WARNING); re-pin to make the shrunk server set the approved truth.
+    ``--removed`` supports transitions where at least one pinned server remains
+    observable: acknowledging EVERY pinned server refuses with a precise message
+    (an empty observation certifies nothing, and the manifest keeps authorizing all
+    pinned names until it is replaced or removed - no pin, no MCP is the
+    decommission path).
 
     A pinned server that is present in the config but *unfetchable* (silently swapped to a
     URL transport this fetcher cannot reach) is a CRITICAL refusal, not a passing WARNING:
@@ -1301,8 +1307,9 @@ def mcp_verify_command(
 
     try:
         # the kernel owns all adjudication AND its composition: diff_observation is the
-        # one omission-resistant v5 verify (sources + instructions + catalog +
-        # unverifiable), so the CLI cannot forget a surface the manifest pins.
+        # one complete v5 verify (sources + instructions + catalog + unverifiable +
+        # removal acknowledgements + whole-server inventory), so the CLI cannot forget
+        # a surface the manifest pins.
         findings = diff_observation(
             pinned,
             McpObservation(
@@ -1521,7 +1528,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="NAME",
         help="acknowledge that this pinned server was deliberately removed (repeatable); "
         "without it, a pinned server absent from the whole observation refuses - re-pin "
-        "after removal to make the shrunk server set the approved truth",
+        "after removal to make the shrunk server set the approved truth. Supports "
+        "transitions where at least one pinned server remains observable; to "
+        "decommission ALL MCP capability, remove or replace the manifest itself "
+        "(no pin, no MCP)",
     )
     p_mcp_verify.add_argument(
         "--json", action="store_true", help="emit the result as JSON instead of text"
