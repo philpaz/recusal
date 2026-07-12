@@ -79,7 +79,9 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 
 from .evidence import Finding
 
-#: Version 5 pins MCP server INSTRUCTIONS alongside the tool catalog. With Claude
+#: Version 6 adds explicit RUNTIME IDENTITY per server (standard_mcp vs claude_plugin;
+#: raw declaration names for discovery, derived callable names for PreToolUse,
+#: collisions refused), on top of v5's server-INSTRUCTION pinning. With Claude
 #: Code's default tool-search behavior, tool names and server instructions load at
 #: session start while full tool definitions are deferred (full definitions may load
 #: up front when tool search is disabled or falls back, when a server sets
@@ -92,7 +94,28 @@ from .evidence import Finding
 #: observation that did not carry instructions (a legacy dump) is recorded as
 #: ``observed: false`` and never silently receives the stronger claim. Older manifests
 #: are refused with a re-pin instruction rather than accepted at a weaker guarantee.
-MANIFEST_VERSION = 5
+MANIFEST_VERSION = 6
+
+#: Runtime naming modes a v6 manifest declares PER SERVER, explicitly - never inferred
+#: from a string prefix. ``standard_mcp``: the PreToolUse name is reconstructed from
+#: the raw declaration name (``mcp__{server}__{raw}``). ``claude_plugin``: Claude
+#: documents that any character outside A-Z a-z 0-9 _ - is replaced with "_" in the
+#: plugin callable name, so the pin stores BOTH identities - the raw declaration name
+#: (discovery verification, fingerprints) and the derived callable name (PreToolUse
+#: membership) - and REFUSES two raw declarations that collapse to one callable
+#: (ambiguous callable identity certifies nothing).
+_RUNTIME_MODES = ("standard_mcp", "claude_plugin")
+
+#: The documented callable-safe character set for Claude plugin MCP names.
+_CALLABLE_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def plugin_callable_name(raw_name: str) -> str:
+    """Claude's documented plugin callable-name normalization for one component: any
+    character outside ``A-Z a-z 0-9 _ -`` is replaced with ``_``. Deterministic, so
+    the loader re-derives the value and refuses a stored one that does not match."""
+    return _CALLABLE_SAFE_RE.sub("_", raw_name)
+
 
 #: Declaration fields fingerprinted individually so a drift refusal can name what moved.
 #: The whole declaration is also fingerprinted, so a change in any *other* field still
@@ -494,6 +517,7 @@ def build_manifest(
     catalog: Dict[str, List[dict]],
     sources: Optional[Dict[str, Dict[str, Any]]] = None,
     instructions: Optional[Dict[str, Optional[str]]] = None,
+    runtime_modes: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Build a manifest from ``{server_name: [tool declarations]}``.
 
@@ -512,16 +536,46 @@ def build_manifest(
     ``instructions`` text (``None`` = the server was asked and declares none). A server
     absent from the mapping was NOT observed for instructions (a legacy dump), which is
     recorded as ``observed: false`` rather than silently claiming coverage.
+
+    ``runtime_modes`` maps a server name to its EXPLICIT runtime naming mode
+    (``standard_mcp`` default, or ``claude_plugin``); the mode is never inferred from
+    the server key. In ``claude_plugin`` mode the server key is the runtime callable
+    server segment and must already be callable-safe (the operator supplies it; an
+    unsafe segment refuses rather than being silently rewritten), each tool pin also
+    stores its derived ``callable_name`` (Claude's documented normalization of the
+    raw declaration name), and two raw names that normalize to the same callable
+    refuse the pin: ambiguous callable identity certifies nothing.
     """
     if not isinstance(catalog, dict) or not catalog:
         raise ValueError("an empty catalog certifies nothing; nothing to pin")
+    modes = dict(runtime_modes or {})
+    unknown_mode_servers = set(modes) - set(catalog)
+    if unknown_mode_servers:
+        raise ValueError(
+            f"runtime_modes names server(s) not in the catalog: {sorted(unknown_mode_servers)}"
+        )
+    for mode_server, mode in modes.items():
+        if mode not in _RUNTIME_MODES:
+            raise ValueError(
+                f"server {mode_server!r}: runtime mode must be one of {list(_RUNTIME_MODES)}, "
+                f"got {mode!r}"
+            )
     servers: Dict[str, Any] = {}
     for server, tools in catalog.items():
         if not isinstance(server, str) or not server:
             raise ValueError(f"server name must be a nonempty string, got {server!r}")
         if not isinstance(tools, list):
             raise ValueError(f"server {server!r}: tools must be a list of declarations")
+        mode = modes.get(server, "standard_mcp")
+        if mode == "claude_plugin" and _CALLABLE_SAFE_RE.search(server):
+            raise ValueError(
+                f"server {server!r}: a claude_plugin server key is the runtime callable "
+                "server segment and must already use the callable-safe set "
+                "(A-Z a-z 0-9 _ -); supply the normalized runtime segment, it is not "
+                "rewritten silently"
+            )
         pinned_tools: Dict[str, Any] = {}
+        callables_seen: Dict[str, str] = {}
         for tool in tools:
             if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
                 raise ValueError(f"server {server!r}: every tool needs a string 'name'")
@@ -535,10 +589,21 @@ def build_manifest(
                     f"server {server!r} declares tool {name!r} twice; an ambiguous "
                     "catalog cannot be pinned"
                 )
-            pinned_tools[name] = {
+            pin: Dict[str, Any] = {
                 "fingerprint": tool_fingerprint(tool),
                 "fields": {k: _sha256(tool[k]) for k in _TRACKED_FIELDS if k in tool},
             }
+            if mode == "claude_plugin":
+                callable_name = plugin_callable_name(name)
+                if callable_name in callables_seen:
+                    raise ValueError(
+                        f"server {server!r}: raw tools {callables_seen[callable_name]!r} "
+                        f"and {name!r} both normalize to the Claude callable "
+                        f"{callable_name!r}; ambiguous callable identity cannot be pinned"
+                    )
+                callables_seen[callable_name] = name
+                pin["callable_name"] = callable_name
+            pinned_tools[name] = pin
         # missing source -> external by design; a SUPPLIED source is validated as
         # given, so an explicit-but-invalid one (e.g. {}) raises instead of silently
         # downgrading to external
@@ -555,6 +620,7 @@ def build_manifest(
             "source": source,
             "source_fingerprint": _sha256(source),
             "server_instructions": server_instructions,
+            "runtime": {"mode": mode},
             "tools": pinned_tools,
         }
     return {"manifest_version": MANIFEST_VERSION, "servers": servers}
@@ -607,6 +673,13 @@ def _validate_manifest(data: Any) -> None:
             "instructions, a discovery-time influence surface Claude loads at session "
             "start); re-pin with `recusal mcp pin` to record instruction coverage"
         )
+    if data.get("manifest_version") == 5:
+        raise ValueError(
+            "manifest_version 5 predates runtime-identity modeling (a Claude plugin "
+            "tool whose raw name requires callable normalization could be refused "
+            "under Claude's spelling, or alias an approved callable); re-pin with "
+            "`recusal mcp pin` to record explicit runtime naming modes"
+        )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
             f"manifest_version {data.get('manifest_version')!r} is not {MANIFEST_VERSION}"
@@ -630,11 +703,29 @@ def _validate_manifest(data: Any) -> None:
             "source",
             "source_fingerprint",
             "server_instructions",
+            "runtime",
             "tools",
         }
         if unknown_entry:
             raise ValueError(
                 f"manifest server {server!r} carries undefined fields: {sorted(unknown_entry)}"
+            )
+        runtime = entry.get("runtime")
+        if (
+            not isinstance(runtime, dict)
+            or set(runtime) != {"mode"}
+            or runtime["mode"] not in _RUNTIME_MODES
+        ):
+            raise ValueError(
+                f"manifest server {server!r} needs a canonical runtime record: exactly "
+                "{'mode': 'standard_mcp' | 'claude_plugin'} - runtime naming is explicit, "
+                "never inferred"
+            )
+        server_mode = runtime["mode"]
+        if server_mode == "claude_plugin" and _CALLABLE_SAFE_RE.search(server):
+            raise ValueError(
+                f"manifest server {server!r} declares claude_plugin runtime but its key "
+                "is not callable-safe; the key is the runtime callable server segment"
             )
         try:
             source = normalize_source(entry.get("source") or {})
@@ -692,12 +783,27 @@ def _validate_manifest(data: Any) -> None:
                 )
             if not isinstance(pin, dict) or not isinstance(pin.get("fingerprint"), str):
                 raise ValueError(f"manifest tool {server!r}/{name!r} has no fingerprint")
-            # canonical pin shape, exactly what the builder emits: BOTH members present
-            # ('fields' may be empty, never absent), nothing else
-            if set(pin) != {"fingerprint", "fields"}:
+            # canonical pin shape, exactly what the builder emits for the server's
+            # runtime mode: 'fields' may be empty, never absent; callable_name exists
+            # exactly when the mode is claude_plugin, and must re-derive
+            expected_keys = (
+                {"fingerprint", "fields", "callable_name"}
+                if server_mode == "claude_plugin"
+                else {"fingerprint", "fields"}
+            )
+            if set(pin) != expected_keys:
                 raise ValueError(
-                    f"manifest tool {server!r}/{name!r} is not canonical: a pin is exactly "
-                    "{'fingerprint': ..., 'fields': {...}}"
+                    f"manifest tool {server!r}/{name!r} is not canonical for "
+                    f"{server_mode} runtime: a pin is exactly {sorted(expected_keys)}"
+                )
+            if server_mode == "claude_plugin" and pin["callable_name"] != plugin_callable_name(
+                name
+            ):
+                raise ValueError(
+                    f"manifest tool {server!r}/{name!r}: stored callable_name "
+                    f"{pin['callable_name']!r} does not re-derive from the raw name via "
+                    "Claude's documented normalization - a hand-edited or corrupt "
+                    "callable identity certifies nothing"
                 )
             if not _DIGEST_RE.fullmatch(pin["fingerprint"]):
                 raise ValueError(
@@ -1505,9 +1611,10 @@ def manifest_policy(
         # corrupt manifest must never be recorded as a successfully enforced one
         _digest_var.set(f"sha256:{digest}")
         names = frozenset(
-            f"mcp__{server}__{tool}"
+            f"mcp__{server}__"
+            + (pin["callable_name"] if entry["runtime"]["mode"] == "claude_plugin" else tool)
             for server, entry in data["servers"].items()
-            for tool in entry["tools"]
+            for tool, pin in entry["tools"].items()
         )
         with _cache_lock:
             _cache[0] = (digest, names)

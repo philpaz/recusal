@@ -166,7 +166,7 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.8"   # the plugin is version-bound; fails CLOSED without it
+pip install "recusal==0.5.9"   # the plugin is version-bound; fails CLOSED without it
                                # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
@@ -443,22 +443,23 @@ Plugin-bundled MCP servers use scoped runtime names: for plugin `my-plugin`, ser
 `mcp__plugin_my-plugin_database-tools__query`, so the manifest SERVER key must be
 `plugin_my-plugin_database-tools` and the tool key `query` (never the whole tool name
 in the server field). Recusal does not discover plugin metadata; supply the exact
-runtime server segment yourself. A character boundary, stated exactly: Claude
-documents that any character outside `A-Z`, `a-z`, `0-9`, `_`, and `-` is replaced
-with `_` in the plugin callable name, while the MCP specification permits more in
-raw tool names (a dotted `admin.tools.list` is spec-valid). Recusal stores raw
-declaration names and reconstructs runtime names WITHOUT modeling that
-normalization, so **plugin call-time mapping is supported only when the raw plugin,
-server, and tool components already use the callable-safe set**; a raw name that
-requires normalization is outside the supported plugin call-time boundary (a
-statically pinned dotted name is refused under Claude's normalized spelling). And a
-plugin-specific aliasing residual sharpens the point-in-time boundary: two distinct
-raw names (`admin.tools.list`, `admin_tools_list`) normalize to the SAME callable
-component, and `PreToolUse` carries only the callable name - so a post-verification
-raw-declaration swap that preserves an already-approved callable alias is
-indistinguishable at call time until `verify` runs again and reports the
-declaration-set drift. Modeling raw and callable identity separately, with
-collision refusal, is 0.6.0 scope. Verifying a config that contains remote servers
+runtime server segment yourself. Since manifest v6, runtime identity
+is modeled explicitly: pin the server with `--claude-plugin NAME` and Recusal stores
+BOTH identities - the raw declaration name (discovery verification, fingerprints) and
+the callable name derived per Claude's documented normalization (any character
+outside `A-Z a-z 0-9 _ -` becomes `_`), which is what `PreToolUse` membership checks.
+A spec-valid dotted tool name (`admin.tools.list`) therefore pins and authorizes
+under Claude's spelling (`admin_tools_list`), the raw dotted spelling is NOT treated
+as a callable, two raw names that normalize to one callable REFUSE the pin
+(ambiguous callable identity certifies nothing), the loader re-derives every stored
+callable name and refuses a mismatch, and the mode is explicit in the manifest -
+never inferred from a key's spelling (`--claude-plugin` is operator input; the
+server key must be the callable-safe runtime segment). The boundary that remains,
+point-in-time as ever: `PreToolUse` carries only the callable name, so a
+post-verification raw-declaration swap that preserves an already-approved callable
+is indistinguishable at call time until the next `verify`, which refuses on raw
+identity - exactly why both identities are pinned. v5 manifests are refused with a
+re-pin instruction. Verifying a config that contains remote servers
 needs their fresh catalogs alongside it:
 
 ```bash
@@ -590,7 +591,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.8   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.9   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

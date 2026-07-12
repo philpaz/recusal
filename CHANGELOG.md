@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.9] - 2026-07-12
+
+The single carry-forward item from the review sequence, pulled forward from 0.6.0 and
+closed: manifest v6 models raw MCP declaration identity and Claude plugin callable
+identity separately. Tightly scoped; the 0.5.8 boundaries are otherwise unchanged.
+
+### Added
+- **Manifest v6: explicit runtime identity (MANIFEST_VERSION = 6).** Each server
+  entry carries a canonical `runtime: {"mode": "standard_mcp" | "claude_plugin"}`,
+  declared explicitly (`build_manifest(runtime_modes=...)`, CLI
+  `recusal mcp pin --claude-plugin NAME`) and never inferred from a key's spelling.
+  In `claude_plugin` mode each tool pin stores its `callable_name`, derived by
+  Claude's documented normalization (any character outside `A-Z a-z 0-9 _ -`
+  becomes `_`, exposed as `recusal.mcp.plugin_callable_name`); the raw declaration
+  name remains the pin key and fingerprint subject. Discovery and drift verification
+  compare RAW identity; `PreToolUse` membership checks CALLABLE identity - so a
+  spec-valid dotted plugin tool (`admin.tools.list`) pins and authorizes under
+  Claude's spelling, and the raw dotted spelling is not treated as a callable. Two
+  raw names normalizing to one callable REFUSE the pin (ambiguous callable identity
+  certifies nothing); a `claude_plugin` server key must already be the callable-safe
+  runtime segment (refused, never silently rewritten); the loader re-derives every
+  stored `callable_name` and refuses mismatches, requires the canonical runtime
+  record, and refuses `callable_name` on standard pins. Runtime identity lives in
+  the manifest bytes, so it is inside the digest that audit provenance records.
+- **Backward compatibility, explicitly**: manifest v5 is refused with a re-pin
+  instruction naming the gap it predates (a plugin tool whose raw name requires
+  normalization could be refused under Claude's spelling, or alias an approved
+  callable); the call-time bridge fails closed on a v5 manifest, never open.
+
+### Changed
+- The plugin claim in the README is upgraded to match: full spec-valid plugin tool
+  names are supported under the explicit plugin mode. The boundary that remains,
+  stated as before: `PreToolUse` carries only the callable name, so a
+  post-verification raw-declaration swap preserving an approved callable is
+  indistinguishable at call time until the next `verify`, which now refuses on raw
+  identity - exactly why both identities are pinned.
+
 ## [0.5.8] - 2026-07-12
 
 A claim-correction patch from an eleventh external review, whose central finding was

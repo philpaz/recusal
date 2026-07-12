@@ -1090,6 +1090,7 @@ def mcp_pin_command(
     approve_server_launch: bool = False,
     update: bool = False,
     force: bool = False,
+    claude_plugin: Optional[List[str]] = None,
     as_json: bool = False,
     stdout: Optional[TextIO] = None,
 ) -> int:
@@ -1166,7 +1167,16 @@ def mcp_pin_command(
     }
     try:
         text = manifest_to_text(
-            build_manifest(catalog, sources=obs.sources, instructions=observed_instructions)
+            build_manifest(
+                catalog,
+                sources=obs.sources,
+                instructions=observed_instructions,
+                # runtime naming mode is EXPLICIT operator input, never inferred from
+                # a server-key prefix: --claude-plugin NAME declares that this server
+                # key is a plugin runtime segment (callable identity derived per
+                # Claude's documented normalization; collisions refuse the pin)
+                runtime_modes={name: "claude_plugin" for name in (claude_plugin or [])},
+            )
         )
     except (ValueError, UnicodeError, RecursionError) as exc:
         # RecursionError: a declaration nested beyond what canonical JSON can serialize
@@ -1501,6 +1511,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         "approved truth; replacing it is a deliberate step)",
     )
     p_pin.add_argument(
+        "--claude-plugin",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="declare this server key (repeatable) as a Claude PLUGIN runtime segment: "
+        "tool callable names are derived per Claude's documented normalization "
+        "(characters outside A-Z a-z 0-9 _ - become _), PreToolUse membership uses the "
+        "callable identity while discovery verification keeps the raw declaration, and "
+        "two raw names normalizing to one callable refuse the pin. Never inferred from "
+        "the key's spelling",
+    )
+    p_pin.add_argument(
         "--force",
         action="store_true",
         help="proceed after deliberate review: pin even when the screen flags tool "
@@ -1583,6 +1605,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 approve_server_launch=args.approve_server_launch,
                 update=args.update,
                 force=args.force,
+                claude_plugin=args.claude_plugin,
                 as_json=args.json,
             )
         if args.mcp_command == "verify":
