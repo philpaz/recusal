@@ -102,6 +102,44 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.4, 2026-07-12)
+
+Every release claim above "it passed" is anchored to reproducible evidence. For v0.5.4
+(commit `7c456a3`):
+
+- **Workflow evidence is public**: CI run [29207262548](https://github.com/philpaz/recusal/actions/runs/29207262548)
+  (all 10 jobs green, including the first exercise of the hash-locked
+  release-environment job) and release run [29207317542](https://github.com/philpaz/recusal/actions/runs/29207317542)
+  (full suite at the release commit, `--require-hashes` install, `--no-isolation`
+  build, neutral-directory wheel check, Trusted Publishing).
+- **The instructions rug pull, live through the CLI** (verbatim, tools byte-identical,
+  only the initialize-result `instructions` rewritten, single-server `--server` path):
+
+```text
+  [ok] mcp_launch_spec: server 'banking' launch specification matches the pin
+  [ok] mcp_manifest: 1 tool declaration(s) across 1 server(s) match the pinned manifest
+FAIL - 1 CRITICAL failure(s) - refused, no retry.
+  FAILED mcp_instructions_changed [CRITICAL]: server 'banking' changed its instructions (the discovery-influence rug pull); refusing until a human re-reviews and re-pins
+```
+
+- **Audit provenance, live through the real hook** (a `manifest_policy` gate with
+  `audit=`, the caller attempting to forge the manifest digest via `control=`): the
+  pinned MCP call's audit entry records the digest of the manifest bytes the
+  invocation actually verified, the forged value is stripped, and the following
+  non-MCP call's entry carries no manifest digest at all:
+
+```text
+mcp call control:     {"manifest_sha256": "sha256:e2354ab7...", "policy_id": "proof-054", "recusal_version": "0.5.4"}
+non-mcp call control: {"policy_id": "proof-054", "recusal_version": "0.5.4"}
+```
+
+Reproduce both from any checkout: the rug pull with `recusal mcp pin/verify --from
+<dump> --server <name>` (change only the dump's `instructions` between the two), the
+provenance proof by piping two PreToolUse payloads into a gate built exactly as in
+[cookbook recipe 16](COOKBOOK.md). The same properties are pinned as deterministic
+tests in [`tests/test_mcp_observation.py`](../tests/test_mcp_observation.py), so this
+page cannot silently rot.
+
 ## Honest scope
 
 This proves the **enforcement path** end to end on the real wire format: a real hook, the

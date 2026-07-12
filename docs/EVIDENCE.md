@@ -90,7 +90,8 @@ v.reasons()          # the specific failure messages, for a human or an agent to
 
 ## `compute_verdict`, the rule
 
-Deterministic. Same findings in, same verdict out. First match wins:
+Deterministic: the same findings, under the same recusal version, fold to the same
+verdict. First match wins:
 
 1. any **failed CRITICAL** → `FAIL`
 2. else any **failed ERROR** → `RETRY`

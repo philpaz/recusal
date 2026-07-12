@@ -670,6 +670,6 @@ extend one chain.
 
 **These are starting points, not turnkey security.** Read each one, tune the lists and
 thresholds to your system, and add the evidence *your* actions actually need. The discipline
-that makes them trustworthy is the same one the whole library is built on: the verdict is
-deterministic, replayable, and has no model in the decision path, so the same proposed
-action gets the same answer, including the **no**.
+that makes them trustworthy is the same one the whole library is built on: the verdict
+has no model in the decision path, so the same normalized evidence and policy inputs,
+under the same recusal version, get the same answer, including the **no**.

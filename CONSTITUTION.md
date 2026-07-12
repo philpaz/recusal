@@ -45,7 +45,7 @@ version, produce the same verdict.
 **Why it helps:** an LLM-as-judge is a probabilistic verifier: it can be prompted,
 and a logged evaluation can be rerun but the same output is not guaranteed across model
 versions, prompts, or sampling. A deterministic gate can be audited,
-diffed, unit-tested, and explained to a regulator or an on-call engineer at 3am. The
+diffed, unit-tested, and explained to an auditor or an on-call engineer at 3am. The
 thing empowered to *refuse* must itself be the most trustworthy part of the system.
 
 It must also be *independent*. A reviewer drawn from the same model family as the actor
