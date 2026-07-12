@@ -102,6 +102,21 @@ def test_vetted_binaries_defer():
     assert bash("grep -n foo src/x.py")[0] == "defer"
 
 
+def test_glob_and_tilde_arguments_are_accepted_for_vetted_binaries():
+    # Documented posture (see _SHELL_META): glob/tilde expansion only widens which paths
+    # a read-only allowlisted binary reads, and any literal path is equally readable by
+    # design, so these defer rather than deny.
+    assert bash("cat *")[0] == "defer"
+    assert bash("grep -r secret ~")[0] == "defer"
+
+
+def test_glob_or_tilde_in_argv0_is_not_an_allowlist_match():
+    # ...but expansion can never pick the *binary*: argv[0] must literally equal a vetted
+    # name, so a glob/tilde argv[0] is refused before any shell would expand it.
+    assert bash("c* README.md")[0] == "deny"
+    assert bash("~/bin/cat README.md")[0] == "deny"
+
+
 # --- code-executing binaries are NOT default-safe (they run code through an argument) -----
 # rg `--pre`, pytest's conftest.py auto-import, and mypy plugins each execute arbitrary code
 # via an argument, which would reopen the write-a-script-then-run-it bypass the allowlist

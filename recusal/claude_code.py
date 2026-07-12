@@ -196,8 +196,13 @@ DEFAULT_SAFE_BINARIES: FrozenSet[str] = frozenset(
     }  # fmt: skip
 )
 
-# Presence of any of these means the command can expand into something other than its
-# literal argv (chaining, substitution, redirection, escapes) -> refuse, don't reason.
+# Presence of any of these means the command can chain, substitute, redirect, or escape
+# its way past the single-argv reading we vet -> refuse, don't reason. Glob (`*`, `?`,
+# `[`) and tilde expansion are deliberately NOT in the set: they only widen which paths
+# an allowlisted read-only binary reads, and any literal path is equally readable by
+# design (`cat /etc/passwd` vets the same as `cat *`), so refusing them would add
+# friction without removing a capability. They cannot smuggle in a second binary: an
+# argv[0] containing a glob or tilde is not a literal allowlist match and is refused.
 _SHELL_META: FrozenSet[str] = frozenset(";|&`$<>(){}\n\\")
 
 # Interpreter names, recognized only to make the refusal reason precise (an unrecognized

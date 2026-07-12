@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **String `passed` values now fail closed on unrecognized tokens, matching `status`.**
+  `Finding.coerce` read a string `passed` against a false-token blocklist, so an
+  unrecognized token (`"passed": "maybe"`) coerced to PASS while `"status": "maybe"`
+  failed closed. Both fields now share the allowlist posture: a string counts as a pass
+  only when it is an affirmative token (`"true"`/`"yes"`/`"1"`/`"pass"`/...); anything
+  unrecognized reads as a failure. Genuine booleans and numbers are unchanged.
+
+### Documentation
+- The `_SHELL_META` comment in the Claude Code allowlist now states the actual posture:
+  glob (`*`, `?`, `[`) and tilde expansion are accepted for allowlisted read-only
+  binaries (any literal path is equally readable by design, and expansion can never
+  select the binary itself, since argv[0] must literally match the allowlist); the
+  metacharacter set refuses chaining, substitution, redirection, and escapes. Pinned
+  with tests in both directions.
+
 ## [0.4.0] - 2026-07-10
 
 ### Added

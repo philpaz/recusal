@@ -44,12 +44,6 @@ def _as_severity(value: Union[Severity, str]) -> Severity:
     return value if isinstance(value, Severity) else Severity(str(value).upper())
 
 
-# Strings that a JSON producer might use for a *failing* outcome. Needed because a raw
-# ``bool("false")`` is ``True`` (any non-empty string is truthy), so a stringified
-# ``"passed": "false"`` would otherwise read as a silent PASS - the exact failure mode
-# this library exists to prevent.
-_FALSE_LIKE = frozenset({"false", "0", "no", "n", "off", "fail", "failed", "error"})
-
 # Strings that affirmatively mean *passed* for the ``status`` field. This is an
 # allowlist on purpose: a ``status`` we do not positively recognize as passing is
 # treated as a failure (fail closed), so a value like ``"failed"``/``"denied"``/
@@ -57,14 +51,22 @@ _FALSE_LIKE = frozenset({"false", "0", "no", "n", "off", "fail", "failed", "erro
 # as a pass the way a hardcoded fail-blocklist would let it.
 _PASS_LIKE = frozenset({"pass", "passed", "ok", "okay", "success", "succeeded", "green"})
 
+# Boolean-ish affirmative tokens accepted for a *string* ``passed`` value, alongside the
+# ``status`` vocabulary above. Same allowlist posture: a string we do not positively
+# recognize as passing (``"maybe"``, ``"unknown"``, ``""``) reads as a failure. A raw
+# ``bool("false")`` is ``True`` (any non-empty string is truthy), so string values are
+# never read with Python truthiness - a stringified ``"passed": "false"`` reading as a
+# silent PASS is the exact failure mode this library exists to prevent.
+_TRUE_LIKE = frozenset({"true", "t", "1", "yes", "y", "on"}) | _PASS_LIKE
+
 
 def _as_bool(value: Any) -> bool:
     """Interpret a loose ``passed`` value. A genuine ``bool``/``int`` is used directly; a
-    *string* is read for intent (``"false"``/``"no"``/``"0"``/``"fail"`` -> ``False``, empty
-    -> ``False``) instead of trusting Python's truthiness, which would pass ``"false"``."""
+    *string* passes only when it is an affirmative token (``"true"``/``"yes"``/``"1"``/
+    ``"pass"``/...). Anything unrecognized (``"maybe"``, ``"false"``, empty) fails closed,
+    mirroring how ``status`` is read."""
     if isinstance(value, str):
-        token = value.strip().lower()
-        return bool(token) and token not in _FALSE_LIKE
+        return value.strip().lower() in _TRUE_LIKE
     return bool(value)
 
 
@@ -119,10 +121,12 @@ class Finding:
         ``compute_verdict(..., strict=True)``) to reject such ambiguous evidence rather
         than silently pass it, which is the safer choice when wiring an adapter.
 
-        A ``passed`` value is read for intent, not raw truthiness: a *stringified*
-        ``"false"``/``"no"``/``"0"`` counts as a failure (a bare ``bool("false")`` is
+        A ``passed`` value is read for intent, not raw truthiness: a *string* counts as
+        a pass only when it is an affirmative token (``"true"``/``"yes"``/``"1"``/
+        ``"pass"``/...); a stringified ``"false"``/``"no"``/``"0"`` - or an unrecognized
+        token like ``"maybe"`` - counts as a failure (a bare ``bool("false")`` is
         ``True``), so a failing check serialized loosely cannot slip through as a pass.
-        A ``status`` value is read the same way, against a pass *allowlist*: only an
+        A ``status`` value is read against the same pass *allowlist* posture: only an
         affirmative token (``"pass"``/``"passed"``/``"ok"``/…) reads as passing, so a
         ``status`` of ``"failed"``/``"denied"``/``"0"`` - or any token not recognized as
         passing - fails closed rather than slipping through.

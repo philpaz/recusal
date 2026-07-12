@@ -58,3 +58,23 @@ def test_status_field_fails_closed_on_any_non_pass_token(status):
 @pytest.mark.parametrize("status", ["pass", "passed", "ok", "okay", "success", "PASS", " Pass "])
 def test_status_field_still_passes_affirmative_tokens(status):
     assert Finding.coerce({"severity": "INFO", "status": status}).passed
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["maybe", "unknown", "borked", "false", "no", "n", "0", "off", "fail", "failed", "", "   "],
+)
+def test_passed_string_fails_closed_on_any_non_affirmative_token(value):
+    # Regression: a string `passed` was once read against a false-token BLOCKLIST, so an
+    # unrecognized token like "maybe" coerced to PASS while status="maybe" failed closed.
+    # Both fields now share the allowlist posture: unrecognized -> failure.
+    assert not Finding.coerce({"severity": "CRITICAL", "passed": value}).passed
+    assert compute_verdict([{"severity": "CRITICAL", "passed": value}], strict=True).refused
+
+
+@pytest.mark.parametrize(
+    "value", ["true", "TRUE", " Yes ", "1", "y", "on", "pass", "passed", "ok", "success"]
+)
+def test_passed_string_still_passes_affirmative_tokens(value):
+    assert Finding.coerce({"severity": "INFO", "passed": value}).passed
+    assert compute_verdict([{"severity": "CRITICAL", "passed": value}], strict=True).passed
