@@ -102,6 +102,42 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.6, 2026-07-12)
+
+For v0.5.6 (commit `c5dd3d5`):
+
+- **Workflow evidence is public**: CI run [29209930133](https://github.com/philpaz/recusal/actions/runs/29209930133)
+  (all 10 jobs green) and release run [29209981300](https://github.com/philpaz/recusal/actions/runs/29209981300)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **A wholly omitted pinned server refuses; a deliberate removal is explicit**
+  (verbatim: two servers pinned, a one-server dump verified):
+
+```text
+FAIL - 1 CRITICAL failure(s) - refused, no retry.
+  FAILED mcp_server_unobserved [CRITICAL]: pinned server 'banking' is absent from every component of this observation and was not explicitly marked removed; ...
+```
+
+  and with `--removed banking` the same verify exits 0, recording:
+
+```text
+  warning mcp_server_removed: pinned server 'banking' is acknowledged as deliberately removed (recorded, not blocking); re-pin so the manifest stops authorizing its runtime names
+```
+
+- **A reserved Claude server name refuses before its command can run** (a config
+  entry named `workspace` whose command would write a marker file):
+
+```text
+FAIL (failed closed) - could not read the configuration: ... this name is reserved by Claude Code for a built-in server ...
+```
+
+  The marker file does not exist afterward; the configured command never executed.
+
+The same properties are pinned as deterministic tests in
+[`tests/test_mcp_observation_inventory.py`](../tests/test_mcp_observation_inventory.py),
+including the counter-instrumented proof that an unpinned MCP call never invokes the
+wrapped business policy.
+
 ## Release proofs on the record (v0.5.5, 2026-07-12)
 
 For v0.5.5 (commit `b1bcddf`):

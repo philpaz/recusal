@@ -90,7 +90,7 @@ def _verify(pinned, observed, label):
 
 
 def main() -> None:
-    print("RECUSAL - MCP discovery governance: pin the catalog, refuse the rug pull\n")
+    print("RECUSAL - MCP discovery integrity: pin instructions and declarations, refuse drift\n")
     pinned = build_manifest(HEALTHY)
     print("  1. pinned the reviewed catalog (hashes only; the manifest never embeds a")
     print("     description, poisoned or otherwise)\n")

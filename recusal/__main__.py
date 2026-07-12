@@ -792,7 +792,7 @@ def doctor_command(
     return EXIT_BY_DECISION[verdict.decision]
 
 
-# --- MCP tool-catalog governance: pin the tool catalog, refuse drift ----------------------
+# --- MCP tool and server-instruction integrity: pin the discovery surface, refuse drift ---
 
 
 class Observation(NamedTuple):
@@ -1463,7 +1463,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p_mcp = sub.add_parser(
         "mcp",
-        help="pin an MCP server tool catalog and refuse drift (tool-catalog governance)",
+        help="pin MCP source templates, server instructions, and tool declarations; "
+        "refuse represented drift",
     )
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command")
     p_pin = mcp_sub.add_parser(
