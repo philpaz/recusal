@@ -102,6 +102,43 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.5, 2026-07-12)
+
+For v0.5.5 (commit `b1bcddf`):
+
+- **Workflow evidence is public**: CI run [29208747925](https://github.com/philpaz/recusal/actions/runs/29208747925)
+  (all 10 jobs green) and release run [29208815312](https://github.com/philpaz/recusal/actions/runs/29208815312)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **Source omission cannot bypass a pinned launch identity** (verbatim library proof:
+  matching catalog plus matching instructions, `sources` omitted, against a pin
+  carrying a stdio source):
+
+```text
+failed checks: ['mcp_source_unobserved']
+PROOF OK: matching catalog + matching instructions, omitted sources -> CRITICAL refusal
+```
+
+- **A malformed event in a reused process carries no stale digest** (verbatim: one
+  process, one policy object, a valid MCP event then malformed JSON through the real
+  hook with `audit=`):
+
+```text
+valid event control:     {"manifest_sha256": "sha256:a854a5c8...", "recusal_version": "0.5.5"}
+malformed event control: {"recusal_version": "0.5.5"}
+```
+
+- **WebSocket OAuth refuses through the real CLI** (a `ws` entry carrying `oauth` in
+  `.mcp.json`; nothing is written):
+
+```text
+FAIL (failed closed) - could not read the configuration: ... Claude Code documents
+WebSocket MCP authentication as header-only (HTTP supports OAuth, WebSocket does not) ...
+```
+
+The same properties are pinned as deterministic tests in
+[`tests/test_mcp_observation_strict.py`](../tests/test_mcp_observation_strict.py).
+
 ## Release proofs on the record (v0.5.4, 2026-07-12)
 
 Every release claim above "it passed" is anchored to reproducible evidence. For v0.5.4
