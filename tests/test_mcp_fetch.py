@@ -61,7 +61,13 @@ for line in sys.stdin:
             del result["capabilities"]
         elif MODE == "no-tools-cap":
             result["capabilities"] = {"prompts": {}}
-        send({"jsonrpc": "2.0", "id": rid, "result": result})
+        elif MODE == "no-serverinfo":
+            del result["serverInfo"]
+        if MODE == "bad-jsonrpc":
+            sys.stdout.write(json.dumps({"id": rid, "result": result}) + "\n")
+            sys.stdout.flush()
+        else:
+            send({"jsonrpc": "2.0", "id": rid, "result": result})
     elif method == "tools/list":
         if MODE == "error":
             send({"jsonrpc": "2.0", "id": rid, "error": {"code": -1, "message": "boom"}})
@@ -205,7 +211,7 @@ def test_claude_config_yields_stdio_servers_and_surfaces_the_rest(tmp_path):
         ),
         encoding="utf-8",
     )
-    servers, skipped = servers_from_claude_config(str(config))
+    servers, remote = servers_from_claude_config(str(config))
     github = servers["github"]
     assert github["command"] == ["npx", "-y", "server-github"]
     assert github["env"]["TOKEN"] == "x"
@@ -217,9 +223,16 @@ def test_claude_config_yields_stdio_servers_and_surfaces_the_rest(tmp_path):
         "command": "npx",
         "args": ["-y", "server-github"],
         "cwd": None,
-        "env_keys": ["TOKEN"],
+        "env_templates": {"TOKEN": "x"},
     }
-    assert skipped == ["hosted"]  # surfaced, never silently dropped
+    # the remote server is a first-class IDENTITY, never a silently dropped name
+    assert remote == {
+        "hosted": {
+            "transport": "http",
+            "url_template": "https://example.com/mcp",
+            "header_keys": [],
+        }
+    }
 
 
 def test_claude_config_with_no_servers_raises(tmp_path):
@@ -255,7 +268,8 @@ def test_claude_config_expands_vars_with_claude_semantics(tmp_path):
     assert banking["command"] == ["/opt/mcp/bin/banking", "--project", "."]
     assert banking["env"]["API_KEY"] == "sk-123"
     assert banking["source"]["command"] == "${MCP_BIN}"  # template, not the expansion
-    assert banking["source"]["env_keys"] == ["API_KEY"]  # names only, never values
+    # the TEMPLATE is pinned: the reference is recorded, the resolved value never is
+    assert banking["source"]["env_templates"] == {"API_KEY": "${BANK_API_KEY}"}
 
 
 def test_claude_config_fails_closed_on_an_unset_variable(tmp_path):
@@ -445,3 +459,30 @@ def test_the_aggregate_character_budget_refuses(tmp_path, monkeypatch):
     )
     with pytest.raises(McpFetchError, match="characters in one observation"):
         fetch_tools_stdio([sys.executable, str(script)], timeout=30)
+
+
+def test_a_response_without_serverinfo_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="serverInfo"):
+        fetch_tools_stdio(fake_server("no-serverinfo"), timeout=30)
+
+
+def test_a_response_without_the_jsonrpc_envelope_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="jsonrpc 2.0 envelope"):
+        fetch_tools_stdio(fake_server("bad-jsonrpc"), timeout=30)
+
+
+def test_the_observation_deadline_is_shared_across_the_whole_exchange(fake_server):
+    # Per-request timeouts alone let a server answering just inside each deadline
+    # stretch initialize plus 100 pages into about 101x the timeout; the observation
+    # deadline is one monotonic budget across all of it.
+    with pytest.raises(McpFetchError, match="observation exceeded"):
+        fetch_tools_stdio(fake_server("hang"), timeout=30, observation_timeout=1.5)
+
+
+def test_the_reader_queue_stays_tiny():
+    # Drift lock for the peak-memory bound: with the budget enforced by the READER
+    # before enqueue, peak buffered memory is a few lines; a big queue would quietly
+    # turn "bounded" into gigabytes.
+    import recusal.mcp_fetch as fetch_mod
+
+    assert fetch_mod._QUEUE_MAXSIZE <= 4

@@ -360,7 +360,15 @@ def verify(
             problems.append(
                 f"length mismatch: {len(entries)} entries, anchor expects {count} (possible truncation)"
             )
-        actual_head = entries[-1].get("hash") if entries else GENESIS
+        actual_head: Optional[str]
+        if not entries:
+            actual_head = GENESIS
+        elif isinstance(entries[-1], dict):
+            actual_head = entries[-1].get("hash")
+        else:
+            # a non-object final record has no head; that is a mismatch to NAME, not a
+            # crash to raise (the anchor exists precisely to catch a mangled tail)
+            actual_head = None
         if actual_head != last_hash:
             problems.append("head mismatch: last hash does not match the external anchor")
     return (not problems), problems

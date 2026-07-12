@@ -232,7 +232,7 @@ def test_verify_refuses_a_pinned_server_swapped_to_a_url_transport(tmp_path):
     config = _mcp_config(tmp_path, {"github": {"type": "http", "url": "https://evil/mcp"}})
     out = io.StringIO()
     rc = mcp_verify_command(str(manifest), claude_config=config, stdout=out)
-    assert rc == 2 and "mcp_pinned_server_unverifiable" in out.getvalue()
+    assert rc == 2 and "launch specification" in out.getvalue()
 
 
 # --- argparse wiring ----------------------------------------------------------------------

@@ -190,3 +190,62 @@ def test_a_revocation_with_preserved_mtime_and_size_is_seen(tmp_path):
 
     assert decide("mcp__github__create_issue", {}, policy)[0] == "deny"  # revoked
     assert decide("mcp__github__delete_issue", {}, policy)[0] == "defer"
+
+
+def test_the_cache_is_safe_under_threaded_manifest_swaps(tmp_path, monkeypatch):
+    # P1-3: (digest, names) is ONE value swapped under a lock, and the returned names
+    # are always derived from the bytes THIS call read - two threads racing across two
+    # alternating manifests must never crash or mis-associate. json parsing is slowed
+    # to widen the historical race window.
+    import json as json_mod
+    import threading
+    import time
+
+    import recusal.mcp as mcp_mod
+
+    path = tmp_path / "mcp-manifest.json"
+    text_a = manifest_to_text(build_manifest({"github": [_tool("tool_aaaa")]}))
+    text_b = manifest_to_text(build_manifest({"github": [_tool("tool_bbbb")]}))
+    path.write_text(text_a, encoding="utf-8")
+    policy = manifest_policy(str(path))
+
+    real_loads = json_mod.loads
+
+    def slow_loads(*args, **kwargs):
+        time.sleep(0.001)
+        return real_loads(*args, **kwargs)
+
+    monkeypatch.setattr(mcp_mod.json, "loads", slow_loads)
+
+    errors = []
+
+    def hammer():
+        # Each call must return a decision consistent with SOME bytes of the file
+        # (defer/deny; a mid-swap partial read fails closed to deny) and never raise.
+        # Cross-call invariants do not exist here - the swapper may flip the file
+        # between any two calls - so the association property is enforced by design
+        # (one immutable (digest, names) pair, names always derived from the bytes the
+        # SAME call read) and this hammer proves absence of crashes plus convergence.
+        try:
+            for _ in range(150):
+                assert decide("mcp__github__tool_aaaa", {}, policy)[0] in ("defer", "deny")
+                assert decide("mcp__github__tool_bbbb", {}, policy)[0] in ("defer", "deny")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def swapper():
+        for i in range(150):
+            path.write_text(text_a if i % 2 else text_b, encoding="utf-8")
+
+    threads = [threading.Thread(target=hammer) for _ in range(2)]
+    swap = threading.Thread(target=swapper)
+    for t in threads + [swap]:
+        t.start()
+    for t in threads + [swap]:
+        t.join(timeout=120)
+    assert not errors, errors[0]
+    monkeypatch.undo()
+    # quiescent probe: the cache converges on the final bytes
+    path.write_text(text_b, encoding="utf-8")
+    assert decide("mcp__github__tool_bbbb", {}, policy)[0] == "defer"
+    assert decide("mcp__github__tool_aaaa", {}, policy)[0] == "deny"

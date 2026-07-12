@@ -175,3 +175,24 @@ def test_verify_flags_malformed_hash_shapes():
     intact, problems = verify([entry])
     assert not intact
     assert any("not a sha256 hex digest" in p for p in problems)
+
+
+@pytest.mark.parametrize("record", ["[]", "null", '"string"', "42"])
+def test_expected_head_with_a_non_object_final_record_is_a_failure_not_a_crash(tmp_path, record):
+    # P1-2 regression: the anchor exists precisely to catch a mangled tail, so a
+    # non-object final record must be a NAMED head mismatch, never an AttributeError.
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path=str(path))
+    entry = log.append(_verdict("real"))
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(record + "\n")
+    intact, problems = verify_file(str(path), expected_head=(2, entry["hash"]))
+    assert not intact
+    assert any("head mismatch" in p or "not an audit entry" in p for p in problems)
+    intact, problems = verify(load(str(path)), expected_head=(2, entry["hash"]))
+    assert not intact
+
+
+def test_expected_head_on_an_entirely_non_object_log():
+    intact, problems = verify([[]], expected_head=(1, "0" * 64))
+    assert not intact and problems

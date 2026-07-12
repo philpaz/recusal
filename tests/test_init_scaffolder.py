@@ -416,3 +416,107 @@ def test_launcher_runs_scaffolded_gate_and_denies(tmp_path):
     assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
     decision = json.loads(proc.stdout)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
+
+
+# --- launcher migration: the remediation path must actually remediate ----------------------
+
+
+def _old_posix_settings():
+    return json.dumps(
+        {
+            "model": "opus",
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": ".*",
+                        "hooks": [{"type": "command", "command": LAUNCHER_COMMAND_POSIX}],
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": "echo custom-non-recusal"}],
+                    },
+                ]
+            },
+        },
+        indent=2,
+    )
+
+
+def test_repair_launcher_migrates_a_posix_install_on_windows(tmp_path, monkeypatch):
+    # P1-1 regression: doctor's remediation used to say "re-run init", but init sees the
+    # existing gate and changes NOTHING - the documented fix was ineffective.
+    import recusal.__main__ as m
+
+    monkeypatch.setattr(m, "_WINDOWS", True)
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(_old_posix_settings(), encoding="utf-8")
+    (claude_dir / "hooks").mkdir()
+    gate = claude_dir / "hooks" / GATE_FILENAME
+    gate.write_text("# my policy\n", encoding="utf-8")
+
+    rc = main(["init", "--dir", str(tmp_path), "--repair-launcher"])
+    assert rc == 0
+    settings = json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
+    commands = [h["command"] for g in settings["hooks"]["PreToolUse"] for h in g.get("hooks", [])]
+    assert LAUNCHER_COMMAND_POWERSHELL in commands  # the host-appropriate launcher
+    assert LAUNCHER_COMMAND_POSIX not in commands  # the failing-open one is gone
+    assert "echo custom-non-recusal" in commands  # other hooks untouched
+    ps_hooks = [
+        h
+        for g in settings["hooks"]["PreToolUse"]
+        for h in g.get("hooks", [])
+        if h["command"] == LAUNCHER_COMMAND_POWERSHELL
+    ]
+    assert ps_hooks[0]["shell"] == "powershell"
+    assert settings["model"] == "opus"  # unrelated settings preserved
+    assert gate.read_text(encoding="utf-8") == "# my policy\n"  # policy never touched
+
+    # second run: no-op
+    rc = main(["init", "--dir", str(tmp_path), "--repair-launcher"])
+    assert rc == 0
+    settings_again = json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
+    assert settings_again == settings
+
+
+def test_repair_launcher_preserves_a_customized_recusal_hook(tmp_path, monkeypatch):
+    import recusal.__main__ as m
+
+    monkeypatch.setattr(m, "_WINDOWS", True)
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    custom = 'python "$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py" --my-flag'
+    (claude_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": ".*", "hooks": [{"type": "command", "command": custom}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    buf = io.StringIO()
+    from recusal.__main__ import repair_launcher
+
+    rc = repair_launcher(str(tmp_path), stdout=buf)
+    assert rc == 0
+    settings = json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
+    commands = [h["command"] for g in settings["hooks"]["PreToolUse"] for h in g.get("hooks", [])]
+    assert custom in commands  # a customized hook is the USER'S; never replaced
+    assert "left 1 customized recusal hook(s) untouched" in buf.getvalue()
+
+
+def test_repair_launcher_refuses_unparseable_settings(tmp_path):
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    broken = "{ not json"
+    (claude_dir / "settings.json").write_text(broken, encoding="utf-8")
+    from recusal.__main__ import repair_launcher
+
+    buf = io.StringIO()
+    rc = repair_launcher(str(tmp_path), stdout=buf)
+    assert rc == 1
+    assert (claude_dir / "settings.json").read_text(encoding="utf-8") == broken

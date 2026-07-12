@@ -37,20 +37,22 @@ Honest limits, stated up front:
 - A PreToolUse event carries the tool *name and input*, not the declaration, so
   ``manifest_policy`` enforces "approved tools only" at call time; description/schema
   *integrity* is checked whenever ``recusal mcp verify`` runs (CI, session start, cron).
-- The manifest pins each server's *launch specification* (unexpanded command template,
-  args, cwd, env variable NAMES) alongside the catalog, and verification compares it
-  BEFORE launching - a changed ``.mcp.json`` command is refused without executing the
-  replacement. The identity is template-level: the *values* of referenced environment
-  variables are not pinned, PATH resolves what PATH says (pin package versions in the
-  args for ``npx``/``uvx``-style launchers), and ``transport: "external"`` (dump-supplied
-  catalogs) is out of launch-identity scope by construction. The FIRST pin still
-  executes the commands it observes - ``--approve-server-launch`` records that a human
-  approved exactly that.
+- The manifest pins each server's *source specification* (for stdio: unexpanded command
+  template, args, cwd, and env value TEMPLATES as written; for remote transports:
+  url_template and header names) alongside the catalog, and verification compares it
+  BEFORE launching - a changed command, a same-key env value swap, or an added server
+  of any transport is refused without executing anything. The identity is
+  template-level: the operator-shell *values* behind ``${VAR}`` references are not
+  pinned (the references are), PATH resolves what PATH says (pin package versions in
+  the args for ``npx``/``uvx``-style launchers), executable bytes are not attested, and
+  ``transport: "external"`` (dump-supplied catalogs) attests the declaration set, not
+  the endpoint. The FIRST pin still executes the stdio commands it observes -
+  ``--approve-server-launch`` records that a human approved exactly that.
 - Fingerprints are byte-exact over canonical JSON (sorted keys, no whitespace, UTF-8,
   no unicode normalization): a homoglyph swap in a description IS a change and fails.
 
-This module is pure: standard library only, no subprocess, no thread, no network, a
-function of its inputs. *Collecting* a catalog from a live server (the one place that
+This module is pure: standard library only, no subprocess, no network, spawns no
+threads (a lock guards the policy cache), a function of its inputs. *Collecting* a catalog from a live server (the one place that
 spawns a process) lives in the sibling :mod:`recusal.mcp_fetch`, deliberately apart, so
 the decision surface never touches a process. Collection is nondeterministic I/O;
 adjudication (everything here) is deterministic. Servers reachable only over HTTP can be
@@ -60,28 +62,38 @@ pinned from a JSON dump instead (``recusal mcp pin --from``).
 import hashlib
 import json
 import re
+import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .evidence import Finding
 
-#: Version 2 adds server-launch identity (``source`` + ``source_fingerprint``): the pin
-#: covers WHAT PROCESS is asked to declare the catalog, not just the declarations it
-#: returns. A version-1 manifest predates that boundary and is refused with a re-pin
-#: instruction rather than silently accepted at the weaker guarantee.
-MANIFEST_VERSION = 2
+#: Version 3 = launch-TEMPLATE integrity, complete: stdio sources pin the unexpanded
+#: environment value templates (not just variable names, so a same-key value swap in the
+#: config - NODE_OPTIONS, LD_PRELOAD - is drift), and remote servers pin their configured
+#: identity ({transport, url_template, header_keys}) so an added or transport-swapped
+#: remote server can never verify clean. Older manifests are refused with a re-pin
+#: instruction rather than silently accepted at a weaker guarantee.
+MANIFEST_VERSION = 3
 
 #: Declaration fields fingerprinted individually so a drift refusal can name what moved.
 #: The whole declaration is also fingerprinted, so a change in any *other* field still
 #: fails, it is just reported without a field name.
 _TRACKED_FIELDS = ("description", "inputSchema", "annotations", "title", "outputSchema")
 
-#: The launch-identity fields pinned for a server recusal itself launches. Templates are
-#: pinned UNEXPANDED (what the config says, before ``${VAR}`` expansion), and only
-#: environment variable NAMES are pinned - never values, and never hashes of values (a
-#: low-entropy secret's hash is an oracle). ``transport: "external"`` marks a server
-#: whose catalog was supplied as a dump (``--from``): recusal never launches it, so
-#: launch identity is out of scope for it, and that is recorded rather than implied.
-_SOURCE_FIELDS = ("transport", "command", "args", "cwd", "env_keys")
+#: The identity fields pinned per transport, and ONLY these per transport: a source
+#: carrying fields outside its transport's set is contradictory and refused, never
+#: silently trimmed. Templates are pinned UNEXPANDED (what the config says, before
+#: ``${VAR}`` expansion); values that would resolve from the environment never appear,
+#: and neither do hashes of values (a low-entropy secret's hash is an oracle).
+#: ``transport: "external"`` marks a catalog supplied as a dump (``--from``): recusal
+#: never launches or contacts it, so identity is out of scope, recorded not implied.
+_SOURCE_FIELDS_BY_TRANSPORT: Dict[str, Tuple[str, ...]] = {
+    "external": ("transport",),
+    "stdio": ("transport", "command", "args", "cwd", "env_templates"),
+    "http": ("transport", "url_template", "header_keys"),
+    "sse": ("transport", "url_template", "header_keys"),
+    "ws": ("transport", "url_template", "header_keys"),
+}
 
 
 # --- canonicalization and fingerprints ---------------------------------------------------
@@ -121,47 +133,70 @@ def split_mcp_tool_name(tool_name: str) -> Optional[Tuple[str, str]]:
 
 
 def normalize_source(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize a server-launch specification to the pinned identity shape.
+    """Normalize a server source specification to the pinned identity shape.
 
-    ``transport`` is ``"stdio"`` for a server recusal launches, or ``"external"`` for a
-    catalog supplied as a dump (``--from``): recusal never launches those, so launch
-    identity is out of scope for them, and that is recorded rather than implied. For
-    stdio, the pinned identity is the UNEXPANDED configuration template: ``command``
-    (nonempty string), ``args`` (list of strings), ``cwd`` (string or null), and
-    ``env_keys`` - the sorted variable NAMES the config passes. Values never appear,
-    and neither do hashes of values: a low-entropy secret's hash is an oracle.
-    Unknown fields are rejected; an identity carrying unpinned baggage is ambiguous.
+    Transports: ``"stdio"`` (a server recusal launches; identity = the UNEXPANDED
+    configuration template: ``command``, ``args``, ``cwd``, and ``env_templates`` - the
+    env variable names mapped to their as-written value templates, so a same-key value
+    swap in the config IS drift); ``"http"``/``"sse"``/``"ws"`` (a remote server;
+    identity = ``url_template`` and ``header_keys``, names only, never header values);
+    ``"external"`` (a dump-supplied catalog; identity out of scope, recorded not
+    implied). Values that resolve from the environment never appear in a pin, and
+    neither do hashes of values: a low-entropy secret's hash is an oracle. Fields
+    outside the transport's own set are contradictory and refused, never trimmed.
     """
     if not isinstance(spec, dict):
         raise ValueError(f"a server source must be an object, got {type(spec).__name__}")
-    unknown = set(spec) - set(_SOURCE_FIELDS)
-    if unknown:
-        raise ValueError(f"server source carries unknown fields: {sorted(unknown)}")
     transport = spec.get("transport")
+    allowed = _SOURCE_FIELDS_BY_TRANSPORT.get(transport if isinstance(transport, str) else "")
+    if allowed is None:
+        raise ValueError(
+            f"server source transport must be one of "
+            f"{sorted(_SOURCE_FIELDS_BY_TRANSPORT)}, got {transport!r}"
+        )
+    unknown = set(spec) - set(allowed)
+    if unknown:
+        raise ValueError(
+            f"a {transport} source carries fields outside its transport's identity: "
+            f"{sorted(unknown)} - a contradictory source is refused, not trimmed"
+        )
     if transport == "external":
         return {"transport": "external"}
-    if transport != "stdio":
-        raise ValueError(
-            f"server source transport must be 'stdio' or 'external', got {transport!r}"
-        )
-    command = spec.get("command")
-    if not isinstance(command, str) or not command:
-        raise ValueError("a stdio source needs a nonempty string 'command' template")
-    args = spec.get("args", [])
-    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-        raise ValueError("a stdio source's 'args' must be a list of strings")
-    cwd = spec.get("cwd")
-    if cwd is not None and not isinstance(cwd, str):
-        raise ValueError("a stdio source's 'cwd' must be a string or null")
-    env_keys = spec.get("env_keys", [])
-    if not isinstance(env_keys, list) or not all(isinstance(k, str) and k for k in env_keys):
-        raise ValueError("a stdio source's 'env_keys' must be a list of variable names")
+    if transport == "stdio":
+        command = spec.get("command")
+        if not isinstance(command, str) or not command:
+            raise ValueError("a stdio source needs a nonempty string 'command' template")
+        args = spec["args"] if "args" in spec else []
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise ValueError("a stdio source's 'args' must be a list of strings")
+        cwd = spec.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ValueError("a stdio source's 'cwd' must be a string or null")
+        env_templates = spec["env_templates"] if "env_templates" in spec else {}
+        if not isinstance(env_templates, dict) or not all(
+            isinstance(k, str) and k and isinstance(v, str) for k, v in env_templates.items()
+        ):
+            raise ValueError(
+                "a stdio source's 'env_templates' must map variable names to their "
+                "as-written (unexpanded) value templates"
+            )
+        return {
+            "transport": "stdio",
+            "command": command,
+            "args": list(args),
+            "cwd": cwd,
+            "env_templates": {k: env_templates[k] for k in sorted(env_templates)},
+        }
+    url_template = spec.get("url_template")
+    if not isinstance(url_template, str) or not url_template:
+        raise ValueError(f"a {transport} source needs a nonempty string 'url_template'")
+    header_keys = spec["header_keys"] if "header_keys" in spec else []
+    if not isinstance(header_keys, list) or not all(isinstance(k, str) and k for k in header_keys):
+        raise ValueError(f"a {transport} source's 'header_keys' must be header names")
     return {
-        "transport": "stdio",
-        "command": command,
-        "args": list(args),
-        "cwd": cwd,
-        "env_keys": sorted(env_keys),
+        "transport": transport,
+        "url_template": url_template,
+        "header_keys": sorted(header_keys),
     }
 
 
@@ -215,7 +250,9 @@ def diff_source(
             )
         ]
     changed = [
-        field for field in _SOURCE_FIELDS if pinned_norm.get(field) != observed_norm.get(field)
+        field
+        for field in sorted(set(pinned_norm) | set(observed_norm))
+        if pinned_norm.get(field) != observed_norm.get(field)
     ]
     return [
         Finding.fail(
@@ -259,6 +296,10 @@ def build_manifest(
             if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
                 raise ValueError(f"server {server!r}: every tool needs a string 'name'")
             name = tool["name"]
+            if not name:
+                # the loader refuses empty stored names; building an artifact the
+                # loader would reject is a pin that certifies nothing
+                raise ValueError(f"server {server!r}: a tool name must be nonempty")
             if name in pinned_tools:
                 raise ValueError(
                     f"server {server!r} declares tool {name!r} twice; an ambiguous "
@@ -268,7 +309,14 @@ def build_manifest(
                 "fingerprint": tool_fingerprint(tool),
                 "fields": {k: _sha256(tool[k]) for k in _TRACKED_FIELDS if k in tool},
             }
-        source = normalize_source((sources or {}).get(server) or {"transport": "external"})
+        # missing source -> external by design; a SUPPLIED source is validated as
+        # given, so an explicit-but-invalid one (e.g. {}) raises instead of silently
+        # downgrading to external
+        if sources is None or server not in sources:
+            source = {"transport": "external"}
+        else:
+            source = normalize_source(sources[server])
+        source = normalize_source(source)
         servers[server] = {
             "source": source,
             "source_fingerprint": _sha256(source),
@@ -303,6 +351,12 @@ def _validate_manifest(data: Any) -> None:
             "manifest_version 1 predates launch-identity pinning (it covers the declared "
             "catalog but not the process that declares it); re-pin with `recusal mcp pin` "
             "to record the launch specifications"
+        )
+    if data.get("manifest_version") == 2:
+        raise ValueError(
+            "manifest_version 2 predates environment-template and remote-source pinning "
+            "(a same-key env value swap or an added remote server could pass it); re-pin "
+            "with `recusal mcp pin` to record the complete source identities"
         )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
@@ -736,23 +790,32 @@ def manifest_policy(
     # replacement with a preserved timestamp - exactly how a REVOCATION might land via
     # deployment tooling - is a different digest, and there is no stat-then-open race
     # because the decision is keyed on the exact bytes that were read. A failed parse is
-    # never cached, so a changed-but-corrupt file refuses on this call and every next one.
-    _cache: Dict[str, Any] = {"digest": None, "names": frozenset()}
+    # never cached, so a changed-but-corrupt file refuses on this call and every next
+    # one. The (digest, names) pair is ONE immutable value swapped under a lock, so a
+    # multi-threaded runtime can never observe one manifest's digest associated with
+    # another manifest's name set; the returned names are always derived from the bytes
+    # THIS call read, never from the cache of a racing call.
+    _cache_lock = threading.Lock()
+    _cache: List[Tuple[Optional[str], "frozenset[str]"]] = [(None, frozenset())]
 
     def _pinned_names() -> "frozenset[str]":
         with open(manifest_path, "rb") as fh:
             raw = fh.read()
         digest = hashlib.sha256(raw).hexdigest()
-        if _cache["digest"] != digest:
-            data = json.loads(raw.decode("utf-8"))
-            _validate_manifest(data)
-            _cache["names"] = frozenset(
-                f"mcp__{server}__{tool}"
-                for server, entry in data["servers"].items()
-                for tool in entry["tools"]
-            )
-            _cache["digest"] = digest
-        return _cache["names"]
+        with _cache_lock:
+            cached_digest, cached_names = _cache[0]
+        if cached_digest == digest:
+            return cached_names
+        data = json.loads(raw.decode("utf-8"))  # parse outside the lock
+        _validate_manifest(data)
+        names = frozenset(
+            f"mcp__{server}__{tool}"
+            for server, entry in data["servers"].items()
+            for tool in entry["tools"]
+        )
+        with _cache_lock:
+            _cache[0] = (digest, names)
+        return names
 
     def _policy(tool_name: str, tool_input: dict) -> List[Any]:
         inner = policy(tool_name, tool_input) if policy else []

@@ -89,6 +89,10 @@ runs:
         EXPECT_HEAD: ${{ inputs['expect-head'] }}
         DOCTOR_DIR: ${{ inputs['doctor-dir'] }}
       run: |
+        # GitHub runs `shell: bash` with -e (fail-fast); that would abort this script at
+        # the FIRST failing gate, so later gates would never run and the highest exit
+        # code would never be aggregated. Every selected gate must run; the max wins.
+        set +e
         set -u
         ran=0
         rc=0

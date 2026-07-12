@@ -152,7 +152,7 @@ def test_the_pin_records_the_launch_specification(arena):
     config = _write_config(arena["tmp"], arena["safe"])
     _pin(arena, config)
     manifest = load_manifest(arena["manifest"])
-    assert manifest["manifest_version"] == MANIFEST_VERSION == 2
+    assert manifest["manifest_version"] == MANIFEST_VERSION == 3
     source = manifest["servers"]["srv"]["source"]
     assert source["transport"] == "stdio"
     assert source["command"] == arena["safe"][0]
@@ -165,7 +165,12 @@ def test_the_pin_records_the_launch_specification(arena):
 
 def test_diff_source_names_the_changed_fields():
     pinned_source = normalize_source(
-        {"transport": "stdio", "command": "npx", "args": ["-y", "srv@1.2.3"], "env_keys": ["T"]}
+        {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "srv@1.2.3"],
+            "env_templates": {"T": "${T}"},
+        }
     )
     manifest = build_manifest({"srv": [{"name": "t"}]}, sources={"srv": pinned_source})
     entry = manifest["servers"]["srv"]
@@ -173,7 +178,7 @@ def test_diff_source_names_the_changed_fields():
         "transport": "stdio",
         "command": "npx",
         "args": ["-y", "srv@9.9.9"],
-        "env_keys": ["T"],
+        "env_templates": {"T": "${T}"},
     }
     findings = diff_source("srv", entry, observed)
     assert len(findings) == 1 and not findings[0].passed
@@ -204,14 +209,14 @@ def test_a_v1_manifest_is_refused_with_a_repin_instruction(tmp_path):
 
 
 def test_normalize_source_rejects_unknown_and_malformed_fields():
-    with pytest.raises(ValueError, match="unknown fields"):
+    with pytest.raises(ValueError, match="outside its transport"):
         normalize_source({"transport": "stdio", "command": "x", "secret": "no"})
     with pytest.raises(ValueError, match="transport"):
         normalize_source({})
     with pytest.raises(ValueError, match="command"):
         normalize_source({"transport": "stdio"})
-    with pytest.raises(ValueError, match="env_keys"):
-        normalize_source({"transport": "stdio", "command": "x", "env_keys": [1]})
+    with pytest.raises(ValueError, match="env_templates"):
+        normalize_source({"transport": "stdio", "command": "x", "env_templates": {"K": 1}})
 
 
 def test_external_sources_pin_and_roundtrip(tmp_path):
@@ -219,7 +224,7 @@ def test_external_sources_pin_and_roundtrip(tmp_path):
     assert manifest["servers"]["remote"]["source"] == {"transport": "external"}
     path = tmp_path / "m.json"
     path.write_text(manifest_to_text(manifest), encoding="utf-8")
-    assert load_manifest(str(path))["manifest_version"] == 2
+    assert load_manifest(str(path))["manifest_version"] == 3
 
 
 # --- more adversarial edges ------------------------------------------------------------------
@@ -243,7 +248,7 @@ def test_an_added_env_key_is_a_launch_spec_change(arena):
     open(config, "w", encoding="utf-8").write(json.dumps(body))
     rc, text = _verify(arena, config)
     assert rc == 2
-    assert "env_keys" in text
+    assert "env_templates" in text
     assert not arena["marker"].exists()
 
 
@@ -293,3 +298,220 @@ def test_pin_and_verify_agree_across_stdio_and_claude_config_forms(arena):
     rc, text = _verify(arena, config)
     # env_keys/cwd match ([] / None both ways); command+args match structurally
     assert rc == 0, text
+
+
+# --- every configured server is covered, remote transports included -------------------------
+
+
+def _verify_with_from(arena, config, from_file):
+    out = io.StringIO()
+    rc = mcp_verify_command(
+        arena["manifest"], claude_config=config, from_file=from_file, stdout=out
+    )
+    return rc, out.getvalue()
+
+
+def test_an_added_unpinned_remote_server_is_refused(arena):
+    # P0-1 regression: v2 silently skipped remote entries, so an attacker could add a
+    # {"type": "http"} server to .mcp.json and verify still passed.
+    config = _write_config(arena["tmp"], arena["safe"])
+    rc, _ = _pin(arena, config)
+    assert rc == 0
+    body = json.loads(open(config, encoding="utf-8").read())
+    body["mcpServers"]["exfil"] = {"type": "http", "url": "https://attacker.example/mcp"}
+    open(config, "w", encoding="utf-8").write(json.dumps(body))
+    rc, text = _verify(arena, config)
+    assert rc == 2
+    assert "no pinned launch specification" in text
+
+
+def test_a_pinned_stdio_server_swapped_to_remote_is_transport_drift(arena):
+    config = _write_config(arena["tmp"], arena["safe"])
+    rc, _ = _pin(arena, config)
+    assert rc == 0
+    body = {"mcpServers": {"srv": {"type": "http", "url": "https://attacker.example/mcp"}}}
+    open(config, "w", encoding="utf-8").write(json.dumps(body))
+    rc, text = _verify(arena, config)
+    assert rc == 2
+    assert "launch specification changed" in text
+
+
+def test_a_url_without_a_type_is_a_configuration_error(arena):
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"srv": {"url": "https://example.com/mcp"}}}),
+        encoding="utf-8",
+    )
+    out = io.StringIO()
+    rc = mcp_pin_command(
+        arena["manifest"], claude_config=str(config), approve_server_launch=True, stdout=out
+    )
+    assert rc == 2
+    assert "no transport" in out.getvalue()
+
+
+def test_a_remote_entry_carrying_a_command_is_refused_and_never_executed(arena):
+    # The observer must not execute a command merely because a malformed remote entry
+    # contains one; the marker proves nothing ran.
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "srv": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "command": arena["attacker"][0],
+                        "args": arena["attacker"][1:],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = io.StringIO()
+    rc = mcp_pin_command(
+        arena["manifest"], claude_config=str(config), approve_server_launch=True, stdout=out
+    )
+    assert rc == 2
+    assert "stdio launch fields" in out.getvalue()
+    assert not arena["marker"].exists()
+
+
+def test_a_mixed_pin_without_the_remote_catalog_refuses(arena):
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "srv": {"command": arena["safe"][0], "args": arena["safe"][1:]},
+                    "hosted": {"type": "http", "url": "https://example.com/mcp"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = io.StringIO()
+    rc = mcp_pin_command(
+        arena["manifest"], claude_config=str(config), approve_server_launch=True, stdout=out
+    )
+    assert rc == 2
+    assert "hosted" in out.getvalue() and "--from" in out.getvalue()
+    assert not os.path.exists(arena["manifest"])  # a partial pin must not read as full
+
+
+def test_a_mixed_pin_with_the_remote_catalog_pins_the_remote_identity(arena):
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "srv": {"command": arena["safe"][0], "args": arena["safe"][1:]},
+                    "hosted": {
+                        "type": "streamable-http",
+                        "url": "${HOST_URL}",
+                        "headers": {"Authorization": "Bearer ${TOKEN}"},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    dump = arena["tmp"] / "hosted.tools.json"
+    dump.write_text(
+        json.dumps({"hosted": [{"name": "remote_tool", "description": "d"}]}),
+        encoding="utf-8",
+    )
+    out = io.StringIO()
+    rc = mcp_pin_command(
+        arena["manifest"],
+        claude_config=str(config),
+        from_file=str(dump),
+        approve_server_launch=True,
+        stdout=out,
+    )
+    assert rc == 0, out.getvalue()
+    manifest = load_manifest(arena["manifest"])
+    hosted = manifest["servers"]["hosted"]["source"]
+    # the CONFIG provides the identity (templates, header NAMES), the dump the catalog
+    assert hosted == {
+        "transport": "http",
+        "url_template": "${HOST_URL}",
+        "header_keys": ["Authorization"],
+    }
+    rc, text = _verify_with_from(arena, str(config), str(dump))
+    assert rc == 0, text
+
+
+# --- environment identity: the P0-2 attacks --------------------------------------------------
+
+
+def _env_config(arena, env):
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "srv": {
+                        "command": arena["safe"][0],
+                        "args": arena["safe"][1:],
+                        "env": env,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(config)
+
+
+def test_a_same_key_env_value_swap_is_drift(arena):
+    # The NODE_OPTIONS / LD_PRELOAD attack: same key, different value, attacker code
+    # executes at launch. v2 pinned names only and passed this; v3 pins the value
+    # TEMPLATES, so a config-level value swap is drift, refused before launch.
+    config = _env_config(arena, {"NODE_OPTIONS": "--require ./safe-bootstrap.js"})
+    rc, _ = _pin(arena, config)
+    assert rc == 0
+    _env_config(arena, {"NODE_OPTIONS": "--require ./attacker-bootstrap.js"})
+    rc, text = _verify(arena, config)
+    assert rc == 2
+    assert "env_templates" in text
+    assert not arena["marker"].exists()
+
+
+def test_an_env_reference_rename_is_drift(arena):
+    config = _env_config(arena, {"API_KEY": "${SAFE_VAR:-x}"})
+    rc, _ = _pin(arena, config)
+    assert rc == 0
+    _env_config(arena, {"API_KEY": "${EVIL_VAR:-x}"})
+    rc, text = _verify(arena, config)
+    assert rc == 2 and "env_templates" in text
+
+
+def test_a_shell_env_value_change_under_an_unchanged_template_verifies(arena, monkeypatch):
+    # The remaining, DOCUMENTED residual after v3: the template ${SOME_VAR} is pinned,
+    # the operator-shell VALUE it resolves to is not. Pinned as a test so the residual
+    # can never silently become a claim.
+    monkeypatch.setenv("SOME_VAR", "value-one")
+    config = _env_config(arena, {"MODE": "${SOME_VAR:-fallback}"})
+    rc, _ = _pin(arena, config)
+    assert rc == 0
+    monkeypatch.setenv("SOME_VAR", "value-two")
+    rc, _ = _verify(arena, config)
+    assert rc == 0  # same template, same verdict; the shell is not the config
+
+
+def test_a_literal_env_value_is_warned_into_the_json_payload(arena):
+    config = _env_config(arena, {"MODE": "read-only"})
+    out = io.StringIO()
+    rc = mcp_pin_command(
+        arena["manifest"],
+        claude_config=config,
+        approve_server_launch=True,
+        as_json=True,
+        stdout=out,
+    )
+    assert rc == 0
+    payload = json.loads(out.getvalue())
+    briefs = json.dumps(payload.get("screen", []))
+    assert "mcp_env_literal" in briefs  # named in machine-readable output, not lost prose

@@ -67,9 +67,11 @@ MAX_LINE_CHARS = 10_000_000
 MAX_TOTAL_CHARS = 50_000_000
 MAX_UNRELATED_MESSAGES = 1_000
 
-#: Reader-to-adjudicator queue depth. Bounded so a server flooding notifications faster
-#: than they are consumed exerts backpressure on the pipe instead of growing memory.
-_QUEUE_MAXSIZE = 256
+#: Reader-to-adjudicator queue depth. Deliberately TINY: the aggregate budget is
+#: enforced by the READER before enqueue, and a small queue keeps the peak buffered
+#: memory at a few lines (queue x line cap), not a multiple of the whole budget - "the
+#: queue is technically bounded" must not stand in for "hostile input is bounded".
+_QUEUE_MAXSIZE = 4
 
 #: Environment variables a child process needs merely to *launch and run* - what
 #: ``minimal_env=True`` keeps. Paths and locale only; nothing here carries a secret.
@@ -141,6 +143,7 @@ def fetch_tools_stdio(
     env: Optional[Dict[str, str]] = None,
     cwd: Optional[str] = None,
     timeout: float = 30.0,
+    observation_timeout: float = 300.0,
     minimal_env: bool = False,
 ) -> List[dict]:
     """Spawn a stdio MCP server, run ``initialize`` → ``tools/list``, return the tools.
@@ -200,6 +203,18 @@ def fetch_tools_stdio(
                         )
                     )
                     return
+                # the READER is the budget's accountant, reserving BEFORE enqueue: with
+                # the budget checked only on dequeue, a hostile server could park
+                # queue x line-cap characters in memory before the limit ever fired
+                budget["chars"] += len(line)
+                if budget["chars"] > MAX_TOTAL_CHARS:
+                    lines.put(
+                        McpFetchError(
+                            f"MCP server sent more than {MAX_TOTAL_CHARS} characters in "
+                            "one observation; refusing a runaway catalog"
+                        )
+                    )
+                    return
                 lines.put(line)
         except (UnicodeError, OSError, ValueError) as exc:
             lines.put(exc)  # invalid UTF-8 (JSON must be UTF-8) or a broken pipe
@@ -208,6 +223,10 @@ def fetch_tools_stdio(
 
     threading.Thread(target=_reader, daemon=True).start()
     next_id = 0
+    # one monotonic deadline for the WHOLE observation: per-request timeouts alone let a
+    # server that answers just inside each deadline stretch initialize + up to 100 pages
+    # into ~101x the configured timeout
+    observation_deadline = time.monotonic() + observation_timeout
 
     def _send(payload: Dict[str, Any]) -> None:
         try:
@@ -223,12 +242,22 @@ def fetch_tools_stdio(
         _send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         deadline = time.monotonic() + timeout
         while True:
-            remaining = deadline - time.monotonic()
+            if time.monotonic() >= observation_deadline:
+                raise McpFetchError(
+                    f"observation exceeded {observation_timeout}s across "
+                    "initialize/pagination; refusing a stalling server"
+                )
+            remaining = min(deadline, observation_deadline) - time.monotonic()
             if remaining <= 0:
                 raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}")
             try:
                 line = lines.get(timeout=remaining)
             except queue.Empty:
+                if time.monotonic() >= observation_deadline:
+                    raise McpFetchError(
+                        f"observation exceeded {observation_timeout}s across "
+                        "initialize/pagination; refusing a stalling server"
+                    ) from None
                 raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}") from None
             if isinstance(line, McpFetchError):
                 raise line  # the reader already named the refusal (e.g. runaway line)
@@ -239,12 +268,6 @@ def fetch_tools_stdio(
                 ) from line
             if line is None:
                 raise McpFetchError(f"MCP server exited before answering {method!r}")
-            budget["chars"] += len(line)
-            if budget["chars"] > MAX_TOTAL_CHARS:
-                raise McpFetchError(
-                    f"MCP server sent more than {MAX_TOTAL_CHARS} characters in one "
-                    "observation; refusing a runaway catalog"
-                )
             line = line.strip()
             if not line:
                 continue
@@ -252,6 +275,15 @@ def fetch_tools_stdio(
                 message = _loads_strict(line)
             except ValueError as exc:
                 raise McpFetchError(f"unparseable line from MCP server: {line[:200]!r}") from exc
+            if (
+                isinstance(message, dict)
+                and message.get("id") == rid
+                and (message.get("jsonrpc") != "2.0")
+            ):
+                raise McpFetchError(
+                    f"MCP server response for {method!r} is missing the jsonrpc 2.0 "
+                    "envelope; refusing an out-of-contract peer"
+                )
             if not isinstance(message, dict) or message.get("id") != rid:
                 # a notification or an unrelated message; not ours - but a flood of them
                 # is a resource attack on the observer, so they are budgeted, not free
@@ -290,13 +322,23 @@ def fetch_tools_stdio(
                 f"MCP server negotiated an unsupported protocol version: {negotiated!r} "
                 f"(supported: {', '.join(SUPPORTED_PROTOCOL_VERSIONS)})"
             )
+        server_info = init.get("serverInfo")
+        if (
+            not isinstance(server_info, dict)
+            or not isinstance(server_info.get("name"), str)
+            or not server_info["name"]
+        ):
+            raise McpFetchError(
+                "MCP server returned no serverInfo object with a name on initialize; the "
+                "lifecycle requires implementation info, and an anonymous peer is refused"
+            )
         capabilities = init.get("capabilities")
         if not isinstance(capabilities, dict):
             raise McpFetchError("MCP server returned no capabilities object on initialize")
-        if "tools" not in capabilities:
+        if not isinstance(capabilities.get("tools"), dict):
             raise McpFetchError(
-                "MCP server did not advertise the 'tools' capability; there is no tool "
-                "catalog to observe"
+                "MCP server did not advertise the 'tools' capability (as an object); "
+                "there is no tool catalog to observe"
             )
         _send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         tools: List[dict] = []
@@ -363,32 +405,51 @@ def _expand(text: str, env: Dict[str, str], *, where: str) -> str:
     return _EXPAND_RE.sub(_sub, text)
 
 
+#: Remote transport ``type`` values Claude Code configures; "streamable-http" is the
+#: same transport "http" names, so both pin as ``http`` (a rename must not read as drift).
+_REMOTE_TYPES = {"http": "http", "streamable-http": "http", "sse": "sse", "ws": "ws"}
+
+
+def _required(entry: Dict[str, Any], key: str, default: Any) -> Any:
+    # presence-checked, never `or`-coerced: a falsey INVALID value ("" / 0 / []) must
+    # reach the type check and be refused, not silently normalized to the default
+    return entry[key] if key in entry else default
+
+
 def servers_from_claude_config(
     path: str, *, base_env: Optional[Dict[str, str]] = None
-) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
-    """Read stdio servers from a Claude Code ``.mcp.json``, with Claude Code's semantics.
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Read every server from a Claude Code ``.mcp.json``, classified by TRANSPORT TYPE.
 
-    Returns ``(servers, skipped)``. Each server maps to::
+    Returns ``(stdio_servers, remote_servers)``. Each stdio server maps to::
 
         {
           "source":  {...},   # the UNEXPANDED launch template (recusal.mcp.normalize_source
-                              #  shape) - what gets pinned and compared BEFORE any launch
+                              #  shape, env_templates included) - what gets pinned and
+                              #  compared BEFORE any launch
           "command": [...],   # resolved argv: ${VAR} / ${VAR:-default} expanded
           "env":     {...},   # resolved env for the child, CLAUDE_PROJECT_DIR included
           "cwd":     None|str,
         }
 
+    Each remote server maps to its identity source (``{transport, url_template,
+    header_keys}``); this fetcher never contacts it - supply its catalog via ``--from``.
+
+    Classification mirrors Claude Code's rules and fails CLOSED on anything else: no
+    ``type`` with a string ``command`` is stdio; ``type: "stdio"`` requires a command;
+    ``http``/``streamable-http``/``sse``/``ws`` are remote and require a ``url`` (and a
+    remote entry also carrying stdio launch fields is a contradiction, refused - the
+    observer must never execute a command merely because a malformed remote entry
+    contains one); a URL with no ``type`` is invalid; an unsupported ``type`` is
+    invalid; a malformed entry raises, never a silent skip (a config the verifier
+    cannot fully represent must not verify clean).
+
     Fidelity notes, matched to current Claude Code behavior: ``${VAR}`` and
     ``${VAR:-default}`` expand in ``command``, ``args``, and ``env`` values (a referenced
     variable that is unset with no default fails CLOSED); ``CLAUDE_PROJECT_DIR`` is set
     in the child environment to the config file's directory, the same value Claude Code
-    injects, unless the config sets it explicitly. Types are rejected, not coerced: a
-    non-string arg or env value is a ``ValueError``, never silently ``str()``-ed into a
-    launch that Claude Code would have refused or run differently.
-
-    ``skipped`` names servers this fetcher cannot reach (URL-based transports), which
-    must be pinned from a JSON dump instead, so they are surfaced, never silently
-    dropped. Raises ``ValueError`` on a config that does not parse or has no servers.
+    injects, unless the config sets it explicitly. Types are rejected, not coerced -
+    including falsey garbage (``"args": ""`` is an error, not an empty list).
     """
     env_base = dict(os.environ) if base_env is None else dict(base_env)
     with open(path, encoding="utf-8") as fh:
@@ -397,37 +458,76 @@ def servers_from_claude_config(
     if not isinstance(entries, dict) or not entries:
         raise ValueError(f"{path} has no mcpServers")
     project_dir = os.path.dirname(os.path.abspath(path))
-    servers: Dict[str, Dict[str, Any]] = {}
-    skipped: List[str] = []
+    stdio_servers: Dict[str, Dict[str, Any]] = {}
+    remote_servers: Dict[str, Dict[str, Any]] = {}
     for name, entry in entries.items():
-        if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
-            skipped.append(str(name))
+        where = f"{path}: server {name!r}"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where} is not an object")
+        transport_type = entry.get("type")
+        if transport_type is not None and not isinstance(transport_type, str):
+            raise ValueError(f"{where} 'type' must be a string")
+
+        if transport_type in _REMOTE_TYPES:
+            url = entry.get("url")
+            if not isinstance(url, str) or not url:
+                raise ValueError(f"{where} ({transport_type}) needs a string 'url'")
+            conflicting = [k for k in ("command", "args", "env", "cwd") if k in entry]
+            if conflicting:
+                raise ValueError(
+                    f"{where} declares remote type {transport_type!r} but also carries "
+                    f"stdio launch fields {conflicting}; a contradictory entry is refused, "
+                    "and a command in a remote entry is never executed"
+                )
+            headers = _required(entry, "headers", {})
+            if not isinstance(headers, dict) or not all(
+                isinstance(k, str) and k and isinstance(v, str) for k, v in headers.items()
+            ):
+                raise ValueError(f"{where} 'headers' must map header names to strings")
+            remote_servers[str(name)] = {
+                "transport": _REMOTE_TYPES[transport_type],
+                "url_template": url,  # unexpanded: the pinned identity is the template
+                "header_keys": sorted(headers.keys()),
+            }
             continue
-        args = entry.get("args") or []
-        env = entry.get("env") or {}
+
+        if transport_type not in (None, "stdio"):
+            raise ValueError(f"{where} has unsupported type {transport_type!r}")
+        command = entry.get("command")
+        if not isinstance(command, str) or not command:
+            if "url" in entry:
+                raise ValueError(
+                    f"{where} has a 'url' but no transport 'type'; Claude Code treats "
+                    "that as a configuration error, and so does this parser"
+                )
+            raise ValueError(f"{where} needs a string 'command' (stdio) or a remote 'type'")
+
+        args = _required(entry, "args", [])
+        env = _required(entry, "env", {})
         cwd = entry.get("cwd")
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-            raise ValueError(f"{path}: server {name!r} 'args' must be a list of strings")
+            raise ValueError(f"{where} 'args' must be a list of strings")
         if not isinstance(env, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+            isinstance(k, str) and k and isinstance(v, str) for k, v in env.items()
         ):
-            raise ValueError(f"{path}: server {name!r} 'env' must map strings to strings")
+            raise ValueError(f"{where} 'env' must map strings to strings")
         if cwd is not None and not isinstance(cwd, str):
-            raise ValueError(f"{path}: server {name!r} 'cwd' must be a string")
-        where = f"{path}: server {name!r}"
+            raise ValueError(f"{where} 'cwd' must be a string")
         resolved_env = {k: _expand(v, env_base, where=where) for k, v in env.items()}
         resolved_env.setdefault("CLAUDE_PROJECT_DIR", project_dir)
-        servers[str(name)] = {
+        stdio_servers[str(name)] = {
             "source": {
                 "transport": "stdio",
-                "command": entry["command"],
+                "command": command,
                 "args": list(args),
                 "cwd": cwd,
-                "env_keys": sorted(env.keys()),
+                # as-written value templates: a same-key value swap in the config
+                # (NODE_OPTIONS, LD_PRELOAD) is DRIFT, not an invisible change
+                "env_templates": dict(env),
             },
-            "command": [_expand(entry["command"], env_base, where=where)]
+            "command": [_expand(command, env_base, where=where)]
             + [_expand(a, env_base, where=where) for a in args],
             "env": resolved_env,
             "cwd": cwd,
         }
-    return servers, skipped
+    return stdio_servers, remote_servers

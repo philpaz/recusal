@@ -4,7 +4,7 @@ Subcommands:
 
 - ``init``: scaffold a fail-closed Claude Code PreToolUse gate (detailed below);
 - ``verdict``: adjudicate a findings JSON file into PASS / RETRY / FAIL with blocking
-  exit codes (0 / 1 / 2), the CI primitive — any tool can emit findings, recusal
+  exit codes (0 / 1 / 2), the CI primitive - any tool can emit findings, recusal
   adjudicates them, and a nonzero exit blocks the merge;
 - ``audit verify``: check a hash-chained audit log's integrity (``recusal.audit``);
 - ``doctor``: health-check a scaffolded gate, so "the gate silently isn't installed"
@@ -279,6 +279,80 @@ def _manual_snippet(launcher: str = "auto") -> str:
     return json.dumps(entry, indent=2)
 
 
+def repair_launcher(project_dir: str, launcher: str = "auto", stdout=None) -> int:
+    """Replace the CANONICAL recusal launcher(s) in settings.json with the right ones
+    for this host, changing nothing else. Returns a process exit code.
+
+    The migration path for pre-0.4.2 Windows installs: ``init`` treats any existing
+    recusal hook as already-installed and changes nothing, so a host whose registered
+    POSIX launcher would fail OPEN under the PowerShell fallback had no automated way
+    forward. This recognizes the exact canonical launchers (never a custom command),
+    removes them, registers the host-appropriate entries, preserves every other hook
+    and setting byte-for-byte in spirit, never touches the gate policy file, prints the
+    exact change, and is a no-op the second time.
+    """
+    out = stdout if stdout is not None else sys.stdout
+    settings_path = os.path.join(project_dir, ".claude", "settings.json")
+    if not os.path.exists(settings_path):
+        out.write(f"{settings_path} does not exist; run `recusal init` for a fresh install\n")
+        return 1
+    with open(settings_path, encoding="utf-8") as f:
+        existing_text = f.read()
+    try:
+        settings = json.loads(existing_text)
+    except ValueError:
+        out.write(f"REFUSING to edit {settings_path} (unparseable); fix it by hand\n")
+        return 1
+    if not isinstance(settings, dict):
+        out.write(f"REFUSING to edit {settings_path} (unexpected shape)\n")
+        return 1
+    canonical = {LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL}
+    hooks = settings.get("hooks")
+    groups = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(groups, list):
+        out.write("no PreToolUse hooks registered; run `recusal init` for a fresh install\n")
+        return 1
+    removed = 0
+    custom = 0
+    kept_groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            kept_groups.append(group)
+            continue
+        kept_hooks = []
+        for hook in group.get("hooks", []) or []:
+            command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+            if command in canonical:
+                removed += 1
+                continue  # the known launcher, ours to replace
+            if GATE_FILENAME in command:
+                custom += 1  # a customized recusal hook is the USER'S; never touched
+            kept_hooks.append(hook)
+        if kept_hooks or not group.get("hooks"):
+            kept_groups.append({**group, "hooks": kept_hooks} if "hooks" in group else group)
+    entries = _hook_entries(launcher)
+    settings.setdefault("hooks", {})["PreToolUse"] = kept_groups + entries
+    new_text = json.dumps(settings, indent=2) + "\n"
+    if new_text == existing_text:
+        out.write("launcher already matches this host; no change\n")
+        return 0
+    with open(settings_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new_text)
+    launchers = ", ".join(
+        "powershell" if h["hooks"][0].get("shell") == "powershell" else "posix" for h in entries
+    )
+    out.write(
+        f"replaced {removed} canonical launcher(s) with {launchers} launcher(s) in "
+        f"{settings_path}\n"
+    )
+    if custom:
+        out.write(
+            f"left {custom} customized recusal hook(s) untouched; review them against the "
+            "canonical launchers yourself\n"
+        )
+    return 0
+
+
 def init(
     project_dir: str,
     posture: str = "deny-list",
@@ -545,7 +619,7 @@ def _launcher_platform_findings(gate_hooks: List[dict]) -> List[Finding]:
                     message="only a POSIX launcher is registered and no bash is on PATH: "
                     "Claude Code will run it under PowerShell, where it is a parse error "
                     "with a NON-blocking exit code - the gate FAILS OPEN on this host. "
-                    "Re-run `recusal init` to register the PowerShell launcher",
+                    "Run `recusal init --repair-launcher` to register the PowerShell launcher",
                 )
             )
     if not _WINDOWS and powershell and not posix:
@@ -554,7 +628,7 @@ def _launcher_platform_findings(gate_hooks: List[dict]) -> List[Finding]:
                 "launcher_shell_strategy",
                 severity="CRITICAL",
                 message="only a PowerShell launcher is registered on a non-Windows host; "
-                "re-run `recusal init` to register the POSIX launcher",
+                "run `recusal init --repair-launcher` to register the POSIX launcher",
             )
         )
     if not findings and (posix or powershell):
@@ -838,31 +912,28 @@ def _collect_catalog(
         argv = split_command(command_text)
         if not argv:
             raise ValueError(f"--stdio {name}: empty command")
-        source = {
+        source: Dict[str, Any] = {
             "transport": "stdio",
             "command": argv[0],
             "args": argv[1:],
             "cwd": None,
-            "env_keys": [],
+            "env_templates": {},
         }
         _gate_launch(name, source)
         _add(name, fetch_tools_stdio(argv, timeout=timeout, minimal_env=minimal_env))
         sources[name] = source
 
     if claude_config:
-        servers, skipped = servers_from_claude_config(claude_config)
-        for name in skipped:
-            unfetchable.append(name)
-            notes.append(
-                f"server {name!r} in {claude_config} is not a stdio server; this fetcher "
-                "cannot reach it - pin it from a JSON dump via --from"
-            )
-        # gate EVERY launch before executing ANY: one drifted server must not let its
-        # siblings run first and only then surface the refusal
+        stdio_servers, remote_servers = servers_from_claude_config(claude_config)
+        # gate EVERY configured server - stdio AND remote - before executing ANY: an
+        # unpinned or drifted server of any transport must refuse first, and one bad
+        # server must not let its siblings launch before the refusal surfaces
         if pinned is not None:
-            for name, spec in servers.items():
+            for name, spec in stdio_servers.items():
                 _gate_launch(name, spec["source"])
-        for name, spec in servers.items():
+            for name, remote_source in remote_servers.items():
+                _gate_launch(name, remote_source)
+        for name, spec in stdio_servers.items():
             _add(
                 name,
                 fetch_tools_stdio(
@@ -874,6 +945,19 @@ def _collect_catalog(
                 ),
             )
             sources[name] = spec["source"]
+        for name, remote_source in remote_servers.items():
+            if name in catalog:
+                # catalog supplied via --from under the same name: the DUMP provides the
+                # declarations, the CONFIG provides the identity - pin/compare the real
+                # remote identity, not a generic "external"
+                sources[name] = remote_source
+            else:
+                unfetchable.append(name)
+                sources[name] = remote_source
+                notes.append(
+                    f"server {name!r} in {claude_config} is remote ({remote_source['transport']});"
+                    " this fetcher never contacts it - supply its catalog via --from"
+                )
 
     if not catalog and not unfetchable:
         raise ValueError("no catalog source given (--from, --stdio, or --claude-config)")
@@ -938,6 +1022,16 @@ def mcp_pin_command(
     if not as_json:  # notes are prose; under --json they would corrupt the payload
         for note in obs.notes:
             out.write(f"note: {note}\n")
+    if obs.unfetchable:
+        # a partial pin reads as a full one: a configured remote server whose catalog
+        # was not supplied must refuse the pin, not ride along as a prose note
+        return _fail_closed(
+            f"server(s) {sorted(obs.unfetchable)} are remote and no catalog was supplied "
+            "for them; add --from with their tools/list dump(s) so the pin covers EVERY "
+            "configured server, or pin them separately and deliberately",
+            as_json,
+            out,
+        )
 
     try:
         text = manifest_to_text(build_manifest(catalog, sources=obs.sources))
@@ -947,6 +1041,23 @@ def mcp_pin_command(
         return _fail_closed(f"catalog cannot be pinned: {exc}", as_json, out)
 
     screen = screen_tool_declarations(catalog)
+    # A literal (non-${VAR}) env value template becomes manifest CONTENT when pinned;
+    # that is the deliberate trade for same-key value-swap detection, and it is named
+    # at pin time - as a WARNING finding, so --json carries it too - with the fix:
+    # reference secrets as ${VAR}, which pins the reference, never the value.
+    for server_name, source in sorted(obs.sources.items()):
+        for key, template in sorted(source.get("env_templates", {}).items()):
+            if "${" not in template:
+                screen = list(screen) + [
+                    Finding.fail(
+                        "mcp_env_literal",
+                        severity="WARNING",
+                        message=f"server {server_name!r} env {key!r} is a literal value; "
+                        "it is now recorded in the manifest - use ${VAR} for secrets",
+                        server=server_name,
+                        env_key=key,
+                    )
+                ]
     screen_verdict = compute_verdict(screen)
     if not screen_verdict.passed and not force:
         if as_json:
@@ -1167,6 +1278,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "Windows, POSIX elsewhere; 'both' suits a settings.json shared across OSes, at "
         "the cost of the gate running twice per call on Windows hosts with Git Bash)",
     )
+    p_init.add_argument(
+        "--repair-launcher",
+        action="store_true",
+        help="replace the CANONICAL recusal launcher(s) already in settings.json with "
+        "the right one(s) for this host (the migration path for a pre-0.4.2 Windows "
+        "install whose POSIX launcher fails OPEN under the PowerShell fallback); custom "
+        "hooks and the gate policy file are never touched",
+    )
 
     p_verdict = sub.add_parser(
         "verdict",
@@ -1273,6 +1392,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "init":
+        if args.repair_launcher:
+            return repair_launcher(args.dir, launcher=args.launcher)
         return init(
             args.dir,
             posture=args.posture,

@@ -451,14 +451,18 @@ recusal mcp pin --stdio github "npx -y @modelcontextprotocol/server-github@1.2.3
 
 > **`--claude-config` and `--stdio` EXECUTE the declared server commands** to ask them
 > for `tools/list`; there is no other way to ask a process for its catalog. That is why
-> the first pin requires `--approve-server-launch`: review the `command`/`args` lines
-> the same way you review the declarations, then record the approval. The manifest pins
-> each **launch specification** (unexpanded command template, args, cwd, env variable
-> names) alongside the catalog, and `verify` compares it **before** launching, so a
-> rewritten config is refused without the replacement command ever executing. Pin
-> package versions in the args (`server-github@1.2.3`, not `server-github`): PATH and
-> the registry resolve what they are asked for. Servers run with a minimal environment
-> by default (`--inherit-env` opts out).
+> the first pin requires `--approve-server-launch`: review the `command`/`args`/`env`
+> lines the same way you review the declarations, then record the approval. The
+> manifest pins each **source specification** (unexpanded command template, args, cwd,
+> and env value *templates*; for remote servers the `url` template and header names)
+> alongside the catalog, and `verify` compares it **before** launching, so a rewritten
+> command, a same-key env value swap, or an added server of any transport is refused
+> without anything executing. A mixed config pins only with `--from` supplying the
+> remote catalogs. Reference secrets as `${VAR}` (a literal env value becomes manifest
+> content, and the pin warns). Pin package versions in the args
+> (`server-github@1.2.3`, not `server-github`): PATH and the registry resolve what
+> they are asked for. Servers run with a minimal environment by default
+> (`--inherit-env` opts out); minimal environment is not a sandbox.
 
 The manifest stores **hashes only** (a poisoned description is never embedded) and is
 byte-deterministic. `pin` refuses to write when its screen flags injection phrasing in a

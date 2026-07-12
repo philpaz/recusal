@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-07-12
+
+The trustworthiness patch, driven by a fourth external review of 0.5.0: the source
+artifact now covers every configured server and the config's whole execution-relevant
+surface, and every confirmed correctness finding is fixed.
+
+### Fixed
+- **Every configured server is verified, remote transports included (P0).** `.mcp.json`
+  is parsed by transport TYPE with Claude Code's rules: `http`/`streamable-http`/`sse`/
+  `ws` entries are first-class identities pinned as `{transport, url_template,
+  header_keys}` (templates and names, never values); an added unpinned remote server, a
+  transport swap, a URL without a type, an unsupported type, or a remote entry carrying
+  stdio launch fields each fail closed - previously a remote entry was a silently
+  skipped name, so an attacker could add `{"type": "http"}` exfiltration to the config
+  and verify still passed. A mixed pin now refuses unless `--from` supplies the remote
+  catalogs: a partial pin must not read as a full one.
+- **Environment value templates are pinned (P0; manifest version 3).** v2 pinned env
+  variable *names* only, so a same-key value swap in the config - `NODE_OPTIONS`,
+  `LD_PRELOAD`, `PYTHONPATH` - passed the preflight and executed attacker code at
+  launch. v3 pins the as-written value templates: a config-level value change or
+  `${VAR}` reference rename is drift, refused before launch. Resolved values still
+  never appear in a pin; a LITERAL env value does become manifest content, named at pin
+  time as a JSON-visible WARNING (`mcp_env_literal`) with the fix (use `${VAR}` for
+  secrets). The residual is narrowed and pinned as a test: the operator-shell value
+  behind a `${VAR}` reference is not the config's to pin. v1 and v2 manifests are
+  refused with re-pin instructions.
+- **`recusal init --repair-launcher` migrates pre-0.4.2 Windows installs.** `init` treats
+  any existing recusal hook as already-installed, so doctor's old remediation ("re-run
+  init") changed nothing on hosts whose POSIX launcher fails OPEN under the PowerShell
+  fallback. The repair recognizes exactly the canonical launchers, replaces them with
+  the host-appropriate entries, preserves custom hooks and every other setting, never
+  touches the gate policy file, and is a no-op the second time. Doctor now recommends it.
+- **`verify(entries, expected_head=...)` returns a named failure on a non-object final
+  record** instead of raising - the anchor exists precisely to catch a mangled tail.
+- **The manifest-policy cache is thread-safe**: (digest, names) is one immutable pair
+  swapped under a lock, and the returned names are always derived from the bytes the
+  same call read, so a multi-threaded runtime can never observe one manifest's digest
+  associated with another manifest's authorization set.
+- **The observer's peak memory matches its budget claim**: the reader thread reserves
+  against the total-character budget BEFORE enqueueing and the queue holds at most 4
+  lines - previously the budget was charged on dequeue, so a hostile server could park
+  queue-times-line-cap (multi-GB) in memory before the limit fired.
+- **The GitHub Action aggregates every gate**: GitHub runs `shell: bash` with fail-fast,
+  which aborted the script at the first failing gate before `bump $?` ran; `set +e` now
+  precedes the aggregation, so every selected gate runs and the highest exit code wins
+  (drift-locked by a test).
+- **Protocol strictness**: a matching response without the `jsonrpc: "2.0"` envelope,
+  or an `initialize` result without a named `serverInfo` object or a `tools` capability
+  *object*, refuses. One monotonic `observation_timeout` (default 300s) spans
+  initialize plus all pagination, so a server answering just inside each per-request
+  deadline cannot stretch an observation to ~101x the timeout.
+- **`build_manifest` refuses an empty tool name** (it previously wrote an artifact its
+  own loader rejects), an explicitly supplied invalid source raises instead of silently
+  downgrading to external, an external source carrying stdio fields is contradictory
+  and refused, and falsey malformed config values (`"args": ""`, `"env": []`) are
+  rejected instead of being coerced to empty defaults.
+
 ## [0.5.0] - 2026-07-12
 
 The MCP launch-template-integrity release: the pin now covers the approved stdio launch

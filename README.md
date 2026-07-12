@@ -314,17 +314,21 @@ session start); the call-time gate then enforces *approved tools only*. A server
 serves one catalog to `verify` and a different one to the live session (a client- or
 time-discriminating server) is a residual this layer names rather than claims to close:
 run `verify` against the same endpoint the session uses, close in time. The manifest
-pins the **launch specification as well as the declared catalog**: the unexpanded
-command template, args, cwd, and environment variable *names* (never values), compared
-by `verify` **before** any process starts, so a rewritten `.mcp.json` command is refused
-without the replacement ever executing (pinned by an adversarial test proving the
-substituted command's marker file is never written). The remaining residuals, named:
-identity is template-level, so the *values* of referenced environment variables are not
-pinned; `npx`/`uvx`-style launchers resolve through PATH and fetch what the registry
-serves (pin package versions in the args); and dump-supplied (`--from`) servers are
-pinned as `transport: external`, their launch being outside recusal's control. Keep
-protecting `.mcp.json` and `mcp-manifest.json` as control-plane files - the default
-deny-list does.
+pins the **source specification as well as the declared catalog**, and `verify` compares
+it **before** any process starts. For stdio servers that is the unexpanded command
+template, args, cwd, and the environment value *templates* as written in the config, so
+a rewritten command, a same-key env value swap (`NODE_OPTIONS`, `LD_PRELOAD`), or a
+`${VAR}` reference rename is refused without the replacement ever executing (each pinned
+by an adversarial test proving the substituted command's marker file is never written).
+Every configured server is covered: a remote (`http`/`sse`/`ws`) entry pins its
+`url_template` and header *names*, an added or transport-swapped server of any kind is
+drift, and a config entry the parser cannot faithfully represent fails closed. The
+remaining residuals, named: the operator-shell *values* behind `${VAR}` references are
+not pinned (the reference is); `npx`/`uvx`-style launchers resolve through PATH and
+fetch what the registry serves (pin package versions in the args); executable bytes are
+not attested; and a `--from`-only pin records `transport: external`, attesting the
+declaration set, not the endpoint that produced it. Keep protecting `.mcp.json` and
+`mcp-manifest.json` as control-plane files - the default deny-list does.
 
 See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py)
 (offline). Pinned as tests: [`tests/test_mcp_manifest.py`](tests/test_mcp_manifest.py),
