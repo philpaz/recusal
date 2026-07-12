@@ -397,6 +397,12 @@ audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
 ok, problems = verify(audit.entries)   # False if an entry with a later entry was edited/reordered
 ```
 
+In the Claude Code hook it is one argument: `run_pretooluse_hook(policy,
+audit=AuditLog("audit.jsonl", resume="tail"))` puts every adjudication - defer, allow,
+and deny - on the chain, with the proposed `tool_input` bound by SHA-256 fingerprint,
+never embedded, and an unwritable log failing closed to a deny (the record is part of
+the control). `resume="tail"` keeps the per-call cost flat as the log grows.
+
 Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
 
 ## Gate your CI

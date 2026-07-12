@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`run_pretooluse_hook(audit=...)`: every adjudication on the record, one wire.**
+  Pass an `AuditLog` and every hook decision - defer, allow, and deny alike - appends one
+  hash-chained entry naming the tool, the decision, the reasons, and a SHA-256 fingerprint
+  of the proposed `tool_input` (contents are never embedded: a `Write`'s file body or an
+  env value must not leak into the log). `actor=` labels entries and defaults to the
+  event's `session_id`. An unwritable log fails **closed** to a deny - the record is part
+  of the control - unless `fail_closed=False`. Malformed-event and policy-error denials
+  are on the record too, with synthesized findings saying what happened.
+- **`AuditLog(path, resume="tail")`: resume the chain without holding the log in memory.**
+  Streams the file once to recover the chain head (last hash, next seq) and retains no
+  entries, before or after; appends go to disk only. The default `resume="full"` is
+  unchanged. Tail is the right mode for a per-call hook over a growing log and for
+  long-running gates; verify with `verify_file(path)`.
+
 ## [0.4.1] - 2026-07-12
 
 Hardening and documentation only, driven by two external reviews; no new capabilities.

@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from .evidence import Verdict
 
@@ -70,6 +70,17 @@ class AuditLog:
     Pass ``path`` to persist as JSONL (one entry per line); otherwise it lives in
     memory on ``self.entries``. An existing file is resumed, the chain continues
     from its last entry.
+
+    ``resume`` controls what a resume holds in memory:
+
+    - ``"full"`` (default): load every prior entry into ``self.entries`` and keep
+      every new append there too, so ``verify(log.entries)`` works directly. The
+      cost is the whole log in memory - fine for a short-lived process (a per-call
+      hook), unbounded for a long-running gate over a growing log.
+    - ``"tail"``: stream the file once to recover the chain head (last hash, next
+      seq) and retain **no** entries in memory, before or after - appends go to
+      disk only and ``self.entries`` stays empty. Bounded memory regardless of log
+      size; verify with ``verify_file(path)``. Requires ``path``.
     """
 
     def __init__(
@@ -77,14 +88,23 @@ class AuditLog:
         path: Optional[str] = None,
         *,
         clock: Optional[Callable[[], datetime]] = None,
+        resume: str = "full",
     ) -> None:
+        if resume not in ("full", "tail"):
+            raise ValueError(f"resume must be 'full' or 'tail', got {resume!r}")
+        if resume == "tail" and not path:
+            raise ValueError("resume='tail' requires a path (an in-memory log IS its entries)")
         self.path = path
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._retain = resume == "full"
         self.entries: List[Dict[str, Any]] = []
         self.last_hash = GENESIS
+        self._next_seq = 0
         if path:
-            for entry in load(path):
-                self.entries.append(entry)
+            for entry in _scan(path):
+                if self._retain:
+                    self.entries.append(entry)
+                self._next_seq += 1
                 head = entry.get("hash")
                 if head is not None:
                     self.last_hash = head
@@ -101,7 +121,7 @@ class AuditLog:
         was adjudicated (e.g. ``{"tool": "Bash", "command": "..."}``); ``actor`` is an
         optional agent/session id. Returns the written entry (including its hash)."""
         entry: Dict[str, Any] = {
-            "seq": len(self.entries),
+            "seq": self._next_seq,
             "timestamp": timestamp or self._clock().isoformat(),
             "actor": actor,
             "action": action,
@@ -110,7 +130,9 @@ class AuditLog:
         }
         entry["hash"] = _digest(entry)
 
-        self.entries.append(entry)
+        self._next_seq += 1
+        if self._retain:
+            self.entries.append(entry)
         self.last_hash = entry["hash"]
         if self.path:
             with open(self.path, "a", encoding="utf-8") as fh:
@@ -118,14 +140,13 @@ class AuditLog:
         return entry
 
 
-def load(path: str) -> List[Dict[str, Any]]:
-    """Read a JSONL audit file into a list of entries (empty if the file is absent).
+def _scan(path: str) -> Iterator[Dict[str, Any]]:
+    """Yield entries from a JSONL audit file one at a time (nothing if it is absent).
 
     A line that is not valid JSON (e.g. a partial final line left by a process killed
     mid-append) is skipped rather than crashing the read, so a half-written tail can never
     brick the log. ``verify`` still surfaces any resulting chain break.
     """
-    entries: List[Dict[str, Any]] = []
     try:
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
@@ -133,12 +154,19 @@ def load(path: str) -> List[Dict[str, Any]]:
                 if not line:
                     continue
                 try:
-                    entries.append(json.loads(line))
+                    yield json.loads(line)
                 except json.JSONDecodeError:
                     continue  # skip a corrupt/partial line instead of bricking the log
     except FileNotFoundError:
-        return []
-    return entries
+        return
+
+
+def load(path: str) -> List[Dict[str, Any]]:
+    """Read a JSONL audit file into a list of entries (empty if the file is absent).
+
+    Corrupt/partial lines are skipped, not fatal - see ``_scan``.
+    """
+    return list(_scan(path))
 
 
 def verify(

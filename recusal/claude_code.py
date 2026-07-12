@@ -53,17 +53,63 @@ unless affirmatively named), see the "Allowlist mode" section below.
 No Anthropic-SDK dependency, this only speaks the hook's stdin/stdout JSON.
 """
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import sys
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
-from .evidence import Finding, compute_verdict
+from .evidence import Finding, Verdict, compute_verdict
+
+if TYPE_CHECKING:  # runtime never needs the import; the hook only calls audit.append
+    from .audit import AuditLog
 
 # A policy maps a proposed tool call to evidence findings.
 Policy = Callable[[str, dict], List[Any]]
+
+
+def _adjudicate(
+    tool_name: str,
+    tool_input: dict,
+    policy: Policy,
+    *,
+    allow_on_pass: bool,
+    fail_closed: bool,
+) -> Tuple[str, str, Verdict]:
+    """``decide`` plus the Verdict that drove it, so a caller can put it on the record.
+
+    A policy error has no verdict of its own; one is synthesized so the audit entry
+    states what actually happened (CRITICAL when it denied, WARNING when ignored)."""
+    try:
+        findings = policy(tool_name, tool_input) or []
+        # strict at the enforcement boundary: ambiguous evidence (a dict with no
+        # status/passed) fails closed here rather than silently degrading to PASS.
+        verdict = compute_verdict(findings, strict=True)
+    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
+        if fail_closed:
+            verdict = compute_verdict(
+                [Finding.fail("recusal_policy_error", severity="CRITICAL", message=str(exc))]
+            )
+            return "deny", f"Recusal failed closed (policy error): {exc}", verdict
+        verdict = compute_verdict(
+            [
+                Finding.fail(
+                    "recusal_policy_error",
+                    severity="WARNING",
+                    message=f"ignored (fail_closed=False): {exc}",
+                )
+            ]
+        )
+        return ("allow" if allow_on_pass else "defer"), f"policy error ignored: {exc}", verdict
+    if verdict.passed:
+        return ("allow" if allow_on_pass else "defer"), verdict.message, verdict
+    return (
+        "deny",
+        f"Recusal refused `{tool_name}` [{verdict.decision.value}]: {verdict.reasons()}",
+        verdict,
+    )
 
 
 def decide(
@@ -79,20 +125,20 @@ def decide(
     ``decision`` is ``"defer"`` (PASS, and not auto-allowing), ``"allow"`` (PASS with
     ``allow_on_pass=True``), or ``"deny"`` (RETRY/FAIL).
     """
-    try:
-        findings = policy(tool_name, tool_input) or []
-        # strict at the enforcement boundary: ambiguous evidence (a dict with no
-        # status/passed) fails closed here rather than silently degrading to PASS.
-        verdict = compute_verdict(findings, strict=True)
-    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        if fail_closed:
-            return "deny", f"Recusal failed closed (policy error): {exc}"
-        return ("allow" if allow_on_pass else "defer"), f"policy error ignored: {exc}"
-    if verdict.passed:
-        return ("allow" if allow_on_pass else "defer"), verdict.message
-    return "deny", (
-        f"Recusal refused `{tool_name}` [{verdict.decision.value}]: {verdict.reasons()}"
+    decision, reason, _ = _adjudicate(
+        tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
     )
+    return decision, reason
+
+
+def _input_fingerprint(tool_input: dict) -> str:
+    """SHA-256 over the canonical JSON of the proposed tool input. The audit entry binds
+    to the exact proposed call without embedding its contents (a Write's file body, an
+    env value): hashes only, the same doctrine as the MCP manifest."""
+    canonical = json.dumps(
+        tool_input, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def run_pretooluse_hook(
@@ -100,6 +146,8 @@ def run_pretooluse_hook(
     *,
     allow_on_pass: bool = False,
     fail_closed: bool = True,
+    audit: Optional["AuditLog"] = None,
+    actor: Optional[str] = None,
     stdin: Any = None,
     stdout: Any = None,
 ) -> Optional[dict]:
@@ -113,10 +161,21 @@ def run_pretooluse_hook(
     treated like a policy error: it **fails closed** to a ``deny`` by default, so a
     garbled or truncated event cannot silently skip the gate. Pass ``fail_closed=False``
     to defer instead.
+
+    Pass ``audit=`` (a :class:`recusal.audit.AuditLog`) to put every adjudication on the
+    record - defer, allow, and deny alike - as one hash-chained entry naming the tool,
+    the decision, the reasons, and a SHA-256 fingerprint of the proposed ``tool_input``
+    (contents are never embedded). ``actor`` labels the entries; when omitted, the
+    event's ``session_id`` is used if present. If the log cannot be written the hook
+    fails **closed** to a deny - the record is part of the control - unless
+    ``fail_closed=False``. The hook runs as a fresh process per tool call, so open the
+    log with ``AuditLog(path, resume="tail")`` to avoid re-reading a grown log each call.
     """
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
 
+    tool_name: Optional[str] = None
+    input_sha256: Optional[str] = None
     try:
         event = json.load(stdin)
         if not isinstance(event, dict):
@@ -126,7 +185,11 @@ def run_pretooluse_hook(
         tool_input = event.get("tool_input", {})
         if not isinstance(tool_input, dict):
             raise ValueError("PreToolUse 'tool_input' is not an object")
-        decision, reason = decide(
+        tool_name = event["tool_name"]
+        input_sha256 = _input_fingerprint(tool_input)
+        if actor is None and isinstance(event.get("session_id"), str):
+            actor = event["session_id"]
+        decision, reason, verdict = _adjudicate(
             event["tool_name"],
             tool_input,
             policy,
@@ -135,8 +198,55 @@ def run_pretooluse_hook(
         )
     except Exception as exc:  # noqa: BLE001 - a malformed event must not silently disable the gate
         if not fail_closed:
-            return None  # fail-open: defer to Claude Code's normal flow
+            # fail-open: defer to Claude Code's normal flow. Still a decision: if a log
+            # was asked for, record it (best-effort; PASS with the warning on record).
+            if audit is not None:
+                verdict = compute_verdict(
+                    [
+                        Finding.fail(
+                            "recusal_malformed_event",
+                            severity="WARNING",
+                            message=f"deferred (fail_closed=False): {exc}",
+                        )
+                    ]
+                )
+                try:
+                    audit.append(
+                        verdict,
+                        action={
+                            "surface": "claude_code.pretooluse",
+                            "tool": tool_name,
+                            "decision": "defer",
+                            "reason": f"malformed PreToolUse event ignored: {exc}",
+                        },
+                        actor=actor,
+                    )
+                except Exception:  # noqa: BLE001 - fail-open mode was chosen explicitly
+                    pass
+            return None
         decision, reason = "deny", f"Recusal failed closed: malformed PreToolUse event ({exc})"
+        verdict = compute_verdict(
+            [Finding.fail("recusal_malformed_event", severity="CRITICAL", message=str(exc))]
+        )
+
+    if audit is not None:
+        action: Dict[str, Any] = {
+            "surface": "claude_code.pretooluse",
+            "tool": tool_name,
+            "decision": decision,
+            "reason": reason,
+        }
+        if input_sha256 is not None:
+            action["input_sha256"] = input_sha256
+        try:
+            audit.append(verdict, action=action, actor=actor)
+        except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed
+            if fail_closed:
+                decision, reason = (
+                    "deny",
+                    f"Recusal failed closed: audit log unavailable ({exc}); "
+                    "the record is part of the control",
+                )
 
     if decision == "defer":
         return None
