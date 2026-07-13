@@ -199,7 +199,11 @@ runs an unbounded set of legitimate commands). Its boundary is inherent, not a d
 literal matcher can be obfuscated past, and `python script.py` runs code no string check
 ever reads, so a deny-list never earns "cannot be subverted." Since 0.5.11 it also
 refuses package-manager mutation of the enforcement package itself (`pip uninstall
-recusal`, install-time shadowing, across the `pip` / `python -m pip` / `uv` spellings).
+recusal`, install-time shadowing, across the `pip` / `python -m pip` / `uv` spellings;
+since 0.5.12 including global option/value forms like `pip --python .venv uninstall`
+and `uv --project . remove`, and Windows launcher spellings like `pip.exe`). Protected
+names are compared as canonical distribution identities, and a source argument that
+merely contains one (`./fake-recusal`) is refused toward safety by contract.
 
 Neither is "better" in the abstract: a deny-list refusing the unknown would grind a broad
 channel to a halt, and an allowlist deferring the unknown would defeat the point of a
@@ -287,8 +291,10 @@ loading or scanning the full log, and file-backed appends are serialized with an
 inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
 it.
 
-Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12
-(record-keeping): for a regulated deployment, this is the artifact your auditor reads.
+Deterministic, stdlib-only, and designed to support OWASP Agentic logging and EU AI Act
+Article 12 record-keeping: in a regulated deployment, this can provide one auditable
+decision artifact within the broader system of records, controls, evidence retention,
+and deployment governance.
 
 ## Why an independent gate
 

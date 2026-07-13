@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.12] - 2026-07-13
+
+Hardens the 0.5.11 package-manager self-protection: the matcher now covers the valid,
+statically visible command forms the flat regex missed, and the customization surface
+gets explicit contracts. Narrow scope, no API change.
+
+### Security
+- **Package-manager matcher widened to option/value and launcher forms.** A bounded
+  token walk now runs in union with the 0.5.11 regex (either matching refuses, so the
+  addition can never regress existing coverage). It pairs a global option with its
+  separate value token, which a flat regex cannot, and strips Windows launcher
+  suffixes: `pip --python .venv uninstall recusal`, `python -m pip --python .venv
+  install recusal`, `uv --project . remove recusal`, `uv --directory . remove recusal`,
+  `uv --offline remove recusal`, `uv pip --python .venv uninstall recusal`, `pip.exe
+  uninstall recusal`, and `python.exe -m pip uninstall recusal` are all refused; every
+  one of them deferred in 0.5.11. Scope stays the documented pip + uv surface: pipx,
+  `uv tool`, conda, and poetry are considered and excluded (isolated tool environments
+  or foreign resolvers, not the import path the gate's venv resolves), and the named
+  ceiling is unchanged (`pip install -e .`, `-r requirements.txt` remain unreadable to
+  a string matcher; the pinned venv stays the real defense).
+- **Protected package names are canonical distribution identities (PEP 503).**
+  Configured and parsed names are compared case-insensitively with runs of `-`/`_`/`.`
+  collapsed, so `protected_packages=("My.Gate",)` now refuses `pip uninstall my_gate`,
+  `my-gate`, and `MY.GATE` alike. In 0.5.11 a mixed-case configured name silently
+  matched nothing (the pattern kept its case while commands are matched lowercased),
+  so the advertised customization point failed open for any non-lowercase input.
+- **Empty protected names are a construction-time `ValueError`.**
+  `protected_packages=("",)` (or a separator-only name) previously compiled to a
+  pattern matching every package mutation, a silent deny-all; it now raises at
+  `deny_list_policy()` construction and in `analyze_command`.
+- **Substring matching is now an explicit contract.** A mutating package command whose
+  argument merely contains a protected name (`notrecusal`, `recusal-helper`,
+  `./fake-recusal`, `recusal-replacement.tar.gz`) is refused toward safety, by design:
+  a name-containing source is a plausible shadow of the gate, and the cost of the
+  safe-side false positive is a deferral to a human. Previously this was an accidental
+  regex property, now documented and pinned both directions (ordinary package
+  commands, `pip install requests`, `uv add httpx`, `pip show recusal`, still defer).
+- 32 new deterministic tests pin the widened forms, the canonicalization, the
+  validation, the substring contract, and the negative space (1046 total; the 66
+  package-protection tests shipped in 0.5.11 all pass unchanged against the widened
+  matcher).
+
+### Documentation
+- **Audit claim tightened one degree.** The README's "this is the artifact your
+  auditor reads" sentence now states the disciplined version: the log can provide one
+  auditable decision artifact within the broader system of records, controls, evidence
+  retention, and deployment governance.
+
 ## [0.5.11] - 2026-07-12
 
 Closes the package-manager self-protection gap and consolidates the front door: the

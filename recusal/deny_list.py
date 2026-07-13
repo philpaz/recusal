@@ -178,21 +178,63 @@ _CD_INTO_CONTROL = re.compile(
 # (`pip install -e ./fake-recusal`, a URL install, a pinned-version reinstall) swaps
 # what the gate IS: neither carries a `recusal/` path segment, so the path-based
 # self-protect guard never sees them ("uninstall" also never matched `\binstall\b`,
-# there is no word boundary inside the word). Covered spellings: `pip` / `pip3` /
-# `pip3.12`, `python -m pip` (plus `py` / `pypy`, with an optional `py -3.12`
-# selector), `uv pip`, and `uv add` / `uv remove`; bounded gaps allow flags in
-# either position (`pip -q install`, `uninstall -y`). The named ceiling is
-# unchanged: an install that provides the package without naming it
-# (`pip install -e .`, `-r requirements.txt`) is unreadable to a string matcher;
-# a protected, pinned venv stays the real defense (SECURITY.md).
+# there is no word boundary inside the word). Two matchers run in union, so adding
+# one can never regress the other:
+#   1. a regex over the covered spellings: `pip` / `pip3` / `pip3.12`, `python -m pip`
+#      (plus `py` / `pypy`, with an optional `py -3.12` selector), `uv pip`, and
+#      `uv add` / `uv remove`, with bounded flag gaps (`pip -q install`,
+#      `uninstall -y`);
+#   2. a bounded token walk over the same two families that also covers what a flat
+#      regex cannot pair: a global option with a separate value (`pip --python .venv
+#      uninstall`, `uv --project . remove`) and Windows launcher suffixes (`pip.exe`).
+# Protected names are canonicalized the way Python distribution names are (PEP 503:
+# case-insensitive, runs of `-`/`_`/`.` are one separator), so `My.Gate` protects
+# `my-gate`, `my_gate`, and `MY.GATE` alike. A name match is deliberately
+# substring-over-refusing: `pip install ./fake-recusal` or a
+# `recusal-replacement.tar.gz` source names a plausible shadow of the gate and is
+# refused toward safety (false positives here defer to a human; false negatives
+# uninstall the gate). The named ceiling is unchanged: an install that provides the
+# package without naming it (`pip install -e .`, `-r requirements.txt`) is unreadable
+# to a string matcher; a protected, pinned venv stays the real defense (SECURITY.md).
+# Considered and excluded: pipx and `uv tool` (isolated tool environments, not the
+# import path the gate's venv resolves) and conda/poetry (outside the documented
+# pip + uv surface); parsing arbitrary shell syntax stays out of scope.
 _PIP_SPELLINGS = (
     r"\b(?:pip[\d.]*|uv\s+pip|(?:py|python[\d.]*|pypy[\d.]*)\s+(?:-[\d.]+\s+)?-m\s+pip[\d.]*)"
 )
 
 
+def _canon_pkg(name: str) -> str:
+    """Canonicalize a distribution name (PEP 503): lowercase, with runs of `-`/`_`/`.`
+    collapsed to one `-`, so `My.Gate`, `my_gate`, and `MY--GATE` are one identity."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+@lru_cache(maxsize=32)
+def _canonical_protected(packages: Tuple[str, ...]) -> Tuple[str, ...]:
+    """Validated canonical forms of the configured protected names. An empty (or
+    separator-only) name would turn the guard into refuse-every-package-mutation;
+    that is a configuration error, not a policy, so it raises instead of silently
+    over-enforcing."""
+    canon = tuple(_canon_pkg(p) for p in packages)
+    for raw, c in zip(packages, canon):
+        if not c.strip("-"):
+            raise ValueError(
+                f"protected package name {raw!r} is empty after canonicalization; "
+                "an empty name would match every package mutation"
+            )
+    return canon
+
+
+def _name_rx(canon: str) -> str:
+    # One canonical name as a pattern tolerant of any separator spelling at each
+    # canonical separator; every literal part is regex-escaped.
+    return r"[-_.]+".join(re.escape(part) for part in canon.split("-") if part)
+
+
 @lru_cache(maxsize=32)
 def _package_mutation_rx(packages: Tuple[str, ...]) -> "re.Pattern[str]":
-    names = "|".join(re.escape(p) for p in packages)
+    names = "|".join(_name_rx(c) for c in _canonical_protected(packages))
     return re.compile(
         _PIP_SPELLINGS
         + r"(?:\s+-[^\s|&;]{1,64}){0,6}\s+(?:un)?install\b[^|&;]{0,256}(?:"
@@ -202,6 +244,83 @@ def _package_mutation_rx(packages: Tuple[str, ...]) -> "re.Pattern[str]":
         + names
         + r")"
     )
+
+
+# ── The token walk: the union partner of `_package_mutation_rx` ───────────────────────
+_LAUNCHER_SUFFIXES = (".exe", ".cmd", ".bat")
+_PIP_TOKEN = re.compile(r"^pip[\d.]*$")
+_INTERP_TOKEN = re.compile(r"^(?:py|python[\d.]*|pypy[\d.]*)$")
+_PIP_MUTATORS = frozenset({"install", "uninstall"})
+_UV_HEADS = frozenset({"add", "remove", "pip"})
+_M_FLAG = frozenset({"-m"})
+
+
+def _strip_launcher(tok: str) -> str:
+    for suf in _LAUNCHER_SUFFIXES:
+        if tok.endswith(suf):
+            return tok[: -len(suf)]
+    return tok
+
+
+def _skip_options(toks: List[str], i: int, stop: FrozenSet[str]) -> int:
+    """Walk past global options, each optionally carrying one separate value token,
+    until a token in ``stop``. Returns the stop token's index, or -1 when the tokens
+    are not that command shape (which sends the caller back to the regex). Bounded."""
+    for _ in range(8):
+        if i >= len(toks):
+            return -1
+        t = toks[i]
+        if t in stop:
+            return i
+        if not t.startswith("-"):
+            return -1  # a bare token that is not the subcommand: a different command
+        i += 1
+        # `--opt value`: consume one value token unless the option already carries its
+        # value (`--python=.venv`) or the next token is the subcommand (`-q install`).
+        if "=" not in t and i < len(toks) and not toks[i].startswith("-") and toks[i] not in stop:
+            i += 1
+    return -1
+
+
+def _args_name_protected(toks: List[str], i: int, canon_names: Tuple[str, ...]) -> bool:
+    """True when any argument token from ``i`` on names a protected distribution.
+    Substring-over-refusing on canonicalized text, deliberately: `./fake-recusal` and
+    `recusal-replacement.tar.gz` are refused as plausible shadows of the gate."""
+    for t in toks[i:]:
+        c = _canon_pkg(t)
+        if any(n in c for n in canon_names):
+            return True
+    return False
+
+
+def _walk_package_mutation(variant: str, canon_names: Tuple[str, ...]) -> bool:
+    """Bounded token walk over the covered pip/uv families. Split on shell separators,
+    whitespace-tokenize each segment, identify the package manager (launcher suffixes
+    stripped), walk past global options and their values, find the mutating
+    subcommand, and test the remaining arguments against the protected names. Any
+    shape it does not recognize returns False and falls back to the regex, so this
+    walker only ever adds coverage."""
+    for seg in re.split(r"[|&;\n]+", variant):
+        toks = [_strip_launcher(t) for t in seg.split()][:64]
+        for i, tok in enumerate(toks):
+            sub = -1
+            if _PIP_TOKEN.match(tok):
+                sub = _skip_options(toks, i + 1, _PIP_MUTATORS)
+            elif _INTERP_TOKEN.match(tok):
+                m = _skip_options(toks, i + 1, _M_FLAG)
+                if m != -1 and m + 1 < len(toks) and _PIP_TOKEN.match(toks[m + 1]):
+                    sub = _skip_options(toks, m + 2, _PIP_MUTATORS)
+            elif tok == "uv":
+                j = _skip_options(toks, i + 1, _UV_HEADS)
+                if j == -1:
+                    continue
+                if toks[j] == "pip":
+                    sub = _skip_options(toks, j + 1, _PIP_MUTATORS)
+                else:
+                    sub = j
+            if sub != -1 and _args_name_protected(toks, sub + 1, canon_names):
+                return True
+    return False
 
 
 # ── Default configuration (the dogfood gate's layout) ─────────────────────────────────
@@ -353,7 +472,11 @@ def analyze_command(
     objection). Used for the Bash tool AND for any other tool that carries a command under a
     command-like key, so an MCP shell can't be a second, ungated shell. ``protected_paths``
     are the control-path substrings whose edit/removal is refused; ``protected_packages``
-    are the distribution names whose package-manager mutation is refused."""
+    are the distribution names whose package-manager mutation is refused (compared
+    canonically per PEP 503, substring-over-refusing; an empty name raises
+    ``ValueError``)."""
+    pkgs = tuple(protected_packages)
+    canon_names = _canonical_protected(pkgs) if pkgs else ()  # raises on an empty name
     findings: List[Finding] = []
     if len(raw) > _MAX_CMD_LEN:
         findings.append(
@@ -440,8 +563,9 @@ def analyze_command(
                 command=raw,
             )
         )
-    if protected_packages and _search_any(
-        _package_mutation_rx(tuple(protected_packages)), variants
+    if pkgs and (
+        _search_any(_package_mutation_rx(pkgs), variants)
+        or any(_walk_package_mutation(v, canon_names) for v in variants)
     ):
         findings.append(
             Finding.fail(
@@ -449,7 +573,7 @@ def analyze_command(
                 severity="CRITICAL",
                 message="refusing a package-manager command that uninstalls, reinstalls, "
                 "or shadows the gate's enforcement package "
-                f"({', '.join(protected_packages)}); manage it outside the governed session",
+                f"({', '.join(pkgs)}); manage it outside the governed session",
                 command=raw,
             )
         )
@@ -493,6 +617,10 @@ def deny_list_policy(
     - ``protected_packages``: distribution names whose package-manager mutation is refused
       (default: ``recusal``, the package the gate imports; ``pip uninstall recusal`` or an
       install-time shadow changes the enforcement code without touching a protected path).
+      Names are compared canonically (PEP 503: case-insensitive, ``-``/``_``/``.`` runs
+      are one separator) and substring-over-refusing, so a source argument that merely
+      *contains* a protected name (``./fake-recusal``) is refused toward safety. An
+      empty or separator-only name raises ``ValueError`` here, at construction.
     - ``secret_basenames`` / ``secret_suffixes``: files a write tool may not create/overwrite.
     - ``command_keys``: keys under which a non-Bash tool's shell command is found and analyzed.
     - ``read_only_tools``: tools exempt from the generic kill-switch guard (they only read).
@@ -502,6 +630,8 @@ def deny_list_policy(
     """
     protected = tuple(protected_paths)
     protected_pkgs = tuple(protected_packages)
+    if protected_pkgs:
+        _canonical_protected(protected_pkgs)  # fail at construction, not first command
     secret_bases = frozenset(secret_basenames)
     secret_sfx = tuple(secret_suffixes)
     cmd_keys = frozenset(command_keys)

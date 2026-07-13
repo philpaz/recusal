@@ -31,7 +31,7 @@ import sys
 
 #: The exact adjudicator this plugin version identifies. A version-drift-lock test keeps
 #: this equal to the plugin manifest version and the package version.
-EXPECTED_RECUSAL_VERSION = "0.5.11"
+EXPECTED_RECUSAL_VERSION = "0.5.12"
 
 try:
     import recusal

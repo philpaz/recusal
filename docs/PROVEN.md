@@ -102,6 +102,49 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.11, 2026-07-13)
+
+For v0.5.11 (commit `5d1acc1`, package-manager self-protection and the capability-first
+README):
+
+- **Workflow evidence is public**: CI run [29225000959](https://github.com/philpaz/recusal/actions/runs/29225000959)
+  (all 10 jobs green) and release run [29225128002](https://github.com/philpaz/recusal/actions/runs/29225128002)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **Proven from the published wheel**: each block below is the verbatim output of piping
+  the exact `PreToolUse` payload into the repo hook using a fresh venv's Python with
+  `pip install recusal==0.5.11` from PyPI (the hook appends the repo path *last*, so the
+  installed distribution adjudicates, not the working tree).
+
+**The exact reported gap**, `pip uninstall recusal` (deferred in 0.5.10 and earlier):
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing a package-manager command that uninstalls, reinstalls, or shadows the gate's enforcement package (recusal); manage it outside the governed session"}}
+```
+
+**An obfuscated spelling**, `pip${IFS}uninstall${IFS}recusal` (same de-obfuscation as
+every other check):
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing a package-manager command that uninstalls, reinstalls, or shadows the gate's enforcement package (recusal); manage it outside the governed session"}}
+```
+
+**A non-Bash tool carrying a command-like key** (an MCP shell cannot be a second,
+ungated shell), payload `{"tool_name": "mcp__runner__execute", "tool_input": {"args":
+{"Command": "pip uninstall recusal"}}}`:
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `mcp__runner__execute` [FAIL]: refusing a package-manager command that uninstalls, reinstalls, or shadows the gate's enforcement package (recusal); manage it outside the governed session"}}
+```
+
+**The negative space holds**: `pip install requests` produces **no output**, the hook
+defers and the call proceeds to the normal permission flow.
+
+- The same properties are pinned as 66 deterministic tests in
+  [`tests/test_deny_list_package_protection.py`](../tests/test_deny_list_package_protection.py)
+  at the 0.5.11 tag: positive, obfuscated, command-key, and negative cases (mutating
+  other packages and read-only pip subcommands against `recusal` still defer). The
+  named ceiling is documented, not papered over: an install that provides the package
+  without naming it (`pip install -e .`, `-r requirements.txt`) is unreadable to a
+  string matcher; the pinned, write-protected venv stays the real defense.
+
 ## Release proofs on the record (v0.5.10, 2026-07-12)
 
 For v0.5.10 (commit `65b1b27`, publishing the loader-wide collision invariant):

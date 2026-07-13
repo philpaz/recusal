@@ -12,6 +12,15 @@ control-plane change, obfuscated spellings included, through the Bash tool AND t
 non-Bash tool carrying a command-like key. The negative space is pinned just as hard:
 mutating OTHER packages, and read-only pip subcommands against recusal, still defer
 (false positives are how gates get uninstalled by humans).
+
+0.5.12 widens the matcher to the valid, statically visible command forms the 0.5.11
+regex missed: a global option carrying a separate value (`pip --python .venv
+uninstall`, `uv --project . remove`), uv global options before the subcommand, and
+Windows launcher suffixes (`pip.exe`). It also makes two contracts explicit and
+tested: protected names are canonical distribution identities (PEP 503, so `My.Gate`
+protects `my_gate`/`MY.GATE`; an empty name is a `ValueError` at construction), and
+name matching is deliberately substring-over-refusing (`notrecusal`, `./fake-recusal`,
+`recusal-replacement.tar.gz` refuse toward safety).
 """
 
 import pytest
@@ -126,6 +135,114 @@ def test_obfuscated_package_mutation_refuses(cmd):
     assert _refuses(cmd)
 
 
+# --- 0.5.12: option/value forms, uv global options, launcher suffixes ----------------------
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # pip global options that carry a separate value token (documented `--python`
+        # form): the 0.5.11 regex allowed dash tokens between pip and the subcommand
+        # but never an option's bare value, so `.venv` broke the match.
+        "python -m pip --python .venv install recusal",
+        "pip --python .venv uninstall recusal",
+        "pip --python=.venv uninstall recusal",
+        "uv pip --python .venv uninstall recusal",
+        # uv documents `uv [OPTIONS] <COMMAND>`: global options (with and without
+        # values) are valid before `add`/`remove`/`pip`.
+        "uv --project . remove recusal",
+        "uv --directory . remove recusal",
+        "uv --offline remove recusal",
+        # Direct Windows launcher spellings.
+        "pip.exe uninstall recusal",
+        "python.exe -m pip uninstall recusal",
+        # Composed: launcher suffix + version selector + option/value.
+        "py -3.12 -m pip --python .venv uninstall recusal",
+    ],
+)
+def test_option_value_and_launcher_forms_refuse(cmd):
+    assert _refuses(cmd)
+
+
+def test_obfuscated_option_value_form_refuses():
+    # The walker runs over the same de-obfuscated variants as every other check.
+    assert _refuses("pip${IFS}--python${IFS}.venv${IFS}uninstall${IFS}recusal")
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The widened matcher must not widen the false-positive space: the same
+        # option/value and launcher forms against OTHER packages still defer.
+        "pip --python .venv install requests",
+        "uv --project . add httpx",
+        "pip.exe install requests",
+        # Out of the documented pip+uv surface by design: pipx and `uv tool` manage
+        # isolated tool environments, not the import path the gate's venv resolves.
+        "uv tool install some-tool",
+        "uv tool uninstall some-tool",
+    ],
+)
+def test_widened_forms_keep_deferring_on_other_packages(cmd):
+    assert analyze_command(cmd) == []
+
+
+# --- 0.5.12: protected names are canonical distribution identities (PEP 503) ---------------
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip uninstall my-gate",
+        "pip uninstall my_gate",
+        "pip uninstall my.gate",
+        "pip uninstall MY.GATE",
+        "pip install ./fake-my.gate",
+    ],
+)
+def test_custom_name_matches_across_separator_and_case_spellings(cmd):
+    # Python distribution names are case-insensitive with `-`/`_`/`.` runs collapsed;
+    # a configured `My.Gate` must protect every spelling of that one identity. (In
+    # 0.5.11 a mixed-case configured name silently matched nothing at all: the
+    # pattern kept its case while commands are matched lowercased.)
+    assert _refuses(cmd, protected_packages=("My.Gate",))
+
+
+def test_canonically_different_name_still_defers():
+    assert not _refuses("pip uninstall mygate", protected_packages=("My.Gate",))
+
+
+@pytest.mark.parametrize("pkgs", [("",), ("   ",), ("recusal", ""), ("...",), ("-_-",)])
+def test_empty_or_separator_only_protected_name_is_a_config_error(pkgs):
+    # An empty canonical name would match EVERY package mutation: that is a
+    # configuration error, refused loudly at construction, not a silent deny-all.
+    with pytest.raises(ValueError):
+        deny_list_policy(protected_packages=pkgs)
+    with pytest.raises(ValueError):
+        analyze_command("ls", protected_packages=pkgs)
+
+
+# --- 0.5.12: substring matching is a deliberate contract (over-refuse toward safety) -------
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip install notrecusal",
+        "pip install recusal-helper",
+        "pip uninstall unrelated-recusal-docs",
+        "pip install https://example.test/recusal-replacement.tar.gz",
+    ],
+)
+def test_name_containing_sources_over_refuse_by_contract(cmd):
+    # Chosen contract: any mutating package command whose argument CONTAINS a
+    # protected name is refused toward safety. A name-containing source is a
+    # plausible shadow or replacement of the gate; the cost is a safe-side false
+    # positive that defers to a human, the alternative is a false negative that
+    # uninstalls the gate.
+    assert _refuses(cmd)
+
+
 # --- the second shell: a non-Bash tool carrying a command-like key ------------------------
 
 
@@ -148,6 +265,20 @@ def test_argv_vector_form_is_joined_and_refused():
             policy,
             "mcp__runner__execute",
             {"command": ["pip", "uninstall", "-y", "recusal"]},
+        )
+        == "deny"
+    )
+
+
+def test_option_value_form_is_refused_through_a_command_key_too():
+    # The widened matcher applies wherever command analysis applies: a non-Bash tool
+    # carrying the option/value form under a command-like key is refused the same way.
+    policy = deny_list_policy()
+    assert (
+        _decision(
+            policy,
+            "mcp__runner__execute",
+            {"args": {"Command": "pip --python .venv uninstall recusal"}},
         )
         == "deny"
     )
