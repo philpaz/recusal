@@ -102,6 +102,33 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.12, 2026-07-13)
+
+For v0.5.12 (commit `f02d37d`, widening the package-manager matcher and making the
+protected-name contracts explicit):
+
+- **Workflow evidence is public**: CI run [29267866649](https://github.com/philpaz/recusal/actions/runs/29267866649)
+  (all 10 jobs green) and release run [29269214665](https://github.com/philpaz/recusal/actions/runs/29269214665)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **A form that deferred in 0.5.11, proven refused from the published wheel** (fresh
+  venv, `pip install recusal==0.5.12` from PyPI, exact payload piped into the repo
+  hook), `pip --python .venv uninstall recusal`:
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing a package-manager command that uninstalls, reinstalls, or shadows the gate's enforcement package (recusal); manage it outside the governed session"}}
+```
+
+- **The contracts hold from the same wheel**: `protected_packages=("My.Gate",)`
+  refuses `pip uninstall my_gate` / `my-gate` / `MY.GATE` (canonical PEP 503
+  identity), `protected_packages=("",)` raises `ValueError` at construction, and the
+  negative space is unchanged (`pip install requests`, `uv add httpx`,
+  `pip show recusal`, `uv tool install some-tool` all defer). Pinned as 98
+  deterministic tests in
+  [`tests/test_deny_list_package_protection.py`](../tests/test_deny_list_package_protection.py),
+  including the 66 shipped at v0.5.11, which pass unchanged against the widened
+  matcher.
+
 ## Release proofs on the record (v0.5.11, 2026-07-13)
 
 For v0.5.11 (commit `5d1acc1`, package-manager self-protection and the capability-first
