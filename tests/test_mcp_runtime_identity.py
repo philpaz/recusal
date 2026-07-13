@@ -305,3 +305,47 @@ def test_cli_collision_refuses_the_pin(tmp_path):
         stdout=out,
     )
     assert rc == 2 and "ambiguous callable identity" in out.getvalue()
+
+
+# --- review 13: collision refusal is a LOADER invariant, not only a builder one -------------
+
+
+def _hand_edited_collision_manifest(tmp_path):
+    """A manifest the builder would refuse, constructed the way an external generator
+    or hand edit could: each pin individually canonical (correctly derived
+    callable_name, valid digest shapes), but two raw tools collide on one callable."""
+    manifest = _plugin_pin(tools=(DOTTED,))
+    tools = manifest["servers"][PLUGIN_SERVER]["tools"]
+    donor = dict(tools["admin.tools.list"])
+    tools["admin_tools_list"] = {
+        "fingerprint": donor["fingerprint"],
+        "fields": dict(donor["fields"]),
+        "callable_name": "admin_tools_list",  # correctly derived for ITS raw name
+    }
+    path = tmp_path / "collide.json"
+    path.write_text(manifest_to_text(manifest), encoding="utf-8")
+    return str(path)
+
+
+def test_load_manifest_refuses_a_hand_edited_callable_collision(tmp_path):
+    path = _hand_edited_collision_manifest(tmp_path)
+    with pytest.raises(ValueError, match="ambiguous callable identity"):
+        load_manifest(path)
+
+
+def test_manifest_policy_fails_closed_on_a_collision_manifest(tmp_path):
+    path = _hand_edited_collision_manifest(tmp_path)
+    findings = manifest_policy(path)(f"mcp__{PLUGIN_SERVER}__admin_tools_list", {})
+    assert any(f.check == "mcp_manifest_unavailable" for f in findings if not f.passed)
+
+
+def test_diff_observation_refuses_the_malformed_pin_before_comparing(tmp_path):
+    path = _hand_edited_collision_manifest(tmp_path)
+    pinned = json.loads((tmp_path / "collide.json").read_text(encoding="utf-8"))
+    obs = McpObservation(
+        catalog={PLUGIN_SERVER: [dict(DOTTED)]},
+        sources={PLUGIN_SERVER: {"transport": "external"}},
+        instructions={PLUGIN_SERVER: {"observed": True, "text": "approved"}},
+    )
+    with pytest.raises(ValueError, match="ambiguous callable identity"):
+        diff_observation(pinned, obs)

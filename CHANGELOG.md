@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Callable-collision refusal is a loader invariant (review 13, P1).** The builder
+  refused two raw plugin tools normalizing to one callable, but `_validate_manifest`
+  checked each pin independently - so an externally generated or hand-edited manifest
+  whose pins were EACH individually canonical could carry a collision, which would
+  collapse into one runtime string in `manifest_policy`. The loader now tracks
+  callable identity per plugin server and refuses the collision; `manifest_policy`
+  fails closed on such an artifact and `diff_observation` refuses it before comparing.
+  Collision refusal is now an invariant of every accepted manifest, not only of the
+  preferred builder path (three regression tests, hand-edited-artifact shaped).
+
+### Documentation
+- Stale "manifest v5" wording in the verifier docstrings and CLI comment replaced
+  with schema-stable phrasing ("the current complete manifest verifier"); the README
+  test references include `tests/test_mcp_runtime_identity.py`.
+
 ## [0.5.9] - 2026-07-12
 
 The single carry-forward item from the review sequence, pulled forward from 0.6.0 and

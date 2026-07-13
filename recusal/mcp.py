@@ -28,7 +28,7 @@ The design is the constitution applied to a new evidence surface, nothing more:
    (a changed *description* is the rug-pull vector), a removed tool is a recorded
    WARNING. The same complete observation, pinned manifest, and recusal implementation
    version produce the same findings, every time. (``diff_manifest`` alone compares
-   only the tool catalog; use ``diff_observation`` for a full manifest-v5 verify.)
+   only the tool catalog; use ``diff_observation`` for the full manifest verify.)
 3. **Enforce at call time.** ``manifest_policy`` bridges the pin into the existing
    PreToolUse gate: an ``mcp__server__tool`` call whose server/tool is not in the pinned
    manifest is refused before the server ever sees it, and a missing or unreadable
@@ -776,6 +776,11 @@ def _validate_manifest(data: Any) -> None:
         tools = entry.get("tools")
         if not isinstance(tools, dict):
             raise ValueError(f"manifest server {server!r} has no tools object")
+        # collision refusal is an invariant of every ACCEPTED manifest, not only of the
+        # preferred builder: an externally generated or hand-edited artifact can carry
+        # two raw tools whose individually-correct callable_name values collide, which
+        # would collapse into one runtime string in manifest_policy
+        callable_to_raw: Dict[str, str] = {}
         for name, pin in tools.items():
             if not isinstance(name, str) or not name:
                 raise ValueError(
@@ -796,15 +801,22 @@ def _validate_manifest(data: Any) -> None:
                     f"manifest tool {server!r}/{name!r} is not canonical for "
                     f"{server_mode} runtime: a pin is exactly {sorted(expected_keys)}"
                 )
-            if server_mode == "claude_plugin" and pin["callable_name"] != plugin_callable_name(
-                name
-            ):
-                raise ValueError(
-                    f"manifest tool {server!r}/{name!r}: stored callable_name "
-                    f"{pin['callable_name']!r} does not re-derive from the raw name via "
-                    "Claude's documented normalization - a hand-edited or corrupt "
-                    "callable identity certifies nothing"
-                )
+            if server_mode == "claude_plugin":
+                if pin["callable_name"] != plugin_callable_name(name):
+                    raise ValueError(
+                        f"manifest tool {server!r}/{name!r}: stored callable_name "
+                        f"{pin['callable_name']!r} does not re-derive from the raw name "
+                        "via Claude's documented normalization - a hand-edited or "
+                        "corrupt callable identity certifies nothing"
+                    )
+                previous = callable_to_raw.get(pin["callable_name"])
+                if previous is not None:
+                    raise ValueError(
+                        f"manifest server {server!r}: raw tools {previous!r} and {name!r} "
+                        f"both map to callable identity {pin['callable_name']!r}; "
+                        "ambiguous callable identity certifies nothing"
+                    )
+                callable_to_raw[pin["callable_name"]] = name
             if not _DIGEST_RE.fullmatch(pin["fingerprint"]):
                 raise ValueError(
                     f"manifest tool {server!r}/{name!r} fingerprint is not "
@@ -843,9 +855,9 @@ def diff_manifest(
     """Compare a freshly observed TOOL CATALOG against the pinned manifest, as Findings.
 
     **Catalog-only by design**: this compares tool declarations. It does NOT compare
-    source specifications or server instructions, both of which a manifest v5 also
+    source specifications or server instructions, both of which the manifest also
     pins; a clean result here says "the declared tools match", nothing more. For the
-    complete, omission-resistant v5 verify use :func:`diff_observation`, which is what
+    complete, omission-resistant verify use :func:`diff_observation`, which is what
     ``recusal mcp verify`` runs.
 
     - an observed server or tool that was never pinned → CRITICAL (unapproved capability);
@@ -1032,7 +1044,7 @@ def diff_manifest(
 
 
 class McpObservation(NamedTuple):
-    """One COMPLETE observation of the MCP surface a manifest v5 pins.
+    """One COMPLETE observation of the MCP surface a manifest pins.
 
     A strict contract, not a convenience bag: :func:`diff_observation` refuses an
     observation that is malformed or incomplete rather than comparing the subset it
@@ -1162,7 +1174,7 @@ def _validate_observation(observation: McpObservation) -> None:
 
 
 def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> List[Finding]:
-    """The complete manifest-v5 verify: every pinned surface, one call, no silent subset.
+    """The current complete manifest verifier: every pinned surface, one call, no silent subset.
 
     Omission-resistance, stated exactly: for every server the observation REPRESENTS
     (in ``catalog``, ``sources``, ``instructions``, or ``unverifiable``), all three
@@ -1245,7 +1257,7 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
                     "mcp_source_unobserved",
                     severity="CRITICAL",
                     message=f"server '{name}' was observed with no source observation; a "
-                    "complete manifest-v5 verify requires one (a dump-supplied catalog's "
+                    "complete manifest verify requires one (a dump-supplied catalog's "
                     "explicit weak claim is {'transport': 'external'}, never an omission)",
                     server=name,
                 )
@@ -1259,7 +1271,7 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
                     "mcp_instructions_unobserved",
                     severity="CRITICAL",
                     message=f"server '{name}' was observed with no instruction record; a "
-                    "complete manifest-v5 verify requires one (the legacy weaker claim is "
+                    "complete manifest verify requires one (the legacy weaker claim is "
                     "the explicit {'observed': False, 'text': None}, never an omission)",
                     server=name,
                 )

@@ -1317,7 +1317,7 @@ def mcp_verify_command(
 
     try:
         # the kernel owns all adjudication AND its composition: diff_observation is the
-        # one complete v5 verify (sources + instructions + catalog + unverifiable +
+        # current complete manifest verifier (sources + instructions + catalog + unverifiable +
         # removal acknowledgements + whole-server inventory), so the CLI cannot forget
         # a surface the manifest pins.
         findings = diff_observation(

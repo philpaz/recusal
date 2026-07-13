@@ -471,7 +471,8 @@ See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugp
 (offline). Pinned as tests: [`tests/test_mcp_manifest.py`](tests/test_mcp_manifest.py),
 [`tests/test_mcp_policy_bridge.py`](tests/test_mcp_policy_bridge.py),
 [`tests/test_mcp_fetch.py`](tests/test_mcp_fetch.py),
-[`tests/test_mcp_cli.py`](tests/test_mcp_cli.py).
+[`tests/test_mcp_cli.py`](tests/test_mcp_cli.py),
+[`tests/test_mcp_runtime_identity.py`](tests/test_mcp_runtime_identity.py).
 
 ### Claude Agent SDK, manual loop
 
