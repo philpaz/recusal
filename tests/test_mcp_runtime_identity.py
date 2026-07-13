@@ -340,7 +340,7 @@ def test_manifest_policy_fails_closed_on_a_collision_manifest(tmp_path):
 
 
 def test_diff_observation_refuses_the_malformed_pin_before_comparing(tmp_path):
-    path = _hand_edited_collision_manifest(tmp_path)
+    _hand_edited_collision_manifest(tmp_path)
     pinned = json.loads((tmp_path / "collide.json").read_text(encoding="utf-8"))
     obs = McpObservation(
         catalog={PLUGIN_SERVER: [dict(DOTTED)]},
