@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.11] - 2026-07-12
+
+Closes the package-manager self-protection gap and consolidates the front door: the
+README now leads with the capability, and the full MCP governance statement moves to
+`docs/MCP.md` unchanged.
+
+### Security
+- **`pip uninstall recusal` is now refused (deny-list).** The self-protect verb pattern
+  matched `\binstall\b`, which never matches "uninstall" (there is no word boundary
+  inside a word), and a bare package name carries no `recusal/` path segment, so
+  uninstalling the enforcement package deferred straight through the gate. A new
+  `package_self_protection` check refuses package-manager mutation of the enforcement
+  package: uninstall, reinstall/downgrade, and install-time shadowing
+  (`pip install -e ./fake-recusal`), across the `pip` / `pip3` / `python -m pip` /
+  `py -m pip` / `uv pip` / `uv add` / `uv remove` spellings, obfuscated forms included,
+  through Bash and through command-like keys on any other tool. Parameterized as
+  `protected_packages` (default `("recusal",)`), and `uninstall` joins the
+  self-protect verb list. 66 new tests pin the positive, obfuscated, and negative
+  cases (no new false positives on ordinary package commands: `pip install requests`,
+  `pip show recusal`, `pip install -e .` all still defer). The named ceiling is
+  unchanged and documented: an install that provides the package without naming it
+  (`pip install -e .`, `-r requirements.txt`) is unreadable to a string matcher; the
+  pinned, write-protected venv stays the real defense.
+
+### Documentation
+- **README front door reordered, capability first.** The page now opens with the
+  problem, what Recusal does (the deny that holds in bypass mode with the isolation
+  caveat in the same breath, MCP capability integrity, the audit record shaped for
+  EU AI Act Article 12 record-keeping), then the 20-second demo and install; allowlist
+  mode is presented above the deny-list as the enforcement posture; the independence
+  thesis moves to a "Why an independent gate" section; the launcher/exit-code/Windows
+  detail folds into a collapsible block. Claim language is unchanged.
+- **MCP governance statement extracted to `docs/MCP.md`.** The README keeps a summary
+  (same gate, pin/verify, no-pin-no-MCP, the point-in-time boundary in one line) and
+  links to the full statement with every named residual; the text moved with link
+  paths adjusted and content otherwise unchanged. Docs index updated.
+
 ## [0.5.10] - 2026-07-12
 
 Aligns the published package with current main's stronger loader invariant: the

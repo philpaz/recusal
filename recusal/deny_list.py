@@ -29,7 +29,9 @@ Point it at *your* gate's control paths::
 Hardening this does that a naive deny-list does not: uniform de-obfuscation (quotes,
 backticks, backslashes, ``$IFS`` stripped) across destructive/secret/self-protect
 checks; delete-not-just-edit protection of the kill-switch; pipe-into-*any*-interpreter;
-reverse/bind shells; ``cd``/variable indirection onto a control dir; and best-effort
+reverse/bind shells; ``cd``/variable indirection onto a control dir; package-manager
+mutation of the enforcement package itself (``pip uninstall recusal``, install-time
+shadowing, across the ``pip`` / ``python -m pip`` / ``uv`` spellings); and best-effort
 symlink resolution for the innocent-name -> protected-target TOCTOU. The honest limit is
 unchanged: a runtime-constructed command name or code inside a bare interpreter is a
 deny-list ceiling, use allowlist mode for those.
@@ -39,6 +41,7 @@ Pure logic, standard library only.
 
 import os
 import re
+from functools import lru_cache
 from typing import Any, Callable, FrozenSet, Iterable, List, Sequence, Tuple
 
 from .evidence import Finding
@@ -112,7 +115,7 @@ _SECRET_PATH_IN_CMD = re.compile(
 # open(...,'w') a file, so those are included. `>`/`>>` (redirect-truncate) count.
 _SELF_PROTECT_VERB = re.compile(
     r"\b(rm|unlink|shred|truncate|mv|move|cp|copy|xcopy|robocopy|ren|rename|tee|dd"
-    r"|install|rsync|ln|mklink|set-content|add-content|clear-content|out-file|new-item"
+    r"|install|uninstall|rsync|ln|mklink|set-content|add-content|clear-content|out-file|new-item"
     r"|set-itemproperty|remove-item|del|rd|rmdir|chmod|chown|chattr|attrib|takeown|icacls)\b"
     r"|\bsed\s+-\w*i"  # sed -i (in-place write); sed -n / print-to-stdout is a read
     # Inline interpreter code (`... -c`/`-e`/`eval`) can open(...,'w') a protected file.
@@ -170,6 +173,37 @@ _CD_INTO_CONTROL = re.compile(
     r"|(?:^|[\s;&|(])\w+=[\"']?\.?/?(?:\.(?:claude|git)|recusal)(?![\w.-])"
 )
 
+# Package-manager mutation of the enforcement package itself. `pip uninstall recusal`
+# removes the package every gate hook imports, and an install-time replacement
+# (`pip install -e ./fake-recusal`, a URL install, a pinned-version reinstall) swaps
+# what the gate IS: neither carries a `recusal/` path segment, so the path-based
+# self-protect guard never sees them ("uninstall" also never matched `\binstall\b`,
+# there is no word boundary inside the word). Covered spellings: `pip` / `pip3` /
+# `pip3.12`, `python -m pip` (plus `py` / `pypy`, with an optional `py -3.12`
+# selector), `uv pip`, and `uv add` / `uv remove`; bounded gaps allow flags in
+# either position (`pip -q install`, `uninstall -y`). The named ceiling is
+# unchanged: an install that provides the package without naming it
+# (`pip install -e .`, `-r requirements.txt`) is unreadable to a string matcher;
+# a protected, pinned venv stays the real defense (SECURITY.md).
+_PIP_SPELLINGS = (
+    r"\b(?:pip[\d.]*|uv\s+pip|(?:py|python[\d.]*|pypy[\d.]*)\s+(?:-[\d.]+\s+)?-m\s+pip[\d.]*)"
+)
+
+
+@lru_cache(maxsize=32)
+def _package_mutation_rx(packages: Tuple[str, ...]) -> "re.Pattern[str]":
+    names = "|".join(re.escape(p) for p in packages)
+    return re.compile(
+        _PIP_SPELLINGS
+        + r"(?:\s+-[^\s|&;]{1,64}){0,6}\s+(?:un)?install\b[^|&;]{0,256}(?:"
+        + names
+        + r")"
+        + r"|\buv\s+(?:add|remove)\b[^|&;]{0,256}(?:"
+        + names
+        + r")"
+    )
+
+
 # ── Default configuration (the dogfood gate's layout) ─────────────────────────────────
 DEFAULT_SECRET_BASENAMES: FrozenSet[str] = frozenset({".env", "id_rsa", "id_ed25519"})
 DEFAULT_SECRET_SUFFIXES: Tuple[str, ...] = (".pem", ".key", ".p12")
@@ -188,6 +222,12 @@ DEFAULT_PROTECTED_PATHS: Tuple[str, ...] = DEFAULT_SELF_PROTECT + (
     ".mcp.json",
     "mcp-manifest.json",
 )
+# The distribution the gate imports, protected at the package-manager layer: uninstalling,
+# reinstalling, or shadowing it changes the enforcement code without any protected path
+# segment appearing in the command. Manage the gate's own package outside the governed
+# session (the README's pinned-venv deployment); override for a gate built on another
+# package name.
+DEFAULT_PROTECTED_PACKAGES: Tuple[str, ...] = ("recusal",)
 # A non-Bash tool that carries a shell command under one of these keys (an MCP shell, a
 # task runner) gets the same command analysis as Bash, so it can't be a second, ungated
 # shell. Kept narrow to keys that clearly imply shell execution (low false-positive risk).
@@ -305,12 +345,15 @@ def _iter_command_values(obj: Any, command_keys: FrozenSet[str]) -> List[str]:
 
 
 def analyze_command(
-    raw: str, protected_paths: Sequence[str] = DEFAULT_PROTECTED_PATHS
+    raw: str,
+    protected_paths: Sequence[str] = DEFAULT_PROTECTED_PATHS,
+    protected_packages: Sequence[str] = DEFAULT_PROTECTED_PACKAGES,
 ) -> List[Finding]:
     """Adjudicate a single shell command string into a list of Findings (empty = no
     objection). Used for the Bash tool AND for any other tool that carries a command under a
     command-like key, so an MCP shell can't be a second, ungated shell. ``protected_paths``
-    are the control-path substrings whose edit/removal is refused."""
+    are the control-path substrings whose edit/removal is refused; ``protected_packages``
+    are the distribution names whose package-manager mutation is refused."""
     findings: List[Finding] = []
     if len(raw) > _MAX_CMD_LEN:
         findings.append(
@@ -397,6 +440,19 @@ def analyze_command(
                 command=raw,
             )
         )
+    if protected_packages and _search_any(
+        _package_mutation_rx(tuple(protected_packages)), variants
+    ):
+        findings.append(
+            Finding.fail(
+                "package_self_protection",
+                severity="CRITICAL",
+                message="refusing a package-manager command that uninstalls, reinstalls, "
+                "or shadows the gate's enforcement package "
+                f"({', '.join(protected_packages)}); manage it outside the governed session",
+                command=raw,
+            )
+        )
     targets_protected = any(
         seg in pv for pv in path_variants for seg in protected_paths
     ) or _search_any(_CD_INTO_CONTROL, variants)
@@ -416,6 +472,7 @@ def analyze_command(
 def deny_list_policy(
     *,
     protected_paths: Sequence[str] = DEFAULT_PROTECTED_PATHS,
+    protected_packages: Sequence[str] = DEFAULT_PROTECTED_PACKAGES,
     secret_basenames: Iterable[str] = DEFAULT_SECRET_BASENAMES,
     secret_suffixes: Sequence[str] = DEFAULT_SECRET_SUFFIXES,
     command_keys: Iterable[str] = DEFAULT_COMMAND_KEYS,
@@ -433,6 +490,9 @@ def deny_list_policy(
       the dogfood gate's ``.claude/settings``, ``.claude/hooks``, ``recusal/``, ``.git/hooks``,
       plus the MCP control plane: ``.mcp.json`` and ``mcp-manifest.json``, since rewriting
       the server config or the pinned manifest changes what "approved" means).
+    - ``protected_packages``: distribution names whose package-manager mutation is refused
+      (default: ``recusal``, the package the gate imports; ``pip uninstall recusal`` or an
+      install-time shadow changes the enforcement code without touching a protected path).
     - ``secret_basenames`` / ``secret_suffixes``: files a write tool may not create/overwrite.
     - ``command_keys``: keys under which a non-Bash tool's shell command is found and analyzed.
     - ``read_only_tools``: tools exempt from the generic kill-switch guard (they only read).
@@ -441,6 +501,7 @@ def deny_list_policy(
     *defers* to the host's normal permission flow; this policy only ever adds refusals.
     """
     protected = tuple(protected_paths)
+    protected_pkgs = tuple(protected_packages)
     secret_bases = frozenset(secret_basenames)
     secret_sfx = tuple(secret_suffixes)
     cmd_keys = frozenset(command_keys)
@@ -451,13 +512,15 @@ def deny_list_policy(
         tl = tool_name.lower()
 
         if tool_name == "Bash":
-            findings.extend(analyze_command(str(tool_input.get("command", "")), protected))
+            findings.extend(
+                analyze_command(str(tool_input.get("command", "")), protected, protected_pkgs)
+            )
         else:
             # A non-Bash tool that carries a shell command (MCP shell, task runner) is analyzed
             # exactly like Bash, so it cannot become a second, ungated shell. Command-like keys
             # are found case-insensitively and at any nesting depth, and argv arrays are joined.
             for val in _iter_command_values(tool_input, cmd_keys):
-                findings.extend(analyze_command(val, protected))
+                findings.extend(analyze_command(val, protected, protected_pkgs))
 
         if tool_name in _WRITE_TOOLS:
             path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")

@@ -7,7 +7,7 @@
 
 # Recusal
 
-**Deterministic governance for Claude agents: an independent verifier that can refuse to certify a tool call *before* it runs.**
+**Recusal is a deterministic governance gate for Claude and MCP tool calls: it pins the capabilities you approved, detects represented drift, and refuses unsafe, unapproved, or policy-violating actions *before* execution, with no model in the decision path.** A judge recuses themselves from a case they cannot impartially decide; the same principle governs autonomous agents: the thing that generates the work must never be the thing that certifies it.
 
 **Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and the Claude Agent SDK as a tool gate). The zero-dep core works in any agent loop.
 
@@ -21,33 +21,344 @@
 </p>
 <p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then the offline demo (<code>python examples/claude_refusal.py</code>), no API key.</sub></p>
 
-A judge **recuses** themselves from a case they can't impartially decide. The same
-principle governs autonomous agents: the thing that *generates* the work must never be
-the thing that *certifies* it. Recusal is that independent authority: collect evidence,
-adjudicate it into **`PASS` / `RETRY` / `FAIL`**, and let the gate **refuse**. No model
-call in the decision path: the same normalized evidence and policy inputs, under the
-same recusal version, produce the same verdict, including the "no".
+## The problem
 
----
+An autonomous agent proposes a tool call, and then, in most stacks, something from the
+same model family effectively decides whether that action is acceptable. When the agent
+runs in auto or bypass mode, even that check thins out: what stands between a proposed
+`rm -rf`, a wrong-customer write, or an unapproved MCP tool and its execution is the
+model's own judgment about its own action.
 
-## The wedge: don't let the same model grade its own work
+## What Recusal does
+
+Recusal places deterministic policy between the proposed action and its execution. No
+model makes the decision: explicit findings fold into a **`PASS` / `RETRY` / `FAIL`**
+verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
+
+- **A refusal that holds in bypass mode.** A Claude Code `deny` issued from the
+  `PreToolUse` seam is honored even under `bypassPermissions`. The honest caveat in the
+  same breath: the verdict is produced outside the model's decision path, but deployment
+  isolation (who owns `settings.json`, the file permissions, the runtime the gate runs
+  on) remains the adopter's responsibility, and the deny-list refuses the obvious
+  attempts on its own control paths, including uninstalling or shadowing the `recusal`
+  package itself.
+- **MCP capability integrity.** Pin the MCP server instructions and tool declarations a
+  human approved; `verify` refuses represented drift (the rug pull, the new tool, the
+  mutated schema), and the call-time gate refuses any MCP tool that was never pinned.
+- **A record built for the auditor.** Every adjudication (defer, allow, deny) can land on
+  an append-only, hash-chained log with the proposed input bound by SHA-256 fingerprint:
+  deterministic, replayable, stdlib-only, shaped for OWASP Agentic logging and EU AI Act
+  Article 12 record-keeping.
+
+The same normalized evidence and policy inputs, under the same recusal version, produce
+the same verdict, including the "no".
+
+> Builders generate. Recusal certifies. Refusal is a feature.
+
+## See it refuse (20 seconds, no API key)
+
+```bash
+git clone https://github.com/philpaz/recusal && cd recusal
+python examples/claude_refusal.py   # a Claude agent stages a write to the WRONG
+                                    # customer; the gate refuses before the tool runs
+python examples/gallery.py          # the same gate across the OWASP agentic failure modes
+```
+
+Deterministic and offline: the same normalized evidence and explicit policy inputs,
+under the same recusal implementation version, produce the same verdict, including
+the **no**.
+
+## Install
+
+```bash
+pip install recusal
+```
+
+### Claude Code, drop-in `PreToolUse` hook
+
+Refuse destructive tool calls *before* Claude Code runs them, even in auto / bypass mode.
+
+**One command:**
+
+```bash
+python -m recusal init          # or: recusal init
+```
+
+scaffolds `.claude/hooks/recusal_gate.py` (the deny-list starter, edit it, it's yours) and
+registers the fail-closed launcher in `.claude/settings.json`, merging with (never
+clobbering) an existing file; re-running is a no-op, and an existing gate file is never
+overwritten. `--posture allowlist` scaffolds the default-deny variant instead. Claude Code
+asks you to confirm the new hook on the next session: a permission-changing hook is a
+deliberate step.
+
+**Or as a plugin** (one gate across every project, no per-project setup):
+
+```bash
+claude plugin marketplace add philpaz/recusal
+claude plugin install recusal-gate@recusal
+pip install "recusal==0.5.11"   # the plugin is version-bound; fails CLOSED without it
+                               # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
+```
+
+The plugin ships the same deny-list shim; if the `recusal` package is missing it refuses
+every tool call rather than silently disabling itself. For a policy tailored to one
+project, prefer `python -m recusal init` and edit the scaffolded gate.
+
+For production, pin the runtime the gate runs on: a dedicated venv with
+`pip install "recusal==<version>"`, registered explicitly, protected from agent writes.
+`pip install recusal` is the quick start, not the governance deployment. (Inside a
+governed session, the deny-list refuses package-manager commands that uninstall,
+reinstall, or shadow the `recusal` package: managing the gate's own runtime is the
+operator's job, outside the session.) One named residual: Claude cancels a command hook
+at the platform hook timeout (default 600s), and this repository has NOT independently
+established the resulting authorization outcome for the launcher - do not describe hook
+timeout as fail-closed until it is tested in your deployment environment. Recusal's
+shipped policies adjudicate in milliseconds; keep custom policies fast and bounded.
+
+<details>
+<summary><b>The manual path, exit-code semantics, and Windows</b> (what <code>recusal init</code> writes, stated exactly)</summary>
+
+Prefer to see exactly what it writes? The manual path is the same two pieces. Register a
+hook in `.claude/settings.json`:
+
+```json
+{ "hooks": { "PreToolUse": [
+  { "matcher": ".*", "hooks": [
+    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" } ]}
+]}}
+```
+
+The command runs the first `python3` → `python` → `py` that is `>=3.9` and **fails
+closed**. The exit-code semantics, stated exactly: Recusal's normal refusal exits `0`
+with `permissionDecision: "deny"` JSON, which Claude honors as a block; a clean verdict
+exits `0` with no output and defers to Claude's normal permission flow; exit `2` is
+Claude's *blocking failure* signal, and any *other* nonzero exit is a non-blocking
+error that lets the tool call proceed. That last rule is why the launcher exists: a
+bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is Python
+2, or a hook that raises at import would each be a nonzero-but-not-2 failure, i.e. a
+silently disabled gate. The loop coerces exactly those gate-process failure modes -
+missing interpreter, unsupported interpreter, import failure, nonzero gate-process
+exit - into `exit 2`, so they refuse instead of waving the call through. It does not
+cover Claude-level hook cancellation or the hook-timeout outcome (above).
+
+**Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
+*falls back to PowerShell* when it is not - where this POSIX loop is a parse error with a
+non-blocking exit code, i.e. the gate silently disables (live-verified). `recusal init`
+therefore registers a PowerShell-native launcher with an explicit `"shell": "powershell"`
+on Windows; the POSIX form above is for macOS/Linux and Windows-with-Git-Bash. For a
+`settings.json` shared across operating systems, `recusal init --launcher both` registers
+the pair, and `recusal doctor` validates the registered launcher against the host.
+
+</details>
+
+## Write the policy: two postures, one principle
+
+A policy is a function; the gate does the rest:
+
+```python
+# my_gate.py
+from recusal import Finding
+from recusal.claude_code import run_pretooluse_hook
+
+def policy(tool_name, tool_input):
+    if tool_name == "Bash" and "rm -rf" in tool_input.get("command", ""):
+        return [Finding.fail("destructive_bash", severity="CRITICAL", message="refusing rm -rf")]
+    return []   # no opinion → defer to Claude Code's normal permission flow
+
+run_pretooluse_hook(policy)
+```
+
+A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
+A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
+
+**Pick the posture by your channel, not by a ranking.**
+
+**Allowlist mode** (default-deny) is the enforcement posture: name the
+affirmatively-safe calls, *refuse everything else*. It fits a narrow, enumerable,
+high-stakes channel: nothing runs unless listed, and bare interpreters and shell
+metacharacters are refused, which closes the documented command-construction and
+bare-interpreter bypass classes by construction (pinned as tests). Within a correctly
+registered routed tool channel, an unapproved capability is refused by default rather
+than inferred safe; what sits outside that channel is named in
+[`SECURITY.md`](SECURITY.md). One more honest line: the default-safe tools are
+*nonmutating*, not authorized for all data - `cat` can read a credential file - so add
+path- and subject-level read rules where confidentiality matters. The trade is friction
+and maintenance: you enumerate and grow the capability set, and it fails toward refusal
+until you do.
+
+```python
+from recusal.claude_code import allowlist_policy, run_pretooluse_hook
+
+run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
+```
+
+The **deny-list** is the low-friction door: name the known-bad calls, *defer everything
+else*. It drops into a broad, open-ended channel with almost no friction and needs no
+inventory of your tools, which is why this repo dogfoods it (a general-purpose dev repo
+runs an unbounded set of legitimate commands). Its boundary is inherent, not a defect: a
+literal matcher can be obfuscated past, and `python script.py` runs code no string check
+ever reads, so a deny-list never earns "cannot be subverted." Since 0.5.11 it also
+refuses package-manager mutation of the enforcement package itself (`pip uninstall
+recusal`, install-time shadowing, across the `pip` / `python -m pip` / `uv` spellings).
+
+Neither is "better" in the abstract: a deny-list refusing the unknown would grind a broad
+channel to a halt, and an allowlist deferring the unknown would defeat the point of a
+high-stakes one. Choose by the channel. Both ship, and both are pinned as tests.
+
+> **Don't start from a blank policy.** [`docs/COOKBOOK.md`](docs/COOKBOOK.md) has copy-paste
+> recipes (destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
+> allowlists, injection quarantine, action budgets) that drop straight into the hook above.
+
+> **Recusal governs *this* repository exactly this way**: a real hook refuses `rm -rf`,
+> force-pushes, and secret-file writes to its own maintainers. Verbatim, reproducible,
+> CI-locked proof: [`docs/PROVEN.md`](docs/PROVEN.md).
+
+## MCP tools, the same gate
+
+MCP server tools reach Claude Code as ordinary tools (`mcp__<server>__<tool>`), so the
+`.*` matcher above already routes every MCP call through the same
+`policy(tool_name, tool_input)` seam: no MCP-specific adapter, no extra wiring.
+Destructive-operation refusal, repository/record scope, write-path confinement, egress
+and action budgets, and the tamper-evident audit record apply to MCP exactly as to
+`Bash`; in allowlist mode an MCP tool is **refused unless affirmatively named**.
+
+**The three MCP tool-call boundaries, stated plainly.** A call-time policy adjudicates
+the proposed tool name and arguments; MCP has two more boundaries, and Recusal covers
+each with its own evidence:
+
+| Boundary | Threat (as the field names it) | Recusal |
+|---|---|---|
+| Discovery (`initialize.instructions` + `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (below) |
+| Invocation (the call) | tool misuse (OWASP ASI02), wrong-subject writes (ASI03), exfiltration via tool invocation (MITRE ATLAS AML.T0086) | the call-time policy above |
+| Response (the result) | indirect prompt injection in tool output (OWASP LLM01) | quarantine, [cookbook recipe 6](docs/COOKBOOK.md) |
+
+Transport and authorization threats (confused deputy, token passthrough, session
+hijacking) are the MCP specification's own Security Best Practices layer, complementary
+to this gate, neither replaces the other.
+
+The discovery boundary gets its own deterministic control. The model chooses tools by
+reading their declared descriptions, so a poisoned declaration steers the agent *before
+any call exists* for a call-time policy to see. Pin what a human approved, then refuse
+represented drift:
+
+```bash
+recusal mcp pin --claude-config .mcp.json --approve-server-launch   # review once, pin
+recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json   # CI / session start: same source, instructions, and declarations, or refuse
+```
+
+`verify` fails **closed** (a missing manifest or an unreachable pinned server is a
+refusal, never a clean-looking pass), and the pin enforces at call time:
+`recusal.mcp.manifest_policy("mcp-manifest.json")` refuses any `mcp__server__tool` call
+that was never pinned. No pin, no MCP. The honest boundary, in one line: verification is
+point-in-time over the configuration artifact you supply, not continuous attestation of
+Claude's effective MCP environment; the full statement, with every named residual
+(transport, OAuth, plugin runtime identity, `list_changed`, roots), is
+[`docs/MCP.md`](docs/MCP.md).
+
+Runnable: [`examples/mcp_governance.py`](examples/mcp_governance.py) and
+[`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py) (both offline).
+Recipes: [`docs/COOKBOOK.md`](docs/COOKBOOK.md) §12-§14.
+
+## Tamper-evident audit
+
+Pair any verdict with an append-only, hash-chained log: every decision on the record, and
+an in-place edit or reordering of any entry with a surviving successor is detectable
+(catching tail-truncation, a tail-suffix rewrite, or a forged append by a write-access
+attacker needs an external anchor, see `recusal.audit`):
+
+```python
+from recusal import AuditLog, verify
+
+audit = AuditLog(path="audit.jsonl")
+audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
+ok, problems = verify(audit.entries)   # False if an entry with a later entry was edited/reordered
+```
+
+In the Claude Code hook it is one argument: `run_pretooluse_hook(policy,
+audit=AuditLog("audit.jsonl", resume="tail"))` puts every adjudication - defer, allow,
+and deny - on the chain, with the proposed `tool_input` bound by SHA-256 fingerprint,
+never embedded, and an unwritable log failing closed to a deny (the record is part of
+the control). Declared `policy_id`/`policy_version` values are caller-supplied labels
+unless you separately bind them to a protected source artifact; the record provides
+the identifiers needed to locate the policy and evidence for replay, it does not by
+itself make arbitrary policy execution replayable. `resume="tail"` recovers the chain
+head from the final record without
+loading or scanning the full log, and file-backed appends are serialized with an
+inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
+it.
+
+Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12
+(record-keeping): for a regulated deployment, this is the artifact your auditor reads.
+
+## Why an independent gate
 
 The reflex fix for agent safety is another model asking "does this action look OK?", but a
 judge from the same family shares the builder's blind spots and drifts with it: that is a
 conflict of interest, not a control. Recusal is an independent, deterministic authority
 instead: no model in the decision path, a verdict you can replay and audit, and a refusal
-that holds (a Claude Code `deny` is honored even under `bypassPermissions`). "Independent"
-means the verdict is produced outside the model's decision path; deployment isolation (who
-owns the config, the file permissions, the runtime) remains the adopter's responsibility.
+that holds. "Independent" means the verdict is produced outside the model's decision path;
+deployment isolation (who owns the config, the file permissions, the runtime) remains the
+adopter's responsibility.
 
 The published evidence (models faking passing tests, benchmarks gamed by intercepting the
 evaluator, and the stated limits of Anthropic's own same-family safety layer) is laid out
 in [`docs/WHY.md`](docs/WHY.md), every source verified in
 [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
-> Builders generate. Recusal certifies. Refusal is a feature.
+## How it works
 
----
+One object model, one pipeline. Checks (or your own evidence) produce **Findings**;
+`compute_verdict` folds them into a **Verdict**; and the Verdict drives every surface:
+the gate refuses, the audit log records, the classifier routes.
+
+```
+  data / a proposed agent action / a tool call
+          │
+     [ checks ]            emit Findings               (recusal.checks, or your own)
+          │
+   compute_verdict()       fold findings → one Verdict (PASS / RETRY / FAIL)
+          │
+       Verdict
+        │   │   │
+        │   │   └─ recusal.classify        route the failure (retry / refuse / ask-human / …)
+        │   └───── recusal.audit           tamper-evident, hash-chained record
+        └───────── recusal.claude(_code)   allow or refuse the tool call
+                   recusal.gates           staged G0-G8 release decision
+```
+
+| Module | What it is |
+|---|---|
+| `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
+| `recusal.checks` | built-in deterministic checks that turn data into Findings |
+| `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
+| `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
+| `recusal.mcp` · `recusal.mcp_fetch` | MCP tool and server-instruction integrity: pin supported source templates, observed server instructions, and complete tool declarations; refuse represented drift (`diff_observation`); enforce approved runtime tool names at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process). Full boundary statement: [`docs/MCP.md`](docs/MCP.md) |
+| `recusal.audit` | tamper-evident, hash-chained log of every verdict |
+| `recusal.classify` | deterministic failure classifier + router |
+| `recusal.gates` | staged `G0`-`G8` release-gate adjudication, `compute_verdict` at each checkpoint |
+
+Zero runtime dependencies, standard library only.
+
+The verdict, directly:
+
+```python
+from recusal import compute_verdict
+from recusal.checks import row_count, null_rate, referential_integrity
+
+verdict = compute_verdict([
+    row_count(users, min_rows=1),                                  # CRITICAL if empty
+    null_rate(users, "email", max_rate=0.10),                      # ERROR if too sparse
+    referential_integrity(orders, users, fk="user_id", pk="id"),   # CRITICAL on orphans
+])
+if verdict.refused:
+    raise RuntimeError(verdict.reasons())
+```
+
+| Worst finding | Verdict | Meaning |
+|---------------|---------|---------|
+| `CRITICAL` failure | **`FAIL`** | Terminal. The work is wrong. Do not retry. |
+| `ERROR` failure | **`RETRY`** | Recoverable. Retry once, with the failures as context. |
+| `WARNING` / `INFO` only | **`PASS`** | Proceed. Warnings recorded, info kept as metrics. |
 
 ## How Recusal fits into Claude Code
 
@@ -75,404 +386,6 @@ The diagram shows execution order (`PreToolUse` runs before the permission promp
 enforcement precedence is deny-wins across the hook and native permission layers - a
 native deny applies regardless of any hook decision, and a blocking hook takes
 precedence over a native allow.
-
-For production, pin the runtime the gate runs on: a dedicated venv with
-`pip install "recusal==<version>"`, registered explicitly, protected from agent writes.
-`pip install recusal` is the quick start, not the governance deployment. One named
-residual: Claude cancels a command hook at the platform hook timeout (default 600s),
-and this repository has NOT independently established the resulting authorization
-outcome for the launcher - do not describe hook timeout as fail-closed until it is
-tested in your deployment environment. Recusal's shipped policies adjudicate in
-milliseconds; keep custom policies fast and bounded.
-
----
-
-## Architecture
-
-One object model, one pipeline. Checks (or your own evidence) produce **Findings**;
-`compute_verdict` folds them into a **Verdict**; and the Verdict drives every surface:
-the gate refuses, the audit log records, the classifier routes.
-
-```
-  data / a proposed agent action / a tool call
-          │
-     [ checks ]            emit Findings               (recusal.checks, or your own)
-          │
-   compute_verdict()       fold findings → one Verdict (PASS / RETRY / FAIL)
-          │
-       Verdict
-        │   │   │
-        │   │   └─ recusal.classify        route the failure (retry / refuse / ask-human / …)
-        │   └───── recusal.audit           tamper-evident, hash-chained record
-        └───────── recusal.claude(_code)   allow or refuse the tool call
-                   recusal.gates           staged G0-G8 release decision
-```
-
-| Module | What it is |
-|---|---|
-| `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
-| `recusal.checks` | built-in deterministic checks that turn data into Findings |
-| `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
-| `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
-| `recusal.mcp` · `recusal.mcp_fetch` | MCP tool and server-instruction integrity: pin supported source templates, observed server instructions, and complete tool declarations; refuse represented drift (`diff_observation`); enforce approved runtime tool names at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process). Prompts, resources, channels, elicitation, live-session divergence, and Claude's effective server selection stay outside the manifest |
-| `recusal.audit` | tamper-evident, hash-chained log of every verdict |
-| `recusal.classify` | deterministic failure classifier + router |
-| `recusal.gates` | staged `G0`-`G8` release-gate adjudication, `compute_verdict` at each checkpoint |
-
-Zero runtime dependencies, standard library only.
-
----
-
-## Install
-
-```bash
-pip install recusal
-```
-
-## See it refuse (20 seconds, no API key)
-
-```bash
-git clone https://github.com/philpaz/recusal && cd recusal
-python examples/claude_refusal.py   # a Claude agent stages a write to the WRONG
-                                    # customer; the gate refuses before the tool runs
-python examples/gallery.py          # the same gate across the OWASP agentic failure modes
-```
-
-Deterministic and offline: the same normalized evidence and explicit policy inputs,
-under the same recusal implementation version, produce the same verdict, including
-the **no**.
-
-## Plug it into Claude
-
-### Claude Code, drop-in `PreToolUse` hook
-
-Refuse destructive tool calls *before* Claude Code runs them, even in auto / bypass mode.
-
-**One command:**
-
-```bash
-python -m recusal init          # or: recusal init
-```
-
-scaffolds `.claude/hooks/recusal_gate.py` (the deny-list starter, edit it, it's yours) and
-registers the fail-closed launcher in `.claude/settings.json`, merging with (never
-clobbering) an existing file; re-running is a no-op, and an existing gate file is never
-overwritten. `--posture allowlist` scaffolds the default-deny variant instead. Claude Code
-asks you to confirm the new hook on the next session: a permission-changing hook is a
-deliberate step.
-
-**Or as a plugin** (one gate across every project, no per-project setup):
-
-```bash
-claude plugin marketplace add philpaz/recusal
-claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.10"   # the plugin is version-bound; fails CLOSED without it
-                               # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
-```
-
-The plugin ships the same deny-list shim; if the `recusal` package is missing it refuses
-every tool call rather than silently disabling itself. For a policy tailored to one
-project, prefer `python -m recusal init` and edit the scaffolded gate.
-
-Prefer to see exactly what it writes? The manual path is the same two pieces. Register a
-hook in `.claude/settings.json`:
-
-```json
-{ "hooks": { "PreToolUse": [
-  { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" } ]}
-]}}
-```
-
-The command runs the first `python3` → `python` → `py` that is `>=3.9` and **fails
-closed**. The exit-code semantics, stated exactly: Recusal's normal refusal exits `0`
-with `permissionDecision: "deny"` JSON, which Claude honors as a block; a clean verdict
-exits `0` with no output and defers to Claude's normal permission flow; exit `2` is
-Claude's *blocking failure* signal, and any *other* nonzero exit is a non-blocking
-error that lets the tool call proceed. That last rule is why the launcher exists: a
-bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is Python
-2, or a hook that raises at import would each be a nonzero-but-not-2 failure, i.e. a
-silently disabled gate. The loop coerces exactly those gate-process failure modes -
-missing interpreter, unsupported interpreter, import failure, nonzero gate-process
-exit - into `exit 2`, so they refuse instead of waving the call through. It does not
-cover Claude-level hook cancellation or the hook-timeout outcome (below).
-
-**Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
-*falls back to PowerShell* when it is not - where this POSIX loop is a parse error with a
-non-blocking exit code, i.e. the gate silently disables (live-verified). `recusal init`
-therefore registers a PowerShell-native launcher with an explicit `"shell": "powershell"`
-on Windows; the POSIX form above is for macOS/Linux and Windows-with-Git-Bash. For a
-`settings.json` shared across operating systems, `recusal init --launcher both` registers
-the pair, and `recusal doctor` validates the registered launcher against the host.
-
-```python
-# my_gate.py
-from recusal import Finding
-from recusal.claude_code import run_pretooluse_hook
-
-def policy(tool_name, tool_input):
-    if tool_name == "Bash" and "rm -rf" in tool_input.get("command", ""):
-        return [Finding.fail("destructive_bash", severity="CRITICAL", message="refusing rm -rf")]
-    return []   # no opinion → defer to Claude Code's normal permission flow
-
-run_pretooluse_hook(policy)
-```
-
-A clean verdict **defers** (Recusal adds refusals; it never strips Claude Code's own prompts).
-A non-clean verdict **denies**, with the reasons. See [`examples/claude_code_gate.py`](examples/claude_code_gate.py).
-
-**Two paths, one principle: pick by your channel, not by a ranking.** The policy above is
-a **deny-list**: name the known-bad calls, *defer everything else*. It drops into a broad,
-open-ended channel with almost no friction and needs no inventory of your tools, which is
-why this repo dogfoods it (a general-purpose dev repo runs an unbounded set of legitimate
-commands). Its boundary is inherent, not a defect: a literal matcher can be obfuscated past,
-and `python script.py` runs code no string check ever reads, so a deny-list never earns
-"cannot be subverted."
-
-The other path is **allowlist mode** (default-deny): name the affirmatively-safe calls,
-*refuse everything else*. It fits a narrow, enumerable, high-stakes channel: nothing runs
-unless listed, and bare interpreters and shell metacharacters are refused, which closes the
-documented command-construction and bare-interpreter bypass classes by construction (pinned
-as tests). Within a correctly registered routed tool channel, an unapproved capability is
-refused by default rather than inferred safe; what sits outside that channel is named in
-[`SECURITY.md`](SECURITY.md). One more honest line: the default-safe tools are *nonmutating*,
-not authorized for all data - `cat` can read a credential file - so add path- and
-subject-level read rules where confidentiality matters. The trade is friction and
-maintenance: you enumerate and grow the capability set, and it fails toward refusal until
-you do.
-
-Neither is "better" in the abstract: a deny-list refusing the unknown would grind a broad
-channel to a halt, and an allowlist deferring the unknown would defeat the point of a
-high-stakes one. Choose by the channel. Both ship, and both are pinned as tests.
-
-```python
-from recusal.claude_code import allowlist_policy, run_pretooluse_hook
-
-run_pretooluse_hook(allowlist_policy(writable_root="./workspace"))
-```
-
-> **Don't start from a blank policy.** [`docs/COOKBOOK.md`](docs/COOKBOOK.md) has copy-paste
-> recipes (destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
-> allowlists, injection quarantine, action budgets) that drop straight into the hook above.
-
-> **Recusal governs *this* repository exactly this way**: a real hook refuses `rm -rf`,
-> force-pushes, and secret-file writes to its own maintainers. Verbatim, reproducible,
-> CI-locked proof: [`docs/PROVEN.md`](docs/PROVEN.md).
-
-### MCP tools, the same gate
-
-MCP server tools reach Claude Code as ordinary tools: the hooks reference documents that
-they "appear as regular tools in tool events" (`PreToolUse`, ...) under the naming pattern
-`mcp__<server>__<tool>` (`mcp__github__create_issue`, `mcp__filesystem__write_file`). So
-the `.*` matcher above already routes every MCP call through the same
-`policy(tool_name, tool_input)` seam: no MCP-specific adapter, no extra wiring. The
-same call-time controls apply to MCP exactly as to `Bash`: destructive-operation refusal,
-repository/record scope, write-path confinement, egress and action budgets, the
-tamper-evident audit record. In allowlist mode the posture is stronger still: an MCP tool
-is **refused unless affirmatively named** (`allow={"mcp__github__create_issue": vet}`),
-the least-privilege default the MCP spec's own security guidance pushes toward. Pinned as
-tests.
-
-```python
-def policy(tool_name, tool_input):
-    if tool_name == "mcp__salesforce__delete_records":
-        return [Finding.fail("mcp_destructive_action", severity="CRITICAL",
-                             message="bulk Salesforce deletion is not approved")]
-    if tool_name == "mcp__github__merge_pull_request":
-        repo = tool_input.get("repo")
-        if repo not in {"philpaz/recusal"}:
-            return [Finding.fail("mcp_repository_scope", severity="CRITICAL",
-                                 message=f"repository {repo!r} is outside the approved scope")]
-    return []   # defer everything else to Claude Code's normal flow
-```
-
-Runnable: [`examples/mcp_governance.py`](examples/mcp_governance.py) (approved-server
-pinning, destructive-verb refusal, path confinement, allowlist mode). Pinned:
-[`tests/test_mcp_governance.py`](tests/test_mcp_governance.py). Recipe:
-[`docs/COOKBOOK.md`](docs/COOKBOOK.md) §12. In a custom Agent SDK or MCP-client loop
-nothing intercepts for you: invoke the gate between the model's proposed MCP call and the
-client dispatching it (the same `gate_tool_use` seam as below).
-
-**The three MCP tool-call boundaries, stated plainly.** A call-time policy adjudicates the proposed
-tool name and arguments; MCP has two more boundaries, and Recusal covers each with its own
-evidence:
-
-| Boundary | Threat (as the field names it) | Recusal |
-|---|---|---|
-| Discovery (`initialize.instructions` + `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section); legacy tools-only observations keep an explicitly weaker instruction claim |
-| Invocation (the call) | tool misuse (OWASP ASI02), wrong-subject writes (ASI03), exfiltration via tool invocation (MITRE ATLAS AML.T0086) | **this section** |
-| Response (the result) | indirect prompt injection in tool output (OWASP LLM01) | quarantine, [cookbook recipe 6](docs/COOKBOOK.md) |
-
-Transport and authorization threats (confused deputy, token passthrough, session
-hijacking) are the MCP specification's own
-[Security Best Practices](https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices)
-layer, complementary to this gate, neither replaces the other. Every source here is
-verified in [`docs/REFERENCES.md`](docs/REFERENCES.md).
-
-### MCP discovery integrity: pin server instructions and tool declarations, refuse represented drift
-
-The model chooses tools by reading their declared descriptions, so a poisoned declaration
-steers the agent *before any call exists* for a call-time policy to see, and the call that
-follows looks structurally valid. `recusal.mcp` adds deterministic integrity controls at
-that boundary the way this library governs every boundary: deterministic evidence, with
-the human where the judgment is:
-
-```bash
-recusal mcp pin --claude-config .mcp.json --approve-server-launch   # review once, pin
-recusal mcp verify --claude-config .mcp.json  # CI / session start: same represented source, server instructions, and tool declarations, or refuse
-```
-
-> **`--claude-config` and `--stdio` execute the declared server commands** to ask them
-> for `tools/list`; there is no other way to ask a process for its catalog. The first
-> pin is therefore an explicit trust event: review the `command`/`args` lines like you
-> review the declarations, then pass `--approve-server-launch` to record it. After the
-> pin, `verify` compares each launch specification against the manifest **before**
-> launching anything, and stdio servers run with a minimal environment by default
-> (`--inherit-env` is the named opt-out). Minimal environment is not a sandbox: the
-> server still runs with your user's filesystem, process, and network permissions. And
-> `--from` pins the supplied declaration set; it does not attest which remote endpoint
-> produced the dump.
-
-Recusal does not judge whether a description is *malicious*: that is semantic judgment, a
-human's call at pin time (a deterministic marker screen surfaces the obvious, and `pin`
-refuses to write over a flagged catalog until `--force` records that a human reviewed it).
-What it detects, deterministically, is **unpinned capability and post-approval change**:
-the rug pull, the new tool, the mutated schema. The pin is the confirmed human decision
-promoted to a deterministic artifact: manifest bytes are reproducible, tool
-declarations and server instructions are stored as hashes only (poisoned text is
-never embedded anywhere) while source templates are stored readable so drift can be
-explained - keep secrets out of them, the pin warns - and the same complete
-observation against the same pin, under the same recusal version, yields the same
-verification result, every time. `verify` fails **closed**: a missing
-manifest, a failed fetch, a wholly empty observation, or a pinned server that can no longer
-be reached for integrity-checking (e.g. silently swapped to a URL transport) is a refusal,
-never a clean-looking pass. (A pinned server *legitimately removed* from the config is
-recorded as a warning, not refused: a shrunk capability set is not an attack.) The pin also
-enforces at call time: `recusal.mcp.manifest_policy("mcp-manifest.json")` drops into the
-same `PreToolUse` gate and refuses any `mcp__server__tool` call that was never pinned (no
-pin, no MCP), composing with the argument-level rules above. A minimal zero-dependency
-stdio client collects `tools/list`; **remote/HTTP servers** are pinned from a JSON dump you
-produce with any MCP client (`--from`, copy-paste recipe:
-[`docs/COOKBOOK.md`](docs/COOKBOOK.md) §14; local/`.mcp.json` servers pin directly, §13).
-Recusal owns the deterministic adjudication, not the transport, so it inherits neither the
-HTTP client's dependencies nor its SSRF surface. Collection is never decision: the kernel
-adjudicates what was observed.
-
-The honest boundary: this is *discovery-time and call-time* integrity, not a live tap on
-every message. `verify` compares the represented source templates, observed
-server-instruction state, and tool declarations at the moment it runs (wire it into CI
-and session start); the call-time gate then enforces *approved tools only*. And the
-server SET is inventory-checked: a pinned server absent from the entire observation is
-a CRITICAL refusal (`mcp_server_unobserved`), never a silent pass - a partial
-observation must not verify clean while the manifest keeps authorizing that server's
-pinned runtime names. Acknowledge a deliberate removal with `--removed NAME`
-(recorded, not blocking), then re-pin to make the shrunk set the approved truth. A server that
-serves one catalog to `verify` and a different one to the live session (a client- or
-time-discriminating server) is a residual this layer names rather than claims to close:
-run `verify` against the same endpoint the session uses, close in time. The manifest
-pins the **source specification as well as the declared catalog**, and `verify` compares
-it **before** any process starts. For stdio servers that is the unexpanded command
-template, args, cwd, and the environment value *templates* as written in the config, so
-a rewritten command, a same-key env value swap (`NODE_OPTIONS`, `LD_PRELOAD`), or a
-`${VAR}` reference rename is refused without the replacement ever executing (each pinned
-by an adversarial test proving the substituted command's marker file is never written).
-Every server entry in the SUPPLIED `.mcp.json` is represented or the operation
-refuses: a remote entry pins its `url_template`, header value *templates*, and
-`headersHelper` command template, plus - for `http`/`sse`, the transports Claude
-applies its preconfigured OAuth flags to (SSE is deprecated upstream in favor of
-HTTP) - the OAuth policy fields; `ws` is header-only and an entry carrying `oauth`
-refuses; a server name Claude reserves for its built-ins (`workspace`,
-`claude-in-chrome`, `computer-use`, `Claude Preview`, `Claude Browser`) refuses
-before anything launches, since Claude skips such entries and representing one would
-misdescribe the effective configuration; an added or transport-swapped server of any
-kind is drift, and a config entry the parser cannot faithfully represent fails
-closed. The
-remaining residuals, named: the operator-shell *values* behind `${VAR}` references are
-not pinned (the reference is); `npx`/`uvx`-style launchers resolve through PATH and
-fetch what the registry serves (pin package versions in the args); executable bytes are
-not attested; and a `--from`-only pin records `transport: external`, attesting the
-declaration set, not the endpoint that produced it. Keep protecting `.mcp.json` and
-`mcp-manifest.json` as control-plane files - the default deny-list does.
-
-Scope, stated exactly: Recusal verifies the configuration artifact YOU supply
-(`--claude-config`/`--stdio`/`--from`); it does not reconstruct Claude Code's effective
-MCP environment across local, project, user, plugin, claude.ai connector, CLI/SDK,
-project-approval, disabled-server, or managed-deployment state, and a successful
-verification does not prove Claude accepted, enabled, connected to, or selected the
-supplied entry as the effective definition - use Claude managed MCP policy
-(`allowedMcpServers`) to constrain the effective server set, then pin what it allows.
-Recusal governs MCP *tools* and, since manifest v5, the initialize-result server
-*instructions* (pinned as a hash; added, removed, or changed instructions are drift).
-With Claude Code's default tool-search behavior those instructions and the tool names
-load at session start while full tool definitions are deferred; full definitions load
-up front when tool search is disabled or falls back, when a server sets `alwaysLoad`,
-or when a tool declares `anthropic/alwaysLoad` (that tool-level flag lives inside the
-declaration, so it IS part of the declaration fingerprint; the server-level
-`alwaysLoad`/`timeout` fields are shape-validated but deliberately not source
-identity - recusal pins declaration content, not Claude's loading strategy). Recusal
-fingerprints the complete observed instruction string while Claude truncates what it
-loads into context (currently 2KB each for instructions and tool descriptions), so a
-change outside the loaded prefix still drifts - the safe side of that asymmetry.
-**Instruction coverage for remote servers requires the rich `--from` shape**
-(`{server: {"instructions": ..., "tools": [...]}}`, or `--server` with the same
-single-server object); legacy `{server: [tools]}` dumps stay supported but record
-`observed: false` and establish no instruction claim. For OAuth, Recusal pins the
-*configured* policy fields in `.mcp.json` (including the configured `scopes` string,
-whose change is drift); it does not observe the final authorization request, scopes
-Claude appends (such as `offline_access` when the server advertises it), the issued
-token, granted authority, or the server-side authorization result. Claude's reference applies
-preconfigured OAuth flags to the `http` and `sse` transports (SSE deprecated upstream
-in favor of HTTP), and documents WebSocket authentication as header-only, so a `ws`
-entry carrying `oauth` is refused as a shape Claude does not support. Prompts, resources,
-resource templates, channels, and elicitation can still introduce context without a
-tool invocation and are outside `manifest_policy`. So are MCP *roots*: Recusal does
-not pin or govern `roots/list` responses (the session launch directory plus
-additional working directories Claude answers with) or
-`notifications/roots/list_changed`; Claude working-directory permissions,
-additional-directory configuration, server-side root enforcement, and
-operating-system controls own that boundary. Claude Code supports dynamic `list_changed`
-updates: a NEW runtime name stays blocked at call time (for plugin-bundled servers,
-subject to the callable-alias residual below), but a changed description under
-an already-pinned name is invisible to the call-time hook until you verify again -
-verification is point-in-time, not continuous attestation. And Recusal never
-authenticates to a remote endpoint: Claude Code (or the MCP client producing your
-`--from` dump) owns OAuth, headers, `headersHelper` execution, TLS, and transport;
-Recusal records the approved nonsecret templates and adjudicates the supplied catalog.
-Plugin-bundled MCP servers use scoped runtime names: for plugin `my-plugin`, server
-`database-tools`, tool `query`, the runtime name is
-`mcp__plugin_my-plugin_database-tools__query`, so the manifest SERVER key must be
-`plugin_my-plugin_database-tools` and the tool key `query` (never the whole tool name
-in the server field). Recusal does not discover plugin metadata; supply the exact
-runtime server segment yourself. Since manifest v6, runtime identity
-is modeled explicitly: pin the server with `--claude-plugin NAME` and Recusal stores
-BOTH identities - the raw declaration name (discovery verification, fingerprints) and
-the callable name derived per Claude's documented normalization (any character
-outside `A-Z a-z 0-9 _ -` becomes `_`), which is what `PreToolUse` membership checks.
-A spec-valid dotted tool name (`admin.tools.list`) therefore pins and authorizes
-under Claude's spelling (`admin_tools_list`), the raw dotted spelling is NOT treated
-as a callable, two raw names that normalize to one callable REFUSE the pin
-(ambiguous callable identity certifies nothing), the loader re-derives every stored
-callable name and refuses a mismatch, and the mode is explicit in the manifest -
-never inferred from a key's spelling (`--claude-plugin` is operator input; the
-server key must be the callable-safe runtime segment). The boundary that remains,
-point-in-time as ever: `PreToolUse` carries only the callable name, so a
-post-verification raw-declaration swap that preserves an already-approved callable
-is indistinguishable at call time until the next `verify`, which refuses on raw
-identity - exactly why both identities are pinned. v5 manifests are refused with a
-re-pin instruction. Verifying a config that contains remote servers
-needs their fresh catalogs alongside it:
-
-```bash
-recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json          # stdio-only
-recusal mcp verify --claude-config .mcp.json --from remote-catalogs.json     --manifest mcp-manifest.json                                                   # mixed/remote
-```
-
-See the refusal: [`examples/mcp_manifest_rugpull.py`](examples/mcp_manifest_rugpull.py)
-(offline). Pinned as tests: [`tests/test_mcp_manifest.py`](tests/test_mcp_manifest.py),
-[`tests/test_mcp_policy_bridge.py`](tests/test_mcp_policy_bridge.py),
-[`tests/test_mcp_fetch.py`](tests/test_mcp_fetch.py),
-[`tests/test_mcp_cli.py`](tests/test_mcp_cli.py),
-[`tests/test_mcp_runtime_identity.py`](tests/test_mcp_runtime_identity.py).
 
 ### Claude Agent SDK, manual loop
 
@@ -520,59 +433,6 @@ the OpenAI Agents SDK, or a homegrown runtime unchanged.
 The tiers are the policy: destructive things REFUSE terminally; recoverable ones BLOCK
 with a retry; a clean call passes. (Same policies power the demo and the test suite.)
 
-## The verdict, directly
-
-```python
-from recusal import compute_verdict
-from recusal.checks import row_count, null_rate, referential_integrity
-
-verdict = compute_verdict([
-    row_count(users, min_rows=1),                                  # CRITICAL if empty
-    null_rate(users, "email", max_rate=0.10),                      # ERROR if too sparse
-    referential_integrity(orders, users, fk="user_id", pk="id"),   # CRITICAL on orphans
-])
-if verdict.refused:
-    raise RuntimeError(verdict.reasons())
-```
-
-| Worst finding | Verdict | Meaning |
-|---------------|---------|---------|
-| `CRITICAL` failure | **`FAIL`** | Terminal. The work is wrong. Do not retry. |
-| `ERROR` failure | **`RETRY`** | Recoverable. Retry once, with the failures as context. |
-| `WARNING` / `INFO` only | **`PASS`** | Proceed. Warnings recorded, info kept as metrics. |
-
----
-
-## Tamper-evident audit
-
-Pair any verdict with an append-only, hash-chained log: every decision on the record, and
-an in-place edit or reordering of any entry with a surviving successor is detectable
-(catching tail-truncation, a tail-suffix rewrite, or a forged append by a write-access
-attacker needs an external anchor, see `recusal.audit`):
-
-```python
-from recusal import AuditLog, verify
-
-audit = AuditLog(path="audit.jsonl")
-audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
-ok, problems = verify(audit.entries)   # False if an entry with a later entry was edited/reordered
-```
-
-In the Claude Code hook it is one argument: `run_pretooluse_hook(policy,
-audit=AuditLog("audit.jsonl", resume="tail"))` puts every adjudication - defer, allow,
-and deny - on the chain, with the proposed `tool_input` bound by SHA-256 fingerprint,
-never embedded, and an unwritable log failing closed to a deny (the record is part of
-the control). Declared `policy_id`/`policy_version` values are caller-supplied labels
-unless you separately bind them to a protected source artifact; the record provides
-the identifiers needed to locate the policy and evidence for replay, it does not by
-itself make arbitrary policy execution replayable. `resume="tail"` recovers the chain
-head from the final record without
-loading or scanning the full log, and file-backed appends are serialized with an
-inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
-it.
-
-Deterministic, stdlib-only, and shaped for OWASP Agentic logging / EU AI Act Article 12 (record-keeping).
-
 ## Gate your CI
 
 CI is, by construction, not the session that did the work, which makes it the natural
@@ -592,7 +452,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.5.10   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.5.11   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
@@ -633,8 +493,9 @@ Default taxonomy (extend or replace it): `transient → retry` · `policy_violat
 ready to use?*) are answered in the [`docs/FAQ.md`](docs/FAQ.md). The plain-terms "so
 what": [`docs/WHY.md`](docs/WHY.md).
 
-**Full documentation index: [`docs/`](docs/README.md).** Comparison with the landscape:
-[`docs/LANDSCAPE.md`](docs/LANDSCAPE.md). The principles and why each helps:
+**Full documentation index: [`docs/`](docs/README.md).** MCP governance in full,
+boundaries and residuals included: [`docs/MCP.md`](docs/MCP.md). Comparison with the
+landscape: [`docs/LANDSCAPE.md`](docs/LANDSCAPE.md). The principles and why each helps:
 [`CONSTITUTION.md`](CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 Usage & extending: [`docs/HOWTO.md`](docs/HOWTO.md) · [`docs/EXTENDING.md`](docs/EXTENDING.md).
 Copy-paste policies: [`docs/COOKBOOK.md`](docs/COOKBOOK.md).

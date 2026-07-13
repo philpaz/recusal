@@ -24,6 +24,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 - **[HOWTO](HOWTO.md)**: the three integration paths (Claude Code hook, in deny-list or
   default-deny allowlist posture, Agent SDK loop, Managed Agents) plus direct
   adjudication, audit, and failure routing.
+- **[MCP](MCP.md)**: MCP governance in full: the call-time gate, discovery-integrity
+  pinning (`recusal mcp pin` / `verify` / `manifest_policy`), the three tool-call
+  boundaries, and every named residual and scope statement.
 - **[EXAMPLE](EXAMPLE.md)**: one complete, copy-paste configuration for a real use case
   (a database-admin agent left in auto mode), shown end to end: install, hook, settings,
   and what the agent experiences when it tries something it shouldn't.
