@@ -102,6 +102,21 @@ intentionally fail-open (Recusal is an optional dependency), so it can never blo
 previously-working flow. What it demonstrates is the pattern: a deterministic, independent
 guard catching a real, named wrong-subject bug before the write runs.
 
+## Release proofs on the record (v0.5.10, 2026-07-12)
+
+For v0.5.10 (commit `65b1b27`, publishing the loader-wide collision invariant):
+
+- **Workflow evidence is public**: CI run [29215512313](https://github.com/philpaz/recusal/actions/runs/29215512313)
+  (all 10 jobs green) and release run [29215621648](https://github.com/philpaz/recusal/actions/runs/29215621648)
+  (full suite at the release commit, hash-locked install, `--no-isolation` build,
+  neutral-directory wheel check, Trusted Publishing).
+- **The hand-edited collision refusal, proven from the published wheel** (a manifest
+  whose pins are each individually canonical but whose raw tools collide on one
+  callable): `load_manifest` refuses with "ambiguous callable identity", and
+  `manifest_policy` fails closed on the artifact (`mcp_manifest_unavailable`).
+  Pinned as three deterministic tests in
+  [`tests/test_mcp_runtime_identity.py`](../tests/test_mcp_runtime_identity.py).
+
 ## Release proofs on the record (v0.5.9, 2026-07-12)
 
 For v0.5.9 (commit `bc9a722`, manifest v6 runtime identity):
