@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.10] - 2026-07-12
+
+Aligns the published package with current main's stronger loader invariant: the
+normal `recusal mcp pin` path in 0.5.9 already rejected callable collisions, so this
+closes the remaining gap for hand-edited and externally generated manifests.
 
 ### Fixed
 - **Callable-collision refusal is a loader invariant (review 13, P1).** The builder
