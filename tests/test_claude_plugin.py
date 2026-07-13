@@ -91,6 +91,29 @@ def test_all_version_surfaces_agree():
     assert recusal.__version__ == plugin_version == market_version
 
 
+def test_onboarding_version_pins_track_the_package_version():
+    # The README's install pin and the Action usage examples are version-bound
+    # onboarding surfaces, not narrative: the plugin fails CLOSED on a package-version
+    # mismatch (deliberately), so a stale `pip install "recusal==X"` line makes a user
+    # following the README exactly install a combination where every tool call is
+    # refused. Shipped stale once (0.5.12 README pinned 0.5.11); locked here since.
+    # Historical mentions ("Since 0.5.11 ...", CHANGELOG, PROVEN) are exempt: this
+    # locks only the exact pin spellings.
+    with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    with open(os.path.join(REPO_ROOT, "action.yml"), encoding="utf-8") as f:
+        action = f.read()
+    install_pins = re.findall(r'recusal==([\d.]+)"', readme)
+    action_pins = re.findall(r"philpaz/recusal@v([\d.]+)", readme + action)
+    assert install_pins, "README lost its version-bound install line"
+    assert action_pins, "README/action.yml lost the Action usage example"
+    for pin in install_pins + action_pins:
+        assert pin == recusal.__version__, (
+            f"onboarding pin {pin} != package {recusal.__version__}; a user following "
+            "the docs exactly would hit the plugin's fail-closed version binding"
+        )
+
+
 def test_plugin_gate_wires_the_same_policy_as_the_scaffolder():
     with open(GATE_SCRIPT, encoding="utf-8") as f:
         src = f.read()
