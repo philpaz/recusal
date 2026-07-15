@@ -77,6 +77,7 @@ import re
 import threading
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+from ._mcp_screening import _screen_server_instructions, _screen_tool_declarations
 from .evidence import Finding
 
 #: Version 6 adds explicit RUNTIME IDENTITY per server (standard_mcp vs claude_plugin;
@@ -1380,47 +1381,6 @@ MAX_DECLARED_CHARS = 4000
 MAX_DECLARED_DEPTH = 200
 
 
-def _declared_text(value: Any, *, max_depth: int = MAX_DECLARED_DEPTH) -> Tuple[List[str], bool]:
-    """Every human-language string the model may read in a tool declaration, plus whether
-    the declaration nests past ``max_depth``.
-
-    Instructions do not only hide in the top-level ``description``: a poisoned
-    ``inputSchema`` property description, an ``enum`` value, a ``title``, an
-    ``annotations`` note, or even a property *name* (a dict key the model reads) is seen by
-    the model just the same. The screen walks all of it, dict keys and values and list
-    items, rather than a single field, so a deny-list ceiling is the only limit, not a
-    blind spot.
-
-    The walk is iterative (an explicit stack, depth-first in declaration order): a hostile
-    server must not be able to crash the screen out of returning a verdict with a
-    thousands-deep schema, and a crash is not a refusal. Past ``max_depth`` the walk
-    records the excess and stops descending, which also bounds a self-referencing
-    (non-JSON) input instead of looping on it.
-    """
-    out: List[str] = []
-    too_deep = False
-    stack: List[Tuple[Any, int]] = [(value, 0)]
-    while stack:
-        node, depth = stack.pop()
-        if isinstance(node, str):
-            out.append(node)
-        elif isinstance(node, dict):
-            if depth >= max_depth:
-                too_deep = True
-                continue
-            for k, v in reversed(list(node.items())):
-                stack.append((v, depth + 1))
-                if isinstance(k, str):
-                    stack.append((k, depth + 1))
-        elif isinstance(node, (list, tuple)):
-            if depth >= max_depth:
-                too_deep = True
-                continue
-            for v in reversed(node):
-                stack.append((v, depth + 1))
-    return out, too_deep
-
-
 def screen_server_instructions(
     instructions: Dict[str, Optional[str]],
     *,
@@ -1433,35 +1393,7 @@ def screen_server_instructions(
     the same reason: instructions are discovery-time model-facing text. ERROR routes to
     human review; this is never semantic malice detection.
     """
-    findings: List[Finding] = []
-    for server, text in sorted(instructions.items()):
-        if text is None:
-            continue
-        low = text.lower()
-        hits = [m for m in markers if m in low]
-        if hits:
-            findings.append(
-                Finding.fail(
-                    "mcp_instructions_marker",
-                    severity="ERROR",
-                    message=f"server {server!r} instructions carry injection phrasing: "
-                    f"{hits[0]!r}; review before pinning",
-                    server=server,
-                    markers=hits,
-                )
-            )
-        if len(text) > max_chars:
-            findings.append(
-                Finding.fail(
-                    "mcp_instructions_size",
-                    severity="ERROR",
-                    message=f"server {server!r} declares {len(text)} chars of "
-                    f"instructions (cap {max_chars}); too large to plausibly review is "
-                    "itself a review flag",
-                    server=server,
-                )
-            )
-    return findings
+    return _screen_server_instructions(instructions, markers=markers, max_chars=max_chars)
 
 
 def screen_tool_declarations(
@@ -1481,63 +1413,12 @@ def screen_tool_declarations(
     not "provably malicious". ``recusal mcp pin`` refuses to write on a non-clean screen
     unless ``--force`` records that a human reviewed and accepted it.
     """
-    findings: List[Finding] = []
-    screened = 0
-    for server, tools in (catalog or {}).items():
-        for tool in tools or []:
-            if not isinstance(tool, dict):
-                continue
-            name = str(tool.get("name", "?"))
-            screened += 1
-            texts, too_deep = _declared_text(tool)
-            if too_deep:
-                findings.append(
-                    Finding.fail(
-                        "mcp_declaration_depth",
-                        severity="ERROR",
-                        message=f"tool '{name}' on server '{server}' nests its declaration "
-                        f"deeper than {MAX_DECLARED_DEPTH} levels; too deep to plausibly "
-                        "review is itself a review flag",
-                        server=server,
-                        tool=name,
-                    )
-                )
-            low = "\n".join(texts).lower()
-            hits = [m for m in markers if m in low]
-            if hits:
-                findings.append(
-                    Finding.fail(
-                        "mcp_declaration_marker",
-                        severity="ERROR",
-                        message=f"tool '{name}' on server '{server}' carries injection "
-                        f"phrasing in its declaration: {hits[0]!r}; review before pinning",
-                        server=server,
-                        tool=name,
-                        markers=hits,
-                    )
-                )
-            total = sum(len(t) for t in texts)
-            if total > max_chars:
-                findings.append(
-                    Finding.fail(
-                        "mcp_declaration_size",
-                        severity="ERROR",
-                        message=f"tool '{name}' on server '{server}' declares {total} chars "
-                        f"of text (cap {max_chars}); too large to plausibly review is itself "
-                        "a review flag",
-                        server=server,
-                        tool=name,
-                    )
-                )
-    if not findings:
-        findings.append(
-            Finding.ok(
-                "mcp_declaration_screen",
-                severity="ERROR",
-                message=f"{screened} declaration(s) screened, no injection markers",
-            )
-        )
-    return findings
+    return _screen_tool_declarations(
+        catalog,
+        markers=markers,
+        max_chars=max_chars,
+        max_depth=MAX_DECLARED_DEPTH,
+    )
 
 
 # --- call-time bridge: enforce the pin inside the existing PreToolUse gate ----------------

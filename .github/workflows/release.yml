@@ -93,6 +93,7 @@ jobs:
             exit 1
           fi
           (cd /tmp && /tmp/wheelcheck/bin/python -m recusal --version)
+          (cd /tmp && /tmp/wheelcheck/bin/python -c 'from recusal.mcp import build_manifest, diff_manifest, diff_observation, diff_source, load_manifest, manifest_policy, manifest_to_text, normalize_source, plugin_callable_name, screen_server_instructions, screen_tool_declarations, tool_fingerprint')
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

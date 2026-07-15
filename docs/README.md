@@ -13,6 +13,8 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 
 ## Understand the design
 
+- **[ARCHITECTURE](ARCHITECTURE.md)**: dependency direction, the public compatibility
+  perimeter, and the incremental MCP decomposition policy.
 - **[../CONSTITUTION](../CONSTITUTION.md)**: the four rules and *why each one helps*:
   builders can't grade their own work · deterministic before AI · the judge owns evidence,
   not progression · a gate that can't say no isn't a gate.

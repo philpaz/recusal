@@ -37,7 +37,9 @@ classifiers = [
 dependencies = []  # zero runtime dependencies, standard library only
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.8"]
+# mypy 2.x no longer accepts python_version=3.9. Keep the newest 1.x checker so
+# static analysis continues to validate the minimum runtime we publicly support.
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.8,<2"]
 
 [project.scripts]
 recusal = "recusal.__main__:main"
