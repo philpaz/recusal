@@ -100,6 +100,28 @@ verdict. First match wins:
 Failed `WARNING`s are surfaced as `warnings` (they don't block). `INFO` findings,
 and any failed `INFO`, which is a contradiction, are kept as `metrics`.
 
+## `evaluate_policy` / `certify_evidence`, what an EMPTY findings set means
+
+`compute_verdict([])` is `PASS`, and that one behavior has always served two
+different intents. The kernel names them so a call site states which contract it
+means:
+
+- **`evaluate_policy(findings)`**: findings are *objections*. A screen that raises
+  none has deliberately said "no objection", so empty is `PASS`. This is the
+  semantics every screening surface (deny list, allowlist, MCP declaration screen)
+  relies on. Identical to `compute_verdict`, `strict` defaults to `False`.
+- **`certify_evidence(findings)`**: findings are *proof*. A certification handed
+  nothing has proven nothing, so empty **refuses**: it folds to `FAIL` through a
+  synthesized failed-CRITICAL `no_evidence` finding, and the verdict explains
+  itself through `failures` / `reasons()` like every other refusal. `strict`
+  defaults to `True`: in the certification posture, ambiguous evidence (a dict
+  with no stated outcome) is rejected, never defaulted to a pass.
+
+On non-empty input both are the same deterministic fold as `compute_verdict`,
+which is unchanged. `GateAdjudicator` has enforced the certification posture at
+gates since before the split; the split makes it a named kernel primitive any
+adapter can reach for.
+
 ## Why a contract, not just dicts
 
 For an *adjudication* library, the definition of "what is evidence" and "what is a

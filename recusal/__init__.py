@@ -17,7 +17,9 @@ The spine is the evidence contract (see ``evidence`` and docs/EVIDENCE.md):
 Everything hangs off it:
 
 - ``evidence``, ``Finding`` / ``Verdict`` / ``Severity`` / ``Decision`` and
-                 ``compute_verdict(findings)`` (the typed core).
+                 ``compute_verdict(findings)`` (the typed core), plus the named
+                 empty-evidence semantics ``evaluate_policy`` (empty = no
+                 objection, PASS) and ``certify_evidence`` (empty = refuse).
 - ``checks``, built-in deterministic checks that turn raw data into Findings.
 - ``claude``, drop the gate in front of a Claude agent's tool calls so it can
                  refuse *before* a tool runs.
@@ -44,7 +46,9 @@ from .evidence import (
     RuleSeverity,
     Severity,
     Verdict,
+    certify_evidence,
     compute_verdict,
+    evaluate_policy,
 )
 from .gates import GateAdjudicator, GateResult, ReleaseEvidence
 
@@ -55,6 +59,8 @@ __all__ = [
     "Verdict",
     "Decision",
     "compute_verdict",
+    "evaluate_policy",
+    "certify_evidence",
     "GateAdjudicator",
     "GateResult",
     "ReleaseEvidence",

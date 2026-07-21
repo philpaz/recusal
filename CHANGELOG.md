@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Named empty-evidence semantics: `evaluate_policy` / `certify_evidence`.**
+  `compute_verdict([])` is `PASS`, one behavior serving two intents. The kernel now
+  names them: `evaluate_policy` reads findings as objections (empty = "no objection",
+  `PASS`; identical to `compute_verdict`), and `certify_evidence` reads findings as
+  proof (empty = refuse, folding to `FAIL` through a synthesized failed-CRITICAL
+  `no_evidence` finding; `strict` defaults to `True` so outcome-less evidence dicts
+  are rejected, not defaulted to a pass). `compute_verdict` and every released
+  surface, including `GateAdjudicator`'s existing empty-evidence refusal, are
+  unchanged. Both names export from the package root.
+- **Kernel property tests (Hypothesis, dev extra only).** Derandomized generative
+  locks over the frozen kernel: verdict monotonicity and order-independence, the
+  documented decision fold, fail-closed string coercion for `passed`/`status`,
+  strict-mode refusal of outcome-less evidence, and tool-fingerprint stability
+  across key insertion order. Runtime dependencies stay zero.
+
+### CI
+- **Release publish hardening.** The PyPI publish step no longer passes
+  `skip-existing`: re-running a release whose version is already on PyPI hard-fails
+  instead of silently no-opping, so a divergent rebuild cannot hide behind an
+  idempotent-looking rerun. Drift-locked by test.
+- **SBOM + build-provenance attestations.** The build job catalogs the built
+  distributions as an SPDX SBOM and writes GitHub build-provenance attestations for
+  `dist/*`, with job-scoped permissions; every action in the release workflow is
+  pinned to a full commit SHA, now enforced by test. Stated narrowly: neither makes
+  the build byte-reproducible.
+
 ## [0.5.12] - 2026-07-13
 
 Hardens the 0.5.11 package-manager self-protection: the matcher now covers the valid,

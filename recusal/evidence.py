@@ -243,3 +243,58 @@ def compute_verdict(
         metrics,
         f"Passed with {len(warnings)} warning(s) and {len(metrics)} metric(s).",
     )
+
+
+# --- what an EMPTY findings set means: the two named semantics ----------------------------
+#
+# ``compute_verdict([])`` is PASS, and that single behavior has always served two very
+# different intents. A policy screen that raises no objection SHOULD pass: absence of a
+# finding is its deliberate "no objection" signal. A certification handed no evidence
+# SHOULD refuse: work that presented nothing has not been graded, and a vacuous pass is
+# exactly the builder-grades-own-work failure this library exists to prevent. The two
+# entry points below name that difference so a call site states which contract it means
+# instead of inheriting whichever one ``compute_verdict`` happens to imply. The raw fold
+# is unchanged; both reduce to it.
+
+
+def evaluate_policy(
+    findings: Iterable[Union[Finding, Mapping[str, Any]]], *, strict: bool = False
+) -> Verdict:
+    """Adjudicate findings as POLICY OBJECTIONS: an empty set means "no objection" and
+    the verdict is PASS.
+
+    This is the semantics every screening surface (deny list, allowlist, MCP
+    declaration screen) already relies on: checks emit findings only when they object,
+    so nothing-to-report is a deliberate pass, not missing evidence. Identical to
+    ``compute_verdict`` today, named so the intent survives at the call site.
+    """
+    return compute_verdict(findings, strict=strict)
+
+
+def certify_evidence(
+    findings: Iterable[Union[Finding, Mapping[str, Any]]], *, strict: bool = True
+) -> Verdict:
+    """Adjudicate findings as CERTIFICATION EVIDENCE: an empty set REFUSES.
+
+    A certification that proves nothing is not a pass, so no findings folds to FAIL
+    through a synthesized failed-CRITICAL ``no_evidence`` finding (the verdict still
+    explains itself through ``failures``/``reasons()`` like every other refusal).
+    ``strict`` defaults to ``True``, unlike ``compute_verdict``: certification is the
+    adapter-wiring posture where ambiguous evidence (a dict with no stated outcome)
+    must be rejected rather than defaulted to a pass (see ``Finding.coerce``).
+
+    The input is materialized once, so a generator is safe to pass.
+    """
+    items = list(findings)
+    if not items:
+        return compute_verdict(
+            [
+                Finding.fail(
+                    "no_evidence",
+                    severity=Severity.CRITICAL,
+                    message="no evidence presented; a certification that proves nothing "
+                    "is not a pass",
+                )
+            ]
+        )
+    return compute_verdict(items, strict=strict)
