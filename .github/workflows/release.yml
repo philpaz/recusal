@@ -43,6 +43,12 @@ jobs:
     name: Build distributions
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Provenance attestations are written to the repo's attestation store; both
+      # grants exist only for actions/attest-build-provenance below.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -94,6 +100,22 @@ jobs:
           fi
           (cd /tmp && /tmp/wheelcheck/bin/python -m recusal --version)
           (cd /tmp && /tmp/wheelcheck/bin/python -c 'from recusal.mcp import build_manifest, diff_manifest, diff_observation, diff_source, load_manifest, manifest_policy, manifest_to_text, normalize_source, plugin_callable_name, screen_server_instructions, screen_tool_declarations, tool_fingerprint')
+
+      # Supply-chain records for the exact bytes that ship (stated narrowly: the SBOM
+      # catalogs the built distributions, and the attestation binds them to this
+      # workflow run's provenance; neither makes the build byte-reproducible).
+      - name: Generate SBOM for the built distributions
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: dist
+          format: spdx-json
+          output-file: dist-sbom.spdx.json
+          artifact-name: dist-sbom.spdx.json
+
+      - name: Attest build provenance for the distributions
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/*
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
