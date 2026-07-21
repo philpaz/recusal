@@ -120,6 +120,8 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
+        # Deliberately no skip-existing: re-running a release whose version is already on
+        # PyPI must hard-fail so a divergent rebuild can never silently no-op over the
+        # published artifacts; a failed re-run is a human-review signal, not an error to
+        # suppress (review 9, publish hardening).
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-        with:
-          skip-existing: true # re-running a release whose version is already on PyPI is a no-op, not a failure

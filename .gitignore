@@ -39,3 +39,6 @@ RUNBOOK.local.md
 ESSAY.local.md
 SOURCES.local.md
 *.local.md
+
+# Engineering Harness local state, internal planning notes
+.claude/harness/
