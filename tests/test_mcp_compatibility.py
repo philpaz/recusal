@@ -69,12 +69,18 @@ EXPECTED_MANIFEST = """{
 
 def test_evidence_kernel_does_not_depend_on_outer_recusal_layers():
     tree = ast.parse((ROOT / "recusal" / "evidence.py").read_text(encoding="utf-8"))
-    relative_imports = [
-        node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.level
-    ]
-    assert relative_imports == [], (
+    package_imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level or (node.module or "").split(".")[0] == "recusal":
+                package_imports.append(ast.dump(node))
+        elif isinstance(node, ast.Import):
+            package_imports.extend(
+                alias.name for alias in node.names if alias.name.split(".")[0] == "recusal"
+            )
+    assert package_imports == [], (
         "recusal.evidence is the innermost deterministic boundary and must not import "
-        "adapters, persistence, CLI, or MCP layers"
+        "adapters, persistence, CLI, or MCP layers, whether relatively or absolutely"
     )
 
 

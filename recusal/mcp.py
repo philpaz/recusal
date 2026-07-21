@@ -1407,7 +1407,7 @@ def screen_tool_declarations(
     Screens the whole declaration, not just ``description`` (which is why it is named for
     declarations, not descriptions): ``title``, ``annotations``, and the strings inside
     ``inputSchema`` / ``outputSchema`` (property names, property descriptions, enum values)
-    are all read by the model and so are all scanned (see :func:`_declared_text`).
+    are all read by the model and so are all scanned.
 
     ERROR (RETRY), deliberately not CRITICAL: a marker hit means "a human must look",
     not "provably malicious". ``recusal mcp pin`` refuses to write on a non-clean screen

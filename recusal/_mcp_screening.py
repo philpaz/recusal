@@ -10,7 +10,22 @@ from .evidence import Finding
 
 
 def _declared_text(value: Any, *, max_depth: int) -> Tuple[List[str], bool]:
-    """Collect declaration strings iteratively; report nesting beyond ``max_depth``."""
+    """Every human-language string the model may read in a tool declaration, plus whether
+    the declaration nests past ``max_depth``.
+
+    Instructions do not only hide in the top-level ``description``: a poisoned
+    ``inputSchema`` property description, an ``enum`` value, a ``title``, an
+    ``annotations`` note, or even a property *name* (a dict key the model reads) is seen by
+    the model just the same. The screen walks all of it, dict keys and values and list
+    items, rather than a single field, so a deny-list ceiling is the only limit, not a
+    blind spot.
+
+    The walk is iterative (an explicit stack, depth-first in declaration order): a hostile
+    server must not be able to crash the screen out of returning a verdict with a
+    thousands-deep schema, and a crash is not a refusal. Past ``max_depth`` the walk
+    records the excess and stops descending, which also bounds a self-referencing
+    (non-JSON) input instead of looping on it.
+    """
     out: List[str] = []
     too_deep = False
     stack: List[Tuple[Any, int]] = [(value, 0)]
