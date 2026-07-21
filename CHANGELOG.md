@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Executable MCP launch-command-drift proof.** `examples/mcp_security_demo.py` uses the
+  real pin/verify command path to approve a local MCP process, substitutes a marker-writing
+  command, and proves verification refuses before that command executes. The same offline
+  narrative also refuses instructions-only drift and an unpinned call; a black-box smoke
+  test locks the published claim and output.
 - **Named empty-evidence semantics: `evaluate_policy` / `certify_evidence`.**
   `compute_verdict([])` is `PASS`, one behavior serving two intents. The kernel now
   names them: `evaluate_policy` reads findings as objections (empty = "no objection",

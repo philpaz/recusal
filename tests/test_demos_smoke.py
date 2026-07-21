@@ -4,6 +4,8 @@ import contextlib
 import io
 import os
 import runpy
+import subprocess
+import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -109,6 +111,47 @@ def test_mcp_rugpull_demo_pins_then_refuses_drift():
             assert "DENY" in line, line  # unpinned or unpinnable -> refused
     assert "rug-pull" in out  # the refusal names the vector
     assert "no pin, no MCP" in out  # a missing manifest fails closed at call time
+
+
+def test_mcp_security_demo_proves_replacement_never_executes():
+    out = _run_demo("examples/mcp_security_demo.py")
+    assert "Unchanged server is observed again" in out
+    assert "launch specification changed" in out
+    assert "PROOF: attacker marker does not exist; substituted command never ran" in out
+    assert "Same server silently rewrites its instructions" in out
+    assert "mcp_instructions_changed" in out
+    assert "Agent calls a tool no human pinned" in out
+    assert "OBSERVED: launch-command drift and instruction drift were refused" in out
+    for line in out.splitlines():
+        if "Unchanged server" in line:
+            assert line.rstrip().endswith("PASS"), line
+        if any(key in line for key in ("attacker program", "rewrites its instructions")):
+            assert line.rstrip().endswith("REFUSED"), line
+        if "tool no human pinned" in line:
+            assert line.rstrip().endswith("DENY"), line
+
+
+def test_mcp_security_demo_is_a_standalone_zero_dependency_process(tmp_path):
+    """Run the published command as a fresh process from outside the checkout.
+
+    This locks the actual user path: exit zero, no cwd/import dependency, both named
+    refusal reasons present, and the marker-file non-execution assertion reached.
+    """
+    script = os.path.join(REPO, "examples", "mcp_security_demo.py")
+    proc = subprocess.run(
+        [sys.executable, script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    assert proc.stderr == ""
+    assert "launch specification changed" in proc.stdout
+    assert "mcp_instructions_changed" in proc.stdout
+    assert "substituted command never ran" in proc.stdout
+    assert "unpinned tool call was denied" in proc.stdout
 
 
 def test_allowlist_gate_demo_clears_the_denylist_ceiling():
