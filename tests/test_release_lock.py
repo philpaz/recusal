@@ -50,15 +50,17 @@ def test_lock_contains_the_toolchain_roots_and_only_hashed_lines():
 
 
 def test_workflows_install_through_the_lock():
-    release = _read(".github", "workflows", "release.yml")
+    # the release build steps live in the reusable build-dist.yml (SLSA L3 pattern);
+    # release.yml delegates to it, so the lock requirement follows the steps
+    build = _read(".github", "workflows", "build-dist.yml")
     ci = _read(".github", "workflows", "ci.yml")
-    for text, name in ((release, "release.yml"), (ci, "ci.yml")):
+    for text, name in ((build, "build-dist.yml"), (ci, "ci.yml")):
         assert "--require-hashes -r release-requirements.txt" in text, (
             f"{name} does not install the release toolchain through the hash lock"
         )
         assert "build --no-isolation" in text, (
             f"{name} builds with an uncontrolled PEP 517 isolation environment"
         )
-    assert "pip install build==" not in release and "pip install twine==" not in release, (
-        "release.yml still installs an unlocked toolchain alongside the lock"
+    assert "pip install build==" not in build and "pip install twine==" not in build, (
+        "build-dist.yml still installs an unlocked toolchain alongside the lock"
     )

@@ -28,6 +28,19 @@ All notable changes to this project are documented here. The format follows
   `.git` for any later step to read). Both locked by test, including a
   negative-case-verified guard that a later step's settings cannot satisfy an earlier
   checkout's requirement.
+- **Release build in a reusable workflow (the documented SLSA Build L3 pattern).**
+  The build, its hash-locked toolchain install, the wheel identity checks, the SBOM,
+  and the provenance attestation moved verbatim into the reusable `build-dist.yml`
+  workflow; `release.yml` delegates to it, so the provenance records that workflow's
+  identity as the signer and a verifier can require it
+  (`gh attestation verify ... --signer-workflow philpaz/recusal/.github/workflows/build-dist.yml`).
+  Stated narrowly: this pins WHICH workflow built and attested the artifacts, per
+  GitHub's documented path to SLSA v1 Build Level 3; it does not make the build
+  byte-reproducible, and a same-repo reusable workflow is as isolated as the
+  repository's own change controls. Drift-locked: attestation inline in release.yml
+  refuses, the delegation is pinned by test, and the wheel's import smoke now covers
+  the full public MCP facade including `diff_resolved_executable` and
+  `diff_observation_scope`.
 - **OpenSSF Scorecard, continuously.** A weekly + on-push Scorecard workflow publishes
   the project's supply-chain posture to the public scorecard API, and the README badge
   reads it from there: the score is measured by tooling the maintainer does not
