@@ -26,6 +26,7 @@ protect ``.mcp.json`` as a control-plane file, and pass ``minimal_env=True`` (th
 default) so a server still being decided about does not inherit secrets.
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -136,6 +137,30 @@ def _resolve_command(command: Sequence[str]) -> List[str]:
     if resolved is None and not os.path.exists(argv[0]):
         raise McpFetchError(f"server command not found on PATH: {argv[0]!r}")
     return [resolved or argv[0]] + argv[1:]
+
+
+def resolve_executable_identity(command: Sequence[str]) -> Dict[str, str]:
+    """The ``{path, sha256}`` identity of the file a command's argv[0] resolves to.
+
+    Uses the SAME resolution the fetcher uses before spawning (:func:`_resolve_command`,
+    ``shutil.which`` semantics including Windows ``.cmd``/``.exe`` shims), then hashes
+    that file's bytes. This is the strict-mode pin/verify collection primitive: the
+    identity is the FIRST process image only - a script or interpreter that argv[0]
+    delegates to (``py server.py`` pins the launcher, not ``server.py``) stays inside
+    the launch-template boundary, not this one. Raises :class:`McpFetchError` when the
+    command cannot be resolved or the resolved file cannot be read; the caller decides
+    whether that fails the pin outright or becomes the explicit ``None`` observation.
+    """
+    argv = _resolve_command(command)
+    path = os.path.abspath(argv[0])
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise McpFetchError(f"cannot read resolved executable {path!r}: {exc}") from exc
+    return {"path": path, "sha256": f"sha256:{digest.hexdigest()}"}
 
 
 def fetch_server_stdio(

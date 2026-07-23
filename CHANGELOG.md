@@ -7,6 +7,22 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Resolved-executable strict mode (manifest v7).** The launch-identity residual named
+  since 0.5.0 - a swapped file behind an unchanged command template - is now closable
+  at pin time: `recusal mcp pin --resolve-executable` also pins the `{path, sha256}` of
+  the file each launched stdio command's argv[0] resolves to (`shutil.which`
+  semantics), and verify re-resolves and refuses (`mcp_resolved_executable_changed`,
+  CRITICAL) when the resolved path or file bytes differ - proven by the wrapper arc:
+  one appended line to a pinned wrapper script, template byte-identical, exit 2.
+  Every v7 server entry states the claim explicitly: `resolved_executable` is `null`
+  (template-only identity, the prior behavior, residual as documented) or the pinned
+  identity - never an omission. A strict pin that cannot be re-resolved refuses
+  (`mcp_resolved_executable_unverifiable`), an observation that skips a strict pin
+  refuses (`mcp_resolved_executable_unobserved`), and the kernel primitive
+  `diff_resolved_executable` joins the facade. Honest boundary: the hash attests the
+  FIRST process image only; interpreter script arguments and launcher-fetched
+  packages stay behind the template. `manifest_version` 6 is refused with a
+  migration message (re-pin; add `--resolve-executable` to opt in).
 - **AuditSink protocol + verify-on-open anchoring.** The audit chain is tamper-evident,
   not tamper-proof: a write-access attacker can rewrite or truncate the tail. The
   countermeasure is now first-class. `AuditLog(sinks=[...])` mirrors every committed

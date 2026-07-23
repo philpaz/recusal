@@ -67,6 +67,7 @@ from .mcp import (
 from .mcp_fetch import (
     McpFetchError,
     fetch_server_stdio,
+    resolve_executable_identity,
     servers_from_claude_config,
     split_command,
 )
@@ -809,7 +810,10 @@ class Observation(NamedTuple):
     - ``instructions``: per server, ``{"observed": bool, "text": str|None}`` - the
       initialize-result instructions when the observation carried them, or
       ``observed: false`` for a legacy dump, which never silently upgrades to the
-      stronger discovery-content claim.
+      stronger discovery-content claim;
+    - ``resolved``: per stdio server that was resolved for strict mode, the
+      ``{path, sha256}`` executable identity, or ``None`` as the explicit claim that
+      resolution was attempted and failed (verify path only; a pin refuses outright).
     """
 
     catalog: Dict[str, List[dict]]
@@ -817,6 +821,7 @@ class Observation(NamedTuple):
     unfetchable: List[str]
     sources: Dict[str, Dict[str, Any]]
     instructions: Dict[str, Dict[str, Any]]
+    resolved: Dict[str, Optional[Dict[str, str]]]
 
 
 def _atomic_write(path: str, text: str) -> None:
@@ -841,8 +846,16 @@ def _collect_catalog(
     timeout: float = 30.0,
     minimal_env: bool = True,
     pinned: Optional[Dict[str, Any]] = None,
+    resolve_executables: bool = False,
 ) -> Observation:
     """Assemble an :class:`Observation` from the CLI's sources.
+
+    ``resolve_executables=True`` (the pin path) records each launched stdio server's
+    resolved ``{path, sha256}`` executable identity; a resolution failure raises
+    (an unpinnable identity refuses the pin). On the verify path the PIN decides:
+    a server pinned strict is re-resolved, and a failure there becomes the explicit
+    ``None`` observation, which the kernel adjudicates into a CRITICAL rather than
+    an operational error - the drift verdict, not a crash, is the deliverable.
 
     Raises ``ValueError`` / ``OSError`` / :class:`McpFetchError` on anything that prevents a
     complete observation, the caller fails closed. A server named by two sources is an
@@ -866,11 +879,31 @@ def _collect_catalog(
     unfetchable: List[str] = []
     sources: Dict[str, Dict[str, Any]] = {}
     instructions: Dict[str, Dict[str, Any]] = {}
+    resolved: Dict[str, Optional[Dict[str, str]]] = {}
 
     def _add(name: str, tools: List[dict]) -> None:
         if name in catalog:
             raise ValueError(f"server {name!r} is named by more than one source")
         catalog[name] = tools
+
+    def _pinned_strict(name: str) -> bool:
+        if pinned is None:
+            return False
+        entry = pinned.get("servers", {}).get(name)
+        return isinstance(entry, dict) and entry.get("resolved_executable") is not None
+
+    def _resolve_identity(name: str, argv: List[str]) -> None:
+        """Record the resolved executable identity when this pass needs it."""
+        if resolve_executables:
+            # pin path: an identity that cannot be established refuses the pin
+            resolved[name] = resolve_executable_identity(argv)
+        elif _pinned_strict(name):
+            # verify path: failure is the EXPLICIT None observation; the kernel turns
+            # it into the CRITICAL refusal instead of an operational error
+            try:
+                resolved[name] = resolve_executable_identity(argv)
+            except McpFetchError:
+                resolved[name] = None
 
     def _gate_launch(name: str, source: Dict[str, Any]) -> None:
         """Refuse a launch whose specification is not the approved one - BEFORE it runs."""
@@ -960,6 +993,7 @@ def _collect_catalog(
             "env_templates": {},
         }
         _gate_launch(name, source)
+        _resolve_identity(name, argv)
         observed = fetch_server_stdio(argv, timeout=timeout, minimal_env=minimal_env)
         _add(name, observed["tools"])
         sources[name] = source
@@ -976,6 +1010,7 @@ def _collect_catalog(
             for name, remote_source in remote_servers.items():
                 _gate_launch(name, remote_source)
         for name, spec in stdio_servers.items():
+            _resolve_identity(name, [str(a) for a in spec["command"]])
             observed = fetch_server_stdio(
                 spec["command"],
                 env=spec["env"],
@@ -1002,7 +1037,7 @@ def _collect_catalog(
 
     if not catalog and not unfetchable:
         raise ValueError("no catalog source given (--from, --stdio, or --claude-config)")
-    return Observation(catalog, notes, unfetchable, sources, instructions)
+    return Observation(catalog, notes, unfetchable, sources, instructions, resolved)
 
 
 #: Templates whose ``${VAR:-default}`` default value is recorded in the manifest; a
@@ -1091,6 +1126,7 @@ def mcp_pin_command(
     update: bool = False,
     force: bool = False,
     claude_plugin: Optional[List[str]] = None,
+    resolve_executable: bool = False,
     as_json: bool = False,
     stdout: Optional[TextIO] = None,
 ) -> int:
@@ -1113,6 +1149,14 @@ def mcp_pin_command(
     before anything executes). The pinned manifest then records each server's launch
     specification, and ``verify`` compares it BEFORE launching, so this approval is a
     one-time event per launch spec, not a ritual.
+
+    ``--resolve-executable`` opts the pin into STRICT launch identity: each launched
+    stdio server's command is resolved (``shutil.which`` semantics) and the resolved
+    file's ``{path, sha256}`` is pinned alongside the template, so verify refuses a
+    swap of the file the unchanged template resolves to. It requires a launching
+    source (``--stdio``/``--claude-config``): an external dump launches nothing, so
+    there is no executable to resolve. A command that cannot be resolved and hashed
+    refuses the pin.
     """
     out = stdout if stdout is not None else sys.stdout
     launches_planned = bool(stdio)
@@ -1134,6 +1178,14 @@ def mcp_pin_command(
             as_json,
             out,
         )
+    if resolve_executable and not launches_planned:
+        return _fail_closed(
+            "--resolve-executable pins the file identity a launched command resolves "
+            "to; an external dump (--from) launches nothing, so there is no executable "
+            "to resolve - use it with --stdio or --claude-config",
+            as_json,
+            out,
+        )
     try:
         obs = _collect_catalog(
             from_file=from_file,
@@ -1142,6 +1194,7 @@ def mcp_pin_command(
             claude_config=claude_config,
             timeout=timeout,
             minimal_env=minimal_env,
+            resolve_executables=resolve_executable,
         )
     except (OSError, ValueError, McpFetchError) as exc:
         # notes accrued before the failure (e.g. URL-skipped servers) are lost on this
@@ -1176,6 +1229,11 @@ def mcp_pin_command(
                 # key is a plugin runtime segment (callable identity derived per
                 # Claude's documented normalization; collisions refuse the pin)
                 runtime_modes={name: "claude_plugin" for name in (claude_plugin or [])},
+                resolved_executables={
+                    name: identity
+                    for name, identity in obs.resolved.items()
+                    if identity is not None
+                },
             )
         )
     except (ValueError, UnicodeError, RecursionError) as exc:
@@ -1274,6 +1332,11 @@ def mcp_verify_command(
     WITHOUT starting the configured command - the substituted process never runs. Only
     approved specifications are then launched to observe their catalogs.
 
+    A server pinned STRICT (``pin --resolve-executable``) is additionally re-resolved:
+    the file its command resolves to now must match the pinned ``{path, sha256}``, so
+    a swapped executable behind an unchanged template refuses too. The pin decides;
+    no verify flag exists to skip a strict check.
+
     A missing manifest fails closed (a missing pin is not a clean pin), and an
     observation that cannot be completed fails closed (a failed fetch must not read as
     "no drift"). Drift findings are CRITICAL, so drift exits 2, the blocking code.
@@ -1328,6 +1391,7 @@ def mcp_verify_command(
                 instructions=obs.instructions,
                 unverifiable=tuple(obs.unfetchable),
                 removed=tuple(removed or ()),
+                resolved_executables=obs.resolved,
             ),
         )
     except (ValueError, UnicodeError, RecursionError) as exc:
@@ -1523,6 +1587,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         "the key's spelling",
     )
     p_pin.add_argument(
+        "--resolve-executable",
+        action="store_true",
+        help="STRICT launch identity: also pin the {path, sha256} of the file each "
+        "launched stdio command resolves to (shutil.which semantics), so verify "
+        "refuses a swapped executable behind an unchanged command template. Requires "
+        "--stdio/--claude-config; a command that cannot be resolved and hashed "
+        "refuses the pin. The identity is the first process image only (an "
+        "interpreter's script argument is covered by the template, not this hash)",
+    )
+    p_pin.add_argument(
         "--force",
         action="store_true",
         help="proceed after deliberate review: pin even when the screen flags tool "
@@ -1606,6 +1680,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 update=args.update,
                 force=args.force,
                 claude_plugin=args.claude_plugin,
+                resolve_executable=args.resolve_executable,
                 as_json=args.json,
             )
         if args.mcp_command == "verify":

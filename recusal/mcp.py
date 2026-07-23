@@ -95,9 +95,13 @@ from .evidence import Finding
 #: observation that did not carry instructions (a legacy dump) is recorded as
 #: ``observed: false`` and never silently receives the stronger claim. Older manifests
 #: are refused with a re-pin instruction rather than accepted at a weaker guarantee.
-MANIFEST_VERSION = 6
+#: v7 adds the always-present ``resolved_executable`` member on every server entry:
+#: ``null`` (the explicit weak claim: launch identity is the unexpanded template only)
+#: or ``{path, sha256}`` of the executable the pinned stdio command resolved to at pin
+#: time, closing the PATH-resolution and executable-bytes residual for pins that opt in.
+MANIFEST_VERSION = 7
 
-#: Runtime naming modes a v6 manifest declares PER SERVER, explicitly - never inferred
+#: Runtime naming modes a v6+ manifest declares PER SERVER, explicitly - never inferred
 #: from a string prefix. ``standard_mcp``: the PreToolUse name is reconstructed from
 #: the raw declaration name (``mcp__{server}__{raw}``). ``claude_plugin``: Claude
 #: documents that any character outside A-Z a-z 0-9 _ - is replaced with "_" in the
@@ -409,6 +413,89 @@ def diff_source(
     ]
 
 
+def _resolved_executable_error(record: Any) -> Optional[str]:
+    """Why ``record`` is not a canonical resolved-executable identity, or None if it is.
+
+    The canonical shape is exactly ``{"path": <nonempty str>, "sha256":
+    "sha256:<64 lowercase hex>"}`` - the absolute file the stdio command's argv[0]
+    resolved to, and the digest of that file's bytes.
+    """
+    if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
+        return 'a resolved-executable record is exactly {"path": ..., "sha256": ...}'
+    if not isinstance(record["path"], str) or not record["path"]:
+        return "resolved-executable 'path' must be a nonempty string"
+    if not isinstance(record["sha256"], str) or not _DIGEST_RE.fullmatch(record["sha256"]):
+        return "resolved-executable 'sha256' is not sha256:<64 lowercase hex>"
+    return None
+
+
+def diff_resolved_executable(
+    server: str, pinned_entry: Dict[str, Any], observed: Optional[Dict[str, str]]
+) -> List[Finding]:
+    """Compare a server's observed resolved-executable identity against its strict pin.
+
+    Adjudicates only when the pin carries a non-null ``resolved_executable`` (strict
+    mode is chosen at pin time; a ``null`` pin makes no claim here and the
+    PATH-resolution/executable-bytes residual stays as documented). ``observed`` is
+    the freshly resolved ``{path, sha256}`` identity, or ``None`` as the explicit
+    claim that resolution was attempted and failed - which refuses (a pinned
+    executable identity that can no longer be checked must not verify clean).
+    A malformed observed record raises ``ValueError``: a malformed observation is
+    not evidence.
+    """
+    pin = pinned_entry.get("resolved_executable") if isinstance(pinned_entry, dict) else None
+    if pin is None:
+        return []
+    problem = _resolved_executable_error(pin)
+    if problem is not None:
+        return [
+            Finding.fail(
+                "mcp_resolved_executable_corrupt",
+                severity="CRITICAL",
+                message=f"server {server!r}: pinned resolved_executable is not canonical "
+                f"({problem}) - a hand-edited or corrupt pin certifies nothing",
+                server=server,
+            )
+        ]
+    if observed is None:
+        return [
+            Finding.fail(
+                "mcp_resolved_executable_unverifiable",
+                severity="CRITICAL",
+                message=f"server {server!r} is pinned to a resolved executable identity "
+                "but the current command's executable could not be resolved and hashed; "
+                "a pinned identity that cannot be checked must not verify clean",
+                server=server,
+            )
+        ]
+    problem = _resolved_executable_error(observed)
+    if problem is not None:
+        raise ValueError(f"resolved-executable observation for server {server!r}: {problem}")
+    changed = [field for field in ("path", "sha256") if pin[field] != observed[field]]
+    if not changed:
+        return [
+            Finding.ok(
+                "mcp_resolved_executable",
+                severity="CRITICAL",
+                message=f"server {server!r} resolved executable matches the pin "
+                f"(path and file bytes)",
+                server=server,
+            )
+        ]
+    return [
+        Finding.fail(
+            "mcp_resolved_executable_changed",
+            severity="CRITICAL",
+            message=f"server {server!r} resolved executable changed since the pin "
+            f"(fields: {', '.join(changed)}); the command template may be unchanged, but "
+            "the file it resolves to is not the approved one - re-pin deliberately if "
+            "this change is yours",
+            server=server,
+            changed_fields=changed,
+        )
+    ]
+
+
 def instructions_record(observed: bool, text: Optional[str]) -> Dict[str, Any]:
     """The pinned shape of one server's initialize-result ``instructions``.
 
@@ -519,6 +606,7 @@ def build_manifest(
     sources: Optional[Dict[str, Dict[str, Any]]] = None,
     instructions: Optional[Dict[str, Optional[str]]] = None,
     runtime_modes: Optional[Dict[str, str]] = None,
+    resolved_executables: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Build a manifest from ``{server_name: [tool declarations]}``.
 
@@ -546,9 +634,27 @@ def build_manifest(
     stores its derived ``callable_name`` (Claude's documented normalization of the
     raw declaration name), and two raw names that normalize to the same callable
     refuse the pin: ambiguous callable identity certifies nothing.
+
+    ``resolved_executables`` maps a server name to the ``{path, sha256}`` identity its
+    stdio command's argv[0] resolved to at pin time (strict mode: verify then refuses
+    a command whose resolved file or file bytes changed even when the template did
+    not). A server absent from the mapping is pinned ``resolved_executable: null``,
+    the explicit weak claim that only the unexpanded template is pinned. Only a stdio
+    server can carry one: nothing else resolves an executable, so a record on any
+    other transport is contradictory and refuses.
     """
     if not isinstance(catalog, dict) or not catalog:
         raise ValueError("an empty catalog certifies nothing; nothing to pin")
+    resolved = dict(resolved_executables or {})
+    unknown_resolved = set(resolved) - set(catalog)
+    if unknown_resolved:
+        raise ValueError(
+            f"resolved_executables names server(s) not in the catalog: {sorted(unknown_resolved)}"
+        )
+    for resolved_server, record in resolved.items():
+        problem = _resolved_executable_error(record)
+        if problem is not None:
+            raise ValueError(f"server {resolved_server!r}: {problem}")
     modes = dict(runtime_modes or {})
     unknown_mode_servers = set(modes) - set(catalog)
     if unknown_mode_servers:
@@ -613,6 +719,13 @@ def build_manifest(
         else:
             source = normalize_source(sources[server])
         source = normalize_source(source)
+        resolved_record = resolved.get(server)
+        if resolved_record is not None and source["transport"] != "stdio":
+            raise ValueError(
+                f"server {server!r}: a resolved_executable identity contradicts a "
+                f"{source['transport']} source - only a stdio command resolves an "
+                "executable"
+            )
         if instructions is not None and server in instructions:
             server_instructions = instructions_record(True, instructions[server])
         else:
@@ -622,6 +735,11 @@ def build_manifest(
             "source_fingerprint": _sha256(source),
             "server_instructions": server_instructions,
             "runtime": {"mode": mode},
+            "resolved_executable": (
+                {"path": resolved_record["path"], "sha256": resolved_record["sha256"]}
+                if resolved_record is not None
+                else None
+            ),
             "tools": pinned_tools,
         }
     return {"manifest_version": MANIFEST_VERSION, "servers": servers}
@@ -681,6 +799,14 @@ def _validate_manifest(data: Any) -> None:
             "under Claude's spelling, or alias an approved callable); re-pin with "
             "`recusal mcp pin` to record explicit runtime naming modes"
         )
+    if data.get("manifest_version") == 6:
+        raise ValueError(
+            "manifest_version 6 predates resolved-executable identity (every v7 server "
+            "entry records an explicit resolved_executable member: null, or the "
+            "{path, sha256} the stdio command resolved to at pin time under strict "
+            "mode); re-pin with `recusal mcp pin` (add --resolve-executable to opt "
+            "into strict resolution pinning)"
+        )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
             f"manifest_version {data.get('manifest_version')!r} is not {MANIFEST_VERSION}"
@@ -705,11 +831,18 @@ def _validate_manifest(data: Any) -> None:
             "source_fingerprint",
             "server_instructions",
             "runtime",
+            "resolved_executable",
             "tools",
         }
         if unknown_entry:
             raise ValueError(
                 f"manifest server {server!r} carries undefined fields: {sorted(unknown_entry)}"
+            )
+        if "resolved_executable" not in entry:
+            raise ValueError(
+                f"manifest server {server!r} has no resolved_executable member; a v7 "
+                "entry records the claim explicitly - null (template-only launch "
+                "identity) or the pinned {path, sha256} - never by omission"
             )
         runtime = entry.get("runtime")
         if (
@@ -742,6 +875,17 @@ def _validate_manifest(data: Any) -> None:
                 f"manifest server {server!r}: source_fingerprint does not match the "
                 "pinned source - a hand-edited or corrupt pin certifies nothing"
             )
+        resolved_record = entry["resolved_executable"]
+        if resolved_record is not None:
+            problem = _resolved_executable_error(resolved_record)
+            if problem is not None:
+                raise ValueError(f"manifest server {server!r}: {problem}")
+            if source["transport"] != "stdio":
+                raise ValueError(
+                    f"manifest server {server!r}: a resolved_executable identity "
+                    f"contradicts a {source['transport']} source - only a stdio "
+                    "command resolves an executable"
+                )
         record = entry.get("server_instructions")
         if not isinstance(record, dict) or not isinstance(record.get("observed"), bool):
             raise ValueError(f"manifest server {server!r} has no server_instructions record")
@@ -1065,6 +1209,13 @@ class McpObservation(NamedTuple):
     one. ``unverifiable`` and ``removed`` must be lists or tuples of unique nonempty
     names; any represented server missing from ``sources`` or ``instructions`` is a
     CRITICAL refusal.
+
+    ``resolved_executables`` maps a catalog server to its freshly resolved
+    ``{path, sha256}`` executable identity, or to ``None`` as the explicit claim that
+    resolution was attempted and failed. It is required exactly for catalog servers
+    whose pin is strict (non-null ``resolved_executable``): a strict pin with no
+    entry is a CRITICAL omission, and an entry for a server outside the catalog is a
+    malformed observation.
     """
 
     catalog: Dict[str, List[dict]]
@@ -1072,6 +1223,7 @@ class McpObservation(NamedTuple):
     instructions: Optional[Dict[str, Dict[str, Any]]] = None
     unverifiable: Sequence[str] = ()
     removed: Sequence[str] = ()
+    resolved_executables: Optional[Dict[str, Optional[Dict[str, str]]]] = None
 
 
 def _validate_observation(observation: McpObservation) -> None:
@@ -1141,6 +1293,27 @@ def _validate_observation(observation: McpObservation) -> None:
             normalize_source(source)
         except ValueError as exc:
             raise ValueError(f"source observation for server {server!r}: {exc}") from exc
+    if observation.resolved_executables is not None:
+        if not isinstance(observation.resolved_executables, dict):
+            raise ValueError("observation resolved_executables must be a dict or None")
+        for server, resolved_record in observation.resolved_executables.items():
+            if not isinstance(server, str) or not server:
+                raise ValueError(
+                    "observation resolved_executables server name must be a nonempty "
+                    f"string, got {server!r}"
+                )
+            if server not in observation.catalog:
+                raise ValueError(
+                    f"observation carries a resolved-executable identity for server "
+                    f"{server!r} which is not in the catalog; an identity without an "
+                    "observation is contradictory"
+                )
+            if resolved_record is not None:
+                problem = _resolved_executable_error(resolved_record)
+                if problem is not None:
+                    raise ValueError(
+                        f"resolved-executable observation for server {server!r}: {problem}"
+                    )
     for label, seq in (
         ("unverifiable", observation.unverifiable),
         ("removed", observation.removed),
@@ -1203,6 +1376,11 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
        (:func:`diff_instructions`); a catalog server with no instruction record is a
        CRITICAL refusal - the legacy weaker claim is the explicit
        ``{"observed": False, "text": None}``, never an omission;
+    5b. every catalog server pinned with a strict ``resolved_executable`` identity is
+       compared (:func:`diff_resolved_executable`); a strict-pinned catalog server
+       with no resolved-executable observation is a CRITICAL refusal
+       (``mcp_resolved_executable_unobserved``), and an explicit ``None`` (resolution
+       attempted, failed) refuses too - a ``null`` pin adjudicates nothing here;
     6. a pinned server represented only by source/instructions (no catalog entry) is
        a CRITICAL refusal unless it is named ``unverifiable``;
     7. a pinned server absent from every component is a CRITICAL refusal unless
@@ -1281,6 +1459,26 @@ def diff_observation(pinned: Dict[str, Any], observation: McpObservation) -> Lis
             findings.extend(
                 diff_instructions(name, pinned_servers[name], record["observed"], record["text"])
             )
+
+    resolved_map = observation.resolved_executables or {}
+    for name in sorted(observation.catalog):
+        entry = pinned_servers.get(name)
+        if not isinstance(entry, dict) or entry.get("resolved_executable") is None:
+            continue
+        if name not in resolved_map:
+            findings.append(
+                Finding.fail(
+                    "mcp_resolved_executable_unobserved",
+                    severity="CRITICAL",
+                    message=f"server '{name}' is pinned to a resolved executable identity "
+                    "but this observation carries no resolved-executable component for "
+                    "it; a strict pin must be checked or refused, never skipped by "
+                    "omission",
+                    server=name,
+                )
+            )
+        else:
+            findings.extend(diff_resolved_executable(name, entry, resolved_map[name]))
 
     for name in sorted((set(sources) | set(instructions)) - set(observation.catalog)):
         if name in pinned_servers and name not in unverifiable:

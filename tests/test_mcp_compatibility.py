@@ -17,6 +17,7 @@ PUBLIC_MCP_CALLABLES = (
     "build_manifest",
     "diff_manifest",
     "diff_observation",
+    "diff_resolved_executable",
     "diff_source",
     "load_manifest",
     "manifest_policy",
@@ -38,10 +39,14 @@ EXPECTED_TOOL_FINGERPRINT = (
     "sha256:57bc8eaed476e21011975012b842889c58fc0749efa91e9510b1f87b7dec7647"
 )
 
+# v7 bytes (deliberate schema bump, 0.6.0): every server entry carries an explicit
+# resolved_executable member - null is the template-only weak claim, {path, sha256}
+# is the strict pin. The next byte change here is the next schema conversation.
 EXPECTED_MANIFEST = """{
-  "manifest_version": 6,
+  "manifest_version": 7,
   "servers": {
     "github": {
+      "resolved_executable": null,
       "runtime": {
         "mode": "standard_mcp"
       },

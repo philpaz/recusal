@@ -78,7 +78,7 @@ def test_plugin_callable_name_matches_the_documented_rule(raw, expected):
 def test_a_plugin_pin_stores_raw_and_callable_identity():
     manifest = _plugin_pin()
     entry = manifest["servers"][PLUGIN_SERVER]
-    assert manifest["manifest_version"] == MANIFEST_VERSION == 6
+    assert manifest["manifest_version"] == MANIFEST_VERSION == 7
     assert entry["runtime"] == {"mode": "claude_plugin"}
     pin = entry["tools"]["admin.tools.list"]  # raw declaration name IS the key
     assert pin["callable_name"] == "admin_tools_list"  # callable identity alongside

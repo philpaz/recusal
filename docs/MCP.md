@@ -132,13 +132,24 @@ refuses; a server name Claude reserves for its built-ins (`workspace`,
 before anything launches, since Claude skips such entries and representing one would
 misdescribe the effective configuration; an added or transport-swapped server of any
 kind is drift, and a config entry the parser cannot faithfully represent fails
-closed. The
-remaining residuals, named: the operator-shell *values* behind `${VAR}` references are
-not pinned (the reference is); `npx`/`uvx`-style launchers resolve through PATH and
-fetch what the registry serves (pin package versions in the args); executable bytes are
-not attested; and a `--from`-only pin records `transport: external`, attesting the
-declaration set, not the endpoint that produced it. Keep protecting `.mcp.json` and
-`mcp-manifest.json` as control-plane files - the default deny-list does.
+closed.
+
+Launch-file identity is opt-in since manifest v7: `pin --resolve-executable` pins the
+`{path, sha256}` of the file each stdio command's argv[0] resolves to
+(`shutil.which` semantics), and verify then refuses when the resolved path or the
+file's bytes change even though the command template did not. Every v7 server entry
+states the claim explicitly: `null` is the template-only pin, never an omission.
+
+The remaining residuals, named: the operator-shell *values* behind `${VAR}` references
+are not pinned (the reference is); under a `null` (template-only) pin,
+`npx`/`uvx`-style launchers resolve through PATH and fetch what the registry serves
+(pin package versions in the args) and executable bytes are not attested; even a
+strict pin attests the FIRST process image only, so what an interpreter or launcher
+loads afterward (a script argument, a registry download at run time) stays behind the
+template, not the hash; and a `--from`-only pin records `transport: external`,
+attesting the declaration set, not the endpoint that produced it. Keep protecting
+`.mcp.json` and `mcp-manifest.json` as control-plane files - the default deny-list
+does.
 
 Scope, stated exactly: Recusal verifies the configuration artifact YOU supply
 (`--claude-config`/`--stdio`/`--from`); it does not reconstruct Claude Code's effective
