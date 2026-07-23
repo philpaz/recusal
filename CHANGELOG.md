@@ -28,6 +28,12 @@ All notable changes to this project are documented here. The format follows
   `.git` for any later step to read). Both locked by test, including a
   negative-case-verified guard that a later step's settings cannot satisfy an earlier
   checkout's requirement.
+- **OpenSSF Scorecard, continuously.** A weekly + on-push Scorecard workflow publishes
+  the project's supply-chain posture to the public scorecard API, and the README badge
+  reads it from there: the score is measured by tooling the maintainer does not
+  control, and nothing in the repository asserts a score value - the badge IS the
+  claim. Minimal permission surface (id-token only; SARIF kept as a run artifact,
+  not uploaded to code scanning).
 
 ## [0.6.0] - 2026-07-23
 

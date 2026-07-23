@@ -12,6 +12,7 @@
 **Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and the Claude Agent SDK as a tool gate). The zero-dep core works in any agent loop.
 
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/philpaz/recusal/badge)](https://scorecard.dev/viewer/?uri=github.com/philpaz/recusal)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 ![runtime deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
