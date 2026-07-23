@@ -20,6 +20,15 @@ All notable changes to this project are documented here. The format follows
   `manifest_version` 7 is refused with a migration message (re-pin; add `--scope`
   to declare a scope).
 
+### CI
+- **Workflow audit (zizmor), blocking.** The CI pipeline is itself an attack surface:
+  zizmor now audits every workflow file as a blocking, version-pinned CI job, and its
+  findings are fixed, not suppressed - every `actions/checkout` runs with
+  `persist-credentials: false` (no job here pushes; the default leaves a live token in
+  `.git` for any later step to read). Both locked by test, including a
+  negative-case-verified guard that a later step's settings cannot satisfy an earlier
+  checkout's requirement.
+
 ## [0.6.0] - 2026-07-23
 
 Supply-chain and integrity release: the audit chain gains a first-class external

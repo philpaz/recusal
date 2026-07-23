@@ -29,6 +29,8 @@ jobs:
       # Actions are pinned to immutable commit SHAs (a moving tag is a rug-pull surface;
       # the trailing comment names the tag each SHA was resolved from).
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -43,11 +45,32 @@ jobs:
       - name: Test
         run: pytest -q
 
+  workflow-audit:
+    name: Workflow audit (zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      # The CI pipeline is itself an attack surface (template injection, credential
+      # persistence, cache poisoning, unpinned actions); zizmor audits the workflow
+      # files as a BLOCKING check. Version-pinned so a new zizmor release cannot
+      # change what green means without a reviewed bump.
+      - name: Install zizmor (version-pinned)
+        run: pip install zizmor==1.28.0
+      - name: Audit every workflow, blocking
+        run: zizmor --no-progress .github/workflows
+
   action-gate:
     name: Dogfood the GitHub Action
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -97,6 +120,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -145,6 +170,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
