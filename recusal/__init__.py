@@ -32,7 +32,7 @@ authority. (See CONSTITUTION.md.)
 Zero runtime dependencies, standard library only.
 """
 
-from .audit import AuditLog, verify
+from .audit import AuditIntegrityError, AuditLog, AuditSink, verify
 from .classify import (
     DEFAULT_TAXONOMY,
     Classification,
@@ -65,6 +65,8 @@ __all__ = [
     "GateResult",
     "ReleaseEvidence",
     "AuditLog",
+    "AuditSink",
+    "AuditIntegrityError",
     "verify",
     "classify_failure",
     "classify_verdict",

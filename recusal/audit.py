@@ -24,8 +24,13 @@ What this does and does not guarantee (read before relying on it):
   (e.g. hooks for parallel tool calls) extend one chain instead of forking it. The
   in-memory ``entries`` mirror is still per-process: under concurrency, verify the
   FILE (``verify_file``), not one process's mirror.
-- Resuming an existing file does **not** re-verify it; run ``verify_file`` first if you
-  need to know the log you are extending is intact.
+- Resuming an existing file does **not** re-verify it by default. Pass
+  ``verify_on_open=True`` to refuse (``AuditIntegrityError``) to extend a file that fails
+  strict verification, and ``expected_head=(count, last_hash)`` to also anchor the resume
+  against truncation, tail-suffix rewrite, and forged appends.
+- To keep such an anchor, or to mirror the record into a store the attacker cannot
+  rewrite (WORM, another host), pass ``sinks=[...]``: every committed entry is handed to
+  each :class:`AuditSink`, and a sink failure surfaces as a failed append (fail closed).
 - **The log contains what you put in it.** ``tool_input`` is never embedded by the hook
   wiring (fingerprint only), but finding *messages*, verdict reasons, and exception text
   are stored in plaintext - a policy that writes a secret or a regulated value into a
@@ -45,7 +50,7 @@ import re
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple
 
 from .evidence import Verdict
 
@@ -57,6 +62,48 @@ else:
 GENESIS = "0" * 64  # the prev_hash of the first entry
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class AuditIntegrityError(Exception):
+    """Raised when ``verify_on_open`` (or an ``expected_head`` anchor) refuses a resume.
+
+    Extending a log that already fails verification would hash-chain new entries onto a
+    tampered or truncated record, laundering the break behind fresh valid links. So the
+    refusal happens at construction, before any resume state exists: the caller gets no
+    log object to append to. ``problems`` carries the verifier's findings verbatim.
+    """
+
+    def __init__(self, path: str, problems: List[str]) -> None:
+        super().__init__(f"audit log {path!r} failed verification on open: " + "; ".join(problems))
+        self.path = path
+        self.problems = problems
+
+
+class AuditSink(Protocol):
+    """Structural protocol for mirroring committed audit entries somewhere else.
+
+    The chain in the local file is tamper-evident, not tamper-proof: an attacker with
+    write access can rewrite a tail suffix or truncate it (see the module docstring). A
+    sink is the extension point for the countermeasure - hand each committed entry to a
+    store that attacker cannot also rewrite (a WORM bucket, another host, a signer).
+    Any object with a matching ``write`` method qualifies; no registration, no base class.
+
+    Contract:
+
+    - ``write(entry)`` receives the entry dict AFTER the local record is committed,
+      in chain order (on a file-backed log it is called inside the append lock, so a
+      shared sink sees one global order even under concurrent writers).
+    - Each entry carries its own ``seq`` and ``hash``, so a sink can maintain the
+      external head anchor directly: ``(entry["seq"] + 1, entry["hash"])`` is exactly
+      the ``expected_head`` that ``verify``/``verify_file``/``verify_on_open`` accept.
+    - A sink signals failure by raising. The exception propagates out of ``append`` so
+      the caller fails closed (the hook wiring already turns that into a deny); the
+      local entry remains on record, and a retry appends a NEW entry with a new seq -
+      a sink must tolerate a seq gap, never assume it saw every attempt.
+    """
+
+    def write(self, entry: Dict[str, Any]) -> None:
+        """Record one committed entry; raise to report failure."""
 
 
 @contextmanager
@@ -192,6 +239,19 @@ class AuditLog:
       appends go to disk only and ``self.entries`` stays empty. Bounded memory and
       final-record-proportional time regardless of log size; verify with
       ``verify_file(path)``. Requires ``path``.
+
+    ``verify_on_open=True`` runs the strict verifier over an existing file BEFORE
+    resuming and raises :class:`AuditIntegrityError` if it is not intact - you never
+    extend a log you cannot trust. An absent file is a new log, not a failure (absence
+    is only tamper-evidence against an anchor). ``expected_head=(count, last_hash)``
+    supplies that anchor: it implies ``verify_on_open`` and additionally refuses
+    truncation, tail-suffix rewrite, and forged appends, including a missing file
+    unless the anchor itself says empty (``(0, GENESIS)``). Verification reads the
+    whole file once, even with ``resume="tail"`` (integrity is a whole-chain property).
+    Both require ``path``.
+
+    ``sinks`` (a list or tuple of :class:`AuditSink`) mirrors every committed entry to
+    external stores; see the protocol's contract for ordering and failure semantics.
     """
 
     def __init__(
@@ -201,11 +261,50 @@ class AuditLog:
         clock: Optional[Callable[[], datetime]] = None,
         resume: str = "full",
         fsync: bool = False,
+        sinks: Optional[Sequence[AuditSink]] = None,
+        verify_on_open: bool = False,
+        expected_head: Optional[Tuple[int, str]] = None,
     ) -> None:
         if resume not in ("full", "tail"):
             raise ValueError(f"resume must be 'full' or 'tail', got {resume!r}")
         if resume == "tail" and not path:
             raise ValueError("resume='tail' requires a path (an in-memory log IS its entries)")
+        if sinks is None:
+            self._sinks: Tuple[AuditSink, ...] = ()
+        else:
+            # Strict container discipline (same doctrine as the manifest verifier): a
+            # sink that silently is not one would drop the mirror without an error.
+            if not isinstance(sinks, (list, tuple)):
+                raise ValueError(
+                    f"sinks must be a list or tuple of AuditSink objects, got {type(sinks).__name__}"
+                )
+            for sink in sinks:
+                if not callable(getattr(sink, "write", None)):
+                    raise ValueError(
+                        f"sink {sink!r} has no callable write(entry) method (see AuditSink)"
+                    )
+            self._sinks = tuple(sinks)
+        if expected_head is not None:
+            verify_on_open = True  # an anchor you do not check is not an anchor
+        if verify_on_open and not path:
+            raise ValueError("verify_on_open requires a path (an in-memory log starts empty)")
+        if path and verify_on_open:
+            if not os.path.exists(path):
+                if expected_head is not None:
+                    count, last_hash = expected_head
+                    if count != 0 or last_hash != GENESIS:
+                        raise AuditIntegrityError(
+                            path,
+                            [
+                                f"no audit log at {path!r} but the anchor expects "
+                                f"{count} entries - a missing log is not an intact log"
+                            ],
+                        )
+                # no file and no (non-empty) anchor: a NEW log, nothing to verify yet
+            else:
+                intact, problems = verify_file(path, expected_head=expected_head)
+                if not intact:
+                    raise AuditIntegrityError(path, problems)
         self.path = path
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._retain = resume == "full"
@@ -257,6 +356,13 @@ class AuditLog:
         In-memory state commits only AFTER the write succeeds: a failed write raises and
         never advances the chain. ``fsync=True`` additionally forces the entry to stable
         storage before the lock is released.
+
+        Sinks are notified AFTER the local record is committed (on a file-backed log,
+        inside the same lock, so a shared sink sees entries in chain order even under
+        concurrent writers). A sink that raises makes this call raise - the caller must
+        fail closed - while the local entry remains on record; the in-memory head/mirror
+        is then stale until the next append re-derives it from the file, which is why
+        under concurrency you verify the FILE, not one process's mirror.
         """
         ts = timestamp or self._clock().isoformat()
         if self.path:
@@ -270,6 +376,8 @@ class AuditLog:
                     fh.flush()
                     if self._fsync:
                         os.fsync(fh.fileno())
+                for sink in self._sinks:
+                    sink.write(entry)
             self._next_seq = next_seq + 1
             self.last_hash = entry["hash"]
             if self._retain:
@@ -279,6 +387,8 @@ class AuditLog:
         self._next_seq += 1
         self.entries.append(entry)
         self.last_hash = entry["hash"]
+        for sink in self._sinks:
+            sink.write(entry)
         return entry
 
 

@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **AuditSink protocol + verify-on-open anchoring.** The audit chain is tamper-evident,
+  not tamper-proof: a write-access attacker can rewrite or truncate the tail. The
+  countermeasure is now first-class. `AuditLog(sinks=[...])` mirrors every committed
+  entry, in chain order and inside the append lock, to any object with a `write(entry)`
+  method (`recusal.AuditSink`, structural); a sink failure raises out of `append`, so
+  the hook wiring fails closed to a deny while the local record remains. Entries carry
+  `seq` and `hash`, so a sink can hold the external head anchor `(seq + 1, hash)`
+  verbatim. `AuditLog(verify_on_open=True)` refuses (`AuditIntegrityError`) to resume a
+  file that fails strict verification, and `expected_head=(count, hash)` anchors the
+  open against truncation, tail-suffix rewrite, and forged appends, including a missing
+  file unless the anchor itself says empty. Stated plainly: without an anchor, a
+  truncated tail is still a self-consistent chain, and that boundary is regression-locked
+  by test. Default construction and append behavior are unchanged.
 - **Executable MCP launch-command-drift proof.** `examples/mcp_security_demo.py` uses the
   real pin/verify command path to approve a local MCP process, substitutes a marker-writing
   command, and proves verification refuses before that command executes. The same offline

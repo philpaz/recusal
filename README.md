@@ -293,6 +293,16 @@ loading or scanning the full log, and file-backed appends are serialized with an
 inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
 it.
 
+The external anchor is first-class: `AuditLog(..., sinks=[...])` mirrors every committed
+entry to any object with a `write(entry)` method (a WORM bucket, another host, a signer;
+`recusal.AuditSink` is the protocol), and a sink failure surfaces as a failed append, so
+the hook fails closed to a deny rather than adjudicating off the record. Each entry
+carries its `seq` and `hash`, so a sink holds the head anchor `(seq + 1, hash)` directly.
+Opening a log can then refuse instead of trusting: `AuditLog(path, verify_on_open=True)`
+raises `AuditIntegrityError` rather than extend a file that fails strict verification,
+and `AuditLog(path, expected_head=(count, hash))` also refuses truncation, a tail-suffix
+rewrite, or forged appends against that externally held head.
+
 Deterministic, stdlib-only, and designed to support OWASP Agentic logging and EU AI Act
 Article 12 record-keeping: in a regulated deployment, this can provide one auditable
 decision artifact within the broader system of records, controls, evidence retention,
