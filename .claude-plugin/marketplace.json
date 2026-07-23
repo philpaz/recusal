@@ -11,7 +11,7 @@
     {
       "name": "recusal-gate",
       "source": "./claude-plugin",
-      "description": "PreToolUse gate with no model in the decision path: refuses destructive tool calls before they run, even under bypassPermissions. Requires pip install recusal; the POSIX launcher fails closed without it on macOS, Linux, and Windows with Git Bash. On Windows without Git Bash use `recusal init`, which registers a PowerShell-native fail-closed launcher. The plugin version is bound to the exact recusal package version that adjudicates: a mismatch fails closed, so the installed plugin identity names the implementation that decides."
+      "description": "PreToolUse gate with no model in the decision path: refuses destructive tool calls before they run, even under bypassPermissions. Self-contained: the plugin vendors the exact recusal runtime it executes (no pip install), and the gate fails closed on a missing, substituted, or version-mismatched runtime, so the installed plugin identity names the implementation that decides. The POSIX launcher fails closed on macOS, Linux, and Windows with Git Bash; on Windows without Git Bash use `recusal init`, which registers a PowerShell-native fail-closed launcher."
     }
   ]
 }

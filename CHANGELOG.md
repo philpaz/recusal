@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Vendored plugin runtime (plugin = implementation).** The recusal-gate Claude Code
+  plugin now ships the exact recusal runtime it executes (`claude-plugin/vendor/recusal`,
+  byte-identical to the package source, drift-locked by test with
+  `tools/vendor_plugin.py` as the one re-sync path), so installing the plugin needs no
+  `pip install` and the installed plugin identity IS the implementation that decides.
+  The shim enforces it at run time: an import resolving outside the plugin's vendor
+  tree (an ambient site-packages or PYTHONPATH copy) is refused as substitution, a
+  missing or unimportable vendor tree refuses every tool call, and the declared-version
+  binding now checks the vendored runtime against the plugin version - all fail-closed
+  exit paths, each pinned by an end-to-end test running the gate with no ambient
+  package available. Stated narrowly: this binds identity and origin, not file bytes
+  at rest; write-protect the installed plugin directory like any control-plane file.
 - **Resolved-executable strict mode (manifest v7).** The launch-identity residual named
   since 0.5.0 - a swapped file behind an unchanged command template - is now closable
   at pin time: `recusal mcp pin --resolve-executable` also pins the `{path, sha256}` of

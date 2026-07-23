@@ -98,13 +98,15 @@ deliberate step.
 ```bash
 claude plugin marketplace add philpaz/recusal
 claude plugin install recusal-gate@recusal
-pip install "recusal==0.5.12"   # the plugin is version-bound; fails CLOSED without it
-                               # (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
+# self-contained: the plugin vendors the exact recusal runtime it executes
+# (POSIX launcher: macOS/Linux/Windows-with-Git-Bash)
 ```
 
-The plugin ships the same deny-list shim; if the `recusal` package is missing it refuses
-every tool call rather than silently disabling itself. For a policy tailored to one
-project, prefer `python -m recusal init` and edit the scaffolded gate.
+The plugin ships the same deny-list shim and adjudicates with its own vendored copy of
+the package - no `pip install` step. A missing, substituted (an ambient package
+instead of the vendored copy), or version-mismatched runtime refuses every tool call
+rather than silently disabling itself. For a policy tailored to one project, prefer
+`python -m recusal init` and edit the scaffolded gate.
 
 For production, pin the runtime the gate runs on: a dedicated venv with
 `pip install "recusal==<version>"`, registered explicitly, protected from agent writes.
