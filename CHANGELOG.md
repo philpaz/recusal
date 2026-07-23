@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] - 2026-07-23
+
+Declared-scope and verifiable-pipeline release, one day after 0.6.0. Manifests (now
+v8) carry an explicit operator-declared observation scope; the CI pipeline is itself
+audited as a blocking check; the release build runs in a reusable workflow whose
+identity the provenance records (the documented SLSA Build L3 pattern); and the
+built distributions are Sigstore-signed, with publish failing closed behind signing.
+Manifest v7 files are refused with a migration message: re-pin, optionally with
+`--scope` (and `--resolve-executable`). Runtime dependencies stay zero; every
+previously released runtime surface is unchanged.
 
 ### Added
 - **observation_scope (manifest v8).** Every manifest now records an explicit top-level
