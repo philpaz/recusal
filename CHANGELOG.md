@@ -4,7 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-23
+
+Supply-chain and integrity release: the audit chain gains a first-class external
+anchor, MCP manifests (now v7) can pin the resolved executable behind each launch
+command, and the Claude Code plugin vendors the exact runtime it executes, so the
+installed plugin identity names the implementation that decides. Manifest v6 files
+are refused with a migration message: re-pin, optionally with `--resolve-executable`.
+The plugin no longer needs `pip install`.
 
 ### Added
 - **Vendored plugin runtime (plugin = implementation).** The recusal-gate Claude Code

@@ -33,7 +33,7 @@ import sys
 
 #: The exact adjudicator this plugin version identifies. A version-drift-lock test keeps
 #: this equal to the plugin manifest version and the package version.
-EXPECTED_RECUSAL_VERSION = "0.5.12"
+EXPECTED_RECUSAL_VERSION = "0.6.0"
 
 #: The plugin's own runtime. CLAUDE_PLUGIN_ROOT is how Claude Code addresses the
 #: installed plugin; the __file__-relative fallback serves direct invocation (tests,
