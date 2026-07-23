@@ -55,6 +55,24 @@ def test_release_delegates_the_build_to_the_reusable_workflow():
     assert "workflow_call" in build, "build-dist.yml must remain a reusable workflow"
 
 
+def test_distributions_are_sigstore_signed_and_publish_fails_closed_behind_it():
+    # the 0.7.0 signing posture (decision 2026-07-23): signatures live at the release
+    # boundary in CI, the runtime verifies nothing. The sign job is the ONE job
+    # allowed contents: write (to attach bundles to the release), and publish must
+    # not run when signing failed - an unsignable distribution is a human-review
+    # signal, not a shippable artifact.
+    release = _read("release.yml")
+    assert "sigstore/gh-action-sigstore-python@" in release, (
+        "the Sigstore signing step left the release workflow"
+    )
+    assert "release-signing-artifacts: true" in release, (
+        "signature bundles must be attached to the release so a verifier can fetch them"
+    )
+    assert re.search(r"needs:\s*\[build,\s*sign\]", release), (
+        "publish must fail closed behind signing (needs: [build, sign])"
+    )
+
+
 def test_every_action_in_every_workflow_is_sha_pinned():
     for name in _workflow_files():
         for line in _read(name).splitlines():

@@ -58,9 +58,41 @@ jobs:
       attestations: write
     uses: ./.github/workflows/build-dist.yml
 
+  # Signatures live at the release boundary, in CI, by decision (2026-07-23): the
+  # runtime stays stdlib-pure and verifies nothing; what IS signed are the built
+  # distributions, keylessly, with the bundles attached to the GitHub Release so a
+  # verifier can fetch them offline (`sigstore verify github ...`). PyPI-side PEP 740
+  # attestations are generated separately by the publish action below.
+  sign:
+    name: Sign the distributions (Sigstore)
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a published release has an asset list to attach bundles to.
+    if: github.event_name == 'release'
+    permissions:
+      id-token: write # Sigstore keyless signing identity (OIDC)
+      # ONLY to attach the .sigstore.json bundles to the triggering Release; the
+      # sbom-action lesson applies: this is the one job that may write release
+      # assets, and it writes nothing else.
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: dist
+          path: dist/
+      - name: Sign sdist and wheel, attach bundles to the release
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: dist/*
+          release-signing-artifacts: true
+
   publish:
     name: Publish to PyPI
-    needs: build
+    # a distribution that could not be signed must not publish: fail closed, a
+    # human looks (signing and publishing share the release event, so a tag push
+    # still rehearses build-only)
+    needs: [build, sign]
     runs-on: ubuntu-latest
     # Only publish on an actual release event, not on every tag push.
     if: github.event_name == 'release'
