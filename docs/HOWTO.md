@@ -66,10 +66,12 @@ explicitly (e.g. `.venv/bin/python` / `.venv\Scripts\python.exe`) instead of the
 from recusal import Finding
 from recusal.claude_code import run_pretooluse_hook
 
+
 def policy(tool_name, tool_input):
     if tool_name == "Bash" and "rm -rf" in tool_input.get("command", ""):
         return [Finding.fail("destructive_bash", severity="CRITICAL", message="refusing rm -rf")]
-    return []   # no opinion → defer to Claude Code's normal flow
+    return []  # no opinion → defer to Claude Code's normal flow
+
 
 run_pretooluse_hook(policy)
 ```
@@ -90,7 +92,7 @@ Rather than hand-roll one, use the hardened reference deny-list that governs thi
 from recusal.claude_code import run_pretooluse_hook
 from recusal.deny_list import deny_list_policy
 
-run_pretooluse_hook(deny_list_policy())   # point it at your gate: protected_paths=(".mygate/",)
+run_pretooluse_hook(deny_list_policy())  # point it at your gate: protected_paths=(".mygate/",)
 ```
 
 `deny_list_policy` refuses destructive shell, writes to secret files, and edits *or
@@ -133,6 +135,7 @@ from recusal.claude import gate_tool_use
 
 SAFE_ROOT = os.path.abspath("/workspace/tmp")
 
+
 def gather_evidence(tool):
     # Whatever proves THIS call is safe: preconditions, policy, a dry-run, an allowlist.
     # commonpath, not startswith: "/workspace/tmp_evil" would slip past startswith.
@@ -143,17 +146,28 @@ def gather_evidence(tool):
         except ValueError:  # different drives on Windows
             inside = False
         if not inside:
-            return [Finding.fail("path_allowlist", severity="CRITICAL",
-                                 message=f"{tool.input['path']} is outside {SAFE_ROOT}")]
+            return [
+                Finding.fail(
+                    "path_allowlist",
+                    severity="CRITICAL",
+                    message=f"{tool.input['path']} is outside {SAFE_ROOT}",
+                )
+            ]
     return [Finding.ok("path_allowlist", severity="CRITICAL")]
+
 
 # inside the manual loop, for each tool_use block:
 allow, refusal = gate_tool_use(tool.id, gather_evidence(tool), tool_name=tool.name)
 if not allow:
-    results.append(refusal)            # tool_result, is_error=True → Claude adapts
+    results.append(refusal)  # tool_result, is_error=True → Claude adapts
 else:
-    results.append({"type": "tool_result", "tool_use_id": tool.id,
-                    "content": execute_tool(tool.name, tool.input)})
+    results.append(
+        {
+            "type": "tool_result",
+            "tool_use_id": tool.id,
+            "content": execute_tool(tool.name, tool.input),
+        }
+    )
 ```
 
 Runnable: `examples/claude_agent_live.py` (real API) and `examples/claude_refusal.py`
@@ -183,14 +197,16 @@ Use the built-in checks to turn data into evidence, then decide:
 from recusal import compute_verdict
 from recusal.checks import row_count, null_rate, referential_integrity
 
-verdict = compute_verdict([
-    row_count(users, min_rows=1),
-    null_rate(users, "email", max_rate=0.10),
-    referential_integrity(orders, users, fk="user_id", pk="id"),
-])
+verdict = compute_verdict(
+    [
+        row_count(users, min_rows=1),
+        null_rate(users, "email", max_rate=0.10),
+        referential_integrity(orders, users, fk="user_id", pk="id"),
+    ]
+)
 
 if verdict.refused:
-    raise RuntimeError(verdict.reasons())   # don't ship it
+    raise RuntimeError(verdict.reasons())  # don't ship it
 ```
 
 ## 5. Staged release gate (CI)
@@ -204,8 +220,8 @@ g5 = gate.adjudicate(
     "G5", [Finding.fail("coverage_floor", severity="CRITICAL", message="coverage 61% < 75%")]
 )
 release = gate.release("run-001", [g5])
-assert not release.release_ready          # G5 failed, so the release is refused
-print([r.gate_id for r in release.blocking])   # ['G5']
+assert not release.release_ready  # G5 failed, so the release is refused
+print([r.gate_id for r in release.blocking])  # ['G5']
 ```
 
 ---
@@ -218,11 +234,13 @@ an in-place edit or reordering of any entry with a surviving successor is detect
 ```python
 from recusal import compute_verdict, AuditLog, verify
 
-audit = AuditLog(path="audit.jsonl")   # omit path for in-memory
+audit = AuditLog(path="audit.jsonl")  # omit path for in-memory
 verdict = compute_verdict(findings)
 audit.append(verdict, action={"tool": tool.name, "input": tool.input}, actor=session_id)
 
-ok, problems = verify(audit.entries)   # (False, [...reasons]) if an entry with a later entry was edited
+ok, problems = verify(
+    audit.entries
+)  # (False, [...reasons]) if an entry with a later entry was edited
 ```
 
 Each entry carries the SHA-256 of the entry before it, so editing or reordering a record
@@ -239,13 +257,13 @@ goes, deterministically, no model:
 ```python
 from recusal import classify_failure, classify_verdict
 
-c = classify_failure(error_text)          # or classify_verdict(verdict)
+c = classify_failure(error_text)  # or classify_verdict(verdict)
 if c.route == "retry":
-    ...                                    # transient, try again
+    ...  # transient, try again
 elif c.route == "refuse":
-    ...                                    # policy violation, don't retry as-is
+    ...  # policy violation, don't retry as-is
 elif c.route == "ask-human":
-    ...                                    # ambiguous, escalate
+    ...  # ambiguous, escalate
 ```
 
 Default classes (order is precedence, security-critical first): `policy_violation`,

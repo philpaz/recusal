@@ -22,14 +22,24 @@ tests.
 ```python
 def policy(tool_name, tool_input):
     if tool_name == "mcp__salesforce__delete_records":
-        return [Finding.fail("mcp_destructive_action", severity="CRITICAL",
-                             message="bulk Salesforce deletion is not approved")]
+        return [
+            Finding.fail(
+                "mcp_destructive_action",
+                severity="CRITICAL",
+                message="bulk Salesforce deletion is not approved",
+            )
+        ]
     if tool_name == "mcp__github__merge_pull_request":
         repo = tool_input.get("repo")
         if repo not in {"philpaz/recusal"}:
-            return [Finding.fail("mcp_repository_scope", severity="CRITICAL",
-                                 message=f"repository {repo!r} is outside the approved scope")]
-    return []   # defer everything else to Claude Code's normal flow
+            return [
+                Finding.fail(
+                    "mcp_repository_scope",
+                    severity="CRITICAL",
+                    message=f"repository {repo!r} is outside the approved scope",
+                )
+            ]
+    return []  # defer everything else to Claude Code's normal flow
 ```
 
 Runnable: [`examples/mcp_governance.py`](../examples/mcp_governance.py) (approved-server

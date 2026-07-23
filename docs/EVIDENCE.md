@@ -28,9 +28,9 @@ library: `dataclasses` + `enum`, zero dependencies.)
 from recusal import Finding, Severity
 
 Finding(
-    check="row_count",       # what produced it
+    check="row_count",  # what produced it
     severity=Severity.CRITICAL,  # how bad it is *if it failed*
-    passed=False,            # did the check hold?
+    passed=False,  # did the check hold?
     message="0 rows in `users`",
     context={"actual": 0, "min_rows": 1},  # arbitrary structured detail
 )
@@ -39,7 +39,7 @@ Finding(
 Ergonomic constructors:
 
 ```python
-Finding.ok("row_count", severity="INFO", actual=5)          # held
+Finding.ok("row_count", severity="INFO", actual=5)  # held
 Finding.fail("row_count", severity="CRITICAL", message="empty", actual=0)  # failed
 ```
 
@@ -74,18 +74,18 @@ coerce loose dicts, which is the convenient form when wiring up an agent:
 ```python
 from recusal import compute_verdict
 
-v = compute_verdict(findings)   # findings: Finding objects or loose dicts
+v = compute_verdict(findings)  # findings: Finding objects or loose dicts
 
-v.decision           # Decision.PASS | RETRY | FAIL
-v.passed             # bool, decision is PASS
-v.refused            # bool, decision is FAIL
-v.retryable          # bool, decision is RETRY
-v.highest_severity   # Severity
-v.failures           # tuple[Finding, ...], what forced FAIL/RETRY
-v.warnings           # tuple[Finding, ...]
-v.metrics            # tuple[Finding, ...]
-v.message            # one-line summary
-v.reasons()          # the specific failure messages, for a human or an agent to act on
+v.decision  # Decision.PASS | RETRY | FAIL
+v.passed  # bool, decision is PASS
+v.refused  # bool, decision is FAIL
+v.retryable  # bool, decision is RETRY
+v.highest_severity  # Severity
+v.failures  # tuple[Finding, ...], what forced FAIL/RETRY
+v.warnings  # tuple[Finding, ...]
+v.metrics  # tuple[Finding, ...]
+v.message  # one-line summary
+v.reasons()  # the specific failure messages, for a human or an agent to act on
 ```
 
 ## `compute_verdict`, the rule

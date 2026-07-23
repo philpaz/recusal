@@ -165,10 +165,12 @@ A policy is a function; the gate does the rest:
 from recusal import Finding
 from recusal.claude_code import run_pretooluse_hook
 
+
 def policy(tool_name, tool_input):
     if tool_name == "Bash" and "rm -rf" in tool_input.get("command", ""):
         return [Finding.fail("destructive_bash", severity="CRITICAL", message="refusing rm -rf")]
-    return []   # no opinion → defer to Claude Code's normal permission flow
+    return []  # no opinion → defer to Claude Code's normal permission flow
+
 
 run_pretooluse_hook(policy)
 ```
@@ -285,7 +287,7 @@ from recusal import AuditLog, verify
 
 audit = AuditLog(path="audit.jsonl")
 audit.append(verdict, action={"tool": "Bash", "command": "rm -rf /"})
-ok, problems = verify(audit.entries)   # False if an entry with a later entry was edited/reordered
+ok, problems = verify(audit.entries)  # False if an entry with a later entry was edited/reordered
 ```
 
 In the Claude Code hook it is one argument: `run_pretooluse_hook(policy,
@@ -371,11 +373,13 @@ The verdict, directly:
 from recusal import compute_verdict
 from recusal.checks import row_count, null_rate, referential_integrity
 
-verdict = compute_verdict([
-    row_count(users, min_rows=1),                                  # CRITICAL if empty
-    null_rate(users, "email", max_rate=0.10),                      # ERROR if too sparse
-    referential_integrity(orders, users, fk="user_id", pk="id"),   # CRITICAL on orphans
-])
+verdict = compute_verdict(
+    [
+        row_count(users, min_rows=1),  # CRITICAL if empty
+        null_rate(users, "email", max_rate=0.10),  # ERROR if too sparse
+        referential_integrity(orders, users, fk="user_id", pk="id"),  # CRITICAL on orphans
+    ]
+)
 if verdict.refused:
     raise RuntimeError(verdict.reasons())
 ```
@@ -423,10 +427,15 @@ from recusal.claude import gate_tool_use
 
 allow, refusal = gate_tool_use(tool.id, gather_evidence(tool), tool_name=tool.name)
 if not allow:
-    results.append(refusal)                          # is_error=True → Claude adapts
+    results.append(refusal)  # is_error=True → Claude adapts
 else:
-    results.append({"type": "tool_result", "tool_use_id": tool.id,
-                    "content": execute_tool(tool.name, tool.input)})
+    results.append(
+        {
+            "type": "tool_result",
+            "tool_use_id": tool.id,
+            "content": execute_tool(tool.name, tool.input),
+        }
+    )
 ```
 
 Runnable: [`examples/claude_agent_live.py`](examples/claude_agent_live.py) (real API) and
@@ -504,8 +513,8 @@ A refusal or failure is only useful if you know what to do next. The classifier 
 from recusal import classify_failure
 
 c = classify_failure("Traceback ... TypeError: 'NoneType' object")
-c.failure_class   # "code_bug"
-c.route           # "fix-code"
+c.failure_class  # "code_bug"
+c.route  # "fix-code"
 ```
 
 Default taxonomy (extend or replace it): `transient → retry` · `policy_violation → refuse` ·

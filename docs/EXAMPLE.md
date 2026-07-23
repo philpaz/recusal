@@ -40,24 +40,43 @@ WORKSPACE = os.path.abspath("./workspace")
 PROTECTED = (".env", ".pem", ".key", "id_rsa", "credentials", "secrets")
 SHELL_RED = ("rm -rf", "rm -fr", "mkfs", "dd if=", "chmod -r 777")
 
+
 def policy(tool_name, tool_input):
     findings = []
 
     if tool_name == "Bash":
         cmd = tool_input.get("command", "").lower()
         if any(m in cmd for m in SHELL_RED):
-            findings.append(Finding.fail("destructive_shell", severity="CRITICAL",
-                                         message="refusing a destructive shell command"))
+            findings.append(
+                Finding.fail(
+                    "destructive_shell",
+                    severity="CRITICAL",
+                    message="refusing a destructive shell command",
+                )
+            )
         if "curl" in cmd and ("| sh" in cmd or "| bash" in cmd):
-            findings.append(Finding.fail("pipe_to_shell", severity="CRITICAL",
-                                         message="refusing curl piped into a shell"))
+            findings.append(
+                Finding.fail(
+                    "pipe_to_shell", severity="CRITICAL", message="refusing curl piped into a shell"
+                )
+            )
         if any(client in cmd for client in ("psql", "mysql", "sqlite3")):
             if ("delete" in cmd or "update" in cmd) and "where" not in cmd:
-                findings.append(Finding.fail("sql_scope", severity="CRITICAL",
-                                             message="refusing destructive SQL with no WHERE clause"))
+                findings.append(
+                    Finding.fail(
+                        "sql_scope",
+                        severity="CRITICAL",
+                        message="refusing destructive SQL with no WHERE clause",
+                    )
+                )
             if "drop table" in cmd or "truncate" in cmd:
-                findings.append(Finding.fail("sql_schema", severity="CRITICAL",
-                                             message="refusing DROP or TRUNCATE on a table"))
+                findings.append(
+                    Finding.fail(
+                        "sql_schema",
+                        severity="CRITICAL",
+                        message="refusing DROP or TRUNCATE on a table",
+                    )
+                )
 
     if tool_name in ("Write", "Edit", "MultiEdit"):
         path = tool_input.get("file_path", "")
@@ -67,13 +86,24 @@ def policy(tool_name, tool_input):
         except ValueError:  # different drives on Windows
             inside = False
         if any(p in path.lower() for p in PROTECTED):
-            findings.append(Finding.fail("protected_file", severity="CRITICAL",
-                                         message=f"refusing a write to a secret file: {path}"))
+            findings.append(
+                Finding.fail(
+                    "protected_file",
+                    severity="CRITICAL",
+                    message=f"refusing a write to a secret file: {path}",
+                )
+            )
         elif not inside:
-            findings.append(Finding.fail("path_confinement", severity="CRITICAL",
-                                         message=f"refusing a write outside the workspace: {path}"))
+            findings.append(
+                Finding.fail(
+                    "path_confinement",
+                    severity="CRITICAL",
+                    message=f"refusing a write outside the workspace: {path}",
+                )
+            )
 
-    return findings   # empty list means defer to Claude Code's normal flow
+    return findings  # empty list means defer to Claude Code's normal flow
+
 
 run_pretooluse_hook(policy)
 ```

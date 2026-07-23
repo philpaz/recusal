@@ -13,13 +13,17 @@ A check is any function that returns one or more `Finding`s. That's the whole in
 ```python
 from recusal import Finding
 
+
 def sql_is_safe(statement: str, *, severity="CRITICAL") -> Finding:
     """Refuse destructive SQL without a WHERE clause."""
     s = statement.lower()
     if ("delete" in s or "update" in s) and "where" not in s:
-        return Finding.fail("sql_safety", severity=severity,
-                            message="destructive statement without a WHERE clause",
-                            statement=statement)
+        return Finding.fail(
+            "sql_safety",
+            severity=severity,
+            message="destructive statement without a WHERE clause",
+            statement=statement,
+        )
     return Finding.ok("sql_safety", severity=severity)
 ```
 
@@ -41,10 +45,11 @@ A "policy" is just a function that returns a list of findings, compose freely:
 ```python
 def write_policy(tool_input, active_subject) -> list:
     return [
-        subject_match(tool_input, active_subject),   # CRITICAL
-        field_allowlist(tool_input),                 # ERROR
-        rate_limit(tool_input),                      # WARNING
+        subject_match(tool_input, active_subject),  # CRITICAL
+        field_allowlist(tool_input),  # ERROR
+        rate_limit(tool_input),  # WARNING
     ]
+
 
 allow, refusal = gate_tool_use(tool.id, write_policy(tool.input, active), tool_name=tool.name)
 ```
@@ -61,6 +66,7 @@ into that framework's allow/deny shape. To support, say, a generic callback-base
 
 ```python
 from recusal import compute_verdict
+
 
 def gate(findings):
     """Return (allow, reason). Plug into any 'before tool call' hook."""

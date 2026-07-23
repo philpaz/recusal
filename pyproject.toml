@@ -39,7 +39,11 @@ dependencies = []  # zero runtime dependencies, standard library only
 [project.optional-dependencies]
 # mypy 2.x no longer accepts python_version=3.9. Keep the newest 1.x checker so
 # static analysis continues to validate the minimum runtime we publicly support.
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.8,<2", "hypothesis>=6"]
+# ruff is pinned EXACTLY: the formatter defines what "format --check green" means,
+# and an unpinned formatter let a new upstream release (0.16.0, markdown code-fence
+# formatting) fail CI against a local pass (caught live 2026-07-23). Upgrades are
+# deliberate: bump the pin, reformat, review the diff, commit together.
+dev = ["pytest>=8", "ruff==0.16.0", "mypy>=1.8,<2", "hypothesis>=6"]
 
 [project.scripts]
 recusal = "recusal.__main__:main"
