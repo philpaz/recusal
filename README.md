@@ -257,7 +257,12 @@ recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json   # CI
 `verify` fails **closed** (a missing manifest or an unreachable pinned server is a
 refusal, never a clean-looking pass), and the pin enforces at call time:
 `recusal.mcp.manifest_policy("mcp-manifest.json")` refuses any `mcp__server__tool` call
-that was never pinned. No pin, no MCP. The honest boundary, in one line: verification is
+that was never pinned. No pin, no MCP. Opt-in strict modes: `pin --resolve-executable`
+also pins the `{path, sha256}` of the file each stdio command resolves to (a swapped
+executable behind an unchanged command template refuses), and `pin --scope LABEL`
+stores an operator-declared observation-scope label whose stability is verified across
+re-pins (a changed scope is a named WARNING; the label's truth is never verified). The
+honest boundary, in one line: verification is
 point-in-time over the configuration artifact you supply, not continuous attestation of
 Claude's effective MCP environment; the full statement, with every named residual
 (transport, OAuth, plugin runtime identity, `list_changed`, roots), is

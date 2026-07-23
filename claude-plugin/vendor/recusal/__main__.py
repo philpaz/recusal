@@ -55,9 +55,11 @@ from .audit import load as _load_audit_entries
 from .audit import verify_file as _verify_audit_file
 from .evidence import Decision, Finding, Verdict, compute_verdict
 from .mcp import (
+    MANIFEST_VERSION,
     McpObservation,
     build_manifest,
     diff_observation,
+    diff_observation_scope,
     diff_source,
     load_manifest,
     manifest_to_text,
@@ -1127,6 +1129,7 @@ def mcp_pin_command(
     force: bool = False,
     claude_plugin: Optional[List[str]] = None,
     resolve_executable: bool = False,
+    observation_scope: Optional[str] = None,
     as_json: bool = False,
     stdout: Optional[TextIO] = None,
 ) -> int:
@@ -1157,8 +1160,22 @@ def mcp_pin_command(
     source (``--stdio``/``--claude-config``): an external dump launches nothing, so
     there is no executable to resolve. A command that cannot be resolved and hashed
     refuses the pin.
+
+    ``--scope`` stores an operator-supplied observation-scope label top-level in the
+    manifest (v8): a claim about what this pin observed (a project config, a machine,
+    an environment), verbatim and never verified for truth. Omitting it records the
+    explicit ``null``. Re-pinning with ``--update`` onto a manifest whose scope
+    differs emits the named ``mcp_observation_scope_changed`` WARNING - a review
+    signal, never a refusal, because the replacement is already deliberate.
     """
     out = stdout if stdout is not None else sys.stdout
+    if observation_scope is not None and not observation_scope.strip():
+        return _fail_closed(
+            "--scope must be a nonempty label with visible content; omit --scope to "
+            "record the explicit null (no scope declared) instead",
+            as_json,
+            out,
+        )
     launches_planned = bool(stdio)
     if claude_config and not launches_planned:
         # parsing is safe (no execution); approval is required only when a stdio
@@ -1234,6 +1251,7 @@ def mcp_pin_command(
                     for name, identity in obs.resolved.items()
                     if identity is not None
                 },
+                observation_scope=observation_scope,
             )
         )
     except (ValueError, UnicodeError, RecursionError) as exc:
@@ -1267,6 +1285,7 @@ def mcp_pin_command(
 
     n_servers = len(catalog)
     n_tools = sum(len(t) for t in catalog.values())
+    scope_change: Optional[str] = None
     if os.path.exists(out_path):
         with open(out_path, encoding="utf-8") as fh:
             existing = fh.read()
@@ -1292,6 +1311,27 @@ def mcp_pin_command(
                 as_json,
                 out,
             )
+        # A deliberate replacement still surfaces operator-metadata drift: a scope
+        # label that differs from the approved manifest's is the named review signal
+        # (WARNING semantics; --update already carries the deliberateness, so this
+        # never refuses). An older-version or unparseable prior manifest is being
+        # replaced wholesale and holds no comparable scope claim.
+        try:
+            prior = json.loads(existing)
+        except ValueError:
+            prior = None
+        if isinstance(prior, dict) and prior.get("manifest_version") == MANIFEST_VERSION:
+            try:
+                scope_findings = diff_observation_scope(
+                    prior.get("observation_scope"), observation_scope
+                )
+            except ValueError:
+                scope_findings = []  # a corrupt prior scope claim is not comparable
+            for finding in scope_findings:
+                if not finding.passed:
+                    scope_change = finding.message
+                    if not as_json:
+                        out.write(f"warning: {finding.check}: {finding.message}\n")
     _atomic_write(out_path, text)
     if as_json:
         payload = {
@@ -1300,6 +1340,7 @@ def mcp_pin_command(
             "path": out_path,
             "servers": n_servers,
             "tools": n_tools,
+            "scope_change": scope_change,
             "screen": [_finding_brief(f) for f in screen],
             "exit_code": 0,
         }
@@ -1400,6 +1441,14 @@ def mcp_verify_command(
         return _fail_closed(f"could not adjudicate the catalog: {exc}", as_json, out)
 
     if not as_json:
+        # the stored scope is operator metadata shown for review context, adjudicated
+        # only across re-pins (pin --update), never against the observation
+        scope = pinned.get("observation_scope")
+        out.write(
+            f"observation scope: {scope!r}\n"
+            if scope is not None
+            else "observation scope: none declared\n"
+        )
         for note in obs.notes:
             out.write(f"note: {note}\n")
         # affirmative evidence is the point; a clean pass says WHAT matched, not just PASS
@@ -1597,6 +1646,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         "interpreter's script argument is covered by the template, not this hash)",
     )
     p_pin.add_argument(
+        "--scope",
+        default=None,
+        metavar="LABEL",
+        help="operator-supplied observation-scope label stored top-level in the "
+        "manifest, verbatim: a claim about what this pin observed (a project config, "
+        "a machine, an environment), shown by verify and compared across re-pins "
+        "(a changed scope under --update is the named mcp_observation_scope_changed "
+        "WARNING, a review signal, never a refusal). Omit to record the explicit "
+        "null: no scope declared. The label's truth is never verified",
+    )
+    p_pin.add_argument(
         "--force",
         action="store_true",
         help="proceed after deliberate review: pin even when the screen flags tool "
@@ -1681,6 +1741,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 force=args.force,
                 claude_plugin=args.claude_plugin,
                 resolve_executable=args.resolve_executable,
+                observation_scope=args.scope,
                 as_json=args.json,
             )
         if args.mcp_command == "verify":

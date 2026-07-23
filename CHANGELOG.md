@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **observation_scope (manifest v8).** Every manifest now records an explicit top-level
+  `observation_scope` member: `null` (no scope declared, the explicit weak claim) or a
+  nonempty operator-supplied label naming what the pin observed (a project config, a
+  machine, an environment), stored verbatim via `pin --scope LABEL`. The label is
+  operator metadata with a deliberately narrow contract: `verify` prints it for review
+  context, `diff_observation_scope` joins the facade, and a re-pin under `--update`
+  whose scope differs emits the named `mcp_observation_scope_changed` WARNING - a
+  review signal, never a refusal, because the replacement is already deliberate.
+  Recusal verifies the label's stability across re-pins, never its truth. A blank
+  label refuses (it reads as a declared claim while claiming nothing).
+  `manifest_version` 7 is refused with a migration message (re-pin; add `--scope`
+  to declare a scope).
+
 ## [0.6.0] - 2026-07-23
 
 Supply-chain and integrity release: the audit chain gains a first-class external

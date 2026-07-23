@@ -99,7 +99,12 @@ from .evidence import Finding
 #: ``null`` (the explicit weak claim: launch identity is the unexpanded template only)
 #: or ``{path, sha256}`` of the executable the pinned stdio command resolved to at pin
 #: time, closing the PATH-resolution and executable-bytes residual for pins that opt in.
-MANIFEST_VERSION = 7
+#: v8 adds the always-present top-level ``observation_scope`` member: ``null`` (no
+#: scope declared, the explicit weak claim) or a nonempty operator-supplied label
+#: naming what this pin observed (a project config, a machine, an environment).
+#: The label is operator metadata: recusal verifies its STABILITY across re-pins
+#: (a changed scope is a named WARNING), never its truth.
+MANIFEST_VERSION = 8
 
 #: Runtime naming modes a v6+ manifest declares PER SERVER, explicitly - never inferred
 #: from a string prefix. ``standard_mcp``: the PreToolUse name is reconstructed from
@@ -496,6 +501,69 @@ def diff_resolved_executable(
     ]
 
 
+def _observation_scope_error(scope: Any) -> Optional[str]:
+    """Why ``scope`` is not a canonical observation-scope value, or ``None`` if it is.
+
+    Canonical: ``None`` (no scope declared, the explicit weak claim) or a nonempty
+    string with visible content. A blank or whitespace-only label refuses: it reads
+    as a declared scope while claiming nothing.
+    """
+    if scope is None:
+        return None
+    if not isinstance(scope, str):
+        return f"observation_scope must be null or a string label, got {type(scope).__name__}"
+    if not scope.strip():
+        return (
+            "observation_scope must be a nonempty label with visible content; a blank "
+            "scope reads as a declared claim while claiming nothing - omit --scope to "
+            "record the explicit null instead"
+        )
+    return None
+
+
+def diff_observation_scope(
+    pinned_scope: Optional[str], current_scope: Optional[str]
+) -> List[Finding]:
+    """Compare two manifests' operator-declared observation scopes, as Findings.
+
+    The scope label is operator metadata about observation context, never verified
+    content, so its drift is a WARNING, not a refusal: a re-pin whose scope differs
+    from the approved one (including a label appearing where the pin declared none,
+    or vanishing where it declared one) deserves a named human-review signal, while
+    matching scopes - including both-null, the explicit no-claim state - pass with
+    the boundary stated. A malformed value on either side raises ``ValueError``:
+    a malformed claim is not evidence.
+    """
+    for label, value in (("pinned", pinned_scope), ("current", current_scope)):
+        problem = _observation_scope_error(value)
+        if problem is not None:
+            raise ValueError(f"{label} observation_scope: {problem}")
+
+    def _shown(value: Optional[str]) -> str:
+        return repr(value) if value is not None else "none declared"
+
+    if pinned_scope == current_scope:
+        return [
+            Finding.ok(
+                "mcp_observation_scope",
+                severity="WARNING",
+                message=f"observation scope matches the pin ({_shown(pinned_scope)}); "
+                "the label is operator metadata - its stability is verified, its "
+                "truth is not",
+            )
+        ]
+    return [
+        Finding.fail(
+            "mcp_observation_scope_changed",
+            severity="WARNING",
+            message=f"observation scope changed since the pin: {_shown(pinned_scope)} "
+            f"-> {_shown(current_scope)}; the label is operator metadata, so this is "
+            "a review signal, not a refusal - re-pin deliberately if the new scope "
+            "is yours",
+        )
+    ]
+
+
 def instructions_record(observed: bool, text: Optional[str]) -> Dict[str, Any]:
     """The pinned shape of one server's initialize-result ``instructions``.
 
@@ -607,6 +675,7 @@ def build_manifest(
     instructions: Optional[Dict[str, Optional[str]]] = None,
     runtime_modes: Optional[Dict[str, str]] = None,
     resolved_executables: Optional[Dict[str, Dict[str, str]]] = None,
+    observation_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a manifest from ``{server_name: [tool declarations]}``.
 
@@ -642,9 +711,20 @@ def build_manifest(
     the explicit weak claim that only the unexpanded template is pinned. Only a stdio
     server can carry one: nothing else resolves an executable, so a record on any
     other transport is contradictory and refuses.
+
+    ``observation_scope`` is an operator-supplied label naming what this pin observed
+    (a project config, a machine, an environment), stored top-level and verbatim.
+    ``None`` is the explicit weak claim that no scope was declared. The label is
+    operator metadata about observation CONTEXT: :func:`diff_observation_scope`
+    adjudicates its stability across re-pins (a changed scope is a named WARNING),
+    never its truth. An empty or whitespace-only label refuses: a blank claim reads
+    as a declared scope while claiming nothing.
     """
     if not isinstance(catalog, dict) or not catalog:
         raise ValueError("an empty catalog certifies nothing; nothing to pin")
+    problem = _observation_scope_error(observation_scope)
+    if problem is not None:
+        raise ValueError(problem)
     resolved = dict(resolved_executables or {})
     unknown_resolved = set(resolved) - set(catalog)
     if unknown_resolved:
@@ -742,7 +822,11 @@ def build_manifest(
             ),
             "tools": pinned_tools,
         }
-    return {"manifest_version": MANIFEST_VERSION, "servers": servers}
+    return {
+        "manifest_version": MANIFEST_VERSION,
+        "observation_scope": observation_scope,
+        "servers": servers,
+    }
 
 
 def manifest_to_text(manifest: Dict[str, Any]) -> str:
@@ -807,17 +891,33 @@ def _validate_manifest(data: Any) -> None:
             "mode); re-pin with `recusal mcp pin` (add --resolve-executable to opt "
             "into strict resolution pinning)"
         )
+    if data.get("manifest_version") == 7:
+        raise ValueError(
+            "manifest_version 7 predates observation-scope metadata (a v8 manifest "
+            "records an explicit top-level observation_scope member: null, or the "
+            "operator-supplied label naming what the pin observed); re-pin with "
+            "`recusal mcp pin` (add --scope LABEL to declare the observation scope)"
+        )
     if data.get("manifest_version") != MANIFEST_VERSION:
         raise ValueError(
             f"manifest_version {data.get('manifest_version')!r} is not {MANIFEST_VERSION}"
         )
-    unknown_top = set(data) - {"manifest_version", "servers"}
+    unknown_top = set(data) - {"manifest_version", "observation_scope", "servers"}
     if unknown_top:
         raise ValueError(
             f"manifest carries fields this loader does not define: {sorted(unknown_top)} - "
             "a deterministic control artifact must not carry ignored fields whose "
             "meaning is undefined"
         )
+    if "observation_scope" not in data:
+        raise ValueError(
+            "manifest has no observation_scope member; a v8 manifest records the claim "
+            "explicitly - null (no scope declared) or the operator-supplied label - "
+            "never by omission"
+        )
+    scope_problem = _observation_scope_error(data["observation_scope"])
+    if scope_problem is not None:
+        raise ValueError(f"manifest observation_scope is not canonical: {scope_problem}")
     servers = data.get("servers")
     if not isinstance(servers, dict) or not servers:
         raise ValueError("manifest has no servers")

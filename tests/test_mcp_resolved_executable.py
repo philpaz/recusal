@@ -137,7 +137,7 @@ def test_a_v6_manifest_is_refused_with_the_migration_message(tmp_path):
     path.write_text(json.dumps({"manifest_version": 6, "servers": {}}), encoding="utf-8")
     with pytest.raises(ValueError, match="resolved-executable identity.*--resolve-executable"):
         load_manifest(str(path))
-    assert MANIFEST_VERSION == 7
+    assert MANIFEST_VERSION == 8
 
 
 # ----------------------------------------------------------------- diff

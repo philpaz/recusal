@@ -140,6 +140,16 @@ Launch-file identity is opt-in since manifest v7: `pin --resolve-executable` pin
 file's bytes change even though the command template did not. Every v7 server entry
 states the claim explicitly: `null` is the template-only pin, never an omission.
 
+An observation-scope label is opt-in since manifest v8: `pin --scope LABEL` stores an
+operator-supplied claim about WHAT this pin observed (a project config, a machine, an
+environment), top-level and verbatim; `null` is the explicit no-scope-declared state,
+never an omission. The label is operator metadata: `verify` prints it for review
+context, and a re-pin under `--update` whose scope differs from the approved one
+emits the named `mcp_observation_scope_changed` WARNING (a review signal, never a
+refusal, because the replacement is already deliberate). Recusal verifies the label's
+stability, never its truth: a scope that says "production config" proves nothing about
+which config was actually observed.
+
 The remaining residuals, named: the operator-shell *values* behind `${VAR}` references
 are not pinned (the reference is); under a `null` (template-only) pin,
 `npx`/`uvx`-style launchers resolve through PATH and fetch what the registry serves

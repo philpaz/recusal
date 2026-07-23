@@ -154,7 +154,7 @@ def test_the_pin_records_the_launch_specification(arena):
     config = _write_config(arena["tmp"], arena["safe"])
     _pin(arena, config)
     manifest = load_manifest(arena["manifest"])
-    assert manifest["manifest_version"] == MANIFEST_VERSION == 7
+    assert manifest["manifest_version"] == MANIFEST_VERSION == 8
     source = manifest["servers"]["srv"]["source"]
     assert source["transport"] == "stdio"
     assert source["command"] == arena["safe"][0]
@@ -226,7 +226,7 @@ def test_external_sources_pin_and_roundtrip(tmp_path):
     assert manifest["servers"]["remote"]["source"] == {"transport": "external"}
     path = tmp_path / "m.json"
     path.write_text(manifest_to_text(manifest), encoding="utf-8")
-    assert load_manifest(str(path))["manifest_version"] == 7
+    assert load_manifest(str(path))["manifest_version"] == 8
 
 
 # --- more adversarial edges ------------------------------------------------------------------
