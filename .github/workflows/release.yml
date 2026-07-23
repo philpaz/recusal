@@ -111,6 +111,11 @@ jobs:
           format: spdx-json
           output-file: dist-sbom.spdx.json
           artifact-name: dist-sbom.spdx.json
+          # The action's default also attaches the SBOM to the GitHub Release, which
+          # needs contents: write; this job deliberately stays contents: read, so the
+          # attach step is off and the SBOM ships as the workflow artifact above
+          # (proven live: the v0.6.0 release event failed exactly there without this).
+          upload-release-assets: false
 
       - name: Attest build provenance for the distributions
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
