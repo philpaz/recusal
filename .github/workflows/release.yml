@@ -8,8 +8,10 @@ name: Release
 on:
   release:
     types: [published]
-  push:
-    tags: ["v*"]
+  # Manual runs rehearse the test + build + provenance path without signing or
+  # publishing. A published release is the ONE canonical release build: listening
+  # to both tag push and release publication built and attested v0.7.0 twice.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,6 +34,9 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: pip install -e ".[dev]"
+      - name: Assert the Python 3.9-compatible mypy line
+        run: |
+          python -c "from importlib.metadata import version; installed=version('mypy'); major=int(installed.split('.', 1)[0]); assert major < 2, 'mypy '+installed+' cannot validate the declared Python 3.9 floor'"
       - name: Lint
         run: ruff check .
       - name: Format
@@ -61,8 +66,10 @@ jobs:
   # Signatures live at the release boundary, in CI, by decision (2026-07-23): the
   # runtime stays stdlib-pure and verifies nothing; what IS signed are the built
   # distributions, keylessly, with the bundles attached to the GitHub Release so a
-  # verifier can fetch them offline (`sigstore verify github ...`). PyPI-side PEP 740
-  # attestations are generated separately by the publish action below.
+  # verifier can fetch them offline (`sigstore verify github ...`). Release mode also
+  # signs GitHub's generated tag .tar.gz and .zip source archives; only the built sdist
+  # and wheel receive build-provenance attestations and publish to PyPI. PyPI-side
+  # PEP 740 attestations are generated separately by the publish action below.
   sign:
     name: Sign the distributions (Sigstore)
     needs: build
@@ -81,7 +88,7 @@ jobs:
         with:
           name: dist
           path: dist/
-      - name: Sign sdist and wheel, attach bundles to the release
+      - name: Sign distributions and generated source archives, attach bundles
         uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
         with:
           inputs: dist/*
@@ -90,11 +97,10 @@ jobs:
   publish:
     name: Publish to PyPI
     # a distribution that could not be signed must not publish: fail closed, a
-    # human looks (signing and publishing share the release event, so a tag push
-    # still rehearses build-only)
+    # human looks (manual dispatch still rehearses test + build without publishing)
     needs: [build, sign]
     runs-on: ubuntu-latest
-    # Only publish on an actual release event, not on every tag push.
+    # Only publish on an actual release event, not on a manual rehearsal.
     if: github.event_name == 'release'
     environment:
       name: pypi
