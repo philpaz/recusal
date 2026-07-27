@@ -54,6 +54,15 @@ and the capabilities that reached only the changelog now reach the front page.
   changed and wording did not: hook timeout is still not independently established
   here, deployment isolation is still the adopter's responsibility, and a deny-list
   still never earns "cannot be subverted."
+- **The hero GIF demonstrates the new front door.** Its second panel showed
+  `python examples/claude_refusal.py`, which is a clone away; it now shows
+  `pip install recusal` followed by `recusal demo`. The live Claude Code panel, a real
+  session under `--dangerously-skip-permissions` that cannot be re-recorded from a
+  script, is preserved frame for frame. `tools/render_demo_gif.py` regenerates the
+  asset by executing the command the panel shows and rendering its captured stdout,
+  so the README's "verbatim transcripts, rendered" is now reproducible rather than
+  asserted. Pillow is required to run it and is deliberately not in the dev extra: it
+  regenerates an asset, it is not part of the gate.
 - PyPI version badge.
 
 ### CI

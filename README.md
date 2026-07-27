@@ -19,9 +19,9 @@
 ![runtime deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
 
 <p align="center">
-  <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then the offline demo refuses a write to the wrong customer and allows the corrected call" src="assets/demo-refusal.gif" width="880">
+  <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="assets/demo-refusal.gif" width="880">
 </p>
-<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then the offline demo (<code>python examples/claude_refusal.py</code>), no API key.</sub></p>
+<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then <code>pip install recusal &amp;&amp; recusal demo</code>, no API key and no clone. The second panel is rendered from that command's captured output by <a href="tools/render_demo_gif.py"><code>tools/render_demo_gif.py</code></a>, so "verbatim" is reproducible rather than asserted.</sub></p>
 
 ## The problem
 
