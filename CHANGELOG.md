@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-07-27
+
+Release-integrity documentation and metadata patch. Runtime behavior, public APIs,
+manifest version 8, and the zero-dependency boundary are unchanged.
+
+### Fixed
+- **Citation metadata follows the release.** `CITATION.cff` now names 0.7.1 and its
+  release date, and the version drift lock covers it alongside the package, plugin,
+  marketplace, vendored runtime, launcher binding, and onboarding pins.
+- **The documented signing boundary matches the published assets.** Sigstore release
+  mode signs the built sdist and wheel plus GitHub's generated tag `.tar.gz` and `.zip`
+  source archives. Only the built distributions receive build-provenance attestations
+  and publish to PyPI; the runtime still verifies no signatures.
+
+### CI
+- **One canonical release build.** Publishing a GitHub Release is now the sole automatic
+  release trigger, preventing the tag-push and release-publication events from building
+  and attesting identical artifacts twice. `workflow_dispatch` retains a non-publishing
+  test/build/provenance rehearsal.
+- **The Python 3.9 type-checker ceiling is executable.** CI and the release gate assert
+  that the installed mypy major version remains below 2, matching the dev constraint;
+  mypy 2 no longer validates the declared Python 3.9 floor.
+
 ## [0.7.0] - 2026-07-23
 
 Declared-scope and verifiable-pipeline release, one day after 0.6.0. Manifests (now
