@@ -26,6 +26,9 @@ collection remains in `recusal.mcp_fetch`.
 
 ## Public compatibility perimeter
 
+This section describes the perimeter; [`../STABILITY.md`](../STABILITY.md) is the promise
+attached to it, including which changes force a major version and what 1.0 has to earn.
+
 For released versions, compatibility is larger than Python function signatures. A
 behavior-preserving internal refactor must retain:
 

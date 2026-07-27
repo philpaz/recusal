@@ -13,6 +13,11 @@ almost every change:
 - **Don't grow the kernel.** New capability is a new check or a thin adapter, not a change
   to `compute_verdict`. See [`docs/EXTENDING.md`](docs/EXTENDING.md).
 
+Before proposing anything that changes behavior, read [`STABILITY.md`](STABILITY.md): it
+lists what is frozen, what each version number promises, and why a manifest schema change
+is now a major release. A PR that crosses one of those lines is not rejected, but it needs
+to say so in its own description.
+
 ## Development setup
 
 ```bash

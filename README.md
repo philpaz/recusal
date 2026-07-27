@@ -563,6 +563,7 @@ Copy-paste policies: [`docs/COOKBOOK.md`](docs/COOKBOOK.md).
 A full worked configuration: [`docs/EXAMPLE.md`](docs/EXAMPLE.md).
 Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
 Verify the artifacts yourself: [`docs/VERIFY.md`](docs/VERIFY.md).
+What will not move under you, and what 1.0 has to earn: [`STABILITY.md`](STABILITY.md).
 
 ## Development
 

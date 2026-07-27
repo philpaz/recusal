@@ -55,6 +55,12 @@ certify a tool call *before* it runs. Start with whichever door fits you:
   (self-grading bias, agent failure modes, MCP attack rates, the regulatory and standards
   drivers), each with an honest note on what it does and does not support.
 
+## Depend on it
+
+- **[../STABILITY](../STABILITY.md)**: what is frozen, what each version number promises,
+  why a manifest schema change is now a major release, and the preconditions 1.0 has to
+  meet before it is claimed.
+
 ## Contribute
 
 - **[../CONTRIBUTING](../CONTRIBUTING.md)** · **[../CODE_OF_CONDUCT](../CODE_OF_CONDUCT.md)**
