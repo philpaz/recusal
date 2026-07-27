@@ -4,6 +4,69 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-07-27
+
+Adoption release. The kernel, the manifest schema (still v8), the public APIs, and the
+zero-dependency boundary are all unchanged; what changes is the distance between a
+stranger and a working refusal. The first refusal no longer costs a clone, the
+supply-chain work of 0.6.0 and 0.7.0 becomes something an adopter can actually run,
+and the capabilities that reached only the changelog now reach the front page.
+
+### Added
+- **`recusal demo`, the refusal without a clone.** `pip install recusal && recusal demo`
+  prints three offline refusals from the installed package: a write to the wrong
+  customer refused before the tool runs, the shipped deny-list refusing `rm -rf`, a
+  secret-file write, and its own uninstall while an ordinary command defers, and a
+  pinned MCP catalog refusing both a post-approval description rewrite and an
+  unreviewed tool. `--scenario` runs one, `--list` names them. `recusal/_demo.py` is
+  CLI surface, not kernel: standard library only, no network, no subprocess, nothing
+  written to disk, byte-identical output on every run, and it imports the same public
+  surface an adopter imports, so it does not simulate the gate, it is the gate. Stated
+  exactly: the command exits 0 when the demo ran, and that 0 is not a verdict;
+  `recusal verdict` remains the adjudicating CLI with blocking exit codes.
+
+### Documentation
+- **`docs/VERIFY.md`: verify the gate you installed.** The SBOM (0.6.0), the build
+  provenance (0.6.0), and the release-boundary Sigstore signatures (0.7.0) had no
+  adopter-facing route: no copy-pasteable command existed in any document. The new page
+  gives all three verifications with exact commands and a negative control for each, and
+  states the two attestation layers precisely, because conflating them accepts a weaker
+  check than the reader believes: PyPI PEP 740 provenance names `release.yml`, the
+  workflow that published, while GitHub build provenance names `build-dist.yml`, the
+  reusable workflow that built and attested. It also states what none of it establishes
+  (not byte-reproducibility, nothing about what the source does, nothing about your
+  deployment isolation) and names the SBOM's real boundary: a workflow run artifact
+  subject to GitHub's retention window, not a release asset.
+- **The named empty-evidence intents are on the front page.** `evaluate_policy` and
+  `certify_evidence` shipped in 0.6.0, export from the package root, and until now
+  appeared only in `docs/EVIDENCE.md`. An empty findings list is the question most gates
+  get wrong, so the README and the FAQ now state both answers: findings as objections
+  (empty passes) versus findings as proof (empty refuses).
+- **The kernel property suite is named where contributors read.** The Hypothesis
+  generative locks shipped in 0.6.0 and appeared only in this changelog; the README's
+  development section and `CONTRIBUTING.md` now name them, and a kernel-touching
+  contribution is asked to extend the invariants rather than only add examples.
+- **Front-page altitude, with every caveat preserved.** The bypass-mode isolation
+  caveat, the hook-timeout residual, and the deny-list ceiling each stated their
+  boundary in several lines exactly where a first-time reader decides whether to keep
+  reading. Each now states it in a clause and links the complete text one click away,
+  in `SECURITY.md` and `docs/HOWTO.md`, where that text already lived. Placement
+  changed and wording did not: hook timeout is still not independently established
+  here, deployment isolation is still the adopter's responsibility, and a deny-list
+  still never earns "cannot be subverted."
+- PyPI version badge.
+
+### CI
+- **The verification procedure is executed, not asserted.**
+  `.github/workflows/verify-release.yml` runs every command in `docs/VERIFY.md` against
+  a published version, both negative controls included, and deliberately does not check
+  out the repository: verification must work from the published artifacts alone, exactly
+  as it does for someone who has never cloned this. The Sigstore client is pinned
+  exactly, for the reason ruff is. Drift locks pin the documentation against the
+  pipeline it describes: the documented signer workflow must exist and must actually
+  attest, and the documented certificate identity must name the workflow holding the
+  signing step.
+
 ## [0.7.1] - 2026-07-27
 
 Release-integrity documentation and metadata patch. Runtime behavior, public APIs,
