@@ -4,10 +4,10 @@ Recusal's whole argument is that the thing which produces work must not be the t
 that certifies it. That argument applies to Recusal's own artifacts. This page is how
 you check them yourself, without trusting this repository's word for anything.
 
-Every command below is run on each release by
-[`.github/workflows/verify-release.yml`](../.github/workflows/verify-release.yml),
-including the negative controls, so what is documented here is what is executed, not
-what someone remembers being true.
+Every command below was run by hand against a published release before it was written
+down, and [`.github/workflows/verify-release.yml`](../.github/workflows/verify-release.yml)
+exists to run all of them, negative controls included, against any published version on
+demand. See [Evidence](#evidence) for exactly which of those has happened so far.
 
 Substitute the version you installed for `0.7.1` throughout.
 
@@ -142,6 +142,12 @@ issue and it will be attached to releases going forward.
 
 ## Evidence
 
-Every command on this page was run against **v0.7.1** on 2026-07-27, with both
-negative controls confirmed failing, and each release re-runs them through
-[`verify-release.yml`](../.github/workflows/verify-release.yml).
+Every command on this page was run by hand against **v0.7.1** on 2026-07-27, with both
+negative controls confirmed failing: a signer workflow that never built the artifact,
+and a certificate identity that never signed it.
+
+[`verify-release.yml`](../.github/workflows/verify-release.yml) has **not yet been
+exercised on a published version**. A `workflow_dispatch` workflow only becomes runnable
+once it is on the default branch, so its first run happens after this document ships.
+That distinction is the point of this page: a procedure is proven by a run, not by
+existing.
