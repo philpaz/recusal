@@ -5,6 +5,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 
 ## Start here
 
+- **Twenty seconds, before any of the reading**: `pip install recusal && recusal demo`
+  shows the gate refusing a wrong-subject write, a destructive command, and a drifted MCP
+  catalog. Offline, no API key, no clone.
 - **[FAQ](FAQ.md)**: the questions people ask before adopting: *do I need this? doesn't
   Claude already do it? is it ready to use?* The fastest orientation.
 - **[WHY](WHY.md)**: the long-form "so what," written for the people who own the decision
@@ -44,9 +47,19 @@ certify a tool call *before* it runs. Start with whichever door fits you:
   observability, and the closest documented peers (Microsoft's toolkit, AEGIS, Anthropic's auto mode).
 - **[PROVEN](PROVEN.md)**: Recusal governs its own repository: a real Claude Code hook
   refusing real destructive tool calls, CI-locked and reproducible verbatim.
+- **[VERIFY](VERIFY.md)**: check the artifacts yourself: build provenance naming the
+  reusable builder, Sigstore bundles, and PyPI's own attestation, with the negative
+  controls and an honest statement of what none of it establishes. The project's own
+  argument, applied to the project's own releases.
 - **[REFERENCES](REFERENCES.md)**: primary sources for every empirical claim the docs make
   (self-grading bias, agent failure modes, MCP attack rates, the regulatory and standards
   drivers), each with an honest note on what it does and does not support.
+
+## Depend on it
+
+- **[../STABILITY](../STABILITY.md)**: what is frozen, what each version number promises,
+  why a manifest schema change is now a major release, and the preconditions 1.0 has to
+  meet before it is claimed.
 
 ## Contribute
 

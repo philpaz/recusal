@@ -26,6 +26,9 @@ collection remains in `recusal.mcp_fetch`.
 
 ## Public compatibility perimeter
 
+This section describes the perimeter; [`../STABILITY.md`](../STABILITY.md) is the promise
+attached to it, including which changes force a major version and what 1.0 has to earn.
+
 For released versions, compatibility is larger than Python function signatures. A
 behavior-preserving internal refactor must retain:
 
@@ -33,7 +36,9 @@ behavior-preserving internal refactor must retain:
 - function signatures, return shapes, finding order, check names, severities, and context;
 - canonical manifest bytes and all source, instruction, and tool fingerprints;
 - manifest validation and fail-closed behavior;
-- CLI commands, JSON shapes, and exit codes;
+- CLI commands, JSON shapes, and exit codes, including the one command whose exit code is
+  deliberately not a verdict: `recusal demo` exits 0 when it ran, and adjudication belongs
+  to `recusal verdict`;
 - Claude Code hook defer/deny behavior and audit control identity;
 - the version lock among the Python package, Claude plugin, marketplace, examples, and
   release metadata.

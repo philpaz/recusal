@@ -71,6 +71,18 @@ pytest, a linter, a schema check). You decide *what proves this action is safe*;
 folds those findings into one verdict. See [`HOWTO.md`](HOWTO.md) and
 [`EXTENDING.md`](EXTENDING.md).
 
+## What if there are no findings at all? Is that a pass?
+
+It depends on what your findings *mean*, and Recusal makes you say which, because a gate
+that guesses here is the classic way an empty evidence set becomes a vacuous approval.
+`evaluate_policy(findings)` treats findings as **objections**: an empty list means
+nothing objected, so it passes (this is exactly `compute_verdict`, unchanged).
+`certify_evidence(findings)` treats them as **proof**: an empty list proves nothing, so
+it refuses with a synthesized `no_evidence` CRITICAL failure, and its `strict` default
+also rejects evidence entries that carry no outcome rather than defaulting them to a
+pass. Both export from the package root. The full contract, with the reasoning:
+[`EVIDENCE.md`](EVIDENCE.md).
+
 ## How is this different from guardrails / evals / observability?
 
 - **Guardrails** (Guardrails AI, NeMo) gate content, and some can gate tool execution.
@@ -91,7 +103,10 @@ compare current capabilities from their own documentation. Capability notes:
 
 ## Is it ready to use? What's the maturity?
 
-It's early (`0.x`, Alpha) and honest about scope. What's proven end-to-end **today**: the
+Twenty seconds settles most of this question: `pip install recusal && recusal demo` shows
+the gate refusing, offline, with no key and no clone.
+
+It's `0.x` and Beta as of 0.8.0, and honest about scope. What's proven end-to-end **today**: the
 enforcement path on the real wire format, a real Claude Code hook, the real `PreToolUse`
 JSON, a real `deny` Claude Code honors, and it governs *this* repository's own
 development. See [`PROVEN.md`](PROVEN.md). What it does not yet claim: fleet-scale
@@ -104,8 +119,8 @@ design.
 **Zero runtime dependencies**, standard library only (no third-party runtime packages;
 the kernel uses `dataclasses` + `enum`, other modules add `hashlib`/`json`/`re`/`shlex`/
 `os`). Python
-**3.9+**, tested in CI on 3.9-3.13. The dev extras (`pytest`, `ruff`, `mypy`) are only for
-contributing.
+**3.9+**, tested in CI on 3.9-3.13. The dev extras (`pytest`, `ruff`, `mypy`, `hypothesis`
+for the kernel property tests) are only for contributing.
 
 ## What happens if my policy code crashes?
 
