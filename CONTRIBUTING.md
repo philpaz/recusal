@@ -31,6 +31,11 @@ Python 3.9+. **Zero runtime dependencies**, please keep `recusal/` standard-libr
   into a framework's allow/deny shape).
 - Tests for it. We test heavy, invariants in `tests/test_contract_invariants.py`, edge
   cases per surface. A check without edge-case tests won't merge.
+- If your change touches the kernel's behavior, extend the Hypothesis property tests in
+  `tests/test_kernel_properties.py` rather than only adding examples: verdict
+  monotonicity, order-independence, the decision fold, fail-closed coercion, and
+  fingerprint stability are generative locks, and a kernel change that cannot state its
+  invariant is a kernel change we cannot review.
 - Keep findings pure (no I/O); put structured detail in `context`, not the message.
 
 ## What we'll likely decline

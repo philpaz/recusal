@@ -11,6 +11,7 @@
 
 **Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and the Claude Agent SDK as a tool gate). The zero-dep core works in any agent loop.
 
+[![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/philpaz/recusal/badge)](https://scorecard.dev/viewer/?uri=github.com/philpaz/recusal)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
@@ -37,12 +38,12 @@ model makes the decision: explicit findings fold into a **`PASS` / `RETRY` / `FA
 verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
 
 - **A refusal that holds in bypass mode.** A Claude Code `deny` issued from the
-  `PreToolUse` seam is honored even under `bypassPermissions`. The honest caveat in the
-  same breath: the verdict is produced outside the model's decision path, but deployment
+  `PreToolUse` seam is honored even under `bypassPermissions`, and the deny-list refuses
+  the obvious attempts on the gate's own control paths, including uninstalling or
+  shadowing the `recusal` package itself. The caveat, in one line and in full one click
+  away: the verdict is produced outside the model's decision path, but deployment
   isolation (who owns `settings.json`, the file permissions, the runtime the gate runs
-  on) remains the adopter's responsibility, and the deny-list refuses the obvious
-  attempts on its own control paths, including uninstalling or shadowing the `recusal`
-  package itself.
+  on) stays the adopter's responsibility ([`SECURITY.md`](SECURITY.md)).
 - **MCP capability integrity.** Pin the MCP server instructions and tool declarations a
   human approved; `verify` refuses represented drift (the rug pull, the new tool, the
   mutated schema), and the call-time gate refuses any MCP tool that was never pinned.
@@ -56,7 +57,20 @@ the same verdict, including the "no".
 
 > Builders generate. Recusal certifies. Refusal is a feature.
 
-## See it refuse (20 seconds, no API key)
+## See it refuse (20 seconds, no API key, no clone)
+
+```bash
+pip install recusal
+recusal demo
+```
+
+Three refusals, offline and deterministic: a write to the wrong customer refused before
+the tool runs, the shipped deny-list refusing `rm -rf` and its own uninstall while an
+ordinary command defers, and a pinned MCP catalog refusing a post-approval rug pull.
+`recusal demo --list` names them; `--scenario` runs one. (Its exit code is not a
+verdict: `recusal verdict` is the command whose exit code adjudicates.)
+
+The long form, annotated and worth reading, is in the repository:
 
 ```bash
 git clone https://github.com/philpaz/recusal && cd recusal
@@ -114,11 +128,16 @@ For production, pin the runtime the gate runs on: a dedicated venv with
 `pip install recusal` is the quick start, not the governance deployment. (Inside a
 governed session, the deny-list refuses package-manager commands that uninstall,
 reinstall, or shadow the `recusal` package: managing the gate's own runtime is the
-operator's job, outside the session.) One named residual: Claude cancels a command hook
-at the platform hook timeout (default 600s), and this repository has NOT independently
-established the resulting authorization outcome for the launcher - do not describe hook
-timeout as fail-closed until it is tested in your deployment environment. Recusal's
+operator's job, outside the session.) One named residual, stated in full in
+[`docs/HOWTO.md`](docs/HOWTO.md): the authorization outcome when Claude cancels a hook
+at the platform timeout has NOT been independently established here, so do not describe
+hook timeout as fail-closed until you have tested it in your own deployment. Recusal's
 shipped policies adjudicate in milliseconds; keep custom policies fast and bounded.
+
+Verifying what you installed is a first-class step, not an afterthought:
+[`docs/VERIFY.md`](docs/VERIFY.md) shows how to check the build provenance, the
+release-boundary Sigstore signatures, and PyPI's own attestation yourself, negative
+controls included.
 
 <details>
 <summary><b>The manual path, exit-code semantics, and Windows</b> (what <code>recusal init</code> writes, stated exactly)</summary>
@@ -204,13 +223,13 @@ else*. It drops into a broad, open-ended channel with almost no friction and nee
 inventory of your tools, which is why this repo dogfoods it (a general-purpose dev repo
 runs an unbounded set of legitimate commands). Its boundary is inherent, not a defect: a
 literal matcher can be obfuscated past, and `python script.py` runs code no string check
-ever reads, so a deny-list never earns "cannot be subverted." Since 0.5.11 it also
-refuses package-manager mutation of the enforcement package itself (`pip uninstall
-recusal`, install-time shadowing, across the `pip` / `python -m pip` / `uv` spellings;
-since 0.5.12 including global option/value forms like `pip --python .venv uninstall`
-and `uv --project . remove`, and Windows launcher spellings like `pip.exe`). Protected
-names are compared as canonical distribution identities, and a source argument that
-merely contains one (`./fake-recusal`) is refused toward safety by contract.
+ever reads, so a deny-list never earns "cannot be subverted." It also refuses
+package-manager mutation of the enforcement package itself (`pip uninstall recusal` and
+install-time shadowing, across the `pip` / `python -m pip` / `uv` spellings and their
+option, value, and Windows launcher forms), comparing canonical distribution identities
+and refusing a merely name-containing source (`./fake-recusal`) toward safety. Exactly
+what is and is not covered, form by form: [`SECURITY.md`](SECURITY.md) and
+[`docs/HOWTO.md`](docs/HOWTO.md).
 
 Neither is "better" in the abstract: a deny-list refusing the unknown would grind a broad
 channel to a halt, and an allowlist deferring the unknown would defeat the point of a
@@ -356,7 +375,7 @@ the gate refuses, the audit log records, the classifier routes.
 
 | Module | What it is |
 |---|---|
-| `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict` |
+| `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`, and the two named empty-evidence intents `evaluate_policy` / `certify_evidence` |
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
 | `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
@@ -389,6 +408,13 @@ if verdict.refused:
 | `CRITICAL` failure | **`FAIL`** | Terminal. The work is wrong. Do not retry. |
 | `ERROR` failure | **`RETRY`** | Recoverable. Retry once, with the failures as context. |
 | `WARNING` / `INFO` only | **`PASS`** | Proceed. Warnings recorded, info kept as metrics. |
+
+**An empty findings list is the question most gates get wrong**, so the kernel names both
+answers instead of picking one silently. `evaluate_policy(findings)` reads findings as
+*objections*: nothing raised means no objection, `PASS`. `certify_evidence(findings)`
+reads them as *proof*: nothing presented certifies nothing, so it refuses with a
+synthesized `no_evidence` failure. `compute_verdict` is unchanged and identical to
+`evaluate_policy`. Pick by what your findings mean ([`docs/EVIDENCE.md`](docs/EVIDENCE.md)).
 
 ## How Recusal fits into Claude Code
 
@@ -544,6 +570,13 @@ Verify the artifacts yourself: [`docs/VERIFY.md`](docs/VERIFY.md).
 pip install -e ".[dev]"
 pytest -q
 ```
+
+The suite is the argument: per-surface edge cases, adversarial red-team tests against
+the dogfooded hook, drift locks that fail when a document and the code it describes
+disagree, and Hypothesis property tests over the frozen kernel (verdict monotonicity
+and order-independence, the documented decision fold, fail-closed string coercion,
+strict-mode refusal of outcome-less evidence, fingerprint stability). Hypothesis is a
+dev extra, derandomized in CI; runtime dependencies stay at zero.
 
 ## Contributing
 

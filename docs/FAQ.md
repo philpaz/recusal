@@ -71,6 +71,18 @@ pytest, a linter, a schema check). You decide *what proves this action is safe*;
 folds those findings into one verdict. See [`HOWTO.md`](HOWTO.md) and
 [`EXTENDING.md`](EXTENDING.md).
 
+## What if there are no findings at all? Is that a pass?
+
+It depends on what your findings *mean*, and Recusal makes you say which, because a gate
+that guesses here is the classic way an empty evidence set becomes a vacuous approval.
+`evaluate_policy(findings)` treats findings as **objections**: an empty list means
+nothing objected, so it passes (this is exactly `compute_verdict`, unchanged).
+`certify_evidence(findings)` treats them as **proof**: an empty list proves nothing, so
+it refuses with a synthesized `no_evidence` CRITICAL failure, and its `strict` default
+also rejects evidence entries that carry no outcome rather than defaulting them to a
+pass. Both export from the package root. The full contract, with the reasoning:
+[`EVIDENCE.md`](EVIDENCE.md).
+
 ## How is this different from guardrails / evals / observability?
 
 - **Guardrails** (Guardrails AI, NeMo) gate content, and some can gate tool execution.
