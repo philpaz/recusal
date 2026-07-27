@@ -22,7 +22,11 @@ keywords = [
     "agent-reliability", "agent-safety", "tool-use", "llm", "ai-safety",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    # Beta as of 0.8.0: the kernel and the manifest schema are frozen, thirteen external
+    # review cycles are closed, and CI covers 3.9-3.13 on Linux, macOS, and Windows. Not
+    # Production/Stable, which is a compatibility promise this project has not yet earned:
+    # the manifest format moved v5 -> v8 in July 2026, and a stability policy comes first.
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "License :: OSI Approved :: Apache Software License",

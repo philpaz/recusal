@@ -77,12 +77,25 @@ any public disclosure.
   never toward silently allowing. Rephrase the command, or use allowlist mode where reads are
   affirmatively vetted rather than pattern-matched.
 - `recusal.audit` is **tamper-evident, not tamper-proof**: the hash chain detects in-place
-  edits and reordering, but the digest is unkeyed and the head is unanchored, so an attacker
-  with write access can truncate the tail or rewrite the whole chain. Commit the head
-  `(count, last_hash)` somewhere they cannot reach and pass `verify(..., expected_head=...)`
-  to catch that. File-backed appends support concurrent processes through an inter-process
-  lock (`<path>.lock`); the in-memory `entries` mirror remains process-local, so under
-  concurrency verify the file, not one process's mirror.
+  edits and reordering, but the digest is unkeyed, so an attacker with write access can
+  truncate the tail or rewrite the whole chain unless the head is anchored somewhere they
+  cannot reach. Three anchoring controls ship for exactly that, and none is on by default:
+  `AuditLog(..., sinks=[...])` mirrors every committed entry, inside the append lock, to any
+  object with a `write(entry)` method (`recusal.AuditSink`, structural), and a sink failure
+  raises out of `append`, so the hook fails closed to a deny rather than adjudicating off the
+  record; entries carry `seq` and `hash`, so a sink holds the external head `(seq + 1, hash)`
+  verbatim; `AuditLog(path, verify_on_open=True)` refuses (`AuditIntegrityError`) to extend a
+  file that fails strict verification, and `expected_head=(count, hash)` refuses truncation, a
+  tail-suffix rewrite, and forged appends against a head you hold elsewhere. `verify(...,
+  expected_head=...)` applies the same check to entries you already have. Without an anchor a
+  truncated tail is still a self-consistent chain, and that boundary is regression-locked by
+  test. File-backed appends support concurrent processes through an inter-process lock
+  (`<path>.lock`); the in-memory `entries` mirror remains process-local, so under concurrency
+  verify the file, not one process's mirror.
+- **Verify the artifacts you install.** The releases carry build provenance naming the
+  reusable builder workflow, Sigstore signature bundles, and PyPI's own PEP 740 attestation.
+  [`docs/VERIFY.md`](docs/VERIFY.md) is the procedure, with a negative control for each check
+  and an explicit statement of what none of it establishes.
 
 ## Attack surfaces, and how this is architected for them
 
@@ -109,7 +122,7 @@ deny-list engine, which lives in the installable package as `recusal.deny_list`
 | **Data exfiltration** | Egress-allowlist policy refuses outbound calls to non-allowlisted destinations (recipe). | Define the allowlist. |
 | **Wrong-subject write** | Subject-guard policy: a write must target the session's active subject (the signature recipe; a real catch in `docs/PROVEN.md`). | Bind the active subject per turn. |
 | **Runaway loop / cost** | Tiered action-budget policy (recipe). | The hook is per-call; persist the counter. |
-| **Tampering with the audit record** | Hash-chained log detects an edit or reorder of any entry with a surviving successor. | Tail truncation, tail-suffix rewrite (down to the last entry), and forged appends need an external head anchor (`verify(expected_head=...)`); the digest is unkeyed, and the in-memory mirror is per-process. |
+| **Tampering with the audit record** | Hash-chained log detects an edit or reorder of any entry with a surviving successor; `sinks=[...]` mirrors every committed entry to an external holder (a sink failure fails the append closed), `verify_on_open=True` refuses to extend a file that fails verification, and `expected_head=(count, hash)` refuses truncation, tail-suffix rewrite, and forged appends. | Every anchoring control is opt-in, and an anchor is only as good as the place you keep it: without one, a truncated tail is still a self-consistent chain. The digest is unkeyed, and the in-memory mirror is per-process. |
 | **Supply chain (CI)** | Every third-party action in every workflow is pinned to an immutable commit SHA (a moving tag is a rug-pull surface), zizmor audits the workflow files as a blocking CI check, the release workflow reruns the full gate at the exact release commit before building, the build and its provenance attestation run in the reusable `build-dist.yml` workflow (the documented SLSA Build L3 pattern; verify with `--signer-workflow`), and the release artifacts are Sigstore-signed in CI with the bundles attached to the GitHub Release (publish fails closed behind signing). Signed, exactly: the built sdist and wheel plus GitHub's generated tag `.tar.gz` and `.zip` source archives, keylessly, at the release boundary. Only the built sdist and wheel receive build-provenance attestations and publish to PyPI. Not signed: anything at runtime - the runtime is stdlib-pure and verifies no signatures; manifests and audit logs are hash-integrity artifacts, not signed ones. | The SHAs are updated deliberately, by hand, when an action is upgraded; a same-repo reusable workflow is as isolated as the repository's own change controls. |
 
 The through-line: the design gives you an **independent, deterministic seam that fails

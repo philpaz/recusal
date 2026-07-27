@@ -103,7 +103,10 @@ compare current capabilities from their own documentation. Capability notes:
 
 ## Is it ready to use? What's the maturity?
 
-It's early (`0.x`, Alpha) and honest about scope. What's proven end-to-end **today**: the
+Twenty seconds settles most of this question: `pip install recusal && recusal demo` shows
+the gate refusing, offline, with no key and no clone.
+
+It's `0.x` and Beta as of 0.8.0, and honest about scope. What's proven end-to-end **today**: the
 enforcement path on the real wire format, a real Claude Code hook, the real `PreToolUse`
 JSON, a real `deny` Claude Code honors, and it governs *this* repository's own
 development. See [`PROVEN.md`](PROVEN.md). What it does not yet claim: fleet-scale
@@ -116,8 +119,8 @@ design.
 **Zero runtime dependencies**, standard library only (no third-party runtime packages;
 the kernel uses `dataclasses` + `enum`, other modules add `hashlib`/`json`/`re`/`shlex`/
 `os`). Python
-**3.9+**, tested in CI on 3.9-3.13. The dev extras (`pytest`, `ruff`, `mypy`) are only for
-contributing.
+**3.9+**, tested in CI on 3.9-3.13. The dev extras (`pytest`, `ruff`, `mypy`, `hypothesis`
+for the kernel property tests) are only for contributing.
 
 ## What happens if my policy code crashes?
 

@@ -5,6 +5,9 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 
 ## Start here
 
+- **Twenty seconds, before any of the reading**: `pip install recusal && recusal demo`
+  shows the gate refusing a wrong-subject write, a destructive command, and a drifted MCP
+  catalog. Offline, no API key, no clone.
 - **[FAQ](FAQ.md)**: the questions people ask before adopting: *do I need this? doesn't
   Claude already do it? is it ready to use?* The fastest orientation.
 - **[WHY](WHY.md)**: the long-form "so what," written for the people who own the decision
