@@ -2,6 +2,9 @@
 
 Subcommands:
 
+- ``demo``: watch the gate refuse, offline, straight from the installed package, so
+  the first refusal costs one command instead of a clone (``recusal._demo``). Its exit
+  code is not a verdict: 0 means the demo ran;
 - ``init``: scaffold a fail-closed Claude Code PreToolUse gate (detailed below);
 - ``verdict``: adjudicate a findings JSON file into PASS / RETRY / FAIL with blocking
   exit codes (0 / 1 / 2), the CI primitive - any tool can emit findings, recusal
@@ -50,6 +53,7 @@ import sys
 from typing import Any, Dict, List, NamedTuple, Optional, TextIO, Tuple
 
 from . import __version__
+from ._demo import SCENARIO_NAMES, list_scenarios, run_demo
 from .audit import GENESIS
 from .audit import load as _load_audit_entries
 from .audit import verify_file as _verify_audit_file
@@ -1705,6 +1709,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_doctor.add_argument(
         "--json", action="store_true", help="emit the result as JSON instead of text"
     )
+    p_demo = sub.add_parser(
+        "demo",
+        help="watch the gate refuse, offline (exit 0 means the demo ran, it is not a verdict)",
+    )
+    p_demo.add_argument(
+        "--scenario",
+        default="all",
+        choices=("all",) + SCENARIO_NAMES,
+        help="which scenario to run (default: all three, in order)",
+    )
+    p_demo.add_argument(
+        "--list", action="store_true", help="list the scenarios and what each demonstrates"
+    )
 
     args = parser.parse_args(argv)
 
@@ -1762,6 +1779,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.command == "doctor":
         return doctor_command(args.dir, as_json=args.json)
+    if args.command == "demo":
+        if args.list:
+            return list_scenarios(print)
+        return run_demo(print, scenario=args.scenario)
     parser.print_help()
     return 2
 
