@@ -1,0 +1,128 @@
+name: Verify a published release
+
+# The verification procedure in docs/VERIFY.md, executed. A documented command that
+# nobody runs is a claim, not a control: this workflow runs every command in that
+# document against a published version, including the negative controls, so the
+# documentation is proven rather than asserted. Manual by design (a release has
+# already verified itself at build time; this is the independent second look, and the
+# one an adopter can copy).
+#
+# It deliberately does NOT check out the repository: verification must work from the
+# published artifacts alone, exactly as it does for someone who has never cloned it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to verify, without the leading v (e.g. 0.7.1)"
+        required: true
+        type: string
+
+permissions: read-all
+
+jobs:
+  verify:
+    name: Verify ${{ inputs.version }} from the published artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # download the release assets
+      attestations: read # read the build-provenance attestations
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ inputs.version }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      # Pinned exactly, for the reason ruff is: an unpinned verifier defines what
+      # "verified" means by whatever released last.
+      - name: Install the Sigstore client
+        run: pip install "sigstore==4.4.0"
+
+      - name: Download the release artifacts
+        run: |
+          mkdir -p dist
+          gh release download "v${VERSION}" --repo "$REPO" --dir dist \
+            --pattern "recusal-${VERSION}*"
+          ls -l dist
+
+      # 1. Build provenance. The signer identity is the REUSABLE builder workflow, which
+      # is the whole point of the SLSA L3 pattern: not "some workflow in this repo".
+      - name: Build provenance names the reusable builder
+        run: |
+          for f in "dist/recusal-${VERSION}-py3-none-any.whl" "dist/recusal-${VERSION}.tar.gz"; do
+            gh attestation verify "$f" --repo "$REPO" \
+              --signer-workflow "${REPO}/.github/workflows/build-dist.yml"
+          done
+
+      - name: NEGATIVE CONTROL, a wrong signer workflow must fail
+        run: |
+          if gh attestation verify "dist/recusal-${VERSION}-py3-none-any.whl" --repo "$REPO" \
+               --signer-workflow "${REPO}/.github/workflows/not-the-builder.yml"; then
+            echo "::error::provenance verification accepted a signer workflow that never built this"
+            exit 1
+          fi
+          echo "refused, as it must"
+
+      # 2. Sigstore bundles. Offline against the bundle attached to the release; the
+      # certificate identity is the workflow that SIGNED, which is release.yml at the
+      # release tag (signing happens at the release boundary, building does not).
+      - name: Sigstore bundles verify offline
+        run: |
+          IDENTITY="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v${VERSION}"
+          for f in "dist/recusal-${VERSION}-py3-none-any.whl" "dist/recusal-${VERSION}.tar.gz"; do
+            python -m sigstore verify github --offline --bundle "${f}.sigstore.json" \
+              --cert-identity "$IDENTITY" --repository "$REPO" "$f"
+          done
+
+      - name: NEGATIVE CONTROL, a wrong certificate identity must fail
+        run: |
+          WRONG="https://github.com/${REPO}/.github/workflows/build-dist.yml@refs/tags/v${VERSION}"
+          f="dist/recusal-${VERSION}-py3-none-any.whl"
+          if python -m sigstore verify github --offline --bundle "${f}.sigstore.json" \
+               --cert-identity "$WRONG" --repository "$REPO" "$f"; then
+            echo "::error::signature verification accepted an identity that did not sign this"
+            exit 1
+          fi
+          echo "refused, as it must"
+
+      # 3. PyPI. Two questions: are the published bytes the same bytes, and does PyPI
+      # hold a PEP 740 attestation for them. PEP 740 names release.yml (the publisher),
+      # not build-dist.yml (the builder); both are true, at different layers.
+      - name: PyPI serves the same bytes, with PEP 740 provenance
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, sys, urllib.request
+
+          version, repo = os.environ["VERSION"], os.environ["REPO"]
+          meta = json.load(
+              urllib.request.urlopen(f"https://pypi.org/pypi/recusal/{version}/json")
+          )
+          failures = []
+          for entry in meta["urls"]:
+              name = entry["filename"]
+              local = os.path.join("dist", name)
+              digest = hashlib.sha256(open(local, "rb").read()).hexdigest()
+              if digest != entry["digests"]["sha256"]:
+                  failures.append(f"{name}: PyPI bytes differ from the release asset")
+              url = f"https://pypi.org/integrity/recusal/{version}/{name}/provenance"
+              bundles = json.load(urllib.request.urlopen(url))["attestation_bundles"]
+              publisher = bundles[0]["publisher"]
+              if publisher.get("repository") != repo:
+                  failures.append(f"{name}: provenance names {publisher.get('repository')}")
+              print(f"{name}: bytes match, provenance publisher {publisher.get('repository')} "
+                    f"via {publisher.get('workflow')}")
+          if failures:
+              sys.exit("\n".join(failures))
+          PY
+
+      - name: What this run did and did not establish
+        run: |
+          echo "Established: the published artifacts were built by the reusable builder"
+          echo "workflow in this repository, signed at the release boundary by release.yml"
+          echo "at the release tag, and PyPI serves those exact bytes with PEP 740"
+          echo "provenance. Both negative controls refused."
+          echo "NOT established: byte-reproducibility, and any claim about what the source"
+          echo "does. Provenance binds an artifact to a build; it does not read the code."

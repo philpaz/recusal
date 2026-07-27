@@ -44,6 +44,10 @@ certify a tool call *before* it runs. Start with whichever door fits you:
   observability, and the closest documented peers (Microsoft's toolkit, AEGIS, Anthropic's auto mode).
 - **[PROVEN](PROVEN.md)**: Recusal governs its own repository: a real Claude Code hook
   refusing real destructive tool calls, CI-locked and reproducible verbatim.
+- **[VERIFY](VERIFY.md)**: check the artifacts yourself: build provenance naming the
+  reusable builder, Sigstore bundles, and PyPI's own attestation, with the negative
+  controls and an honest statement of what none of it establishes. The project's own
+  argument, applied to the project's own releases.
 - **[REFERENCES](REFERENCES.md)**: primary sources for every empirical claim the docs make
   (self-grading bias, agent failure modes, MCP attack rates, the regulatory and standards
   drivers), each with an honest note on what it does and does not support.

@@ -536,6 +536,7 @@ Usage & extending: [`docs/HOWTO.md`](docs/HOWTO.md) · [`docs/EXTENDING.md`](doc
 Copy-paste policies: [`docs/COOKBOOK.md`](docs/COOKBOOK.md).
 A full worked configuration: [`docs/EXAMPLE.md`](docs/EXAMPLE.md).
 Proof it governs itself: [`docs/PROVEN.md`](docs/PROVEN.md).
+Verify the artifacts yourself: [`docs/VERIFY.md`](docs/VERIFY.md).
 
 ## Development
 
