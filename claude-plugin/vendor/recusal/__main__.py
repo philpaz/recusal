@@ -1717,7 +1717,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--scenario",
         default="all",
         choices=("all",) + SCENARIO_NAMES,
-        help="which scenario to run (default: all three, in order)",
+        help="which scenario to run (default: all four, in order)",
     )
     p_demo.add_argument(
         "--list", action="store_true", help="list the scenarios and what each demonstrates"

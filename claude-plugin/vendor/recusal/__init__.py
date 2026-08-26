@@ -33,6 +33,15 @@ Zero runtime dependencies, standard library only.
 """
 
 from .audit import AuditIntegrityError, AuditLog, AuditSink, verify
+from .authorization import (
+    ActionRequest,
+    AuthorizationContext,
+    AuthorizationDecision,
+    Constraints,
+    DecisionReceipt,
+    Supplied,
+    certify_authorization,
+)
 from .classify import (
     DEFAULT_TAXONOMY,
     Classification,
@@ -61,6 +70,13 @@ __all__ = [
     "compute_verdict",
     "evaluate_policy",
     "certify_evidence",
+    "ActionRequest",
+    "AuthorizationContext",
+    "AuthorizationDecision",
+    "Constraints",
+    "DecisionReceipt",
+    "Supplied",
+    "certify_authorization",
     "GateAdjudicator",
     "GateResult",
     "ReleaseEvidence",
@@ -75,4 +91,4 @@ __all__ = [
     "DEFAULT_TAXONOMY",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"

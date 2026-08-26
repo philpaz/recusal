@@ -328,3 +328,39 @@ def test_the_fail_open_malformed_path_carries_the_same_control_identity(tmp_path
     control = load(path)[0]["action"]["control"]
     assert control["recusal_version"] == recusal.__version__  # spoof stripped here too
     assert control["policy_id"] == "x"
+
+
+def test_runtime_context_is_recorded_as_a_claim_with_provenance_not_as_identity(tmp_path):
+    """Measured on Claude Code 2.1.246: a subagent's PreToolUse event carries agent_id,
+    agent_type and permission_mode; a main session carries permission_mode only. The
+    record keeps them under runtime_* names with provenance, outside the control identity,
+    so a reader cannot mistake what the runtime reported for who was authorized."""
+    path = str(tmp_path / "audit.jsonl")
+    _run(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo subagent-probe"},
+            "session_id": "s-1",
+            "permission_mode": "default",
+            "agent_id": "a343c667c7dc99439",
+            "agent_type": "general-purpose",
+        },
+        AuditLog(path=path),
+    )
+    action = load(path)[0]["action"]
+    assert action["runtime"] == {
+        "runtime_agent_id": "a343c667c7dc99439",
+        "runtime_agent_type": "general-purpose",
+        "runtime_permission_mode": "default",
+        "provenance": "claude_pretooluse_event",
+    }
+    assert "agent_id" not in action["control"]  # never part of the control identity
+    assert "runtime_agent_id" not in action["control"]
+
+
+def test_runtime_context_is_absent_when_the_event_carries_none(tmp_path):
+    """A main-session event (no agent fields, no permission_mode) records no runtime
+    key at all: the record must not invent a value, and 0.8.0 record shapes are kept."""
+    path = str(tmp_path / "audit.jsonl")
+    _run({"tool_name": "Read", "tool_input": {}, "agent_id": ""}, AuditLog(path=path))
+    assert "runtime" not in load(path)[0]["action"]

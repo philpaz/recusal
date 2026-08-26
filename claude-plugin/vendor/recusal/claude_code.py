@@ -178,6 +178,32 @@ def _control_identity(policy: Policy, control: Optional[Dict[str, Any]]) -> Dict
     return identity
 
 
+#: Event fields copied onto the audit record as RUNTIME CONTEXT, renamed so the record
+#: says what they are: what the Claude Code runtime reported about itself, with
+#: provenance ``claude_pretooluse_event``. They are not authenticated identity and never
+#: decide anything here; ``recusal.authorization`` binds a runtime label to a principal
+#: only through an adopter-supplied trust rule. Measured on Claude Code 2.1.246: a main
+#: session carries ``permission_mode`` and no ``agent_id``/``agent_type``; a subagent
+#: carries all three.
+_RUNTIME_CONTEXT_KEYS = (
+    ("agent_id", "runtime_agent_id"),
+    ("agent_type", "runtime_agent_type"),
+    ("permission_mode", "runtime_permission_mode"),
+)
+
+
+def _runtime_context(event: dict) -> Dict[str, str]:
+    """The runtime-reported context present in ``event``, or ``{}`` when none is."""
+    out: Dict[str, str] = {}
+    for source, target in _RUNTIME_CONTEXT_KEYS:
+        value = event.get(source)
+        if isinstance(value, str) and value:
+            out[target] = value
+    if out:
+        out["provenance"] = "claude_pretooluse_event"
+    return out
+
+
 def _input_fingerprint(tool_input: dict) -> str:
     """SHA-256 over the canonical JSON of the proposed tool input. The audit entry binds
     to the exact proposed call without embedding its contents (a Write's file body, an
@@ -264,6 +290,9 @@ def run_pretooluse_hook(
         for key in ("prompt_id", "tool_use_id"):
             if isinstance(event.get(key), str) and event[key]:
                 event_ids[key] = event[key]
+        runtime = _runtime_context(event)
+        if runtime:
+            event_ids["runtime"] = runtime
         if actor is None and isinstance(event.get("session_id"), str):
             actor = event["session_id"]
         decision, reason, verdict = _adjudicate(

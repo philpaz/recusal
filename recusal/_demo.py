@@ -7,14 +7,17 @@ inside the wheel, so the first refusal a person sees costs one command:
     pip install recusal
     recusal demo
 
-Three scenarios, each the shortest honest version of a claim the project makes:
+Four scenarios, each the shortest honest version of a claim the project makes:
 
 - ``wrong-subject``: a deterministic precondition the model cannot self-enforce (which
   subject is active this turn) refuses a write and hands the agent a reason;
 - ``destructive-shell``: the shipped deny-list refuses ``rm -rf`` and refuses to be
   uninstalled from inside a governed session, while an ordinary command defers;
 - ``mcp-drift``: a reviewed MCP catalog is pinned, then a post-approval description
-  rewrite and an unreviewed tool are both refused at the discovery boundary.
+  rewrite and an unreviewed tool are both refused at the discovery boundary;
+- ``expired-authorization``: the right tool with valid arguments is refused because the
+  authority it runs under has expired, and again because its label is bound to no
+  configured principal; the same call inside its authority is allowed, with a receipt.
 
 Properties this module holds to, pinned by ``tests/test_demo_cli.py``: standard
 library only, no network, no subprocess, nothing written to disk, and byte-identical
@@ -29,6 +32,14 @@ adjudicating command, and it exits 0 / 1 / 2 for PASS / RETRY / FAIL.
 from typing import Callable, Dict, List, Mapping, Tuple
 
 from . import Finding, compute_verdict
+from .authorization import (
+    ActionRequest,
+    AuthorizationContext,
+    Constraints,
+    DecisionReceipt,
+    Supplied,
+    certify_authorization,
+)
 from .claude import gate_tool_use
 from .claude_code import decide
 from .deny_list import deny_list_policy
@@ -180,6 +191,72 @@ def _scenario_mcp_drift(write: Writer) -> None:
     write("   job at pin time. Live: recusal mcp pin, then recusal mcp verify in CI.")
 
 
+def _authority_context(now: str, label_bound: bool) -> AuthorizationContext:
+    """The authority evidence an adopter's system of record would supply. ``now`` is
+    supplied, never read: the demo has no clock, and neither does the adjudicator."""
+    return AuthorizationContext(
+        trusted_principals=Supplied(
+            {"agent:invoice-assistant": "svc:invoice-assistant"} if label_bound else {},
+            "operator_config",
+        ),
+        active_subject=Supplied("customer:456", "session_store"),
+        allowed_operations=Supplied({"crm.update_record": ["update"]}, "delegation_grant"),
+        constraints=Supplied(
+            Constraints(
+                fields=("status", "notes"),
+                max_calls=3,
+                expires_at="2026-08-26T20:00:00+00:00",
+            ),
+            "delegation_grant",
+        ),
+        now=Supplied(now, "adopter_clock"),
+        calls_so_far=Supplied(1, "adopter_counter"),
+        used_nonces=Supplied(["n-001"], "adopter_nonce_store"),
+        approval=Supplied({"policy_version": "crm-writes-v3"}, "delegation_grant"),
+        policy_version=Supplied("crm-writes-v3", "operator_config"),
+    )
+
+
+def _scenario_expired_authorization(write: Writer) -> None:
+    write("4. EXPIRED AUTHORIZATION  (the right tool, valid arguments, no authority)")
+    write("")
+    write("   Delegation on record: agent:invoice-assistant may crm.update_record.update")
+    write("   customer:456, fields status/notes, 3 calls, until 2026-08-26T20:00:00Z,")
+    write("   under policy crm-writes-v3. Every value below is SUPPLIED evidence with a")
+    write("   provenance label; the adjudicator reads no clock and keeps no counter.")
+    write("")
+    request = ActionRequest(
+        principal="agent:invoice-assistant",
+        tool="crm.update_record",
+        operation="update",
+        resource="customer:456",
+        arguments={"status": "resolved", "notes": "invoice 456 paid"},
+        nonce="n-002",
+    )
+    write("   proposed: crm.update_record(customer:456, status=resolved, notes=...)")
+    write("")
+    cases = (
+        ("at 2026-08-26T21:00:00Z, label bound", "2026-08-26T21:00:00+00:00", True),
+        ("at 2026-08-26T19:00:00Z, label NOT bound", "2026-08-26T19:00:00+00:00", False),
+        ("at 2026-08-26T19:00:00Z, label bound", "2026-08-26T19:00:00+00:00", True),
+    )
+    for label, now, bound in cases:
+        decision = certify_authorization(request, _authority_context(now, bound))
+        outcome = "ALLOWED" if decision.authorized else "REFUSED"
+        write(f"   {label:<44}{decision.verdict.decision.value:<6}-> {outcome}")
+        for failure in decision.verdict.failures:
+            write(f"     {failure.check}: {failure.message}")
+        if decision.authorized:
+            receipt = DecisionReceipt.build(decision, policy_version="crm-writes-v3")
+            passed = sum(1 for f in decision.findings if f.passed)
+            write(f"     receipt digest sha256:{receipt.digest[:16]}... over {passed} passing")
+            write("     findings; digest-bound, not signed, not an identity assertion")
+        write("")
+    write("   Nothing about the call changed between the refusals and the allow; the")
+    write("   authority did. A runtime label is a claim, so an unbound label refuses.")
+    write("   Deny-lists cannot see this; supplied authority evidence can.")
+
+
 #: Ordered: name -> (one-line summary, scenario function). The order is the narrative.
 _SCENARIOS: Tuple[Tuple[str, str, Callable[[Writer], None]], ...] = (
     (
@@ -197,6 +274,11 @@ _SCENARIOS: Tuple[Tuple[str, str, Callable[[Writer], None]], ...] = (
         "a pinned MCP catalog refuses a post-approval rug pull",
         _scenario_mcp_drift,
     ),
+    (
+        "expired-authorization",
+        "a valid call is refused because its delegated authority expired",
+        _scenario_expired_authorization,
+    ),
 )
 
 SCENARIO_NAMES: Tuple[str, ...] = tuple(name for name, _, _ in _SCENARIOS)
@@ -204,7 +286,7 @@ SCENARIO_NAMES: Tuple[str, ...] = tuple(name for name, _, _ in _SCENARIOS)
 
 def list_scenarios(write: Writer) -> int:
     """Print the scenario names and what each one demonstrates."""
-    write("recusal demo scenarios (default: all three, in order)")
+    write("recusal demo scenarios (default: all four, in order)")
     write("")
     for name, summary, _ in _SCENARIOS:
         write(f"  {name:<20}{summary}")
@@ -214,7 +296,7 @@ def list_scenarios(write: Writer) -> int:
 
 
 def run_demo(write: Writer, scenario: str = "all") -> int:
-    """Run one scenario or all three, writing lines through ``write``.
+    """Run one scenario or all four, writing lines through ``write``.
 
     Returns 0 when the demo ran. That 0 is not a verdict: the refusals are in the
     output, and ``recusal verdict`` is the command whose exit code adjudicates.
