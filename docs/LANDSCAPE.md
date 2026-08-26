@@ -1,17 +1,20 @@
 # Landscape, is anyone else doing this?
 
 *A dated capability comparison. Every capability and scope statement below was taken
-from the linked project documentation as reviewed in June 2026; re-check the current
-documentation before citing, capabilities change. This page maps layers and documented
-scope differences; it is not a ranking, and it makes no market-exhaustiveness claim.*
+from the linked project documentation as reviewed in June 2026, with the closest peers
+re-read on 2026-08-26; re-check the current documentation before citing, capabilities
+change. This page maps layers and documented scope differences; it is not a ranking, and
+it makes no market-exhaustiveness claim.*
 
 Short answer: the category is active and filling fast. Most adjacent tools cover a
 *different* layer (orchestration, content filtering, evaluation, observability), and
-documented peers exist (AEGIS, Microsoft's toolkit). No equivalent small
-zero-dependency library with this exact contract was identified in the documents
-reviewed as of June 2026 (a documentation review of the projects listed here, not an
-exhaustive market search), and Recusal is new and unproven while several of these are
-mature, widely-used projects.
+documented peers exist (AEGIS, Microsoft's toolkit, and the authorization-and-receipt
+projects listed under the closest peers). No equivalent small zero-dependency Python
+library with this exact contract was identified in the documents reviewed (a
+documentation review of the projects listed here, not an exhaustive market search), and
+Recusal is new and unproven while several of these are mature, widely-used projects.
+Deterministic pre-execution refusal is now shared ground, not a differentiator; the
+documented difference is scope and size, and that is the only claim this page makes.
 
 ## The category is real (2026 validation)
 
@@ -35,7 +38,7 @@ of others.
 |---|---|
 | [AutoGen](https://github.com/microsoft/autogen) | "critic" patterns are in-process and LLM-graded, not a separate deterministic authority. |
 | [CrewAI](https://github.com/crewAIInc/crewAI) | `max_iter` bounds loops; no deterministic verifier or failure-router. |
-| [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) | `max_turns` plus LLM/heuristic "guardrails," not a separate authority. |
+| [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) | `max_turns`, plus (re-read 2026-08-26) native tool guardrails and `needs_approval` gates. Per its [guardrails page](https://openai.github.io/openai-agents-python/guardrails/), "Tool guardrails apply only to function tools created with `function_tool`"; hosted tools (web search, file search, hosted MCP, code interpreter, image generation) and built-in execution tools (computer, shell, apply_patch, local shell) "do not use this guardrail pipeline", while approvals do reach shell, apply_patch and hosted MCP. An in-framework seam, not a separate authority. |
 | [Pydantic AI](https://github.com/pydantic/pydantic-ai) | output schema *validation*, not evidence adjudication. |
 | [LangGraph](https://github.com/langchain-ai/langgraph) | closest in spirit (retry/rollback nodes), but governance is hand-rolled, not packaged. |
 
@@ -53,7 +56,9 @@ of others.
 - [Langfuse](https://github.com/langfuse/langfuse), Arize Phoenix, AgentOps, Helicone. Passive telemetry.
 
 ### The closest documented peers
-- **[Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit)**: a multi-package, multi-language platform (Agent OS / Mesh / Runtime / SRE / Compliance / Marketplace / Lightning / Agent Control Specification; Python/TS/Rust/Go/.NET). It covers **#3** (circuit breakers, SLOs, cascade handling) and partial compliance grading, but per its own docs does **not** package (1) an adjudicator that can *refuse to certify*, (2) deterministic failure-classification→remediator routing, or (4) a constitutional separation-of-powers model. It is OWASP/policy-engine framed (Cedar/OPA Rego) and platform-scale, the opposite of a zero-dependency kernel. It is itself deterministic, so that is shared ground, not a difference.
+- **[Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit)** (re-read 2026-08-26; MIT; v4.1.0 on 2026-06-09; its [releases page](https://github.com/microsoft/agent-governance-toolkit/releases) states "Public Preview ... may have breaking changes before GA"): a multi-package, multi-language platform (Agent OS / Mesh / Runtime / SRE / Compliance / Marketplace / Lightning / Agent Hypervisor / Agent Control Specification; Python/TS/Rust/Go/.NET). Its Agent OS kernel (`pip install agent-os-kernel`) **does** package a pre-execution refuser: per its [documentation](https://microsoft.github.io/agent-governance-toolkit/packages/agent-os/), "Actions are intercepted and validated before execution, making enforcement deterministic", with a verdict object and actions reported as blocked, delegation with trust-ceiling propagation, and a hash-chained ("Merkle") audit ledger. An earlier revision of this page said it did not package a refusing adjudicator; that was wrong at least as of this re-read and is withdrawn. What it does not package, per the same docs, is (2) deterministic failure-classification to remediator routing or (4) a separation-of-powers model, and its stateless API is "zero dependencies beyond Pydantic" where Recusal's kernel has none. It is OWASP/policy-engine framed and platform-scale, the opposite of a small kernel; deterministic refusal is shared ground.
+- **[Agent Passport System](https://github.com/aeoess/agent-passport-system)** (read 2026-08-26; Apache-2.0; TypeScript reference with Python and Go): "Cryptographic identity, scoped delegation that narrows per hop, gateway enforcement, signed receipts for every action", with "a 3-signature action chain: agent signs intent, policy engine signs evaluation, agent signs execution receipt" and "Sub-delegation can only reduce scope." It is the closest documented peer for **authorization evidence and decision receipts**. Recusal does not implement identity, key management, or delegation issuance; it adjudicates evidence an adopter supplies and binds the decision to a digest, not a signature.
+- **[Dogwood](https://github.com/dogwood-policy/dogwood)** (read 2026-08-26; Apache-2.0; Rust): "Reference parser and interpreter for the Dogwood policy language", Cedar extended with temporal conditions ("since, formerly, once") and aggregations over an agent's recent event history; its README states it is "NOT intended for production use". A policy language for sequences of tool calls, with no envelope or receipt format of its own.
 
 ### Direct peers, the lane is filling
 - **AEGIS** ([github](https://github.com/Justin0504/Aegis)): an OSS agent-firewall whose documentation describes pre-execution policy enforcement (YAML/AJV DSL), deterministic blocking, hash-chained + Merkle audit, a kill switch, and Claude Code + MCP adapters. Recusal does **not** compete on feature count; the documented difference in scope is Recusal's small zero-dependency evidence-to-verdict contract and independent-refusal framing. Verify AEGIS's current capabilities from its own documentation before comparing.
@@ -75,7 +80,9 @@ widely used.
 | Guardrails | filter input/output content | judges the work product or action, not the text |
 | Eval libraries | score offline, often LLM-as-judge | decides in the live action path, deterministically |
 | Observability | record what happened | can refuse before the action runs |
-| MS Toolkit | enterprise governance platform | a small zero-dependency kernel, not a platform |
+| MS Toolkit | enterprise governance platform, deterministic pre-execution refusal included | a small zero-dependency kernel, not a platform; refusal itself is shared ground |
+| Agent Passport System | signed identity, narrowing delegation, signed receipts | adjudicates supplied authority evidence; digest-bound receipt, no identity or keys |
+| Dogwood | Cedar-family policy language with temporal conditions | evidence-to-verdict contract, not a policy language |
 | Anthropic auto mode | same-family safety classifier | no model in the decision path |
 | AEGIS | agent firewall: enforce + audit (per its documentation) | a documented peer; Recusal's difference is the small deterministic evidence-to-verdict contract, not feature parity |
 
