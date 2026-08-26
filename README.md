@@ -64,7 +64,9 @@ verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
   as Claude Code's `agent_id` passes only through a trust rule you supply), it does not
   issue delegation, it reads no clock and keeps no counter (those are supplied evidence,
   so it verifies budgets, it does not atomically enforce them), and the receipt is a
-  digest, not a signature. `recusal demo --scenario expired-authorization` shows it.
+  digest, not a signature. Also not in 0.9.0, so it is not inferred: OAuth, delegation
+  chain validation, the hook's `updatedInput` and `escalate` decisions, and any
+  non-Claude adapter. `recusal demo --scenario expired-authorization` shows it.
 
 The same normalized evidence and policy inputs, under the same recusal version, produce
 the same verdict, including the "no".
