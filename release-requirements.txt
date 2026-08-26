@@ -4,7 +4,7 @@
 #
 # Environment: the release runner exactly - ubuntu-latest, CPython 3.12
 # (linux/x86_64). Regenerate deliberately for any other environment.
-# Roots: build==1.5.1, twine==6.2.0, hatchling==1.27.0 (hatchling matches
+# Roots: build==1.5.0, twine==6.2.0, hatchling==1.27.0 (hatchling matches
 # pyproject's [build-system] requires; the release builds with --no-isolation
 # from THIS reviewed environment, so no unpinned PEP 517 resolution occurs).
 # Each pin lists the sha256 of every distribution file PyPI serves for that
@@ -13,9 +13,13 @@
 # Install: python -m pip install --require-hashes -r release-requirements.txt
 # Regenerate + review: see the release workflow comments.
 
-build==1.5.1 \
-    --hash=sha256:94e17f1db803ab22f46049376c44c8437c52090f0dfdf1adc43df56542d644fb \
-    --hash=sha256:f1a58fe2e5af5b0238a07b9e70207492c79ddebbdb1ad954fc86d62a56be3e0d
+# build 1.5.1 was yanked on PyPI after the 0.8.0 release ("Considers breaking changes,
+# will discuss re-releasing as a new major version"); 1.5.0 is the current un-yanked
+# release. An exact pin still installs a yanked file, so this line is corrected
+# deliberately rather than left to pip's warning. Relocked 2026-08-26.
+build==1.5.0 \
+    --hash=sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f \
+    --hash=sha256:302c22c3ba2a0fd5f3911918651341ebb3896176cbdec15bd421f80b1afc7647
 certifi==2026.6.17 \
     --hash=sha256:024c88eeec92ca068db80f02b8b07c9cef7b9fe261d1d535abfd5abd6f6af432 \
     --hash=sha256:2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db
