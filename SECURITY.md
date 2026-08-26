@@ -96,6 +96,21 @@ any public disclosure.
   reusable builder workflow, Sigstore signature bundles, and PyPI's own PEP 740 attestation.
   [`docs/VERIFY.md`](docs/VERIFY.md) is the procedure, with a negative control for each check
   and an explicit statement of what none of it establishes.
+- **Authorization checks verify supplied evidence; they do not own state.** (0.9.0,
+  `recusal.authorization`.) Three limits, stated so nobody infers more: (1) a runtime label
+  is a claim, not an identity. The Claude Code hook records `agent_id`, `agent_type` and
+  `permission_mode` from the event as `runtime_*` keys with provenance
+  `claude_pretooluse_event`, outside the control identity, and the principal dimension
+  passes only through a trust rule you supply mapping a label to a configured principal;
+  with no rule it refuses. (2) Expiry, budget and replay compare against the `now`,
+  `calls_so_far` and `used_nonces` you hand in. Nothing here reserves a slot or consumes
+  a nonce, so two callers that both observe `calls_so_far=2` under `max_calls=3` both
+  pass, both execute, and the final count is 4; trustworthy clocks and atomic state
+  transitions stay yours, and a test pins that limit so the docs cannot drift past it.
+  (3) A `DecisionReceipt` is a SHA-256 digest over canonical bytes: tamper-evident when
+  its digest or audit head is anchored somewhere the writer cannot reach, not an identity
+  assertion, and not authenticated by its digest alone. No key, no signature, by design,
+  until a real deployment needs portable verification across a trust boundary.
 - **Two validations that remain open.** Both need an environment this project's maintainer
   does not have, and both are preconditions for 1.0 in [`STABILITY.md`](STABILITY.md).
   (1) **The hook-timeout authorization outcome**: when Claude Code cancels a `PreToolUse`

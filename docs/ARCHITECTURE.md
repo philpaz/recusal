@@ -40,6 +40,12 @@ behavior-preserving internal refactor must retain:
   deliberately not a verdict: `recusal demo` exits 0 when it ran, and adjudication belongs
   to `recusal verdict`;
 - Claude Code hook defer/deny behavior and audit control identity;
+- the `recusal.authorization` surface (0.9.0): the `ActionRequest`, `AuthorizationContext`,
+  `Constraints`, `Supplied` and `DecisionReceipt` shapes, the nine dimension names and
+  their `authorization.<dimension>` check names in order, the rule that a required
+  dimension with no finding refuses, the receipt's canonical body and digest, and the
+  `runtime` context keys the hook records with provenance `claude_pretooluse_event`
+  outside the control identity;
 - the version lock among the Python package, Claude plugin, marketplace, examples, and
   release metadata.
 

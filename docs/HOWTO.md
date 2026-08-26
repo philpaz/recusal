@@ -271,6 +271,70 @@ Default classes (order is precedence, security-critical first): `policy_violatio
 Unmatched failures fall back to
 `ask-human`, it never guesses. See `examples/classify_demo.py`.
 
+## 8. Authorize one exact action (0.9.0)
+
+The deny-list and the allowlist decide whether a call *looks* acceptable. This decides
+whether the agent holds authority for *this* call: bound principal, active subject,
+granted tool and operation, argument constraints, expiry, call budget, replay, and the
+policy and manifest the grant was approved under. Every input is evidence you supply,
+each with a provenance label; the adjudicator reads no clock and keeps no counter.
+
+```python
+from recusal import (
+    ActionRequest,
+    AuthorizationContext,
+    Constraints,
+    DecisionReceipt,
+    Supplied,
+    certify_authorization,
+)
+
+request = ActionRequest(
+    principal="agent:invoice-assistant",  # a label; bound to a principal only below
+    tool="crm.update_record",
+    operation="update",
+    resource="customer:456",
+    arguments={"status": "resolved", "notes": "invoice 456 paid"},
+    nonce="n-002",
+)
+
+context = AuthorizationContext(
+    trusted_principals=Supplied({"agent:invoice-assistant": "svc:invoice"}, "operator_config"),
+    active_subject=Supplied("customer:456", "session_store"),
+    allowed_operations=Supplied({"crm.update_record": ["update"]}, "delegation_grant"),
+    constraints=Supplied(
+        Constraints(
+            fields=("status", "notes"), max_calls=3, expires_at="2026-08-26T20:00:00+00:00"
+        ),
+        "delegation_grant",
+    ),
+    now=Supplied("2026-08-26T19:00:00+00:00", "adopter_clock"),  # supplied, never read
+    calls_so_far=Supplied(1, "adopter_counter"),  # supplied, never kept
+    used_nonces=Supplied(["n-001"], "adopter_nonce_store"),
+    approval=Supplied({"policy_version": "crm-writes-v3"}, "delegation_grant"),
+    policy_version=Supplied("crm-writes-v3", "operator_config"),
+)
+
+decision = certify_authorization(request, context)
+if not decision.authorized:
+    raise PermissionError(decision.verdict.reasons())
+receipt = DecisionReceipt.build(decision, context=context, policy_version="crm-writes-v3")
+print(receipt.digest)  # the same evidence yields the same digest, every time
+```
+
+Three things to hold onto. **A required dimension with no evidence refuses**: pass nothing
+for `active_subject` and `authorization.subject` fails CRITICAL; there is no way to pass
+by omission, and an unrelated passing finding cannot stand in for a missing one
+(`certify_dimensions` synthesizes `authorization.dimension_missing`). **A runtime label
+is a claim.** The Claude Code hook records the event's `agent_id`, `agent_type` and
+`permission_mode` as `runtime_*` keys with provenance `claude_pretooluse_event`; the
+principal dimension passes only through the `trusted_principals` rule you supply. **State
+is yours.** Expiry, budget and replay verify the `now`, `calls_so_far` and `used_nonces`
+you hand in; nothing here reserves a slot or consumes a nonce, so make the counter update
+atomic in your own store before you execute. Narrow `required=` only as an explicit
+choice; the default requires every dimension. `recusal demo --scenario
+expired-authorization` runs this exact shape offline.
+
 ## Patterns & choices
 
 - **Where evidence comes from is yours.** Recusal doesn't gather evidence, it adjudicates it. Preconditions, dry-runs, policy checks, an allowlist, the output of your existing validators (Great Expectations, pytest, a linter): anything that produces `Finding`s.

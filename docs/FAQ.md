@@ -183,6 +183,22 @@ No. The Claude adapters are conveniences; the enforcement core (`compute_verdict
 agent loop whose only import is `recusal`, no Claude and no SDK. The same `compute_verdict`
 seam drops into LangGraph, the OpenAI Agents SDK, or a homegrown runtime unchanged.
 
+## Frameworks now ship tool guardrails. What is left for Recusal?
+
+Deterministic pre-execution refusal is shared ground now: Microsoft's Agent Governance
+Toolkit, the OpenAI Agents SDK's tool guardrails and approvals, and Claude Code's own
+permission rules all intercept a call before it runs ([`LANDSCAPE.md`](LANDSCAPE.md)
+keeps the dated comparison). What those seams decide on is the call. `recusal.authorization`
+(0.9.0) decides on the *authority* behind the call: whether the runtime label is bound to a
+configured principal, whether the target is the subject this session is about, whether the
+tool, operation and arguments are inside the grant, whether the grant has expired or its
+budget is spent, whether the nonce was used, and whether the policy and MCP manifest are
+the ones the grant was approved under. Each is one named finding, a missing one refuses,
+and the decision can be bound into a digest-bound receipt. It does that as a small,
+standard-library module that reads no clock and keeps no state, so it drops into any of
+those seams rather than replacing them. It does not establish identity, issue delegation,
+or sign anything; [`../SECURITY.md`](../SECURITY.md) states each of those limits.
+
 ## Why the name "Recusal"?
 
 A judge **recuses** themselves from a case they can't impartially decide. The same

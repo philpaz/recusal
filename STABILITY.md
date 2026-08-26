@@ -38,6 +38,11 @@ attached to it.
    the audit control identity is owned by the implementation, never by the caller.
 6. **The version lock** among the Python package, the plugin, the marketplace entry, the
    vendored runtime, and the release metadata.
+7. **The authorization surface**, since 0.9.0: the request, context, constraints and
+   receipt shapes, the nine dimension names and their check names in order, the rule
+   that a required dimension with no finding refuses, and the receipt digest. It joined
+   the perimeter as a MINOR addition with the kernel byte-identical to 0.8.0 (pinned by
+   test), and it is held to the same freeze from here on.
 
 ## What a version number promises
 

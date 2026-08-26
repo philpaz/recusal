@@ -4,12 +4,62 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] - Unreleased
 
-Corrections on `main` after 0.8.0. No public surface changed; these ride with the next
-release under the cadence in `STABILITY.md`.
+Authorization release. Recusal is a deterministic authorization adjudicator for agent
+actions: it verifies each proposed action against explicit, provenance-bearing authority
+evidence and can refuse before execution. A deny-list asks whether a command looks
+dangerous; this release asks where the authority for this exact call came from, what it
+permits, and whether the call is still inside it. The kernel is byte-identical to 0.8.0
+(pinned by test), the manifest schema is still v8, and nothing existing behaves
+differently, so this is a MINOR release under `STABILITY.md`.
+
+### Added
+- **`recusal.authorization`, one sibling module.** Immutable `ActionRequest` (principal
+  label, tool, operation, resource, arguments with a canonical fingerprint, nonce),
+  `AuthorizationContext` (every item a `Supplied(value, provenance)`: trust rule, active
+  subject, allowed operations, `Constraints`, `now`, `calls_so_far`, `used_nonces`,
+  approval, policy version, manifest fingerprint), and `Constraints` (fields, call
+  budget, expiry, one value bound). Nine pure checks, one named finding each in a fixed
+  order: `authorization.principal`, `.subject`, `.tool_operation`, `.arguments`,
+  `.expiry`, `.budget`, `.replay`, `.policy_binding`, `.manifest_binding`. Absent
+  evidence on any dimension refuses; it never passes by omission.
+- **The composition invariant.** `certify_dimensions` requires one named finding per
+  required dimension and synthesizes a failed CRITICAL
+  `authorization.dimension_missing` for each absent one before folding through
+  `certify_evidence`, so an unrelated passing finding cannot certify a request that
+  lacks principal or subject evidence (a test demonstrates the hazard and the fix).
+  `certify_authorization` runs the checks and applies the invariant; `required=`
+  defaults to every dimension and narrowing it is an explicit claim at the call site.
+- **A runtime label is not an identity.** The principal dimension passes only through an
+  adopter-supplied trust rule mapping a runtime label to a configured principal; with no
+  rule it refuses. The Claude Code hook now records `agent_id`, `agent_type` and
+  `permission_mode` from the `PreToolUse` event as `runtime_agent_id`,
+  `runtime_agent_type`, `runtime_permission_mode` with provenance
+  `claude_pretooluse_event`, in a `runtime` key outside the control identity; an event
+  with none of them records no key. Measured on Claude Code 2.1.246 before it was
+  written: a main session carries `permission_mode` only, a subagent carries all three.
+- **`DecisionReceipt`.** Canonical JSON over the action and argument fingerprints, the
+  required dimensions, every finding (passing ones included), the decision, the policy
+  version and manifest fingerprint, evidence provenance, and the audit `seq` and head
+  when an entry is supplied; `digest` is SHA-256 over that body, `digest_matches()`
+  detects a changed byte. No timestamp unless supplied. Digest-bound, not signed.
+- **`recusal demo --scenario expired-authorization`**: the right tool with valid
+  arguments refused at 21:00 because the grant expired at 20:00, refused again at 19:00
+  because its label is bound to no principal, then allowed at 19:00 with a receipt.
+  Nothing about the call changed; the authority did.
+- 44 tests, including the kernel-freeze pin (`recusal/evidence.py` SHA-256 at the v0.8.0
+  tag), the budget race demonstrated as a passing pair, and a source lock that the
+  module reads no clock and imports no signing primitive.
+
+### Not in this release, stated so it is not inferred
+An identity provider, OAuth, delegation issuance or chain validation, signed receipts,
+atomic quota enforcement, `updatedInput` or `escalate` hook decisions, and any
+non-Claude adapter. Each waits for a requirement that comes from a real deployment.
 
 ### Changed
+- The version lock moves to 0.9.0 across the package, plugin, marketplace, vendored
+  runtime, and action example.
 - **Release lock: `build` relocked from 1.5.1 to 1.5.0.** PyPI yanked `build` 1.5.1 after
   0.8.0 shipped ("Considers breaking changes, will discuss re-releasing as a new major
   version"). An exact `==` pin still installs a yanked file, so the release pipeline kept

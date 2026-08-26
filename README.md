@@ -51,6 +51,20 @@ verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
   an append-only, hash-chained log with the proposed input bound by SHA-256 fingerprint:
   deterministic, replayable, stdlib-only, shaped for OWASP Agentic logging and EU AI Act
   Article 12 record-keeping.
+- **Authorization for this exact action** (0.9.0). Recusal is a deterministic
+  authorization adjudicator for agent actions: it verifies each proposed action against
+  explicit, provenance-bearing authority evidence and can refuse before execution. A
+  deny-list asks whether a command looks dangerous; `recusal.authorization` asks where
+  the authority for this call came from, what it permits, and whether the call is still
+  inside it: the bound principal, the active subject, the granted tool and operation,
+  the argument constraints, expiry, call budget, replay, and the policy and MCP manifest
+  the grant was approved under. Each dimension is one named finding; a required
+  dimension with no evidence refuses, and the decision can be bound into a digest-bound
+  `DecisionReceipt`. Stated exactly: it does not establish identity (a runtime label such
+  as Claude Code's `agent_id` passes only through a trust rule you supply), it does not
+  issue delegation, it reads no clock and keeps no counter (those are supplied evidence,
+  so it verifies budgets, it does not atomically enforce them), and the receipt is a
+  digest, not a signature. `recusal demo --scenario expired-authorization` shows it.
 
 The same normalized evidence and policy inputs, under the same recusal version, produce
 the same verdict, including the "no".
@@ -361,7 +375,7 @@ the gate refuses, the audit log records, the classifier routes.
 ```
   data / a proposed agent action / a tool call
           │
-     [ checks ]            emit Findings               (recusal.checks, or your own)
+     [ checks ]            emit Findings               (recusal.checks, recusal.authorization, or your own)
           │
    compute_verdict()       fold findings → one Verdict (PASS / RETRY / FAIL)
           │
@@ -377,6 +391,7 @@ the gate refuses, the audit log records, the classifier routes.
 |---|---|
 | `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`, and the two named empty-evidence intents `evaluate_policy` / `certify_evidence` |
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
+| `recusal.authorization` | authorization for one exact action: `ActionRequest`, `AuthorizationContext` (supplied evidence, each item with provenance), `Constraints`, nine named dimension checks, `certify_authorization` (a required dimension with no finding refuses), and the digest-bound `DecisionReceipt`. Reads no clock, keeps no state, signs nothing |
 | `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
 | `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
 | `recusal.mcp` · `recusal.mcp_fetch` | MCP tool and server-instruction integrity: pin supported source templates, observed server instructions, and complete tool declarations; refuse represented drift (`diff_observation`); enforce approved runtime tool names at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process). Full boundary statement: [`docs/MCP.md`](docs/MCP.md) |
@@ -513,7 +528,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.8.0   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.9.0   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
