@@ -96,6 +96,18 @@ any public disclosure.
   reusable builder workflow, Sigstore signature bundles, and PyPI's own PEP 740 attestation.
   [`docs/VERIFY.md`](docs/VERIFY.md) is the procedure, with a negative control for each check
   and an explicit statement of what none of it establishes.
+- **Two validations that remain open.** Both need an environment this project's maintainer
+  does not have, and both are preconditions for 1.0 in [`STABILITY.md`](STABILITY.md).
+  (1) **The hook-timeout authorization outcome**: when Claude Code cancels a `PreToolUse`
+  hook at the platform timeout, whether the pending tool call is then refused or allowed has
+  NOT been independently established here; do not describe hook timeout as fail-closed until
+  you have tested it in your own deployment, and a shorter timeout widens the window rather
+  than closing it (see [`docs/HOWTO.md`](docs/HOWTO.md)). (2) **The enterprise
+  managed-settings patterns**: managed-hook distribution, a force-enabled managed plugin,
+  native-deny versus hook-deny precedence in practice, and Claude sandboxing plus the hook on
+  macOS/Linux ship as written procedures that have never been executed anywhere. A report
+  from a real deployment, with the OS, Claude Code version, configured timeout, and the
+  verbatim transcript, is the contribution that closes either one.
 
 ## Attack surfaces, and how this is architected for them
 

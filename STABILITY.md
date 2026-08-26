@@ -108,7 +108,8 @@ be checked rather than announced:
   `PreToolUse` hook and MCP pinning;
 - the two environment-bound validations closed by someone's real environment: the hook
   timeout authorization outcome, and the enterprise managed-settings patterns, both named as
-  open in [`SECURITY.md`](SECURITY.md) and the documentation;
+  open in [`SECURITY.md`](SECURITY.md) ("Two validations that remain open") and in
+  [`docs/HOWTO.md`](docs/HOWTO.md);
 - two consecutive minor releases with no breaking change needed.
 
 Until then the number stays `0.x` and the classifier stays Beta. A project whose entire
