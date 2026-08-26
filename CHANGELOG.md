@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Corrections on `main` after 0.8.0. No public surface changed; these ride with the next
+release under the cadence in `STABILITY.md`.
+
+### Changed
+- **Release lock: `build` relocked from 1.5.1 to 1.5.0.** PyPI yanked `build` 1.5.1 after
+  0.8.0 shipped ("Considers breaking changes, will discuss re-releasing as a new major
+  version"). An exact `==` pin still installs a yanked file, so the release pipeline kept
+  passing with only a warning; the pin is corrected deliberately and re-verified (hash
+  install, `--no-isolation` build, `twine check`).
+- **`docs/LANDSCAPE.md` re-read 2026-08-26.** The page said Microsoft's Agent Governance
+  Toolkit does not package a refusing adjudicator; its own documentation says actions are
+  intercepted and validated before execution with deterministic enforcement, so that
+  sentence is withdrawn in place. Agent Passport System and Dogwood added from their
+  READMEs; the OpenAI Agents SDK row now states its guardrail and approval boundaries
+  from its guardrails page. Deterministic pre-execution refusal is stated as shared
+  ground, not a differentiator.
+
+### Fixed
+- **`SECURITY.md` now names the two open validations** (the hook-timeout authorization
+  outcome and the enterprise managed-settings patterns) that `STABILITY.md`'s 1.0
+  preconditions said it named.
+
 ## [0.8.0] - 2026-07-27
 
 Adoption release. The kernel, the manifest schema (still v8), the public APIs, and the
