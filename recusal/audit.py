@@ -57,9 +57,15 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequ
 from .evidence import Verdict
 
 if sys.platform == "win32":
-    import msvcrt
+    import msvcrt as _msvcrt
+
+    msvcrt: Any = _msvcrt
 else:
     import fcntl
+
+    # Present on every platform so the Windows lock helper type-checks everywhere and
+    # tests can substitute a fake; it is only ever called on Windows.
+    msvcrt: Any = None
 
 GENESIS = "0" * 64  # the prev_hash of the first entry
 
