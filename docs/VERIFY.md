@@ -142,14 +142,16 @@ issue and it will be attached to releases going forward.
 
 ## Evidence
 
-Every command on this page was run against **v0.9.0** on 2026-08-27, by hand and then by
+Every command on this page was run against **v0.9.0** on 2026-08-27 by
 [`verify-release.yml`](../.github/workflows/verify-release.yml)
 ([run 33031105701](https://github.com/philpaz/recusal/actions/runs/33031105701)), with
 both negative controls confirmed failing: a signer workflow that never built the
-artifact, and a certificate identity that never signed it. The published wheel and sdist
-on PyPI are byte-identical to the GitHub Release assets, and both carry PEP 740
-provenance naming this repository and `release.yml`. The same procedure first ran against
-v0.9.0 on 2026-07-27
+artifact, and a certificate identity that never signed it. Sections 1 and 3 were also
+run by hand the same day from the maintainer's machine: the build-provenance check and
+its negative control, the PyPI byte comparison, and the PEP 740 provenance query. The
+published wheel and sdist on PyPI are byte-identical to the GitHub Release assets, and
+both carry PEP 740 provenance naming this repository and `release.yml`. The same
+procedure first ran against v0.8.0 on 2026-07-27
 ([run 30306481372](https://github.com/philpaz/recusal/actions/runs/30306481372)).
 
 Re-run it yourself on any published version: Actions, "Verify a published release", and
