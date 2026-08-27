@@ -318,7 +318,7 @@ context = AuthorizationContext(
 decision = certify_authorization(request, context)
 if not decision.authorized:
     raise PermissionError(decision.verdict.reasons())
-receipt = DecisionReceipt.build(decision, context=context, policy_version="crm-writes-v3")
+receipt = DecisionReceipt.build(decision)  # derived from the decision, nothing else
 print(receipt.digest)  # the same evidence yields the same digest, every time
 ```
 
@@ -331,9 +331,13 @@ is a claim.** The Claude Code hook records the event's `agent_id`, `agent_type` 
 principal dimension passes only through the `trusted_principals` rule you supply. **State
 is yours.** Expiry, budget and replay verify the `now`, `calls_so_far` and `used_nonces`
 you hand in; nothing here reserves a slot or consumes a nonce, so make the counter update
-atomic in your own store before you execute. Narrow `required=` only as an explicit
-choice; the default requires every dimension. `recusal demo --scenario
-expired-authorization` runs this exact shape offline.
+atomic in your own store before you execute. Every built-in dimension is always required
+and cannot be switched off; `additional_required=` adds custom dimensions you evidence
+with your own `authorization.<name>` findings (a custom finding may not reuse a built-in
+name). **Malformed evidence is rejected, not normalized**: a non-string key, a set, an
+arbitrary object, NaN or infinity raises at construction, and a value bound compares
+JSON numbers only, so `"100"`, `True` and `"nan"` refuse rather than coerce.
+`recusal demo --scenario expired-authorization` runs this exact shape offline.
 
 ## Patterns & choices
 

@@ -247,7 +247,7 @@ def _scenario_expired_authorization(write: Writer) -> None:
         for failure in decision.verdict.failures:
             write(f"     {failure.check}: {failure.message}")
         if decision.authorized:
-            receipt = DecisionReceipt.build(decision, policy_version="crm-writes-v3")
+            receipt = DecisionReceipt.build(decision)
             passed = sum(1 for f in decision.findings if f.passed)
             write(f"     receipt digest sha256:{receipt.digest[:16]}... over {passed} passing")
             write("     findings; digest-bound, not signed, not an identity assertion")
