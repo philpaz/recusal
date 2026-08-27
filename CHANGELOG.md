@@ -29,8 +29,22 @@ differently, so this is a MINOR release under `STABILITY.md`.
   `authorization.dimension_missing` for each absent one before folding through
   `certify_evidence`, so an unrelated passing finding cannot certify a request that
   lacks principal or subject evidence (a test demonstrates the hazard and the fix).
-  `certify_authorization` runs the checks and applies the invariant; `required=`
-  defaults to every dimension and narrowing it is an explicit claim at the call site.
+  `certify_authorization` runs the checks and applies the invariant. Every built-in
+  dimension is always required and cannot be disabled; `additional_required=` names
+  custom dimensions the adopter evidences with `authorization.<name>` findings, and a
+  custom finding that reuses a built-in name is refused rather than merged.
+- **Malformed evidence is rejected, never normalized.** Requests and supplied evidence
+  are held to a strict JSON domain at construction: object keys must be strings, leaves
+  are strings, booleans, finite numbers or null, containers are objects and arrays. Sets,
+  arbitrary objects, non-string keys (`{1: "a", "1": "b"}` no longer collapses to one
+  key), NaN and infinities raise `ValueError`, canonical JSON uses `allow_nan=False` and
+  no `default=`, so distinct supported values are not collapsed through lossy
+  normalization before hashing (collision resistance itself is SHA-256's). Numeric bounds
+  compare JSON numbers only: `"nan"`, `"100"`, `True` and `float("nan")` refuse the value
+  bound instead of walking through `float()`. `Constraints` validates its own shape
+  (integer budget, finite bound, unique nonempty fields); `ActionRequest.resource` and
+  `nonce` must be null or nonempty; `allowed_operations`, `used_nonces` and manifest
+  fingerprints (64 lowercase hex) are shape-checked in their checks.
 - **A runtime label is not an identity.** The principal dimension passes only through an
   adopter-supplied trust rule mapping a runtime label to a configured principal; with no
   rule it refuses. The Claude Code hook now records `agent_id`, `agent_type` and
@@ -40,10 +54,30 @@ differently, so this is a MINOR release under `STABILITY.md`.
   with none of them records no key. Measured on Claude Code 2.1.246 before it was
   written: a main session carries `permission_mode` only, a subagent carries all three.
 - **`DecisionReceipt`.** Canonical JSON over the action and argument fingerprints, the
-  required dimensions, every finding (passing ones included), the decision, the policy
-  version and manifest fingerprint, evidence provenance, and the audit `seq` and head
-  when an entry is supplied; `digest` is SHA-256 over that body, `digest_matches()`
-  detects a changed byte. No timestamp unless supplied. Digest-bound, not signed.
+  principal label and the configured principal it resolved to, the required dimensions,
+  every finding (passing ones included), the decision, the policy version and manifest
+  fingerprint, evidence provenance, and the audit `seq` and head when an entry is
+  supplied; `digest` is SHA-256 over that body. **Derived, not described**: everything
+  adjudicated comes from the `AuthorizationDecision`, which captures the final finding
+  set (synthesized `dimension_missing` findings included) and a snapshot of the evidence
+  provenance, policy version and manifest fingerprint inside `certify_authorization`;
+  `build` takes only the decision, an optional audit anchor and an optional timestamp,
+  so a receipt cannot be labeled with a policy or provenance the decision was not made
+  under. Strict in both directions: the body is frozen recursively and validated on
+  construction (every field present, no unknown field, `receipt_version` 1, 64-hex
+  fingerprints and heads, a non-boolean nonnegative `audit_seq`, finding contexts
+  validated recursively) and **reconciled with itself**: the findings are re-folded
+  through the kernel and must produce the recorded `decision` and `authorized`, every
+  built-in dimension must appear exactly once, and every custom required dimension must
+  be evidenced or explicitly declared missing. `from_json` refuses anything else,
+  `digest_matches()` returns False for malformed state rather than raising, and
+  `verify()` reports schema, consistency and digest problems together in the audit
+  verifier's shape. No timestamp unless supplied. Digest-bound, not signed.
+- **Strict canonicalization at every public entry point.** `canonical_json` and
+  `fingerprint` validate their input against the JSON domain before encoding (a
+  non-string key now raises instead of being stringified by `json.dumps`), and a
+  hand-built `FrozenMapping` is validated on construction. Canonicalization performs
+  no lossy normalization; digest collision resistance is inherited from SHA-256.
 - **`recusal demo --scenario expired-authorization`**: the right tool with valid
   arguments refused at 21:00 because the grant expired at 20:00, refused again at 19:00
   because its label is bound to no principal, then allowed at 19:00 with a receipt.
@@ -51,6 +85,24 @@ differently, so this is a MINOR release under `STABILITY.md`.
 - 44 tests, including the kernel-freeze pin (`recusal/evidence.py` SHA-256 at the v0.8.0
   tag), the budget race demonstrated as a passing pair, and a source lock that the
   module reads no clock and imports no signing primitive.
+
+- **Receipt metadata reconciles with the findings.** Every built-in finding records,
+  under `evidence`, the provenance of the context fields its dimension decides on
+  (`EVIDENCE_FIELDS`), and the policy and manifest findings always carry the current
+  values they compared against; `verify()` requires the receipt's `principal`,
+  `policy_version`, `manifest_fingerprint` and `evidence_provenance` to equal what its
+  own findings recorded, so relabeling any of them and recomputing the digest is
+  refused. Membership tests over parsed values are type-guarded, and malformed
+  findings passed to `certify_dimensions` or `certify_authorization` raise the
+  documented `ValueError`, never an incidental `TypeError`.
+
+### Fixed
+- **Windows audit lock no longer fails at a ten-second cliff.** `msvcrt.locking(LK_LOCK)`
+  retries ten times one second apart and then raises `PermissionError`; four concurrent
+  hook processes exhausted that once on a loaded CI runner (run 33018557987,
+  windows-latest, 2026-08-26). The lock now polls `LK_NBLCK` with a 5 ms sleep until a
+  60 s deadline and still fails closed (a raised `OSError`, so the hook denies) when the
+  deadline passes. Internal only; no public surface or record shape changed.
 
 ### Not in this release, stated so it is not inferred
 An identity provider, OAuth, delegation issuance or chain validation, signed receipts,

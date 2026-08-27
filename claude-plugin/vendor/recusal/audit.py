@@ -43,11 +43,13 @@ The record shape maps cleanly onto OWASP Agentic logging and EU AI Act Article 1
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import re
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple
@@ -60,6 +62,14 @@ else:
     import fcntl
 
 GENESIS = "0" * 64  # the prev_hash of the first entry
+
+#: How long a Windows writer keeps trying to acquire the inter-process lock before it
+#: gives up and the append fails (closed). ``msvcrt.locking(LK_LOCK)`` retries only ten
+#: times one second apart, which four writers on a slow runner can exhaust; a
+#: non-blocking attempt in a short-sleep loop keeps the same fail-closed outcome without
+#: the ten-second cliff.
+_LOCK_TIMEOUT_SECONDS = 60.0
+_LOCK_RETRY_SECONDS = 0.005
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -123,8 +133,7 @@ def _interprocess_lock(lock_path: str) -> Iterator[None]:
             if fh.tell() == 0:
                 fh.write(b"\0")
                 fh.flush()
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            _acquire_windows_lock(fh, lock_path)
             try:
                 yield
             finally:
@@ -136,6 +145,29 @@ def _interprocess_lock(lock_path: str) -> Iterator[None]:
                 yield
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_windows_lock(fh: Any, lock_path: str) -> None:
+    """Take the one-byte range lock with non-blocking attempts until the deadline.
+
+    Raises ``OSError`` when the deadline passes, so the caller's append fails closed
+    exactly as an unwritable log does; the lock is never silently skipped.
+    """
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+    while True:
+        fh.seek(0)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EDEADLK):
+                raise  # not contention (a bad descriptor, an unsupported handle): fail now
+            if time.monotonic() >= deadline:
+                raise OSError(
+                    f"could not acquire the audit lock {lock_path!r} within "
+                    f"{_LOCK_TIMEOUT_SECONDS:g}s ({exc}); refusing to append off the record"
+                ) from exc
+            time.sleep(_LOCK_RETRY_SECONDS)
 
 
 def _tail_state(path: str) -> Tuple[int, str]:
