@@ -56,11 +56,12 @@ wildcard-import behavior and requires a separately reviewed compatibility decisi
 
 ## Incremental MCP decomposition
 
-`recusal.mcp` has accumulated several cohesive responsibilities. Decomposition should be
-incremental, with the historical module remaining the public facade. The first candidate
-is declaration and server-instruction screening because it is pure and does not participate
-in manifest serialization, runtime authorization caching, process collection, or hook
-protocol handling.
+`recusal.mcp` has accumulated several cohesive responsibilities. Decomposition is
+incremental, with the historical module remaining the public facade. The first extraction
+is done (0.6.0): declaration and server-instruction screening lives in the private
+`recusal._mcp_screening`, chosen first because it is pure and does not participate in
+manifest serialization, runtime authorization caching, process collection, or hook
+protocol handling. `recusal.mcp` still exposes it.
 
 The safe sequence is:
 

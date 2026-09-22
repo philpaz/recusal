@@ -59,7 +59,9 @@ if verdict.refused or verdict.retryable:
 > from recusal.deny_list import deny_list_policy
 > from recusal.claude_code import run_pretooluse_hook
 >
-> run_pretooluse_hook(deny_list_policy())   # your gate's paths: protected_paths=(".mygate/",)
+> # protected_paths REPLACES the defaults: extend them, never substitute for them
+> # (from recusal.deny_list import DEFAULT_PROTECTED_PATHS)
+> run_pretooluse_hook(deny_list_policy())   # or protected_paths=DEFAULT_PROTECTED_PATHS + (".mygate/",)
 > ```
 
 ---

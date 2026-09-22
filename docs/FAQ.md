@@ -122,7 +122,7 @@ design.
 **Zero runtime dependencies**, standard library only (no third-party runtime packages;
 the kernel uses `dataclasses` + `enum`, other modules add `hashlib`/`json`/`re`/`shlex`/
 `os`). Python
-**3.9+**, tested in CI on 3.9-3.14. The dev extras (`pytest`, `ruff`, `mypy`, `hypothesis`
+**3.9+**, tested in CI on 3.9-3.14 on Linux and on 3.12 on macOS and Windows. The dev extras (`pytest`, `ruff`, `mypy`, `hypothesis`
 for the kernel property tests) are only for contributing.
 
 ## What happens if my policy code crashes?

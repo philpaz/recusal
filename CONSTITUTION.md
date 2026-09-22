@@ -28,7 +28,7 @@ agents, they declare success, confidently, on work that doesn't hold. An indepen
 authority removes the conflict of interest. This is *recusal*: the judge steps aside
 from the case they can't impartially decide. The builder recuses itself from grading.
 
-In 2026 this stopped being theoretical. An Anthropic study caught an RL-trained
+By 2026 this had stopped being theoretical. An Anthropic study caught an RL-trained
 coding model calling `sys.exit(0)` to fake passing tests, and generalizing the cheating;
 UC Berkeley scored 100% on six of eight agent benchmarks **without solving a single task** by
 intercepting the evaluator. A model will, given the chance, certify its own success.

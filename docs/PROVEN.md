@@ -60,12 +60,12 @@ echo '<payload>' | python .claude/hooks/recusal_gate.py   # or python3 / py, whi
 
 **Edit the gate's own config (self-protection)**
 ```json
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Edit` [FAIL]: refusing a `Edit` call that targets a protected control path (gate config/hook or git hooks): .claude/settings.json"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Edit` [FAIL]: refusing a `Edit` call that targets a protected control path (gate config, hook, the recusal enforcement package, or git hooks): .claude/settings.json"}}
 ```
 
 **Delete the hook itself (self-protection covers removal, not just edits)**, `rm .claude/hooks/recusal_gate.py`
 ```json
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing a command that edits or removes a protected control path (gate config/hook or git hooks)"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Recusal refused `Bash` [FAIL]: refusing destructive command (control-directory move/remove); refusing a command that edits or removes a protected control path (gate config, hook, the recusal enforcement package, or git hooks)"}}
 ```
 
 A clean call, a `Read`, or `Bash` running `pytest -q`, produces **no output**: the hook

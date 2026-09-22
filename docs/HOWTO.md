@@ -91,9 +91,12 @@ Rather than hand-roll one, use the hardened reference deny-list that governs thi
 
 ```python
 from recusal.claude_code import run_pretooluse_hook
-from recusal.deny_list import deny_list_policy
+from recusal.deny_list import DEFAULT_PROTECTED_PATHS, deny_list_policy
 
-run_pretooluse_hook(deny_list_policy())  # point it at your gate: protected_paths=(".mygate/",)
+# protected_paths REPLACES the defaults: add your gate's paths to them, never instead of them
+run_pretooluse_hook(
+    deny_list_policy()
+)  # or protected_paths=DEFAULT_PROTECTED_PATHS + (".mygate/",)
 ```
 
 `deny_list_policy` refuses destructive shell, writes to secret files, and edits *or

@@ -9,7 +9,8 @@ python examples/claude_refusal.py
 ```
 
 **Just want to see it refuse?** `recusal demo` ships inside the package and needs no clone:
-`pip install recusal && recusal demo` runs three of these narratives back to back. These
+`pip install recusal && recusal demo` runs four scenarios back to back, three of them
+short versions of these narratives. These
 files are the long form, annotated and adaptable; the shipped demo is the thirty-second one.
 
 ## Start here, see the refusal (offline, no key)

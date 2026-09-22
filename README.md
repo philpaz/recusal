@@ -9,7 +9,7 @@
 
 **Recusal is a deterministic governance gate for Claude and MCP tool calls: it pins the capabilities you approved, detects represented drift, and refuses unsafe, unapproved, or policy-violating actions *before* execution, with no model in the decision path.** A judge recuses themselves from a case they cannot impartially decide; the same principle governs autonomous agents: the thing that generates the work must never be the thing that certifies it.
 
-**Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and the Claude Agent SDK as a tool gate). The zero-dep core works in any agent loop.
+**Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and a Claude Messages API loop or Managed Agents as a tool gate). The zero-dep core works in any agent loop.
 
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -21,7 +21,7 @@
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="assets/demo-refusal.gif" width="880">
 </p>
-<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then <code>pip install recusal &amp;&amp; recusal demo</code>, no API key and no clone. The second panel is rendered from that command's captured output by <a href="tools/render_demo_gif.py"><code>tools/render_demo_gif.py</code></a>, so "verbatim" is reproducible rather than asserted.</sub></p>
+<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then <code>pip install recusal &amp;&amp; recusal demo --scenario wrong-subject</code>, no API key and no clone. The second panel is rendered from that command's captured output by <a href="tools/render_demo_gif.py"><code>tools/render_demo_gif.py</code></a>, so "verbatim" is reproducible rather than asserted.</sub></p>
 
 ## The problem
 
@@ -47,6 +47,8 @@ verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
 - **MCP capability integrity.** Pin the MCP server instructions and tool declarations a
   human approved; `verify` refuses represented drift (the rug pull, the new tool, the
   mutated schema), and the call-time gate refuses any MCP tool that was never pinned.
+  Stdio servers are observed over MCP 2026-07-28 or the `initialize` revisions, through
+  the same handshake Claude Code uses, so a pin is the catalog Claude actually loads.
 - **A record built for the auditor.** Every adjudication (defer, allow, deny) can land on
   an append-only, hash-chained log with the proposed input bound by SHA-256 fingerprint:
   deterministic, replayable, stdlib-only, shaped for OWASP Agentic logging and EU AI Act
@@ -64,8 +66,8 @@ verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
   as Claude Code's `agent_id` passes only through a trust rule you supply), it does not
   issue delegation, it reads no clock and keeps no counter (those are supplied evidence,
   so it verifies budgets, it does not atomically enforce them), and the receipt is a
-  digest, not a signature. Also not in 0.9.0, so it is not inferred: OAuth, delegation
-  chain validation, the hook's `updatedInput` and `escalate` decisions, and any
+  digest, not a signature. Not included, so it is not inferred: OAuth, delegation
+  chain validation, the hook's `updatedInput` rewriting and `ask` decision, and any
   non-Claude adapter. `recusal demo --scenario expired-authorization` shows it.
 
 The same normalized evidence and policy inputs, under the same recusal version, produce
@@ -80,9 +82,10 @@ pip install recusal
 recusal demo
 ```
 
-Three refusals, offline and deterministic: a write to the wrong customer refused before
+Four scenarios, offline and deterministic: a write to the wrong customer refused before
 the tool runs, the shipped deny-list refusing `rm -rf` and its own uninstall while an
-ordinary command defers, and a pinned MCP catalog refusing a post-approval rug pull.
+ordinary command defers, a pinned MCP catalog refusing a post-approval rug pull, and a
+valid call refused because its delegated authority expired.
 `recusal demo --list` names them; `--scenario` runs one. (Its exit code is not a
 verdict: `recusal verdict` is the command whose exit code adjudicates.)
 
@@ -400,7 +403,7 @@ the gate refuses, the audit log records, the classifier routes.
 | `recusal.evidence` | the contract, `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`, and the two named empty-evidence intents `evaluate_policy` / `certify_evidence` |
 | `recusal.checks` | built-in deterministic checks that turn data into Findings |
 | `recusal.authorization` | authorization for one exact action: `ActionRequest`, `AuthorizationContext` (supplied evidence, each item with provenance), `Constraints`, nine named dimension checks, `certify_authorization` (a required dimension with no finding refuses), and the digest-bound `DecisionReceipt`. Reads no clock, keeps no state, signs nothing |
-| `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (SDK loop, Managed Agents, Claude Code hook) |
+| `recusal.claude` · `recusal.claude_code` | gate a Claude agent's tool calls (Messages API manual loop, Managed Agents, Claude Code hook) |
 | `recusal.deny_list` · `recusal.claude_code.allowlist_policy` | ready-made policies: a reference deny-list (refuse known-bad) and default-deny allowlist |
 | `recusal.mcp` · `recusal.mcp_fetch` | MCP tool and server-instruction integrity: pin supported source templates, observed server instructions, and complete tool declarations; refuse represented drift (`diff_observation`); enforce approved runtime tool names at call time (pure kernel); collect a live catalog over stdio (fetcher, the one module that spawns a process). Full boundary statement: [`docs/MCP.md`](docs/MCP.md) |
 | `recusal.audit` | tamper-evident, hash-chained log of every verdict |

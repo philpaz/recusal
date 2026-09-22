@@ -47,4 +47,4 @@ body:
     id: context
     attributes:
       label: Surface / context (optional)
-      description: Claude Code hook, Agent SDK loop, Managed Agents, release gate, or direct `compute_verdict`?
+      description: Claude Code hook, Messages API manual loop, Agent SDK hook, Managed Agents, release gate, or direct `compute_verdict`?

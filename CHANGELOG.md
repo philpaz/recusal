@@ -34,6 +34,19 @@ Python SDK 2.2 server), so this is a MINOR release under `STABILITY.md`.
   Claude Code would load refuses.
 
 ### Fixed
+- **Security (deny-list):** a force-push was refused only when the flag came right after
+  `push`. `git push origin main --force`, `git push origin -f`, combined short flags
+  (`-uf`), and git global options before the verb (`git -C . push -f`) all passed. A
+  force flag anywhere in one `git push` command segment is now refused; `-f` on a
+  neighbouring command (`&& rm -f`, `| grep -f`) and branch names containing "force"
+  still defer. Pinned by a table of both.
+- `recusal mcp pin` printed its pin-time WARNINGs (`mcp_header_literal`,
+  `mcp_env_literal`, `mcp_template_default`, `mcp_arg_secret`) only under `--json`, so
+  a literal bearer token could be written into a manifest with no visible sign. Text
+  output now prints each as a `warning:` line; the JSON shape and exit code are
+  unchanged.
+- `recusal demo --list` ran the longest scenario name into its description
+  (`expired-authorizationa valid call ...`); the column now fits the longest name.
 - The deny-list treats Claude Code's subagent tool, `Agent` (formerly `Task`), as
   read-only: a subagent prompt that mentions a protected path was refused as a write.
   Each of the subagent's own tool calls still reaches the hook.
@@ -53,6 +66,16 @@ Python SDK 2.2 server), so this is a MINOR release under `STABILITY.md`.
   on the repository, and states the supported versions.
 
 ### Documentation
+- A line-by-line audit of every Markdown file against the code, with each claim run or
+  traced, corrected: the `protected_paths` example, which REPLACED the defaults and so
+  dropped the gate's own self-protection (it now extends `DEFAULT_PROTECTED_PATHS`);
+  two "verbatim" hook outputs in `PROVEN.md` that no longer matched; the loose-dict
+  `status` vocabulary and the non-strict default in `EVIDENCE.md`; a pinned server that
+  disappears (refused as `mcp_server_unobserved` unless acknowledged with `--removed`,
+  not "a warning"); the demo's four scenarios; the Agent SDK claims, which describe a
+  Messages API loop; the example gate's write confinement; which manifest versions are
+  refused; the CI matrix; the July schema count; and the finished MCP screening
+  extraction.
 - Hook timeout is fail-open, as Claude Code now documents ("A timed-out `command`,
   `http`, or `mcp_tool` hook doesn't block the tool call"). The README, `HOWTO.md`,
   `SECURITY.md` and the 1.0 preconditions no longer list it as an open question.

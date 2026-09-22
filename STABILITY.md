@@ -10,8 +10,8 @@ As of **0.8.0** the classifier is `Development Status :: 4 - Beta`.
 
 Between 2026-07-05 and 2026-07-27 this project published twenty-three releases. That was
 a hardening phase driven by thirteen external review cycles, not by users asking for
-changes, and it included four MCP manifest schema versions, each of which refuses its
-predecessor and forces a deliberate re-pin. A reader is right to see that cadence as
+changes, and it included eight MCP manifest schema versions (v1 to v8), each after the
+first refusing its predecessor and forcing a deliberate re-pin. A reader is right to see that cadence as
 instability rather than velocity.
 
 This policy is the change. From 0.8.0 forward the rules below apply, and the first of them
@@ -98,7 +98,8 @@ by the procedure in [`docs/VERIFY.md`](docs/VERIFY.md).
 The latest minor receives fixes. Security fixes land on the latest minor; anything older is
 best-effort, and the report process is in [`SECURITY.md`](SECURITY.md).
 
-Python **3.9 or newer**, tested in CI on 3.9 through 3.14 across Linux, macOS, and Windows.
+Python **3.9 or newer**, tested in CI on 3.9 through 3.14 on Linux, and on 3.12 on macOS
+and Windows.
 The 3.9 floor stays until holding it forces a compromise in the enforcement code, and the
 release toolchain is pinned to versions that still validate it.
 

@@ -59,15 +59,20 @@ A *passed* finding of any severity is fine, it held. Severity only matters on fa
 
 ### Loose-dict input (coercion)
 
-You don't have to build `Finding` objects. `compute_verdict` (and `recusal.claude`)
+You don't have to build `Finding` objects. `compute_verdict` and `recusal.claude`
 coerce loose dicts, which is the convenient form when wiring up an agent:
 
 ```python
 {"severity": "CRITICAL", "status": "fail", "message": "...", "check": "subject_match", ...context}
 ```
 
-`status` is one of `pass` / `fail` / `error` / `warn` (`fail`/`error`/`warn` → not passed).
+`status` passes only on an affirmative token (`pass`, `passed`, `ok`, `okay`, `success`,
+`succeeded`, `green`); any other value, `fail`/`error`/`warn` included, is not passed.
 `type` is accepted as an alias for `check`. Everything else becomes `context`.
+
+A dict with neither `status` nor `passed` reads as **passed** under `compute_verdict`
+unless you pass `strict=True`. The Claude adapters, the hook, and the gates are strict
+and refuse such a dict instead, so state the outcome explicitly.
 
 ## `Verdict`, the decision the findings add up to
 

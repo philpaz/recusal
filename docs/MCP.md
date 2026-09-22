@@ -47,7 +47,7 @@ pinning, destructive-verb refusal, path confinement, allowlist mode). Pinned:
 [`tests/test_mcp_governance.py`](../tests/test_mcp_governance.py). Recipe:
 [`COOKBOOK.md`](COOKBOOK.md) §12. In a custom Agent SDK or MCP-client loop
 nothing intercepts for you: invoke the gate between the model's proposed MCP call and the
-client dispatching it (the same `gate_tool_use` seam as the README's Agent SDK section).
+client dispatching it (the same `gate_tool_use` seam as the README's Messages API manual loop section).
 
 **The three MCP tool-call boundaries, stated plainly.** A call-time policy adjudicates the proposed
 tool name and arguments; MCP has two more boundaries, and Recusal covers each with its own
@@ -102,12 +102,17 @@ observation against the same pin, under the same recusal version, yields the sam
 verification result, every time. `verify` fails **closed**: a missing
 manifest, a failed fetch, a wholly empty observation, or a pinned server that can no longer
 be reached for integrity-checking (e.g. silently swapped to a URL transport) is a refusal,
-never a clean-looking pass. (A pinned server *legitimately removed* from the config is
-recorded as a warning, not refused: a shrunk capability set is not an attack.) The pin also
+never a clean-looking pass. A pinned server absent from the whole observation is refused
+too (`mcp_server_unobserved`), because the manifest keeps authorizing its tool names until
+it changes; a *deliberate* removal is acknowledged with `verify --removed NAME`, recorded as
+a passing warning, and re-pinning without the server makes the smaller set the approved
+truth. The pin also
 enforces at call time: `recusal.mcp.manifest_policy("mcp-manifest.json")` drops into the
 same `PreToolUse` gate and refuses any `mcp__server__tool` call that was never pinned (no
 pin, no MCP), composing with the argument-level rules above. A minimal zero-dependency
-stdio client collects `tools/list`; **remote/HTTP servers** are pinned from a JSON dump you
+stdio client collects `tools/list`, speaking MCP 2026-07-28 and the `initialize` revisions
+back to 2024-11-05 through the same handshake Claude Code uses (see "Which protocol
+revision a pin reflects" below); **remote/HTTP servers** are pinned from a JSON dump you
 produce with any MCP client (`--from`, copy-paste recipe:
 [`COOKBOOK.md`](COOKBOOK.md) §14; local/`.mcp.json` servers pin directly, §13).
 Recusal owns the deterministic adjudication, not the transport, so it inherits neither the
@@ -249,8 +254,8 @@ server key must be the callable-safe runtime segment). The boundary that remains
 point-in-time as ever: `PreToolUse` carries only the callable name, so a
 post-verification raw-declaration swap that preserves an already-approved callable
 is indistinguishable at call time until the next `verify`, which refuses on raw
-identity - exactly why both identities are pinned. v5 manifests are refused with a
-re-pin instruction. Verifying a config that contains remote servers
+identity - exactly why both identities are pinned. Manifests older than v8 (v1 to v7)
+are refused with a re-pin instruction. Verifying a config that contains remote servers
 needs their fresh catalogs alongside it:
 
 ```bash

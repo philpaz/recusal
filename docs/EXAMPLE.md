@@ -17,7 +17,8 @@ anyone looks:
 
 You want the agent to stay autonomous but be unable to take those specific actions. That is
 the job of a Recusal `PreToolUse` hook: it adds refusals for the actions you have named as
-off limits, and it stays silent (defers) on everything else, so Claude Code's normal
+off limits (and, in this policy, for any file write outside `./workspace`), and it stays
+silent (defers) on everything else, so Claude Code's normal
 permission flow is unchanged. A `deny` holds even under `bypassPermissions`, so the agent
 cannot switch its own mode to get around it.
 
@@ -125,7 +126,7 @@ run_pretooluse_hook(policy)
 }
 ```
 
-That is the entire setup. Three files touched, nothing running in the background, no service.
+That is the entire setup. Two files touched, nothing running in the background, no service.
 
 ## 4. What the agent experiences
 
@@ -158,12 +159,13 @@ The record maps cleanly onto agent logging and audit requirements.
 ## What you configured
 
 - An agent that stays fully autonomous, minus four classes of action you decided it must
-  never take.
+  never take, with every file write confined to `./workspace`.
 - A refusal that is deterministic and replayable: the same proposed call gets the same
   answer every time, including the `no`, with a reason you can read and audit.
 - No model in the decision path, and no change to how the agent works when it behaves.
 
-One honest caveat: this gate is a **deny-list**, it stops the four named classes and the
+One honest caveat: this gate is a **deny-list**, it stops the four named classes, writes
+outside `./workspace`, and the
 common variants, not everything a determined agent could construct (`python script.py`
 runs code no string match reads). If the stakes warrant "nothing runs unless named," flip
 the same hook to the shipped allowlist mode,
@@ -171,4 +173,5 @@ the same hook to the shipped allowlist mode,
 [HOWTO §1](HOWTO.md) "Two postures, two claims."
 
 Want different rules? Lift more from the [policy cookbook](COOKBOOK.md), or read
-[HOWTO](HOWTO.md) for the Agent SDK and any-loop surfaces.
+[HOWTO](HOWTO.md) for the Messages API manual loop and Managed Agents, or
+[`examples/agent_loop.py`](../examples/agent_loop.py) for any other loop.

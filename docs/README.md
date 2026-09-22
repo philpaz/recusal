@@ -6,8 +6,8 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 ## Start here
 
 - **Twenty seconds, before any of the reading**: `pip install recusal && recusal demo`
-  shows the gate refusing a wrong-subject write, a destructive command, and a drifted MCP
-  catalog. Offline, no API key, no clone.
+  shows the gate refusing a wrong-subject write, a destructive command, a drifted MCP
+  catalog, and a call whose authority expired. Offline, no API key, no clone.
 - **[FAQ](FAQ.md)**: the questions people ask before adopting: *do I need this? doesn't
   Claude already do it? is it ready to use?* The fastest orientation.
 - **[WHY](WHY.md)**: the long-form "so what," written for the people who own the decision
@@ -27,7 +27,7 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 ## Use it
 
 - **[HOWTO](HOWTO.md)**: the three integration paths (Claude Code hook, in deny-list or
-  default-deny allowlist posture, Agent SDK loop, Managed Agents) plus direct
+  default-deny allowlist posture, Messages API manual loop, Managed Agents) plus direct
   adjudication, audit, and failure routing.
 - **[MCP](MCP.md)**: MCP governance in full: the call-time gate, discovery-integrity
   pinning (`recusal mcp pin` / `verify` / `manifest_policy`), the three tool-call
