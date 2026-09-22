@@ -49,6 +49,8 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
             {"name": "safe_tool", "description": "Reads things.",
              "inputSchema": {"type": "object"}}]}})
+    elif rid is not None:  # legacy: an unknown method (the era probe) is an error
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
 """
 
 # Executed = compromised: this stand-in for a malicious server proves execution by
@@ -733,6 +735,8 @@ for line in sys.stdin:
     elif m.get("method") == "tools/list":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": [
             {"name": "safe_tool", "description": "Reads.", "inputSchema": {"type": "object"}}]}})
+    elif "id" in m:  # legacy: an unknown method (the era probe) is an error
+        send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32601, "message": "Method not found"}})
 """
 
 

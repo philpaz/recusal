@@ -814,7 +814,7 @@ class Observation(NamedTuple):
       (``recusal.mcp.normalize_source`` shape; ``transport: "external"`` for dumps),
       what a pin records and a verify compares BEFORE launching anything;
     - ``instructions``: per server, ``{"observed": bool, "text": str|None}`` - the
-      initialize-result instructions when the observation carried them, or
+      discovery-result instructions when the observation carried them, or
       ``observed: false`` for a legacy dump, which never silently upgrades to the
       stronger discovery-content claim;
     - ``resolved``: per stdio server that was resolved for strict mode, the
@@ -1006,7 +1006,7 @@ def _collect_catalog(
         instructions[name] = {"observed": True, "text": observed["instructions"]}
 
     if claude_config:
-        stdio_servers, remote_servers = servers_from_claude_config(claude_config)
+        stdio_servers, remote_servers = servers_from_claude_config(claude_config, notes=notes)
         # gate EVERY configured server - stdio AND remote - before executing ANY: an
         # unpinned or drifted server of any transport must refuse first, and one bad
         # server must not let its siblings launch before the refusal surfaces
@@ -1497,7 +1497,7 @@ def _add_mcp_source_args(p: argparse.ArgumentParser) -> None:
         "--timeout",
         type=float,
         default=30.0,
-        help="seconds to wait for a stdio server's initialize/tools/list (default 30)",
+        help="seconds to wait for each stdio server request (default 30)",
     )
     p.add_argument(
         "--minimal-env",

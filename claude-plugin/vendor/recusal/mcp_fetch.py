@@ -45,16 +45,37 @@ from . import __version__
 #: (which canonicalizes every declaration). A real catalog is dozens of tools, not thousands.
 MAX_TOOLS = 5000
 
-#: MCP protocol revisions this client speaks, newest first; the newest is what we request.
-#: The handshake and ``tools/list`` (with cursor pagination) are identical across these.
-#: Negotiation per the spec: the server answers with a version of its choosing, and a
-#: client that does not support the answered version must disconnect - here, refuse.
+#: The per-request-metadata ("modern") MCP revision this client speaks. From 2026-07-28
+#: there is no ``initialize`` handshake: every request carries its protocol version and
+#: client capabilities in ``_meta``, and ``server/discover`` reports the server's
+#: supported versions, capabilities, and instructions.
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+
+#: The handshake-based ("legacy") MCP revisions this client speaks, newest first; the
+#: newest is what ``initialize`` requests. The handshake and ``tools/list`` (with cursor
+#: pagination) are identical across these. Negotiation per the spec: the server answers
+#: with a version of its choosing, and a client that does not support the answered
+#: version must disconnect - here, refuse.
 SUPPORTED_PROTOCOL_VERSIONS: Tuple[str, ...] = (
     "2025-11-25",
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",
 )
+
+#: How long the ``server/discover`` era probe waits before treating a silent server as
+#: legacy (the stdio backward-compatibility rule). Legacy servers usually answer an
+#: unknown pre-``initialize`` method with an error at once; a silent one costs this
+#: much, never the full request timeout. A modern server that starts slower than this
+#: is still recognized: it answers the fallback ``initialize`` with a modern error, and
+#: the client switches to the modern exchange instead of refusing.
+DISCOVER_PROBE_TIMEOUT = 10.0
+
+#: JSON-RPC error codes the MCP specification reserves for itself (2026-07-28 allocation
+#: policy); ``-32022`` is ``UnsupportedProtocolVersionError``. A reply in this range
+#: identifies a modern server, and the client must not fall back to ``initialize``.
+_MODERN_ERROR_CODES = range(-32099, -32019)
+_UNSUPPORTED_PROTOCOL_VERSION = -32022
 
 #: Upper bound on a single stdout line from the server. Without it, a server emitting one
 #: endless line with no newline buffers unboundedly until the timeout; with it, the fetch
@@ -172,12 +193,16 @@ def fetch_server_stdio(
     observation_timeout: float = 300.0,
     minimal_env: bool = False,
 ) -> Dict[str, Any]:
-    """Spawn a stdio MCP server; return ``{"tools": [...], "instructions": str|None}``.
+    """Spawn a stdio MCP server; return ``{"tools": [...], "instructions": str|None,
+    "protocol_version": str}``.
 
-    The initialize-result ``instructions`` field is discovery-time model-facing content
-    (under Claude's default tool-search behavior, server instructions load at session
-    start), so it is observed alongside the tool catalog; a non-string value refuses. Everything else is
-    :func:`fetch_tools_stdio`'s contract, which remains available for tools-only use.
+    The server's ``instructions`` (the ``server/discover`` result on a modern server, the
+    ``initialize`` result on a legacy one; the same field in both) are discovery-time
+    model-facing content (under Claude's default tool-search behavior, server
+    instructions load at session start), so they are observed alongside the tool
+    catalog; a non-string value refuses. ``protocol_version`` names the revision the
+    observation was made under. Everything else is :func:`fetch_tools_stdio`'s contract,
+    which remains available for tools-only use.
     """
     return _fetch_stdio(
         command,
@@ -218,7 +243,16 @@ def _fetch_stdio(
     observation_timeout: float = 300.0,
     minimal_env: bool = False,
 ) -> Dict[str, Any]:
-    """Spawn a stdio MCP server, run ``initialize`` → ``tools/list``, return both.
+    """Spawn a stdio MCP server, observe its instructions and ``tools/list``, return both.
+
+    The exchange is dual-era, per the 2026-07-28 stdio backward-compatibility rule. It
+    probes with ``server/discover`` first: a ``DiscoverResult`` means a modern server,
+    observed with per-request ``_meta`` and no handshake; a recognized modern error
+    (the spec-reserved code range, ``UnsupportedProtocolVersionError`` included)
+    refuses, never falls back; any other error, or silence past
+    ``DISCOVER_PROBE_TIMEOUT``, means a legacy server, observed through ``initialize``
+    → ``notifications/initialized`` → ``tools/list``. The fallback is never keyed to one
+    error code.
 
     Newline-delimited JSON-RPC 2.0 over the child's stdin/stdout; stderr is discarded
     (servers log there). Messages that are not the awaited response (notifications,
@@ -307,30 +341,44 @@ def _fetch_stdio(
         except OSError as exc:
             raise McpFetchError(f"MCP server closed its stdin: {exc}") from exc
 
-    def _request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _stalled() -> McpFetchError:
+        return McpFetchError(
+            f"observation exceeded {observation_timeout}s across discovery and "
+            "pagination; refusing a stalling server"
+        )
+
+    def _send_request(method: str, params: Dict[str, Any]) -> int:
         nonlocal next_id
         next_id += 1
-        rid = next_id
-        _send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        deadline = time.monotonic() + timeout
+        _send({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params})
+        return next_id
+
+    def _await(
+        method: str, rid: int, wait: float, *, silence_ok: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """The message answering ``rid``, a result or an error, returned unjudged.
+
+        ``None`` only when ``silence_ok`` (the era probe) and ``wait`` passes with no
+        answer; everywhere else silence is a timeout refusal. The observation deadline
+        is a refusal in every case, the probe included.
+        """
+        deadline = time.monotonic() + wait
         while True:
             if time.monotonic() >= observation_deadline:
-                raise McpFetchError(
-                    f"observation exceeded {observation_timeout}s across "
-                    "initialize/pagination; refusing a stalling server"
-                )
+                raise _stalled()
             remaining = min(deadline, observation_deadline) - time.monotonic()
             if remaining <= 0:
-                raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}")
+                if silence_ok:
+                    return None
+                raise McpFetchError(f"timed out after {wait}s waiting for {method!r}")
             try:
                 line = lines.get(timeout=remaining)
             except queue.Empty:
                 if time.monotonic() >= observation_deadline:
-                    raise McpFetchError(
-                        f"observation exceeded {observation_timeout}s across "
-                        "initialize/pagination; refusing a stalling server"
-                    ) from None
-                raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}") from None
+                    raise _stalled() from None
+                if silence_ok:
+                    return None
+                raise McpFetchError(f"timed out after {wait}s waiting for {method!r}") from None
             if isinstance(line, McpFetchError):
                 raise line  # the reader already named the refusal (e.g. runaway line)
             if isinstance(line, BaseException):
@@ -366,24 +414,120 @@ def _fetch_stdio(
                         f"were not the awaited response; refusing a message flood"
                     )
                 continue
-            if "error" in message:
-                raise McpFetchError(
-                    f"MCP server returned an error for {method!r}: {message['error']!r}"
-                )
-            result = message.get("result")
-            if not isinstance(result, dict):
-                raise McpFetchError(f"MCP server returned no result object for {method!r}")
-            return result
+            return message
 
-    try:
-        init = _request(
-            "initialize",
-            {
-                "protocolVersion": SUPPORTED_PROTOCOL_VERSIONS[0],
-                "capabilities": {},
-                "clientInfo": {"name": "recusal", "version": __version__},
-            },
+    def _result(method: str, message: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Judge an answer: an error or a missing result object refuses."""
+        if message is None:  # unreachable unless silence_ok; kept for the type contract
+            raise McpFetchError(f"MCP server did not answer {method!r}")
+        if "error" in message:
+            raise McpFetchError(
+                f"MCP server returned an error for {method!r}: {message['error']!r}"
+            )
+        result = message.get("result")
+        if not isinstance(result, dict):
+            raise McpFetchError(f"MCP server returned no result object for {method!r}")
+        # From 2026-07-28 every result names its kind; an interim "input_required"
+        # result is not an observation. Earlier revisions omit the field, which the
+        # spec says to read as "complete" (the modern path requires it; see below).
+        result_type = result.get("resultType", "complete")
+        if result_type != "complete":
+            raise McpFetchError(
+                f"MCP server answered {method!r} with resultType {result_type!r}; only a "
+                "complete result is an observation"
+            )
+        return result
+
+    def _request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        return _result(method, _await(method, _send_request(method, params), timeout))
+
+    def _modern_error(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The error object when ``message`` carries a spec-reserved (modern) code."""
+        error = message.get("error")
+        if not isinstance(error, dict):
+            return None
+        code = error.get("code")
+        if isinstance(code, int) and not isinstance(code, bool) and code in _MODERN_ERROR_CODES:
+            return error
+        return None
+
+    def _modern_versions(error: Dict[str, Any]) -> Optional[List[Any]]:
+        """The ``supported`` list an ``UnsupportedProtocolVersionError`` carries, if any."""
+        if error.get("code") != _UNSUPPORTED_PROTOCOL_VERSION:
+            return None
+        data = error.get("data")
+        supported = data.get("supported") if isinstance(data, dict) else None
+        return supported if isinstance(supported, list) else None
+
+    def _refuse_modern(method: str, error: Dict[str, Any]) -> McpFetchError:
+        supported = _modern_versions(error)
+        if supported is not None:
+            return McpFetchError(
+                f"MCP server does not support protocol version {MODERN_PROTOCOL_VERSION!r} "
+                f"(it supports {supported!r}); a modern server is never downgraded to the "
+                "initialize handshake, so the observation refuses"
+            )
+        return McpFetchError(
+            f"MCP server answered {method!r} with a modern protocol error {error!r}; refusing"
         )
+
+    def _check_capabilities(result: Dict[str, Any], method: str) -> Optional[str]:
+        """Validate the capabilities and instructions every era reports; return the
+        instructions."""
+        capabilities = result.get("capabilities")
+        if not isinstance(capabilities, dict):
+            raise McpFetchError(f"MCP server returned no capabilities object on {method}")
+        if not isinstance(capabilities.get("tools"), dict):
+            raise McpFetchError(
+                "MCP server did not advertise the 'tools' capability (as an object); "
+                "there is no tool catalog to observe"
+            )
+        instructions = result.get("instructions")
+        if instructions is not None and not isinstance(instructions, str):
+            raise McpFetchError(
+                f"MCP server returned non-string {method} instructions; refusing a "
+                "malformed declaration"
+            )
+        return instructions
+
+    # The modern per-request envelope: version, identity and capabilities on EVERY call.
+    modern_meta: Dict[str, Any] = {
+        "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+        "io.modelcontextprotocol/clientInfo": {"name": "recusal", "version": __version__},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }
+
+    def _observe_modern(discovered: Dict[str, Any]) -> Dict[str, Any]:
+        # A DiscoverResult binds the exchange as a legacy negotiation does: the version
+        # this client speaks must be in the server's list, the result must say what it
+        # is, and the tools capability must be declared. ``serverInfo`` is optional
+        # (SHOULD) in this revision and, per the spec, not a basis for any decision.
+        supported = discovered.get("supportedVersions")
+        if not isinstance(supported, list) or not all(isinstance(v, str) for v in supported):
+            raise McpFetchError(
+                "server/discover returned no supportedVersions list of strings; refusing a "
+                "malformed discovery"
+            )
+        if MODERN_PROTOCOL_VERSION not in supported:
+            raise McpFetchError(
+                f"MCP server discovery lists {supported!r}, not {MODERN_PROTOCOL_VERSION!r}; "
+                "a modern server is never downgraded to the initialize handshake, so the "
+                "observation refuses"
+            )
+        if discovered.get("resultType") != "complete":
+            raise McpFetchError(
+                "server/discover result has no resultType 'complete', which this "
+                "protocol revision requires on every result; refusing an out-of-contract peer"
+            )
+        instructions = _check_capabilities(discovered, "server/discover")
+        tools = _list_tools({"_meta": modern_meta}, modern=True)
+        return {
+            "tools": tools,
+            "instructions": instructions,
+            "protocol_version": MODERN_PROTOCOL_VERSION,
+        }
+
+    def _observe_legacy(init: Dict[str, Any]) -> Dict[str, Any]:
         # The negotiated response is a binding compatibility decision, not decoration:
         # an unsupported or missing version, or a server that does not advertise the
         # tools capability, is a refusal - proceeding would adjudicate a catalog
@@ -404,26 +548,24 @@ def _fetch_stdio(
                 "MCP server returned no serverInfo object with a name on initialize; the "
                 "lifecycle requires implementation info, and an anonymous peer is refused"
             )
-        capabilities = init.get("capabilities")
-        if not isinstance(capabilities, dict):
-            raise McpFetchError("MCP server returned no capabilities object on initialize")
-        if not isinstance(capabilities.get("tools"), dict):
-            raise McpFetchError(
-                "MCP server did not advertise the 'tools' capability (as an object); "
-                "there is no tool catalog to observe"
-            )
-        instructions = init.get("instructions")
-        if instructions is not None and not isinstance(instructions, str):
-            raise McpFetchError(
-                "MCP server returned non-string initialize instructions; refusing a "
-                "malformed declaration"
-            )
+        instructions = _check_capabilities(init, "initialize")
         _send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        tools = _list_tools({}, modern=False)
+        return {"tools": tools, "instructions": instructions, "protocol_version": negotiated}
+
+    def _list_tools(base: Dict[str, Any], *, modern: bool) -> List[dict]:
         tools: List[dict] = []
         cursor: Optional[str] = None
         for _ in range(100):  # pagination backstop; a longer catalog is an error, not a loop
-            params: Dict[str, Any] = {"cursor": cursor} if cursor else {}
+            params: Dict[str, Any] = dict(base)
+            if cursor:
+                params["cursor"] = cursor
             result = _request("tools/list", params)
+            if modern and result.get("resultType") != "complete":
+                raise McpFetchError(
+                    "tools/list result has no resultType 'complete', which this protocol "
+                    "revision requires on every result; refusing an out-of-contract peer"
+                )
             page = result.get("tools")
             if not isinstance(page, list):
                 raise McpFetchError("tools/list result has no 'tools' array")
@@ -442,10 +584,44 @@ def _fetch_stdio(
                 )
             cursor = result.get("nextCursor")
             if not cursor:
-                return {"tools": tools, "instructions": instructions}
+                return tools
             if not isinstance(cursor, str) or len(cursor) > 10_000:
                 raise McpFetchError("tools/list returned an invalid nextCursor; refusing")
         raise McpFetchError("tools/list paginated past 100 pages; refusing a runaway catalog")
+
+    try:
+        # The era probe (stdio backward compatibility, 2026-07-28): a DiscoverResult is
+        # a modern server; a spec-reserved error is a modern server that refuses this
+        # client's version (never a fallback); anything else, silence included, is a
+        # legacy server that gets the initialize handshake.
+        probe_id = _send_request("server/discover", {"_meta": modern_meta})
+        probe = _await(
+            "server/discover", probe_id, min(timeout, DISCOVER_PROBE_TIMEOUT), silence_ok=True
+        )
+        if probe is not None:
+            modern_error = _modern_error(probe)
+            if modern_error is not None:
+                raise _refuse_modern("server/discover", modern_error)
+            if "error" not in probe:
+                return _observe_modern(_result("server/discover", probe))
+        init_id = _send_request(
+            "initialize",
+            {
+                "protocolVersion": SUPPORTED_PROTOCOL_VERSIONS[0],
+                "capabilities": {},
+                "clientInfo": {"name": "recusal", "version": __version__},
+            },
+        )
+        init = _await("initialize", init_id, timeout)
+        late = _modern_error(init) if init is not None else None
+        if late is not None:
+            # A modern server that started slower than the probe window rejects the
+            # handshake with a modern error. That identifies its era: when it names
+            # this client's version, observe it the modern way instead of refusing.
+            if MODERN_PROTOCOL_VERSION in (_modern_versions(late) or []):
+                return _observe_modern(_request("server/discover", {"_meta": modern_meta}))
+            raise _refuse_modern("initialize", late)
+        return _observe_legacy(_result("initialize", init))
     finally:
         try:
             proc.stdin.close()  # type: ignore[union-attr]
@@ -541,7 +717,10 @@ def _validate_runtime_fields(entry: Dict[str, Any], where: str) -> None:
 
 
 def servers_from_claude_config(
-    path: str, *, base_env: Optional[Dict[str, str]] = None
+    path: str,
+    *,
+    base_env: Optional[Dict[str, str]] = None,
+    notes: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """Read every server from a Claude Code ``.mcp.json``, classified by TRANSPORT TYPE.
 
@@ -572,6 +751,12 @@ def servers_from_claude_config(
     contains one); a URL with no ``type`` is invalid; an unsupported ``type`` is
     invalid; a malformed entry raises, never a silent skip (a config the verifier
     cannot fully represent must not verify clean).
+
+    One documented exception: a ``"type": "sdk"`` entry is skipped, because Claude Code
+    skips it too (since 2.1.274, with a warning: only an SDK host application can
+    register an in-process server). It is not part of the effective configuration, so it
+    is neither launched nor pinned; the skip is never silent, it is appended to
+    ``notes`` when the caller passes a list.
 
     Fidelity notes, matched to current Claude Code behavior: ``${VAR}`` and
     ``${VAR:-default}`` expand in ``command``, ``args``, and ``env`` values (a referenced
@@ -672,6 +857,14 @@ def servers_from_claude_config(
             remote_servers[str(name)] = remote_source
             continue
 
+        if transport_type == "sdk":
+            if notes is not None:
+                notes.append(
+                    f"{where}: skipped a 'type: sdk' entry, as Claude Code does (only an "
+                    "SDK host application registers in-process servers); it is neither "
+                    "launched nor pinned"
+                )
+            continue
         if transport_type not in (None, "stdio"):
             raise ValueError(f"{where} has unsupported type {transport_type!r}")
         command = entry.get("command")
@@ -719,4 +912,6 @@ def servers_from_claude_config(
             "env": resolved_env,
             "cwd": cwd,
         }
+    if not stdio_servers and not remote_servers:
+        raise ValueError(f"{path} declares no MCP server that Claude Code would load")
     return stdio_servers, remote_servers

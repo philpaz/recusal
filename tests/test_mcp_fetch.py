@@ -1,8 +1,9 @@
 """The stdio fetcher against a real (fake) MCP server subprocess.
 
-The fetcher's contract: it completes ``initialize`` → ``notifications/initialized`` →
-paginated ``tools/list`` against a well-behaved server (surviving stderr noise and
-interleaved notifications), and EVERY irregularity, timeout, early exit, a JSON-RPC
+The fetcher's contract: it probes with ``server/discover``; a modern (2026-07-28) server
+is observed with per-request ``_meta`` and no handshake, a legacy one through
+``initialize`` → ``notifications/initialized`` → paginated ``tools/list`` (surviving
+stderr noise and interleaved notifications), and EVERY irregularity, timeout, early exit, a JSON-RPC
 error, an unparseable line, a missing binary, raises ``McpFetchError`` so the caller
 fails closed. A failed observation must never read as an empty (clean) catalog.
 """
@@ -15,6 +16,7 @@ import pytest
 
 from recusal.mcp_fetch import (
     McpFetchError,
+    fetch_server_stdio,
     fetch_tools_stdio,
     servers_from_claude_config,
     split_command,
@@ -99,6 +101,10 @@ for line in sys.stdin:
                       "result": {"tools": [TOOLS[0]], "nextCursor": "page2"}})
         else:
             send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
+    elif rid is not None and MODE != "silent-probe":
+        # a legacy server answers an unknown method (the server/discover era probe)
+        # with an implementation-defined error, as the official 1.x SDKs do
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
 """
 
 
@@ -237,6 +243,38 @@ def test_claude_config_yields_stdio_servers_and_surfaces_the_rest(tmp_path):
     }
 
 
+def test_claude_config_skips_an_sdk_entry_as_claude_does_and_says_so(tmp_path):
+    # Claude Code skips "type": "sdk" entries (only an SDK host application registers
+    # in-process servers), so they are not part of the effective configuration: never
+    # launched, never pinned, and the skip is reported, never silent.
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "inproc": {"type": "sdk", "name": "inproc"},
+                    "github": {"command": "npx", "args": ["-y", "server-github"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    notes: list = []
+    servers, remote = servers_from_claude_config(str(config), notes=notes)
+    assert set(servers) == {"github"} and remote == {}
+    assert len(notes) == 1 and "'inproc'" in notes[0] and "type: sdk" in notes[0]
+
+
+def test_claude_config_with_only_sdk_entries_refuses(tmp_path):
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"inproc": {"type": "sdk", "name": "inproc"}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="no MCP server that Claude Code would load"):
+        servers_from_claude_config(str(config))
+
+
 def test_claude_config_with_no_servers_raises(tmp_path):
     config = tmp_path / ".mcp.json"
     for body in ("{}", '{"mcpServers": {}}', "[]"):
@@ -326,6 +364,8 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
             {"name": "t", "description": os.environ.get("RECUSAL_TEST_SECRET", "ABSENT"),
              "inputSchema": {"type": "object"}}]}})
+    elif rid is not None:  # legacy: an unknown method (the era probe) is an error
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
 """
 
 
@@ -488,3 +528,177 @@ def test_the_reader_queue_stays_tiny():
     import recusal.mcp_fetch as fetch_mod
 
     assert fetch_mod._QUEUE_MAXSIZE <= 4
+
+
+# --- the 2026-07-28 (modern) revision: server/discover, per-request _meta, no handshake ----
+
+# A modern-only server, as the 2026-07-28 revision permits: it rejects `initialize` and
+# any request whose _meta lacks the version and capability envelope, as the official
+# 2.x SDK does on a connection serving the modern protocol.
+MODERN_SERVER = r"""
+import json, sys, time
+
+MODE = sys.argv[1] if len(sys.argv) > 1 else "normal"
+V = "2026-07-28"
+TOOLS = [
+    {"name": "create_issue", "description": "Create an issue.", "inputSchema": {"type": "object"}},
+    {"name": "read_file", "description": "Read a file.", "inputSchema": {"type": "object"}},
+]
+SERVER_META = {"io.modelcontextprotocol/serverInfo": {"name": "modern", "version": "0"}}
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+def result(rid, body):
+    body = dict(body)
+    if MODE != "no-resulttype":
+        body.setdefault("resultType", "complete")
+    body["_meta"] = SERVER_META
+    send({"jsonrpc": "2.0", "id": rid, "result": body})
+
+def unsupported(rid, requested):
+    send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32022,
+          "message": "Unsupported protocol version",
+          "data": {"supported": ["2099-01-01"] if MODE == "other-version" else [V],
+                   "requested": requested}}})
+
+started = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    if MODE == "slow-start" and not started:
+        time.sleep(1.5)  # longer than the (patched) probe window
+    started = True
+    msg = json.loads(line)
+    method, rid = msg.get("method"), msg.get("id")
+    meta = (msg.get("params") or {}).get("_meta") or {}
+    version = meta.get("io.modelcontextprotocol/protocolVersion")
+    if method == "initialize":
+        unsupported(rid, (msg.get("params") or {}).get("protocolVersion"))
+        continue
+    if rid is None:
+        continue
+    if version != V or "io.modelcontextprotocol/clientCapabilities" not in meta:
+        if MODE == "other-version" or version is not None:
+            unsupported(rid, version)
+        else:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602,
+                  "message": "params._meta must carry the version envelope"}})
+        continue
+    if MODE == "other-version":
+        unsupported(rid, version)
+    elif method == "server/discover":
+        if MODE == "reserved-error":
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32021,
+                  "message": "Missing required client capability"}})
+            continue
+        body = {"supportedVersions": [V], "capabilities": {"tools": {}},
+                "instructions": "Use create_issue for bugs.", "ttlMs": 0, "cacheScope": "private"}
+        if MODE == "wrong-list":
+            body["supportedVersions"] = ["2099-01-01"]
+        elif MODE == "no-tools-cap":
+            body["capabilities"] = {"prompts": {}}
+        result(rid, body)
+    elif method == "tools/list":
+        if MODE == "input-required":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "input_required",
+                  "inputRequests": {}}})
+            continue
+        if MODE == "paginate" and not (msg.get("params") or {}).get("cursor"):
+            result(rid, {"tools": [TOOLS[0]], "nextCursor": "page2", "ttlMs": 0,
+                         "cacheScope": "private"})
+        elif MODE == "paginate":
+            result(rid, {"tools": [TOOLS[1]], "ttlMs": 0, "cacheScope": "private"})
+        else:
+            result(rid, {"tools": TOOLS, "ttlMs": 0, "cacheScope": "private"})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
+"""
+
+
+@pytest.fixture()
+def modern_server(tmp_path):
+    script = tmp_path / "modern_mcp_server.py"
+    script.write_text(MODERN_SERVER, encoding="utf-8")
+
+    def _command(mode="normal"):
+        return [sys.executable, str(script), mode]
+
+    return _command
+
+
+def test_a_modern_server_is_observed_without_a_handshake(modern_server):
+    observed = fetch_server_stdio(modern_server("normal"), timeout=30)
+    assert [t["name"] for t in observed["tools"]] == ["create_issue", "read_file"]
+    # the discovery-content surface comes from server/discover in this revision
+    assert observed["instructions"] == "Use create_issue for bugs."
+    assert observed["protocol_version"] == "2026-07-28"
+
+
+def test_a_legacy_server_is_observed_through_initialize(fake_server):
+    observed = fetch_server_stdio(fake_server("normal"), timeout=30)
+    assert observed["protocol_version"] == "2025-06-18"
+    assert [t["name"] for t in observed["tools"]] == ["create_issue", "read_file"]
+
+
+def test_modern_pagination_carries_the_envelope_on_every_page(modern_server):
+    # the fake refuses any request without the _meta envelope, so reaching page two
+    # proves the cursor request carried it too
+    tools = fetch_tools_stdio(modern_server("paginate"), timeout=30)
+    assert [t["name"] for t in tools] == ["create_issue", "read_file"]
+
+
+def test_a_modern_server_that_does_not_speak_this_version_refuses_never_downgrades(
+    modern_server,
+):
+    with pytest.raises(McpFetchError, match="never downgraded"):
+        fetch_tools_stdio(modern_server("other-version"), timeout=30)
+
+
+def test_a_discovery_that_omits_this_version_refuses(modern_server):
+    with pytest.raises(McpFetchError, match="never downgraded"):
+        fetch_tools_stdio(modern_server("wrong-list"), timeout=30)
+
+
+def test_a_spec_reserved_error_on_the_probe_refuses_never_falls_back(modern_server):
+    with pytest.raises(McpFetchError, match="modern protocol error"):
+        fetch_tools_stdio(modern_server("reserved-error"), timeout=30)
+
+
+def test_a_modern_result_without_result_type_refuses(modern_server):
+    with pytest.raises(McpFetchError, match="resultType"):
+        fetch_tools_stdio(modern_server("no-resulttype"), timeout=30)
+
+
+def test_an_input_required_result_is_not_an_observation(modern_server):
+    with pytest.raises(McpFetchError, match="input_required"):
+        fetch_tools_stdio(modern_server("input-required"), timeout=30)
+
+
+def test_a_modern_server_without_the_tools_capability_refuses(modern_server):
+    with pytest.raises(McpFetchError, match="did not advertise the 'tools' capability"):
+        fetch_tools_stdio(modern_server("no-tools-cap"), timeout=30)
+
+
+def test_a_silent_legacy_server_falls_back_after_the_probe_window(fake_server, monkeypatch):
+    # Legacy servers may ignore an unknown pre-initialize method entirely; silence past
+    # the probe window means legacy, and costs the window, not the request timeout.
+    import recusal.mcp_fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "DISCOVER_PROBE_TIMEOUT", 0.5)
+    observed = fetch_server_stdio(fake_server("silent-probe"), timeout=30)
+    assert observed["protocol_version"] == "2025-06-18"
+
+
+def test_a_slow_starting_modern_server_is_still_observed_the_modern_way(modern_server, monkeypatch):
+    # The probe window passes before the server answers; its reply to the fallback
+    # initialize is a modern error naming this client's version, which identifies the
+    # era: the client switches to the modern exchange instead of refusing.
+    import recusal.mcp_fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "DISCOVER_PROBE_TIMEOUT", 0.5)
+    observed = fetch_server_stdio(modern_server("slow-start"), timeout=30)
+    assert observed["protocol_version"] == "2026-07-28"
+    assert [t["name"] for t in observed["tools"]] == ["create_issue", "read_file"]

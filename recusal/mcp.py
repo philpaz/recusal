@@ -1,6 +1,6 @@
 """
 MCP tool and server-instruction integrity: pin supported source templates, observed
-initialize-result instructions, and complete tool declarations; refuse represented drift.
+discovery-result instructions, and complete tool declarations; refuse represented drift.
 
 The call-time gate (``recusal.claude_code``) adjudicates a *proposed call*, the tool name
 and arguments. This module governs the boundary before that one: **what the MCP server
@@ -47,7 +47,7 @@ Honest limits, stated up front:
   template, args, cwd, and env value TEMPLATES as written; for remote transports:
   url_template, header value templates, the headersHelper command template, and - for
   http/sse - the represented OAuth policy fields; ws is header-only per Claude's
-  documented surface) plus its initialize-result INSTRUCTIONS (as a hash)
+  documented surface) plus its discovery-result INSTRUCTIONS (as a hash)
   alongside the catalog, and verification compares it all BEFORE launching - a changed
   command, a same-key env value swap, a same-name header-template swap, a changed
   helper command, a widened OAuth scope set, changed instructions, or an added server
@@ -87,9 +87,10 @@ from .evidence import Finding
 #: session start while full tool definitions are deferred (full definitions may load
 #: up front when tool search is disabled or falls back, when a server sets
 #: ``alwaysLoad``, or when a tool declares ``anthropic/alwaysLoad``), which makes the
-#: initialize-result ``instructions`` field a discovery-time influence surface: a
-#: server that keeps its tools byte-identical but rewrites its instructions steers
-#: when and why the model reaches for them. Instructions are pinned
+#: server ``instructions`` field (the ``initialize`` result on a legacy server, the
+#: ``server/discover`` result from MCP 2026-07-28; the same field, the same pin) a
+#: discovery-time influence surface: a server that keeps its tools byte-identical but
+#: rewrites its instructions steers when and why the model reaches for them. Instructions are pinned
 #: as a hash (never readable text), screened at pin time with the same bounded marker
 #: review as declarations, and added/removed/changed instructions are drift. An
 #: observation that did not carry instructions (a legacy dump) is recorded as
@@ -565,7 +566,7 @@ def diff_observation_scope(
 
 
 def instructions_record(observed: bool, text: Optional[str]) -> Dict[str, Any]:
-    """The pinned shape of one server's initialize-result ``instructions``.
+    """The pinned shape of one server's discovery-result ``instructions``.
 
     Three states, never conflated: ``{"observed": false}`` (the observation did not
     carry instructions - a legacy dump - and the pin claims nothing about them);
@@ -690,7 +691,7 @@ def build_manifest(
     :func:`normalize_source`); a server without one is pinned as ``transport:
     "external"`` - its catalog is governed, its launch is not recusal's to govern.
 
-    ``instructions`` maps a server name to its observed initialize-result
+    ``instructions`` maps a server name to its observed discovery-result
     ``instructions`` text (``None`` = the server was asked and declares none). A server
     absent from the mapping was NOT observed for instructions (a legacy dump), which is
     recorded as ``observed: false`` rather than silently claiming coverage.
@@ -1685,7 +1686,7 @@ def screen_server_instructions(
     markers: Sequence[str] = DECLARATION_MARKERS,
     max_chars: int = MAX_DECLARED_CHARS,
 ) -> List[Finding]:
-    """The pin-time review screen for initialize-result server instructions.
+    """The pin-time review screen for discovery-result server instructions.
 
     The same bounded deny-list marker scan and size cap as the declaration screen, for
     the same reason: instructions are discovery-time model-facing text. ERROR routes to

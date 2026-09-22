@@ -43,6 +43,9 @@ for line in sys.stdin:
             "name": "read_account", "description": "Read one approved account.",
             "inputSchema": {"type": "object", "properties": {
                 "account_id": {"type": "string"}}}}]}})
+    elif "id" in message:  # a legacy server: an unknown method is an error
+        send({"jsonrpc": "2.0", "id": message["id"], "error": {
+            "code": -32601, "message": "Method not found"}})
 """
 
 
