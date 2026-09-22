@@ -34,9 +34,10 @@ error in the hook) is nonzero-but-not-2, so the gate silently disables. The loop
 the first `python3` → `python` → `py` that is `>=3.9`, executes the hook, and coerces
 **any** nonzero exit into `exit 2`. Stated precisely: the launcher closes the
 missing-interpreter, wrong-interpreter, import-error, and nonzero gate-process
-failure modes; it does not cover Claude-level hook cancellation, the hook-timeout
-outcome (not independently established), or a broken gate that exits 0 with
-irrelevant output. (Deny and defer both exit `0`, so any nonzero genuinely means
+failure modes; it does not cover Claude-level hook cancellation, the hook timeout
+(fail-open: Claude Code documents that a `PreToolUse` command hook canceled at its
+timeout "doesn't block the tool call", [hooks reference](https://code.claude.com/docs/en/hooks#timeouts); an Agent SDK callback
+hook that times out does block), or a broken gate that exits 0 with irrelevant output. (Deny and defer both exit `0`, so any nonzero genuinely means
 "the hook did not run.")
 On Windows, Claude Code runs shell-form hooks under Git Bash when it is installed and
 **falls back to PowerShell when it is not**, where this POSIX one-liner is a parse error
@@ -122,7 +123,7 @@ normal permission flow, allowlist mode, too, only ever adds refusals. See
 `examples/allowlist_gate.py` for the deny-list-vs-allowlist comparison, and
 `docs/COOKBOOK.md` recipe 11 for tuning.
 
-## 2. Claude Agent SDK, manual loop
+## 2. Claude Messages API, manual loop
 
 Use the **manual** agent loop (not the auto tool-runner) so you can adjudicate each
 tool call before it executes. Gather whatever evidence proves the call is safe, get a
@@ -175,19 +176,31 @@ Runnable: `examples/claude_agent_live.py` (real API) and `examples/claude_refusa
 
 ## 3. Gate a Managed Agent (`always_ask`)
 
-For agents running `permission_policy: {"type": "always_ask"}`, the session idles
-awaiting a `user.tool_confirmation`. Make Recusal the decider. The SDK surfaces below
-(`permission_policy`, the `user.tool_confirmation` event, `sessions.events.send`) are
-**illustrative**: verify them against your Agent SDK version. `tool_confirmation` only
-builds the dict and carries no SDK dependency:
+For agents running `permission_policy: {"type": "always_ask"}` (beta header
+`managed-agents-2026-04-01`), the session emits an `agent.tool_use` or
+`agent.mcp_tool_use` event, then idles with `stop_reason.type: "requires_action"` until
+it receives a `user.tool_confirmation` for each blocking event. Make Recusal the decider.
+The event shape below is the one Anthropic documents
+([permission policies](https://platform.claude.com/docs/en/managed-agents/permission-policies#respond-to-confirmation-requests)); `tool_confirmation` only
+builds the dict and carries no SDK dependency. Pass the **event ID** of the tool-use
+event (listed in `stop_reason.event_ids`), not a Messages API `tool_use` block id:
 
 ```python
 from recusal.claude import tool_confirmation
 
-event = tool_confirmation(tool_use_id, gather_evidence(tool))
-# → {"type": "user.tool_confirmation", "result": "allow"|"deny", "deny_message": "..."}
-client.beta.sessions.events.send(session_id=session.id, events=[event])
+event = tool_confirmation(tool_use_event.id, gather_evidence(tool_use_event))
+# → {"type": "user.tool_confirmation", "tool_use_id": ..., "result": "allow"|"deny",
+#    "deny_message": "..."}
+client.beta.sessions.events.send(session.id, events=[event])
 ```
+
+Recusal decides only the calls that reach a confirmation. Under the `auto` policy the
+server runs the calls it judges safe and denies the ones it judges high-risk without
+asking, and a server denial cannot be overridden; only the calls it reaches no
+determination on pause for a confirmation. For a tool every call of which must be
+adjudicated, set that tool to `always_ask`. Custom tools are outside permission
+policies entirely: your application decides before sending `user.custom_tool_result`,
+which is where `gate_tool_use`-style adjudication belongs.
 
 ## 4. Adjudicate data / a work product directly
 

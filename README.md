@@ -137,7 +137,11 @@ The plugin ships the same deny-list shim and adjudicates with its own vendored c
 the package - no `pip install` step. A missing, substituted (an ambient package
 instead of the vendored copy), or version-mismatched runtime refuses every tool call
 rather than silently disabling itself. For a policy tailored to one project, prefer
-`python -m recusal init` and edit the scaffolded gate.
+`python -m recusal init` and edit the scaffolded gate. Under the managed setting
+`allowManagedHooksOnly`, Claude Code blocks plugin hooks unless managed `enabledPlugins`
+force-enables that exact `recusal-gate@recusal` ID
+([settings reference](https://code.claude.com/docs/en/settings-reference#what-runs-under-allowmanagedhooksonly)):
+an installed but not force-enabled gate would not run.
 
 For production, pin the runtime the gate runs on: a dedicated venv with
 `pip install "recusal==<version>"`, registered explicitly, protected from agent writes.
@@ -145,10 +149,12 @@ For production, pin the runtime the gate runs on: a dedicated venv with
 governed session, the deny-list refuses package-manager commands that uninstall,
 reinstall, or shadow the `recusal` package: managing the gate's own runtime is the
 operator's job, outside the session.) One named residual, stated in full in
-[`docs/HOWTO.md`](docs/HOWTO.md): the authorization outcome when Claude cancels a hook
-at the platform timeout has NOT been independently established here, so do not describe
-hook timeout as fail-closed until you have tested it in your own deployment. Recusal's
-shipped policies adjudicate in milliseconds; keep custom policies fast and bounded.
+[`docs/HOWTO.md`](docs/HOWTO.md): hook timeout is **fail-open**. Claude Code documents
+that a `PreToolUse` command hook canceled at its timeout (600 seconds unless the
+registration sets `timeout`) "doesn't block the tool call" and the call continues through
+the normal permission flow ([hooks reference](https://code.claude.com/docs/en/hooks#timeouts)). Recusal's shipped policies
+adjudicate in milliseconds; keep custom policies fast and bounded, and keep a native deny
+rule for anything that must hold even if the gate stalls.
 
 Verifying what you installed is a first-class step, not an afterthought:
 [`docs/VERIFY.md`](docs/VERIFY.md) shows how to check the build provenance, the
@@ -179,7 +185,7 @@ bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is P
 silently disabled gate. The loop coerces exactly those gate-process failure modes -
 missing interpreter, unsupported interpreter, import failure, nonzero gate-process
 exit - into `exit 2`, so they refuse instead of waving the call through. It does not
-cover Claude-level hook cancellation or the hook-timeout outcome (above).
+cover Claude-level hook cancellation or the hook timeout, which is fail-open (above).
 
 **Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
 *falls back to PowerShell* when it is not - where this POSIX loop is a parse error with a
@@ -274,7 +280,7 @@ each with its own evidence:
 
 | Boundary | Threat (as the field names it) | Recusal |
 |---|---|---|
-| Discovery (`initialize.instructions` + `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (below) |
+| Discovery (server `instructions` from `initialize` or, on MCP 2026-07-28, `server/discover`; plus `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (below) |
 | Invocation (the call) | tool misuse (OWASP ASI02), wrong-subject writes (ASI03), exfiltration via tool invocation (MITRE ATLAS AML.T0086) | the call-time policy above |
 | Response (the result) | indirect prompt injection in tool output (OWASP LLM01) | quarantine, [cookbook recipe 6](docs/COOKBOOK.md) |
 
@@ -440,8 +446,10 @@ intentionally ONE layer in a broader control stack, not a replacement for the ot
 Claude native permissions own broad allow/ask/deny rules (a native deny applies
 regardless of any hook decision). Claude sandboxing constrains what an allowed command
 can touch after it runs. Managed settings own organization-controlled policy, hook
-distribution, and MCP server restrictions (`allowedMcpServers` is how an enterprise
-bounds the effective server set). Claude MCP configuration owns transport, OAuth,
+distribution, and MCP server restrictions (`allowedMcpServers` bounds the servers
+users add, and is authoritative only with `allowManagedMcpServersOnly: true`; since
+Claude Code 2.1.259 it no longer filters `managed-mcp.json` servers, which only
+`deniedMcpServers` subtracts from). Claude MCP configuration owns transport, OAuth,
 credentials, and endpoint connectivity. Recusal owns deterministic evidence
 adjudication: explicit findings become `PASS`/`RETRY`/`FAIL` with no model in the
 decision path, a clean verdict defers to Claude's remaining permission flow by default,
@@ -460,7 +468,7 @@ enforcement precedence is deny-wins across the hook and native permission layers
 native deny applies regardless of any hook decision, and a blocking hook takes
 precedence over a native allow.
 
-### Claude Agent SDK, manual loop
+### Claude Messages API, manual loop
 
 In a manual agent loop, gate each tool call and hand Claude an `is_error` tool_result on a
 refusal; it self-corrects:
@@ -483,8 +491,9 @@ else:
 
 Runnable: [`examples/claude_agent_live.py`](examples/claude_agent_live.py) (real API) and
 [`examples/claude_refusal.py`](examples/claude_refusal.py) (offline, no key). For **Managed
-Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic decider
-(the SDK event shape is illustrative; verify it against your Agent SDK version).
+Agents** `always_ask`, `recusal.claude.tool_confirmation` is the deterministic decider,
+building the `user.tool_confirmation` event Anthropic documents; under the `auto` policy
+it decides only the calls the server pauses on (see [`docs/HOWTO.md`](docs/HOWTO.md)).
 
 ### Any agent loop, no Claude required
 

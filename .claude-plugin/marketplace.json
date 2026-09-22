@@ -3,10 +3,8 @@
   "owner": {
     "name": "Philip Paz"
   },
-  "metadata": {
-    "description": "Deterministic governance for Claude agents: an independent verifier that refuses a tool call before it runs.",
-    "version": "0.9.0"
-  },
+  "description": "Deterministic governance for Claude agents: an independent verifier that refuses a tool call before it runs.",
+  "version": "0.9.0",
   "plugins": [
     {
       "name": "recusal-gate",

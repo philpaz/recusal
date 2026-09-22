@@ -534,7 +534,7 @@ Runnable version with path confinement and allowlist mode:
 > poisoned tool *description* steers the model before any call is proposed. Screen what an
 > MCP tool *returns* with recipe 6; govern the tool catalog itself with `recusal mcp pin` /
 > `recusal mcp verify` and enforce the pin at call time by wrapping this recipe in
-> `recusal.mcp.manifest_policy("mcp-manifest.json", policy=policy)` — unpinned MCP calls
+> `recusal.mcp.manifest_policy("mcp-manifest.json", policy=policy)` - unpinned MCP calls
 > refuse before your rules even run. Transport/authorization threats (confused deputy,
 > token passthrough, session hijacking) belong to the MCP spec's own Security Best
 > Practices layer, complementary to this gate.
@@ -543,10 +543,10 @@ Runnable version with path confinement and allowlist mode:
 
 Recipe 12 refuses *unexpected* servers and verbs at call time. This is the discovery-boundary
 companion: **pin the exact tool catalog your approved servers declare, then refuse any call to
-a tool that was never pinned** — catching the rug pull (a description quietly rewritten after
+a tool that was never pinned** - catching the rug pull (a description quietly rewritten after
 approval) and the tool-that-appeared, deterministically.
 
-**1. Pin once** — the reviewed, human step. recusal fetches local stdio servers for you:
+**1. Pin once** - the reviewed, human step. recusal fetches local stdio servers for you:
 
 ```bash
 recusal mcp pin --claude-config .mcp.json --approve-server-launch --out mcp-manifest.json
@@ -575,9 +575,9 @@ never embedded); source templates are stored readable so drift can be explained 
 secrets out of them (the pin warns). It is
 byte-deterministic. `pin` refuses to write when its screen flags injection phrasing in a
 declaration, until you pass `--force` to record that a human reviewed it. Commit
-`mcp-manifest.json` — it is approved truth.
+`mcp-manifest.json` - it is approved truth.
 
-**2. Enforce at call time** — wire `manifest_policy` into a PreToolUse hook
+**2. Enforce at call time** - wire `manifest_policy` into a PreToolUse hook
 (`.claude/hooks/mcp_gate.py`), the same way as any gate in the Wiring section above:
 
 ```python
@@ -594,7 +594,7 @@ from recusal.mcp import manifest_policy
 run_pretooluse_hook(manifest_policy("mcp-manifest.json", policy=deny_list_policy()))
 ```
 
-**3. Verify in CI / at session start** — catch drift before it reaches an agent:
+**3. Verify in CI / at session start** - catch drift before it reaches an agent:
 
 ```bash
 recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json
@@ -603,34 +603,48 @@ recusal mcp verify --claude-config .mcp.json --manifest mcp-manifest.json
 ```
 
 A **remote/HTTP** server is pinned the same way, except you supply its `tools/list` yourself
-(recipe 14). To also apply argument-level rules on top of the pin, pass an inner policy —
+(recipe 14). To also apply argument-level rules on top of the pin, pass an inner policy:
 recipe 15.
 
 ## 14. Pin a remote (HTTP) MCP server
 
-Recipe 13's `--stdio` / `--claude-config` fetch a **local stdio** server for you — the
-zero-dependency client recusal ships speaks stdio only. A **remote/HTTP** server
+Recipe 13's `--stdio` / `--claude-config` fetch a **local stdio** server for you - the
+zero-dependency client recusal ships speaks stdio only (the MCP 2026-07-28 revision,
+probed first with `server/discover`, and the `initialize` revisions back to 2024-11-05
+as the fallback the spec prescribes). A **remote/HTTP** server
 (streamable-HTTP or SSE) is governed exactly the same way, but you obtain its `tools/list`
 with a real MCP client and hand recusal the dump via `--from`. That is deliberate: recusal
 owns the *adjudication* (deterministic, no deps), not the *transport* (an HTTP+OAuth client is
 heavy, and its own SSRF/redirect surface is precisely what the MCP spec's Security Best
-Practices warn about — best left to the maintained SDKs).
+Practices warn about - best left to the maintained SDKs).
 
 Dump `tools/list` into recusal's `{server_name: [declaration, ...]}` shape with the
-official [`mcp`](https://pypi.org/project/mcp/) SDK (or `fastmcp`, or any client):
+official [`mcp`](https://pypi.org/project/mcp/) Python SDK, version 2.2 or later (or any
+client). Its `Client` probes `server/discover` and falls back to the `initialize`
+handshake, so the same code dumps an MCP 2026-07-28 server and an older one. This exact
+code was run against a 2.2 and a 1.30 server over streamable HTTP on 2026-09-22:
 
 ```python
-# pip install mcp    (NOT a recusal dependency — this is your collection step)
-import anyio, json
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+# pip install "mcp>=2.2"    (NOT a recusal dependency: this is your collection step)
+import json
+
+import anyio
+import httpx2
+from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
 
 
 async def dump(url, server_name, out_path, headers=None):
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            init = await session.initialize()
-            tools = (await session.list_tools()).tools
+    async with httpx2.AsyncClient(headers=headers) as http:
+        async with Client(streamable_http_client(url, http_client=http)) as client:
+            tools, cursor = [], None
+            while True:  # EVERY page: a first-page-only dump would pin a subset
+                page = await client.list_tools(cursor=cursor)
+                tools.extend(page.tools)
+                cursor = page.next_cursor
+                if not cursor:
+                    break
+            instructions = client.instructions
     # the RICH shape: under Claude's default tool-search behavior, instructions are
     # discovery content loaded at session start, so the dump carries them alongside
     # the tools (manifest v5 pins both); a legacy {server: [tools]} dump still works
@@ -638,8 +652,8 @@ async def dump(url, server_name, out_path, headers=None):
     # with --server takes the same {"instructions": ..., "tools": [...]} object)
     catalog = {
         server_name: {
-            "instructions": getattr(init, "instructions", None),
-            "tools": [t.model_dump(exclude_none=True, mode="json") for t in tools],
+            "instructions": instructions,
+            "tools": [t.model_dump(exclude_none=True, mode="json", by_alias=True) for t in tools],
         }
     }
     with open(out_path, "w", encoding="utf-8") as fh:
@@ -654,6 +668,10 @@ anyio.run(
     {"Authorization": "Bearer <token>"},
 )
 ```
+
+On the 1.x SDK, which predates `mcp.Client`, the same dump uses `ClientSession` over
+`streamablehttp_client`, `await session.initialize()` for the instructions, and the same
+cursor loop over `session.list_tools(cursor=...)`.
 
 Then pin and, in CI or at session start, verify. **Pin the config alongside the dump**:
 the dump supplies the declarations, but the `.mcp.json` entry supplies the *identity* -
@@ -702,7 +720,7 @@ records what it emits. A dump-only pin (no `--claude-config`) still works and re
 >   differences read as drift. Pick one dumper and reuse it.
 > - **Same endpoint the agent session uses.** Point the dumper at the exact URL (and auth)
 >   your agent connects to. A server that serves one catalog to your dumper and another to
->   the live session defeats the check — see the "honest boundary" note in the README.
+>   the live session defeats the check - see the "honest boundary" note in the README.
 > - **Close in time.** `verify` proves the catalog *when it runs*. Run it at session start
 >   (and in CI), not once a week, so the window a rug-pull can hide in stays small.
 

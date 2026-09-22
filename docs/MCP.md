@@ -55,7 +55,7 @@ evidence:
 
 | Boundary | Threat (as the field names it) | Recusal |
 |---|---|---|
-| Discovery (`initialize.instructions` + `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section); legacy tools-only observations keep an explicitly weaker instruction claim |
+| Discovery (server `instructions` from `initialize` or, on MCP 2026-07-28, `server/discover`; plus `tools/list`) | model-facing server instructions, tool-description poisoning (benchmarked against real-world MCP servers by MCPTox), unapproved capability, post-approval declaration changes (the rug pull), name collisions | **pin + refuse drift**: `recusal mcp pin` / `recusal mcp verify` / `recusal.mcp.manifest_policy` (next section); legacy tools-only observations keep an explicitly weaker instruction claim |
 | Invocation (the call) | tool misuse (OWASP ASI02), wrong-subject writes (ASI03), exfiltration via tool invocation (MITRE ATLAS AML.T0086) | **this section** |
 | Response (the result) | indirect prompt injection in tool output (OWASP LLM01) | quarantine, [cookbook recipe 6](COOKBOOK.md) |
 
@@ -177,9 +177,13 @@ MCP environment across local, project, user, plugin, claude.ai connector, CLI/SD
 project-approval, disabled-server, or managed-deployment state, and a successful
 verification does not prove Claude accepted, enabled, connected to, or selected the
 supplied entry as the effective definition - use Claude managed MCP policy
-(`allowedMcpServers`) to constrain the effective server set, then pin what it allows.
-Recusal governs MCP *tools* and, since manifest v5, the initialize-result server
-*instructions* (pinned as a hash; added, removed, or changed instructions are drift).
+(`allowedMcpServers` with `allowManagedMcpServersOnly: true` for the servers users
+add; `managed-mcp.json` or `managedMcpServers` for the servers the organization
+provides, which `allowedMcpServers` does not filter since Claude Code 2.1.259) to
+constrain the effective server set, then pin what it allows.
+Recusal governs MCP *tools* and, since manifest v5, the server *instructions* a
+server declares at discovery (the `initialize` result, or `server/discover` on an MCP
+2026-07-28 server) (pinned as a hash; added, removed, or changed instructions are drift).
 With Claude Code's default tool-search behavior those instructions and the tool names
 load at session start while full tool definitions are deferred; full definitions load
 up front when tool search is disabled or falls back, when a server sets `alwaysLoad`,

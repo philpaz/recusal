@@ -22,10 +22,13 @@ See [`WHY.md` §1-2](WHY.md) for the full argument.
 ## Doesn't Claude / Claude Code already do this?
 
 Partly, and Anthropic is refreshingly candid about the limit. Claude Code's auto-mode
-safety layer is a **same-family classifier**: a Claude-class model (Sonnet 4.6) judging another Claude
+safety layer is a **same-family classifier**: a Claude-class model (Sonnet 4.6 in Anthropic's
+engineering write-up) judging another Claude
 agent's actions. Anthropic itself states it is *"not a drop-in replacement for careful human
 review on high-stakes infrastructure"* and carries an acknowledged 17% false-negative rate
-on a curated hard-case set (see [REFERENCES](REFERENCES.md)).
+on a curated hard-case set (see [REFERENCES](REFERENCES.md)). Auto mode is now the
+built-in starting permission mode on Pro, Max, and Team plans ([permission modes](https://code.claude.com/docs/en/permission-modes),
+checked 2026-09-22), so this is the layer most Claude Code sessions start with.
 In *Trustworthy agents in practice* Anthropic also says the security of agents *"cannot be achieved by any single company"*,
 a seam where an **independent** verifier fits.
 
@@ -119,7 +122,7 @@ design.
 **Zero runtime dependencies**, standard library only (no third-party runtime packages;
 the kernel uses `dataclasses` + `enum`, other modules add `hashlib`/`json`/`re`/`shlex`/
 `os`). Python
-**3.9+**, tested in CI on 3.9-3.13. The dev extras (`pytest`, `ruff`, `mypy`, `hypothesis`
+**3.9+**, tested in CI on 3.9-3.14. The dev extras (`pytest`, `ruff`, `mypy`, `hypothesis`
 for the kernel property tests) are only for contributing.
 
 ## What happens if my policy code crashes?

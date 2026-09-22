@@ -2,7 +2,8 @@
 
 *A dated capability comparison. Every capability and scope statement below was taken
 from the linked project documentation as reviewed in June 2026, with the closest peers
-re-read on 2026-08-26; re-check the current documentation before citing, capabilities
+re-read on 2026-08-26 and the Anthropic auto-mode entry on 2026-09-22; re-check the
+current documentation before citing, capabilities
 change. This page maps layers and documented scope differences; it is not a ranking, and
 it makes no market-exhaustiveness claim.*
 
@@ -62,7 +63,7 @@ of others.
 
 ### Direct peers, the lane is filling
 - **AEGIS** ([github](https://github.com/Justin0504/Aegis)): an OSS agent-firewall whose documentation describes pre-execution policy enforcement (YAML/AJV DSL), deterministic blocking, hash-chained + Merkle audit, a kill switch, and Claude Code + MCP adapters. Recusal does **not** compete on feature count; the documented difference in scope is Recusal's small zero-dependency evidence-to-verdict contract and independent-refusal framing. Verify AEGIS's current capabilities from its own documentation before comparing.
-- **Anthropic's Claude Code auto mode**: a *same-family* safety layer: an injection probe on tool output plus a Sonnet-class transcript classifier judging actions pre-execution, with an admitted 17% false-negative rate and Anthropic's own note that it is "not a drop-in replacement for careful human review on high-stakes infrastructure." This is the conflict of interest Recusal exists to remove, a model from the same family grading the same family. In "Trustworthy agents in practice" Anthropic also states the security of agents "cannot be achieved by any single company".
+- **Anthropic's Claude Code auto mode**: a *same-family* safety layer: an injection probe on tool output plus a Sonnet-class transcript classifier judging actions pre-execution, with an admitted 17% false-negative rate and Anthropic's own note that it is "not a drop-in replacement for careful human review on high-stakes infrastructure." Since that post, auto mode has become the built-in starting permission mode on Pro, Max, and Team plans, and its classifier runs server-side by default for Claude API and Enterprise users ([permission modes](https://code.claude.com/docs/en/permission-modes), Claude Code 2.1.278); the structure is unchanged: a separate classifier model reviews each action. This is the conflict of interest Recusal exists to remove, a model from the same family grading the same family. In "Trustworthy agents in practice" Anthropic also states the security of agents "cannot be achieved by any single company".
 
 ### Academic / niche on the exact thesis (no popular pip-install)
 - "AgentCity: Constitutional Governance for Autonomous Agent Economies via Separation of Power" ([arXiv](https://arxiv.org/abs/2604.07007), an on-chain governance model); "Beyond Autonomy: A Dynamic Tiered AgentRunner" puts proposal, review, execution, and **verification** in independent agents with physically isolated boundaries ([arXiv](https://arxiv.org/abs/2605.10223)): conceptual overlap, but framework papers, not libraries.

@@ -4,10 +4,13 @@ Recusal is a governance tool, so its own integrity matters.
 
 ## Reporting a vulnerability
 
-Please report security issues **privately**, open a
-[GitHub Security Advisory](https://github.com/philpaz/recusal/security/advisories) or email
-the maintainer, rather than filing a public issue. We'll acknowledge and work a fix before
-any public disclosure.
+Please report security issues **privately**, through GitHub private vulnerability
+reporting: [open a draft advisory](https://github.com/philpaz/recusal/security/advisories/new).
+Only the maintainer sees it. Please don't file a public issue. We'll acknowledge the report
+and work on a fix before any public disclosure.
+
+**Supported versions:** the latest minor release receives security fixes; anything older is
+best-effort. The full policy is in [`STABILITY.md`](STABILITY.md#supported-versions).
 
 ## Things worth knowing
 
@@ -111,18 +114,21 @@ any public disclosure.
   its digest or audit head is anchored somewhere the writer cannot reach, not an identity
   assertion, and not authenticated by its digest alone. No key, no signature, by design,
   until a real deployment needs portable verification across a trust boundary.
-- **Two validations that remain open.** Both need an environment this project's maintainer
-  does not have, and both are preconditions for 1.0 in [`STABILITY.md`](STABILITY.md).
-  (1) **The hook-timeout authorization outcome**: when Claude Code cancels a `PreToolUse`
-  hook at the platform timeout, whether the pending tool call is then refused or allowed has
-  NOT been independently established here; do not describe hook timeout as fail-closed until
-  you have tested it in your own deployment, and a shorter timeout widens the window rather
-  than closing it (see [`docs/HOWTO.md`](docs/HOWTO.md)). (2) **The enterprise
-  managed-settings patterns**: managed-hook distribution, a force-enabled managed plugin,
-  native-deny versus hook-deny precedence in practice, and Claude sandboxing plus the hook on
-  macOS/Linux ship as written procedures that have never been executed anywhere. A report
-  from a real deployment, with the OS, Claude Code version, configured timeout, and the
-  verbatim transcript, is the contribution that closes either one.
+- **Hook timeout is fail-open.** Claude Code documents the outcome: a `PreToolUse`
+  command hook canceled at its timeout (600 seconds unless the registration sets `timeout`)
+  "doesn't block the tool call. The call continues through the normal permission flow, so
+  don't count on a stalled hook to act as a gate" ([hooks reference](https://code.claude.com/docs/en/hooks#timeouts)). Recusal
+  therefore never describes hook timeout as fail-closed. Its shipped policies adjudicate in
+  milliseconds; a custom policy that can stall is a policy that can be bypassed, and a
+  native deny rule is the layer for anything that must hold even then. (An Agent SDK
+  callback hook that exceeds its timeout blocks the call; that is a different hook family.)
+- **One validation that remains open.** It needs an environment this project's maintainer
+  does not have, and it is a precondition for 1.0 in [`STABILITY.md`](STABILITY.md):
+  **the enterprise managed-settings patterns**: managed-hook distribution, a force-enabled
+  managed plugin, native-deny versus hook-deny precedence in practice, and Claude
+  sandboxing plus the hook on macOS/Linux ship as written procedures that have never been
+  executed anywhere. A report from a real deployment, with the OS, the Claude Code version,
+  and the verbatim transcript, is the contribution that closes it.
 
 ## Attack surfaces, and how this is architected for them
 
@@ -143,7 +149,7 @@ deny-list engine, which lives in the installable package as `recusal.deny_list`
 | **Disabling the gate itself** | The hook refuses edits *and deletions* of its own kill-switch, the settings and hook scripts (`.claude/settings*`, `.claude/hooks/**`), the in-repo `recusal/` **enforcement package** the hook imports and delegates every decision to (poisoning `recusal/*.py` would neutralize the gate on the next tool call), `.git/hooks/**` / `git config core.hooksPath`, *and* moving or removing the `.claude` / `.git` control directory itself, via `Write`/`Edit`, via Bash (`rm`/`mv`/`del`/redirects/inline-script writes), *and* via any other non-read tool: a generic guard refuses any non-read-only tool (an MCP filesystem tool) whose inputs reference a protected control path, matched against the de-obfuscated command and three path readings so quote-splitting, a backslash-escape, or a Windows separator cannot slip past. Pinned in `tests/test_dogfood.py`. | Same deny-list caveat; the allowlist path refuses by default (choose it for narrow high-stakes channels, see the posture note in the README). This covers the dogfood hook, which runs the gate from in-repo source; an adopter who `pip install`s `recusal` into site-packages keeps the enforcement code outside the governed tree entirely. A bare interpreter (`python file.py`) is allowed to *run* the hook; only its inline-code forms (`python -c`) are gated. Allowlist mode refuses bare interpreters outright. |
 | **Ungated side-channel tool** (an MCP shell / filesystem tool used instead of `Bash`/`Write`) | Any tool carrying a command under a command-like key (`command`/`cmd`/`shell`/`script`, matched **case-insensitively and at any nesting depth**, with argv-array values joined) gets the exact same command analysis as `Bash`; the kill-switch guard above covers filesystem-style tools. | The command-key *names* and the read-only-tool allowlist are conventions; map *your* MCP tools to the policy explicitly. A read-only MCP tool that references a protected path is refused (safe-side false positive). |
 | **Malformed / drifted hook envelope** (non-object JSON, missing `tool_name`, non-dict `tool_input`) | Fails **closed** to `deny` by default instead of normalizing and continuing. | `fail_closed=False` opts out. |
-| **Rewritten MCP control plane** (`.mcp.json` server command swapped, `mcp-manifest.json` rewritten to redefine "approved") | The manifest pins each server's **launch specification** and `verify` compares it **before** launching, so a swapped command is refused without executing the replacement (pinned by an adversarial marker test); the first pin requires `--approve-server-launch`; the default deny-list protects `.mcp.json` and `mcp-manifest.json` as kill-switch-rank paths; `manifest_policy` fails closed on a deleted/corrupt manifest; stdio servers observe under a minimal environment by default. | Identity is template-level: env and header value TEMPLATES are pinned, and manifest v5 also fingerprints initialize-result server INSTRUCTIONS when the observation carries them (legacy tools-only dumps explicitly retain NO instruction-integrity claim; the rich `--from` shape establishes it). Outside the artifact: the operator-shell values behind `${VAR}` references; under a template-only (`null`) pin, PATH/registry resolution (pin package versions in the args) and executable bytes - `pin --resolve-executable` (manifest v7) closes the first-process-image half of that by pinning the resolved `{path, sha256}`, while interpreter script arguments and launcher-fetched packages stay behind the template; resolved environment values; actual credentials, generated headers, and actual OAuth grants (only configured template/policy fields are pinned); Claude's effective server selection and dynamic live-session divergence; MCP prompts/resources/resource-templates/channels/elicitation, and MCP roots (`roots/list` responses - the session launch directory plus additional working directories - and `notifications/roots/list_changed`; Claude working-directory permissions and OS controls own that boundary) - constrain those with Claude managed MCP policy. `manifest_policy` performs runtime-NAME membership authorization at call time; it does not verify declaration or instruction content per call - run `recusal mcp verify` against a fresh observation for that. |
+| **Rewritten MCP control plane** (`.mcp.json` server command swapped, `mcp-manifest.json` rewritten to redefine "approved") | The manifest pins each server's **launch specification** and `verify` compares it **before** launching, so a swapped command is refused without executing the replacement (pinned by an adversarial marker test); the first pin requires `--approve-server-launch`; the default deny-list protects `.mcp.json` and `mcp-manifest.json` as kill-switch-rank paths; `manifest_policy` fails closed on a deleted/corrupt manifest; stdio servers observe under a minimal environment by default. | Identity is template-level: env and header value TEMPLATES are pinned, and manifest v5 also fingerprints server INSTRUCTIONS (the `initialize` result, or `server/discover` on an MCP 2026-07-28 server) when the observation carries them (legacy tools-only dumps explicitly retain NO instruction-integrity claim; the rich `--from` shape establishes it). Outside the artifact: the operator-shell values behind `${VAR}` references; under a template-only (`null`) pin, PATH/registry resolution (pin package versions in the args) and executable bytes - `pin --resolve-executable` (manifest v7) closes the first-process-image half of that by pinning the resolved `{path, sha256}`, while interpreter script arguments and launcher-fetched packages stay behind the template; resolved environment values; actual credentials, generated headers, and actual OAuth grants (only configured template/policy fields are pinned); Claude's effective server selection and dynamic live-session divergence; MCP prompts/resources/resource-templates/channels/elicitation, and MCP roots (`roots/list` responses - the session launch directory plus additional working directories - and `notifications/roots/list_changed`; Claude working-directory permissions and OS controls own that boundary) - constrain those with Claude managed MCP policy. `manifest_policy` performs runtime-NAME membership authorization at call time; it does not verify declaration or instruction content per call - run `recusal mcp verify` against a fresh observation for that. |
 | **Ambiguous / buggy policy evidence** (a finding dict with no status degrading to PASS; a stringified `"passed": "false"` reading as truthy; a policy that raises) | The enforcement adapters adjudicate with `strict=True` and fail closed; `Finding.coerce` reads a string `passed` or `status` against a pass *allowlist*, so `"false"`/`"no"`/`"0"` and any unrecognized token (`"maybe"`) read as a *failure* (not raw truthiness); a raising policy fails closed too. | The lenient no-status default applies only to `compute_verdict` called directly, not at the adapters. |
 | **Prompt injection via tool output** | Adjudicate the observation before acting; `classify_failure` routes injected content to `quarantine` deterministically (recipe). | You must actually gate on the screen result. |
 | **Data exfiltration** | Egress-allowlist policy refuses outbound calls to non-allowlisted destinations (recipe). | Define the allowlist. |

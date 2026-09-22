@@ -98,7 +98,7 @@ by the procedure in [`docs/VERIFY.md`](docs/VERIFY.md).
 The latest minor receives fixes. Security fixes land on the latest minor; anything older is
 best-effort, and the report process is in [`SECURITY.md`](SECURITY.md).
 
-Python **3.9 or newer**, tested in CI on 3.9 through 3.13 across Linux, macOS, and Windows.
+Python **3.9 or newer**, tested in CI on 3.9 through 3.14 across Linux, macOS, and Windows.
 The 3.9 floor stays until holding it forces a compromise in the enforcement code, and the
 release toolchain is pinned to versions that still validate it.
 
@@ -111,10 +111,11 @@ be checked rather than announced:
 - manifest v8 unchanged through a period of real adopter use;
 - at least one deployment outside the maintainer's own machines exercising both the
   `PreToolUse` hook and MCP pinning;
-- the two environment-bound validations closed by someone's real environment: the hook
-  timeout authorization outcome, and the enterprise managed-settings patterns, both named as
-  open in [`SECURITY.md`](SECURITY.md) ("Two validations that remain open") and in
-  [`docs/HOWTO.md`](docs/HOWTO.md);
+- the environment-bound validation closed by someone's real environment: the enterprise
+  managed-settings patterns, named as open in [`SECURITY.md`](SECURITY.md) ("One
+  validation that remains open"). The hook-timeout outcome, listed here until 0.10.0, is
+  no longer open: Claude Code now documents it as fail-open, and
+  [`SECURITY.md`](SECURITY.md) says so;
 - two consecutive minor releases with no breaking change needed.
 
 Until then the number stays `0.x` and the classifier stays Beta. A project whose entire

@@ -101,7 +101,7 @@ def test_all_version_surfaces_agree():
     assert 'dynamic = ["version"]' in pyproject
     assert 'path = "recusal/__init__.py"' in pyproject
     plugin_version = _load(PLUGIN_DIR, ".claude-plugin", "plugin.json")["version"]
-    market_version = _load(REPO_ROOT, ".claude-plugin", "marketplace.json")["metadata"]["version"]
+    market_version = _load(REPO_ROOT, ".claude-plugin", "marketplace.json")["version"]
     assert recusal.__version__ == plugin_version == market_version
 
 

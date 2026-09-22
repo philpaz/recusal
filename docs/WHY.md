@@ -128,7 +128,7 @@ Recusal is that authority. Operationally, adopting it changes five things:
 
 4. **It works where you already build.** The enforcement core is zero-dependency and
    framework-neutral; the same findings-and-verdict model is exposed through the
-   included adapters: a Claude Code hook, a Claude Agent SDK manual loop, a Managed
+   included adapters: a Claude Code hook, a Claude Messages API manual loop, a Managed
    Agents confirmation, or the library called directly.
 
 5. **It tells you what to do next.** A refusal is only useful if you know the next move.
