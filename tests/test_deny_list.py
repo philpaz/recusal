@@ -89,6 +89,16 @@ def test_policy_honors_custom_read_only_tools():
     assert _decision(policy, "myreader", {"path": ".claude/settings.json"}) == "defer"
 
 
+def test_the_subagent_tool_is_read_only_under_its_current_and_former_names():
+    # Claude Code's subagent tool is `Agent` (formerly `Task`). Spawning a subagent
+    # touches no file itself; each of the subagent's own tool calls reaches the hook
+    # separately, so a prompt that MENTIONS a protected path is not a write to it.
+    policy = deny_list_policy()
+    prompt = {"prompt": "Review .claude/settings.json and report", "description": "review"}
+    assert _decision(policy, "Agent", prompt) == "defer"
+    assert _decision(policy, "Task", prompt) == "defer"
+
+
 def test_policy_analyzes_commands_under_custom_keys():
     policy = deny_list_policy(command_keys={"run"})
     assert _decision(policy, "mcp__runner", {"run": "rm -rf /repo"}) == "deny"

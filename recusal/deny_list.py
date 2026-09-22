@@ -353,9 +353,23 @@ DEFAULT_PROTECTED_PACKAGES: Tuple[str, ...] = ("recusal",)
 DEFAULT_COMMAND_KEYS: FrozenSet[str] = frozenset({"command", "cmd", "shell", "script"})
 # Built-in tools that only read; they may reference a protected path freely. Any OTHER
 # non-Bash tool (Write/Edit, or an MCP filesystem tool) that touches a protected path is
-# refused by the generic kill-switch guard. Names are compared lowercased.
+# refused by the generic kill-switch guard. Names are compared lowercased. ``agent`` is
+# Claude Code's subagent tool (``task`` is its former name, kept for older versions):
+# spawning a subagent touches no file, and each of the subagent's own tool calls reaches
+# the hook separately, so a prompt that mentions a protected path is not a write to it.
 DEFAULT_READ_ONLY_TOOLS: FrozenSet[str] = frozenset(
-    {"read", "glob", "grep", "ls", "notebookread", "webfetch", "websearch", "todowrite", "task"}
+    {
+        "read",
+        "glob",
+        "grep",
+        "ls",
+        "notebookread",
+        "webfetch",
+        "websearch",
+        "todowrite",
+        "task",
+        "agent",
+    }
 )
 _WRITE_TOOLS: Tuple[str, ...] = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
