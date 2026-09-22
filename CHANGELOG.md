@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.0] - 2026-09-23
 
 Alignment release: the MCP 2026-07-28 revision, current Claude Code behavior, and the
 release lock. The kernel, manifest schema v8, and every CLI shape and exit code are
