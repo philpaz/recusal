@@ -30,7 +30,7 @@ jobs:
     steps:
       # Actions are pinned to immutable commit SHAs (a moving tag is a rug-pull surface;
       # the trailing comment names the tag each SHA was resolved from).
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false # no job here pushes; the default keeps a live token in .git
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

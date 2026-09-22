@@ -2,13 +2,13 @@
 # Keep revs current with: pre-commit autoupdate
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.16.0  # matches the exact ruff pin in pyproject dev extras
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.18.2
+    rev: v1.20.2  # the newest mypy 1.x, as the dev extras resolve
     hooks:
       - id: mypy
         files: ^recusal/

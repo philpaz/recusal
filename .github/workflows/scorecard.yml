@@ -22,7 +22,7 @@ jobs:
       # publish_results uses OIDC to sign the results into the public scorecard API
       id-token: write
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false # no job here pushes; the default keeps a live token in .git
       - name: Run Scorecard analysis

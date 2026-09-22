@@ -14,7 +14,9 @@ dynamic = ["version"]
 description = "Lightweight, extensible, Claude-native governance for AI agents: an independent, deterministic verifier that can refuse to certify a tool call before it runs. Builders cannot grade their own work."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { file = "LICENSE" }
+# PEP 639: an SPDX expression plus the file it names (hatchling >= 1.27)
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
 keywords = [
     "ai-agents", "agent-governance", "guardrails", "verifier", "determinism",
@@ -23,13 +25,12 @@ keywords = [
 ]
 classifiers = [
     # Beta as of 0.8.0: the kernel and the manifest schema are frozen, thirteen external
-    # review cycles are closed, and CI covers 3.9-3.13 on Linux, macOS, and Windows. Not
+    # review cycles are closed, and CI covers 3.9-3.14 on Linux, macOS, and Windows. Not
     # Production/Stable, which is a compatibility promise this project has not yet earned:
     # the manifest format moved v5 -> v8 in July 2026, and a stability policy comes first.
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",

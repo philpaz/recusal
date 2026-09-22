@@ -4,7 +4,74 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.9.0] - Unreleased
+## [Unreleased]
+
+Alignment release: the MCP 2026-07-28 revision, current Claude Code behavior, and the
+release lock. The kernel, manifest schema v8, and every CLI shape and exit code are
+unchanged; a manifest pinned by 0.9.0 verifies unchanged (checked against a live MCP
+Python SDK 2.2 server), so this is a MINOR release under `STABILITY.md`.
+
+### Added
+- **MCP 2026-07-28 on stdio.** The collector now follows the revision's stdio
+  backward-compatibility rule: it probes with `server/discover` first; a
+  `DiscoverResult` is observed the stateless way (per-request `_meta` carrying the
+  protocol version, client info and capabilities, no `initialize` handshake), a
+  spec-reserved error (`UnsupportedProtocolVersionError` included) refuses and never
+  downgrades, and any other error or silence past `DISCOVER_PROBE_TIMEOUT` (10 s) falls
+  back to the `initialize` handshake for 2025-11-25 through 2024-11-05. A modern server
+  that starts slower than the probe window is still recognized by its modern error to
+  `initialize`. Modern results must carry `resultType: "complete"`; an
+  `input_required` result is not an observation. Server instructions come from the
+  discovery result, the same field and the same pin. `fetch_server_stdio` also returns
+  `protocol_version`. Verified against the official MCP Python SDK 2.2.0 (modern) and
+  1.30.0 (legacy) servers, stdio and pin/verify end to end.
+- `servers_from_claude_config(..., notes=[...])`: a `"type": "sdk"` entry is skipped,
+  as Claude Code skips it (only an SDK host application registers in-process servers),
+  and the skip is reported in `pin`/`verify` output, never silent. A config with nothing
+  Claude Code would load refuses.
+
+### Fixed
+- The deny-list treats Claude Code's subagent tool, `Agent` (formerly `Task`), as
+  read-only: a subagent prompt that mentions a protected path was refused as a write.
+  Each of the subagent's own tool calls still reaches the hook.
+- Cookbook recipe 14 used the 1.x SDK's `streamablehttp_client`, which the current MCP
+  Python SDK (2.x) no longer has, and dumped only the first `tools/list` page. It now
+  uses `mcp.Client` with a cursor loop, run against 2.2 and 1.30 servers.
+- `.claude-plugin/marketplace.json` carries `description` and `version` at the top
+  level, the current documented form (under `metadata` is accepted only for backward
+  compatibility).
+
+### Security
+- `release-requirements.txt`: `cryptography` 49.0.0 to 50.0.1 (GHSA-g6cj-pr64-35w5 /
+  PYSEC-2026-3552). The build and upload path does not decrypt PKCS#7; the pin moved
+  because a known-vulnerable version does not stay in a reviewed lock. Every other pin
+  checked clean against OSV on 2026-09-22.
+- `SECURITY.md` points reporters at GitHub private vulnerability reporting, now enabled
+  on the repository, and states the supported versions.
+
+### Documentation
+- Hook timeout is fail-open, as Claude Code now documents ("A timed-out `command`,
+  `http`, or `mcp_tool` hook doesn't block the tool call"). The README, `HOWTO.md`,
+  `SECURITY.md` and the 1.0 preconditions no longer list it as an open question.
+- `allowedMcpServers` bounds user-added servers and is authoritative only with
+  `allowManagedMcpServersOnly: true`; since Claude Code 2.1.259 it does not filter
+  `managed-mcp.json` servers. Plugin users under `allowManagedHooksOnly` need the gate
+  force-enabled through managed `enabledPlugins`.
+- Managed Agents: the `user.tool_confirmation` shape is Anthropic's documented one (no
+  longer "illustrative"), `tool_use_id` is the tool-use EVENT id, and under the `auto`
+  policy Recusal decides only the calls the server pauses on.
+- "Claude Agent SDK, manual loop" is renamed "Claude Messages API, manual loop", which
+  is what the example is. The auto-mode statements in `LANDSCAPE.md` and `FAQ.md` are
+  dated and note that auto mode is now the starting mode on Pro, Max, and Team.
+
+### Build
+- PEP 639 license metadata (`license = "Apache-2.0"`, `license-files`); the deprecated
+  license classifier is removed. CI adds Python 3.14 and a weekly scheduled run. The
+  pre-commit ruff and mypy revisions match the dev pins. Each SHA-pinned action's
+  comment now names the exact tag that SHA resolves to (`v5.0.1`, `v1.14.0`), which
+  zizmor's online audit checks; the SHAs themselves are unchanged.
+
+## [0.9.0] - 2026-08-27
 
 Authorization release. Recusal is a deterministic authorization adjudicator for agent
 actions: it verifies each proposed action against explicit, provenance-bearing authority
@@ -1301,8 +1368,8 @@ Hardening and documentation only, driven by two external reviews; no new capabil
     a changed *description* is called out as the rug-pull vector) are CRITICAL; a removed
     tool or absent server is a recorded WARNING; an empty or ambiguous observation fails
     closed. `screen_tool_declarations` is a pin-time review aid (deterministic injection
-    markers + a size cap over the *whole* declaration — title, annotations, schema property
-    names/descriptions, enum values — ERROR → RETRY → a human looks), deliberately not a
+    markers + a size cap over the *whole* declaration - title, annotations, schema property
+    names/descriptions, enum values - ERROR → RETRY → a human looks), deliberately not a
     malice detector: whether a declaration is malicious is semantic judgment, made by the
     human at pin time; everything after the pin detects *change*, not *intent*.
   - **CLI**: `recusal mcp pin` / `recusal mcp verify`, same exit-code discipline as the
@@ -1317,7 +1384,7 @@ Hardening and documentation only, driven by two external reviews; no new capabil
     `PreToolUse` gate and refuses any `mcp__server__tool` call that was never pinned
     ("no pin, no MCP"); a missing or corrupt manifest fails CLOSED for MCP calls; wraps
     an inner policy so argument-level rules compose on top of the pin.
-  - **The fetcher** (`recusal.mcp_fetch`, a separate module — the one place in the package
+  - **The fetcher** (`recusal.mcp_fetch`, a separate module - the one place in the package
     that spawns a process, kept apart so the decision surface stays pure/stdlib): a minimal
     zero-dependency stdio MCP client (`fetch_tools_stdio`, newline-delimited JSON-RPC,
     `initialize` → `notifications/initialized` → paginated `tools/list`). Collection is
@@ -1376,22 +1443,22 @@ Hardening and documentation only, driven by two external reviews; no new capabil
 ### Added
 - **CI adjudication commands.** The `recusal` CLI grew three subcommands that expose the
   kernel to CI with blocking exit codes (`PASS` → 0, `RETRY` → 1, `FAIL` → 2; every
-  operational error — unreadable file, invalid JSON, malformed anchor — exits 2,
+  operational error - unreadable file, invalid JSON, malformed anchor - exits 2,
   indistinguishable from FAIL on purpose: a gate that cannot adjudicate must refuse, not
   wave the job through). All three take `--json` for a stable machine-readable payload.
   - **`recusal verdict findings.json`**: adjudicate any tool's findings file (a JSON array,
-    or an object with a `findings` array; `-` reads stdin). Strict by default — a finding
+    or an object with a `findings` array; `-` reads stdin). Strict by default - a finding
     that omits `status`/`passed` is rejected rather than read as a silent pass
-    (`--lenient` opts out) — and an *empty* findings set fails closed: an evidence set
+    (`--lenient` opts out) - and an *empty* findings set fails closed: an evidence set
     that proves nothing certifies nothing (the `GateAdjudicator` rule, at the CLI seam).
   - **`recusal audit verify log.jsonl [--expect-head COUNT:HASH]`**: verify a hash-chained
     audit log. A **missing log fails closed** (a missing log is not an intact log), and a
     nonblank line that does not parse counts as a *break*: `recusal.audit.load` skips such
     a line so a reader survives a half-written tail, but a verifier that ignored it could
     bless a log whose most recent entries are unreadable.
-  - **`recusal doctor [--dir]`**: health-check a scaffolded gate — gate script present and
+  - **`recusal doctor [--dir]`**: health-check a scaffolded gate - gate script present and
     compiling, hook actually registered in `settings.json`, launcher coercing failures to
-    the blocking exit code — so "the gate silently isn't installed" is caught by CI
+    the blocking exit code - so "the gate silently isn't installed" is caught by CI
     instead of discovered during an incident. The doctor is adjudicated by the same kernel
     it checks: its observations are `Finding`s folded through `compute_verdict`.
 - **GitHub Action** (`action.yml`): the same three commands as a composite action
