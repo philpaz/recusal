@@ -1286,6 +1286,11 @@ def mcp_pin_command(
     if not screen_verdict.passed and not as_json:
         for f in screen_verdict.failures:
             out.write(f"reviewed (--force): {f.check}: {f.message}\n")
+    if not as_json:
+        # WARNINGs do not block the pin, but a literal secret written into a pinned
+        # template is exactly what the operator must see; --json carries them in `screen`
+        for f in screen_verdict.warnings:
+            out.write(f"warning: {f.check}: {f.message}\n")
 
     n_servers = len(catalog)
     n_tools = sum(len(t) for t in catalog.values())

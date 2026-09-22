@@ -71,6 +71,13 @@ _CHMOD_WORLD = re.compile(
     r"\bchmod\b[^|&;]{0,256}-\w*r[^|&;]{0,256}\b0?777\b"
 )  # recursive chmod to 777
 _GIT_FORCE_REFSPEC = re.compile(r"\bgit\s+push\b.*\s\+\S")  # force-push via +refspec
+# A force flag ANYWHERE in a git push (the literal markers above only see it right after
+# `push`): after the remote (`git push origin main --force`), combined short flags
+# (`-uf`), and git global options before the verb (`git -C . push -f`). Scoped to one
+# command segment, so a later `| grep -f` or `; rm -f` is not read as a push flag.
+_GIT_FORCE_FLAG = re.compile(
+    r"\bgit\b[^|&;\n]*?\bpush\b[^|&;\n]*?\s(?:--force\S*|-[a-z]*f[a-z]*)(?=\s|$)"
+)
 # curl/wget piped or process-substituted into ANY interpreter (not just sh/bash).
 _PIPE_TO_SHELL = re.compile(r"(curl|wget)\b.*(\|\s*" + _INTERP + r"\b|<\(\s*(curl|wget))")
 _PROCESS_SUB_TO_SHELL = re.compile(r"\b" + _INTERP + r"\b\s*<\(\s*(curl|wget)\b")
@@ -522,6 +529,10 @@ def analyze_command(
         markers.append("chmod -R 777")
     if _search_any(_GIT_FORCE_REFSPEC, variants):
         markers.append("git push +force")
+    if not any(m.startswith("git push -") for m in markers) and _search_any(
+        _GIT_FORCE_FLAG, variants
+    ):
+        markers.append("git push --force")
     if _search_any(_GIT_HOOK_REDIRECT, variants):
         markers.append("git hooksPath redirect")
     if _search_any(_CONTROL_DIR_OP, variants):

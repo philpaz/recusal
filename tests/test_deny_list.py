@@ -6,6 +6,8 @@ test_subversion_hook.py, which now import this module directly. Here we pin the 
 own public API: ``analyze_command`` as a pure function, and ``deny_list_policy``'s
 parameterization (the capability the extraction adds over a copy-paste script)."""
 
+import pytest
+
 from recusal import Decision, Finding, compute_verdict
 from recusal.claude_code import decide
 from recusal.deny_list import (
@@ -97,6 +99,41 @@ def test_the_subagent_tool_is_read_only_under_its_current_and_former_names():
     prompt = {"prompt": "Review .claude/settings.json and report", "description": "review"}
     assert _decision(policy, "Agent", prompt) == "defer"
     assert _decision(policy, "Task", prompt) == "defer"
+
+
+FORCE_PUSHES = (
+    "git push --force",
+    "git push -f origin main",
+    "git push origin main --force",  # the flag after the remote
+    "git push origin -f",
+    "git -C . push --force",  # git global options before the verb
+    "git push --force-with-lease",
+    "git push origin main --force-if-includes",
+    "git push origin +main",  # force via +refspec
+    "git push origin main -uf",  # combined short flags
+    "GIT PUSH origin main --FORCE",
+)
+ORDINARY_GIT = (
+    "git push origin main",
+    "git push -u origin feature",
+    "git push --follow-tags origin main",
+    "git push -o ci.skip origin main",
+    "git push --dry-run origin main",
+    "git push origin feature-force",  # a branch name, not a flag
+    "git fetch -f",  # force on another verb
+    "git push origin main && rm -f /tmp/x.log",  # -f belongs to the next command
+    "git push origin main | grep -f pats",
+)
+
+
+@pytest.mark.parametrize("command", FORCE_PUSHES)
+def test_every_force_push_form_is_refused(command):
+    assert _decision(deny_list_policy(), "Bash", {"command": command}) == "deny"
+
+
+@pytest.mark.parametrize("command", ORDINARY_GIT)
+def test_ordinary_git_pushes_are_not_mistaken_for_force(command):
+    assert _decision(deny_list_policy(), "Bash", {"command": command}) == "defer"
 
 
 def test_policy_analyzes_commands_under_custom_keys():

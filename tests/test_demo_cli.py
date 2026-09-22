@@ -71,8 +71,9 @@ def test_mcp_drift_passes_the_pin_and_refuses_both_drifts(capsys):
 def test_list_names_every_scenario(capsys):
     code, out = _run(capsys, "--list")
     assert code == 0
-    for name in ("wrong-subject", "destructive-shell", "mcp-drift"):
-        assert name in out
+    for name in ("wrong-subject", "destructive-shell", "mcp-drift", "expired-authorization"):
+        # the name must stand apart from its summary, however long the name is
+        assert f"  {name}  " in out
 
 
 def test_unknown_scenario_is_refused_by_the_parser():

@@ -692,6 +692,23 @@ def test_secret_bearing_templates_are_warned_into_json(arena):
     assert "mcp_template_default" in briefs
 
 
+def test_secret_bearing_templates_are_warned_in_text_output_too(arena):
+    # The docs say "the pin warns": a WARNING never blocks the pin, so without this line
+    # a literal bearer token would be written into the manifest with no visible sign.
+    entry = {
+        "type": "http",
+        "url": "https://x.example/mcp",
+        "headers": {"Authorization": "Bearer literal-token-abc"},
+    }
+    config = _remote_config(arena, entry)
+    dump = arena["tmp"] / "hosted.tools.json"
+    dump.write_text(json.dumps({"hosted": [{"name": "t"}]}), encoding="utf-8")
+    out = io.StringIO()
+    rc = mcp_pin_command(arena["manifest"], claude_config=config, from_file=str(dump), stdout=out)
+    assert rc == 0  # a warning, not a refusal
+    assert "warning: mcp_header_literal" in out.getvalue()
+
+
 def test_a_secret_bearing_argument_is_warned(arena):
     config = arena["tmp"] / ".mcp.json"
     config.write_text(

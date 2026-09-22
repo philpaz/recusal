@@ -288,8 +288,9 @@ def list_scenarios(write: Writer) -> int:
     """Print the scenario names and what each one demonstrates."""
     write("recusal demo scenarios (default: all four, in order)")
     write("")
+    width = max(len(name) for name, _, _ in _SCENARIOS) + 3
     for name, summary, _ in _SCENARIOS:
-        write(f"  {name:<20}{summary}")
+        write(f"  {name:<{width}}{summary}")
     write("")
     write("  recusal demo --scenario mcp-drift")
     return 0
