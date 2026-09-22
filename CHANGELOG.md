@@ -12,19 +12,22 @@ unchanged; a manifest pinned by 0.9.0 verifies unchanged (checked against a live
 Python SDK 2.2 server), so this is a MINOR release under `STABILITY.md`.
 
 ### Added
-- **MCP 2026-07-28 on stdio.** The collector now follows the revision's stdio
-  backward-compatibility rule: it probes with `server/discover` first; a
-  `DiscoverResult` is observed the stateless way (per-request `_meta` carrying the
-  protocol version, client info and capabilities, no `initialize` handshake), a
-  spec-reserved error (`UnsupportedProtocolVersionError` included) refuses and never
-  downgrades, and any other error or silence past `DISCOVER_PROBE_TIMEOUT` (10 s) falls
-  back to the `initialize` handshake for 2025-11-25 through 2024-11-05. A modern server
-  that starts slower than the probe window is still recognized by its modern error to
-  `initialize`. Modern results must carry `resultType: "complete"`; an
-  `input_required` result is not an observation. Server instructions come from the
-  discovery result, the same field and the same pin. `fetch_server_stdio` also returns
-  `protocol_version`. Verified against the official MCP Python SDK 2.2.0 (modern) and
-  1.30.0 (legacy) servers, stdio and pin/verify end to end.
+- **MCP 2026-07-28 on stdio.** The collector opens with `initialize`, as Claude Code
+  does for stdio servers by default, so a server that speaks both revisions is pinned
+  through the same handshake Claude loads it through and cannot show the verifier a
+  different catalog than the agent; a legacy server receives exactly the exchange 0.9.0
+  sent. Only a server that rejects the handshake is observed the 2026-07-28 way: an
+  `UnsupportedProtocolVersionError` naming this client's version, or any other error
+  followed by a `DiscoverResult` from `server/discover`, leads to the stateless exchange
+  (per-request `_meta` carrying the protocol version, client info and capabilities); a
+  modern server that does not list 2026-07-28 refuses and is never downgraded. Modern
+  results must carry `resultType: "complete"`; an `input_required` result is not an
+  observation. Server instructions come from the discovery result, the same field and
+  the same pin. `fetch_server_stdio` also returns `protocol_version`. Measured on
+  2026-09-22: the four official reference servers (everything, memory, filesystem,
+  sequential-thinking, 2026.8.31) and the official Python SDK 2.2.0 and 1.30.0 servers
+  produce manifests byte-identical to 0.9.0's, and the modern path observes a real SDK
+  2.2.0 server that rejects `initialize` either way.
 - `servers_from_claude_config(..., notes=[...])`: a `"type": "sdk"` entry is skipped,
   as Claude Code skips it (only an SDK host application registers in-process servers),
   and the skip is reported in `pin`/`verify` output, never silent. A config with nothing

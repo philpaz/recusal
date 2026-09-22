@@ -55,7 +55,7 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
             {"name": "safe_tool", "description": "Reads things.",
              "inputSchema": {"type": "object"}}]}})
-    elif rid is not None:  # legacy: an unknown method (the era probe) is an error
+    elif rid is not None:  # legacy: an unknown method is an error
         send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
 """
 

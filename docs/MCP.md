@@ -179,8 +179,18 @@ verification does not prove Claude accepted, enabled, connected to, or selected 
 supplied entry as the effective definition - use Claude managed MCP policy
 (`allowedMcpServers` with `allowManagedMcpServersOnly: true` for the servers users
 add; `managed-mcp.json` or `managedMcpServers` for the servers the organization
-provides, which `allowedMcpServers` does not filter since Claude Code 2.1.259) to
-constrain the effective server set, then pin what it allows.
+provides, which `allowedMcpServers` does not filter since Claude Code 2.1.259 unless
+the server's definition uses `${VAR}` expansion) to constrain the effective server set,
+then pin what it allows.
+
+**Which protocol revision a pin reflects.** A server can speak both the `initialize`
+revisions and MCP 2026-07-28, and nothing stops it from declaring a different catalog in
+each. Recusal observes a stdio server the way Claude Code connects to it by default:
+through `initialize`, turning to 2026-07-28 only when the server rejects the handshake.
+Claude Code negotiates 2026-07-28 with stdio servers only under
+`MCP_PROTOCOL_NEGOTIATION=auto`; with that set, a server that speaks both revisions is
+loaded through a revision the stdio pin did not observe. Leave it unset for pinned stdio
+servers, or pin those servers from a `--from` dump made in the revision Claude uses.
 Recusal governs MCP *tools* and, since manifest v5, the server *instructions* a
 server declares at discovery (the `initialize` result, or `server/discover` on an MCP
 2026-07-28 server) (pinned as a hash; added, removed, or changed instructions are drift).

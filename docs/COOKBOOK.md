@@ -609,9 +609,9 @@ recipe 15.
 ## 14. Pin a remote (HTTP) MCP server
 
 Recipe 13's `--stdio` / `--claude-config` fetch a **local stdio** server for you - the
-zero-dependency client recusal ships speaks stdio only (the MCP 2026-07-28 revision,
-probed first with `server/discover`, and the `initialize` revisions back to 2024-11-05
-as the fallback the spec prescribes). A **remote/HTTP** server
+zero-dependency client recusal ships speaks stdio only. It opens with `initialize`
+(revisions back to 2024-11-05), as Claude Code does for stdio, and observes a server the
+MCP 2026-07-28 way only when the server rejects that handshake. A **remote/HTTP** server
 (streamable-HTTP or SSE) is governed exactly the same way, but you obtain its `tools/list`
 with a real MCP client and hand recusal the dump via `--from`. That is deliberate: recusal
 owns the *adjudication* (deterministic, no deps), not the *transport* (an HTTP+OAuth client is
@@ -621,7 +621,9 @@ Practices warn about - best left to the maintained SDKs).
 Dump `tools/list` into recusal's `{server_name: [declaration, ...]}` shape with the
 official [`mcp`](https://pypi.org/project/mcp/) Python SDK, version 2.2 or later (or any
 client). Its `Client` probes `server/discover` and falls back to the `initialize`
-handshake, so the same code dumps an MCP 2026-07-28 server and an older one. This exact
+handshake, so the same code dumps an MCP 2026-07-28 server and an older one; for HTTP
+that is also the order Claude Code's v2 client uses ([MCP docs](https://code.claude.com/docs/en/mcp)), so a server
+that speaks both revisions is dumped in the revision Claude loads it through. This exact
 code was run against a 2.2 and a 1.30 server over streamable HTTP on 2026-09-22:
 
 ```python

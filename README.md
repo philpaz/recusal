@@ -448,8 +448,8 @@ regardless of any hook decision). Claude sandboxing constrains what an allowed c
 can touch after it runs. Managed settings own organization-controlled policy, hook
 distribution, and MCP server restrictions (`allowedMcpServers` bounds the servers
 users add, and is authoritative only with `allowManagedMcpServersOnly: true`; since
-Claude Code 2.1.259 it no longer filters `managed-mcp.json` servers, which only
-`deniedMcpServers` subtracts from). Claude MCP configuration owns transport, OAuth,
+Claude Code 2.1.259 it no longer filters `managed-mcp.json` servers, other than those
+using `${VAR}` expansion; `deniedMcpServers` still subtracts from all of them). Claude MCP configuration owns transport, OAuth,
 credentials, and endpoint connectivity. Recusal owns deterministic evidence
 adjudication: explicit findings become `PASS`/`RETRY`/`FAIL` with no model in the
 decision path, a clean verdict defers to Claude's remaining permission flow by default,

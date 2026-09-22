@@ -49,7 +49,7 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
             {"name": "safe_tool", "description": "Reads things.",
              "inputSchema": {"type": "object"}}]}})
-    elif rid is not None:  # legacy: an unknown method (the era probe) is an error
+    elif rid is not None:  # legacy: an unknown method is an error
         send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
 """
 
@@ -338,6 +338,28 @@ def test_a_pinned_stdio_server_swapped_to_remote_is_transport_drift(arena):
     rc, text = _verify(arena, config)
     assert rc == 2
     assert "launch specification changed" in text
+
+
+def test_a_pinned_server_swapped_to_an_sdk_entry_refuses_never_reads_as_removed(arena):
+    # An sdk entry is skipped (Claude Code skips it too), so a pinned server rewritten
+    # to "type": "sdk" must not read as a quiet removal: the pin keeps authorizing its
+    # runtime names, so verification refuses until the removal is acknowledged.
+    body = {
+        "mcpServers": {
+            "srv": {"command": arena["safe"][0], "args": arena["safe"][1:]},
+            "keep": {"command": arena["safe"][0], "args": arena["safe"][1:]},
+        }
+    }
+    config = arena["tmp"] / ".mcp.json"
+    config.write_text(json.dumps(body), encoding="utf-8")
+    rc, _ = _pin(arena, str(config))
+    assert rc == 0
+    body["mcpServers"]["srv"] = {"type": "sdk", "name": "srv"}
+    config.write_text(json.dumps(body), encoding="utf-8")
+    rc, text = _verify(arena, str(config))
+    assert rc == 2
+    assert "mcp_server_unobserved" in text
+    assert "type: sdk" in text  # the skip is reported, never silent
 
 
 def test_a_url_without_a_type_is_a_configuration_error(arena):
@@ -735,7 +757,7 @@ for line in sys.stdin:
     elif m.get("method") == "tools/list":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": [
             {"name": "safe_tool", "description": "Reads.", "inputSchema": {"type": "object"}}]}})
-    elif "id" in m:  # legacy: an unknown method (the era probe) is an error
+    elif "id" in m:  # legacy: an unknown method is an error
         send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32601, "message": "Method not found"}})
 """
 

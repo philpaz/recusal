@@ -63,14 +63,6 @@ SUPPORTED_PROTOCOL_VERSIONS: Tuple[str, ...] = (
     "2024-11-05",
 )
 
-#: How long the ``server/discover`` era probe waits before treating a silent server as
-#: legacy (the stdio backward-compatibility rule). Legacy servers usually answer an
-#: unknown pre-``initialize`` method with an error at once; a silent one costs this
-#: much, never the full request timeout. A modern server that starts slower than this
-#: is still recognized: it answers the fallback ``initialize`` with a modern error, and
-#: the client switches to the modern exchange instead of refusing.
-DISCOVER_PROBE_TIMEOUT = 10.0
-
 #: JSON-RPC error codes the MCP specification reserves for itself (2026-07-28 allocation
 #: policy); ``-32022`` is ``UnsupportedProtocolVersionError``. A reply in this range
 #: identifies a modern server, and the client must not fall back to ``initialize``.
@@ -245,14 +237,17 @@ def _fetch_stdio(
 ) -> Dict[str, Any]:
     """Spawn a stdio MCP server, observe its instructions and ``tools/list``, return both.
 
-    The exchange is dual-era, per the 2026-07-28 stdio backward-compatibility rule. It
-    probes with ``server/discover`` first: a ``DiscoverResult`` means a modern server,
-    observed with per-request ``_meta`` and no handshake; a recognized modern error
-    (the spec-reserved code range, ``UnsupportedProtocolVersionError`` included)
-    refuses, never falls back; any other error, or silence past
-    ``DISCOVER_PROBE_TIMEOUT``, means a legacy server, observed through ``initialize``
-    → ``notifications/initialized`` → ``tools/list``. The fallback is never keyed to one
-    error code.
+    The exchange opens with ``initialize``, as Claude Code does for stdio servers by
+    default (it negotiates the 2026-07-28 revision over stdio only under
+    ``MCP_PROTOCOL_NEGOTIATION=auto``). The order is the security property: a server
+    that speaks both revisions is observed through the same handshake Claude loads it
+    through, so it cannot show the verifier one catalog and the agent another, and a
+    legacy server receives exactly the exchange 0.9.0 sent. Only a server that REJECTS
+    the handshake is tried the modern way: a modern error naming this client's version
+    (``UnsupportedProtocolVersionError``), or any other error followed by a
+    ``DiscoverResult`` from ``server/discover``, is observed with per-request ``_meta``
+    and no handshake; every other outcome refuses. A modern server never falls back to a
+    version it did not list.
 
     Newline-delimited JSON-RPC 2.0 over the child's stdin/stdout; stderr is discarded
     (servers log there). Messages that are not the awaited response (notifications,
@@ -353,32 +348,22 @@ def _fetch_stdio(
         _send({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params})
         return next_id
 
-    def _await(
-        method: str, rid: int, wait: float, *, silence_ok: bool = False
-    ) -> Optional[Dict[str, Any]]:
-        """The message answering ``rid``, a result or an error, returned unjudged.
-
-        ``None`` only when ``silence_ok`` (the era probe) and ``wait`` passes with no
-        answer; everywhere else silence is a timeout refusal. The observation deadline
-        is a refusal in every case, the probe included.
-        """
-        deadline = time.monotonic() + wait
+    def _await(method: str, rid: int) -> Dict[str, Any]:
+        """The message answering ``rid``, a result or an error, returned unjudged;
+        silence past the request timeout or the observation deadline refuses."""
+        deadline = time.monotonic() + timeout
         while True:
             if time.monotonic() >= observation_deadline:
                 raise _stalled()
             remaining = min(deadline, observation_deadline) - time.monotonic()
             if remaining <= 0:
-                if silence_ok:
-                    return None
-                raise McpFetchError(f"timed out after {wait}s waiting for {method!r}")
+                raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}")
             try:
                 line = lines.get(timeout=remaining)
             except queue.Empty:
                 if time.monotonic() >= observation_deadline:
                     raise _stalled() from None
-                if silence_ok:
-                    return None
-                raise McpFetchError(f"timed out after {wait}s waiting for {method!r}") from None
+                raise McpFetchError(f"timed out after {timeout}s waiting for {method!r}") from None
             if isinstance(line, McpFetchError):
                 raise line  # the reader already named the refusal (e.g. runaway line)
             if isinstance(line, BaseException):
@@ -416,10 +401,8 @@ def _fetch_stdio(
                 continue
             return message
 
-    def _result(method: str, message: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _result(method: str, message: Dict[str, Any]) -> Dict[str, Any]:
         """Judge an answer: an error or a missing result object refuses."""
-        if message is None:  # unreachable unless silence_ok; kept for the type contract
-            raise McpFetchError(f"MCP server did not answer {method!r}")
         if "error" in message:
             raise McpFetchError(
                 f"MCP server returned an error for {method!r}: {message['error']!r}"
@@ -439,7 +422,7 @@ def _fetch_stdio(
         return result
 
     def _request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        return _result(method, _await(method, _send_request(method, params), timeout))
+        return _result(method, _await(method, _send_request(method, params)))
 
     def _modern_error(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """The error object when ``message`` carries a spec-reserved (modern) code."""
@@ -589,39 +572,43 @@ def _fetch_stdio(
                 raise McpFetchError("tools/list returned an invalid nextCursor; refusing")
         raise McpFetchError("tools/list paginated past 100 pages; refusing a runaway catalog")
 
+    def _discover_after_rejection(rejection: Dict[str, Any]) -> Dict[str, Any]:
+        # The server refused the handshake. Only a DiscoverResult makes it a modern
+        # server this client can observe; any other answer to server/discover refuses,
+        # naming the original rejection so the operator sees why initialize failed.
+        answer = _await("server/discover", _send_request("server/discover", {"_meta": modern_meta}))
+        modern_error = _modern_error(answer)
+        if modern_error is not None:
+            raise _refuse_modern("server/discover", modern_error)
+        if "error" in answer:
+            raise McpFetchError(
+                f"MCP server returned an error for 'initialize': {rejection!r}, and "
+                f"server/discover did not identify a modern server: {answer['error']!r}"
+            )
+        return _observe_modern(_result("server/discover", answer))
+
     try:
-        # The era probe (stdio backward compatibility, 2026-07-28): a DiscoverResult is
-        # a modern server; a spec-reserved error is a modern server that refuses this
-        # client's version (never a fallback); anything else, silence included, is a
-        # legacy server that gets the initialize handshake.
-        probe_id = _send_request("server/discover", {"_meta": modern_meta})
-        probe = _await(
-            "server/discover", probe_id, min(timeout, DISCOVER_PROBE_TIMEOUT), silence_ok=True
-        )
-        if probe is not None:
-            modern_error = _modern_error(probe)
-            if modern_error is not None:
-                raise _refuse_modern("server/discover", modern_error)
-            if "error" not in probe:
-                return _observe_modern(_result("server/discover", probe))
-        init_id = _send_request(
+        init = _await(
             "initialize",
-            {
-                "protocolVersion": SUPPORTED_PROTOCOL_VERSIONS[0],
-                "capabilities": {},
-                "clientInfo": {"name": "recusal", "version": __version__},
-            },
+            _send_request(
+                "initialize",
+                {
+                    "protocolVersion": SUPPORTED_PROTOCOL_VERSIONS[0],
+                    "capabilities": {},
+                    "clientInfo": {"name": "recusal", "version": __version__},
+                },
+            ),
         )
-        init = _await("initialize", init_id, timeout)
-        late = _modern_error(init) if init is not None else None
-        if late is not None:
-            # A modern server that started slower than the probe window rejects the
-            # handshake with a modern error. That identifies its era: when it names
-            # this client's version, observe it the modern way instead of refusing.
-            if MODERN_PROTOCOL_VERSION in (_modern_versions(late) or []):
-                return _observe_modern(_request("server/discover", {"_meta": modern_meta}))
-            raise _refuse_modern("initialize", late)
-        return _observe_legacy(_result("initialize", init))
+        if "error" not in init:
+            return _observe_legacy(_result("initialize", init))
+        rejection = init["error"]
+        modern_error = _modern_error(init)
+        if modern_error is not None and MODERN_PROTOCOL_VERSION not in (
+            _modern_versions(modern_error) or [MODERN_PROTOCOL_VERSION]
+        ):
+            # a modern server that lists versions, none of them this client's
+            raise _refuse_modern("initialize", modern_error)
+        return _discover_after_rejection(rejection)
     finally:
         try:
             proc.stdin.close()  # type: ignore[union-attr]
