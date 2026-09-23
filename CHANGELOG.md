@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-09-23
+
+Two first-run fixes found by installing 0.10.0 from PyPI into a fresh virtual
+environment and using it as a new adopter would. PATCH under `STABILITY.md`: the
+kernel, manifest schema v8, hook semantics, CLI shapes and exit codes are unchanged.
+
+### Fixed
+- **The launcher `init` registers now skips an interpreter that cannot import recusal.**
+  It used to run the first `python3` / `python` / `py` that was 3.9 or newer, so with
+  recusal installed in a virtual environment behind a system Python, the gate refused
+  every tool call (fail-closed, but unusable). The probe is now
+  `import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal`, in the POSIX
+  and PowerShell launchers and in every manual-registration example; with no candidate
+  that can import recusal it still fails closed, and says so. The plugin launcher is
+  unchanged: it vendors its runtime and needs only a Python.
+- `recusal init --repair-launcher` recognizes the launchers 0.10.0 and earlier
+  registered and upgrades them in place, leaving other hooks untouched; `recusal doctor`
+  names an outdated launcher as a warning. Upgrade an existing project with
+  `recusal init --repair-launcher`.
+
+### Changed
+- **The pin-time size screen is recalibrated from 4,000 to 8,000 characters**
+  (`MAX_DECLARED_CHARS`, the default `max_chars` of `screen_tool_declarations` and
+  `screen_server_instructions`). Measured with this package's own screen over 10 widely
+  used servers (103 tools), the largest legitimate declarations were 4,470 (Notion) and
+  4,090 (sequential-thinking) characters and everything else 2,880 or less, so the old
+  cap flagged ordinary tools and taught reflexive `--force`. 8,000 clears every measured
+  tool and still flags a declaration of several pages; the marker screen and the depth
+  cap are unchanged, and a caller can still pass `max_chars=4000`.
+
 ## [0.10.0] - 2026-09-23
 
 Alignment release: the MCP 2026-07-28 revision, current Claude Code behavior, and the
