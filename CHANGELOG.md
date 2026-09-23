@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.2] - 2026-09-23
+
+One determinism fix, found while reviewing a contribution. PATCH under `STABILITY.md`: on
+Python 3.9 nothing changes; on 3.11+ the expiry check now refuses the timestamp formats
+only those versions accepted, so every supported Python gives the same verdict.
 
 ### Fixed
 - **The authorization expiry check gave different verdicts on different Pythons.** It
