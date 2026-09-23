@@ -211,13 +211,14 @@ Use the built-in checks to turn data into evidence, then decide:
 
 ```python
 from recusal import compute_verdict
-from recusal.checks import row_count, null_rate, referential_integrity
+from recusal.checks import date_range, null_rate, referential_integrity, row_count
 
 verdict = compute_verdict(
     [
         row_count(users, min_rows=1),
         null_rate(users, "email", max_rate=0.10),
         referential_integrity(orders, users, fk="user_id", pk="id"),
+        date_range(orders, "created_at", min_date="2026-01-01", max_date="2026-12-31"),
     ]
 )
 

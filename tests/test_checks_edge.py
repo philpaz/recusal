@@ -1,7 +1,10 @@
 """Heavy edge-case tests for the built-in checks, nulls, NaN, boundaries, row shapes."""
 
+from datetime import date, datetime, timezone
+
 from recusal import Severity
 from recusal.checks import (
+    date_range,
     in_range,
     in_set,
     null_rate,
@@ -82,3 +85,51 @@ def test_checks_work_on_dict_subclass_rows():
 
 def test_severity_parameter_overrides_default():
     assert row_count([], min_rows=1, severity="WARNING").severity is Severity.WARNING
+
+
+def test_date_range_empty_rows_passes_vacuously():
+    assert date_range([], "d", "2026-01-01", "2026-01-31").passed
+
+
+def test_date_range_all_null_column_passes_vacuously():
+    rows = [{"d": None}, {"d": float("nan")}, {"d": ""}]
+    assert date_range(rows, "d", "2026-01-01", "2026-01-31").passed
+
+
+def test_date_range_boundaries_inclusive():
+    rows = [{"d": "2026-01-01"}, {"d": "2026-01-31"}]
+    assert date_range(rows, "d", "2026-01-01", "2026-01-31").passed
+    assert not date_range([{"d": "2025-12-31"}], "d", "2026-01-01", "2026-01-31").passed
+    assert not date_range([{"d": "2026-02-01"}], "d", "2026-01-01", "2026-01-31").passed
+
+
+def test_date_range_naive_versus_aware_datetime_mix():
+    aware_min = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    aware_max = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    naive_rows = [{"d": datetime(2026, 1, 15)}]
+    f = date_range(naive_rows, "d", aware_min, aware_max)
+    assert not f.passed
+    assert f.context["violation_count"] == 1
+
+    # reverse: naive bounds with aware row
+    aware_rows = [{"d": datetime(2026, 1, 15, tzinfo=timezone.utc)}]
+    f2 = date_range(aware_rows, "d", datetime(2026, 1, 1), datetime(2026, 1, 31))
+    assert not f2.passed
+    assert f2.context["violation_count"] == 1
+
+
+def test_date_range_non_date_value_is_a_violation():
+    f = date_range([{"d": "not-a-date"}, {"d": 12345}], "d", "2026-01-01", "2026-01-31")
+    assert not f.passed
+    assert f.context["violation_count"] == 2
+
+
+def test_date_range_invalid_boundary_fails_cleanly():
+    f = date_range([{"d": "2026-01-15"}], "d", min_date="invalid", max_date="2026-01-31")
+    assert not f.passed
+    assert "invalid date_range boundary" in f.message
+
+
+def test_date_range_date_and_datetime_objects():
+    rows = [{"d": date(2026, 1, 15)}, {"d": datetime(2026, 1, 20, 10, 30)}]
+    assert date_range(rows, "d", date(2026, 1, 1), date(2026, 1, 31)).passed

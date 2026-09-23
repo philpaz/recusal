@@ -2,6 +2,7 @@
 
 from recusal import compute_verdict
 from recusal.checks import (
+    date_range,
     in_range,
     in_set,
     null_rate,
@@ -52,6 +53,18 @@ def test_in_range_flags_out_of_bounds():
     f2 = in_range(USERS, "score", min_value=50, max_value=100)
     assert not f2.passed
     assert f2.context["violation_count"] == 1
+
+
+def test_date_range_pass_and_fail():
+    dates = [
+        {"id": 1, "created": "2026-01-05"},
+        {"id": 2, "created": "2026-01-15T12:00:00"},
+        {"id": 3, "created": "2026-01-20"},
+    ]
+    assert date_range(dates, "created", min_date="2026-01-01", max_date="2026-01-31").passed
+    f = date_range(dates, "created", min_date="2026-01-10", max_date="2026-01-31")
+    assert not f.passed
+    assert f.context["violation_count"] == 1
 
 
 def test_required_keys_detects_missing():

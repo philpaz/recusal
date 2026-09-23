@@ -15,16 +15,19 @@ required.
 Typical use::
 
     from recusal import compute_verdict
-    from recusal.checks import row_count, null_rate, referential_integrity
+    from recusal.checks import date_range, null_rate, referential_integrity, row_count
 
     findings = [
         row_count(users, min_rows=1),
         null_rate(users, "email", max_rate=0.10),
         referential_integrity(orders, users, fk="user_id", pk="id"),
+        date_range(orders, "created_at", min_date="2026-01-01", max_date="2026-12-31"),
     ]
     verdict = compute_verdict(findings)   # PASS / RETRY / FAIL
+
 """
 
+from datetime import date, datetime
 from typing import Any, Iterable, Sequence
 
 from .evidence import Finding, RuleSeverity
@@ -187,6 +190,76 @@ def in_range(
     )
 
 
+def date_range(
+    rows: Rows,
+    column: str,
+    min_date: Any,
+    max_date: Any,
+    severity: str = RuleSeverity.ERROR.value,
+) -> Finding:
+    """Fail if any date or datetime in ``column`` falls outside [min_date, max_date].
+
+    Values and boundaries may be ``datetime.date``, ``datetime.datetime``, or
+    ISO-formatted strings. Null and empty values are ignored (use ``null_rate``
+    to enforce presence). Values that cannot be parsed as dates, or that trigger
+    offset-naive versus offset-aware comparison mismatches, are counted as
+    violations.
+
+    What this check does NOT establish:
+    - It does not establish that dates are monotonically ordered or sorted.
+    - It does not establish that there are no gaps or missing days in the series.
+    - It does not verify business day / holiday calendar validity.
+    - It does not establish timezone semantic correctness or daylight-saving integrity.
+    - It does not establish non-nullness or dataset completeness.
+    """
+    try:
+        min_d = _parse_date(min_date)
+        max_d = _parse_date(max_date)
+    except (TypeError, ValueError) as err:
+        return _failed(
+            "date_range",
+            severity,
+            f"{column}: invalid date_range boundary: {err}.",
+            column=column,
+            min_date=str(min_date),
+            max_date=str(max_date),
+            violation_count=len(rows),
+        )
+
+    violations = 0
+    for r in rows:
+        v = _get(r, column)
+        if _is_null(v):
+            continue
+        try:
+            dv = _parse_date(v)
+            if isinstance(dv, datetime) and type(min_d) is date and type(max_d) is date:
+                dv = dv.date()
+            elif type(dv) is date and isinstance(min_d, datetime) and isinstance(max_d, datetime):
+                if min_d.tzinfo is None and max_d.tzinfo is None:
+                    dv = datetime.combine(dv, datetime.min.time())
+            if dv < min_d or dv > max_d:
+                violations += 1
+        except (TypeError, ValueError):
+            violations += 1
+            continue
+
+    if violations:
+        return _failed(
+            "date_range",
+            severity,
+            f"{column}: {violations} value(s) outside [{min_date}, {max_date}].",
+            column=column,
+            violation_count=violations,
+        )
+    return _passed(
+        "date_range",
+        severity,
+        f"{column}: all values within [{min_date}, {max_date}].",
+        column=column,
+    )
+
+
 def required_keys(
     rows: Rows,
     keys: Iterable[str],
@@ -240,3 +313,31 @@ def _is_null(value: Any) -> bool:
         return True
     # NaN is the only value not equal to itself.
     return value != value
+
+
+def _parse_date(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            raise ValueError("empty date string")
+        if s.endswith("Z") or s.endswith("z"):
+            s = s[:-1] + "+00:00"
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            try:
+                return date.fromisoformat(s)
+            except ValueError:
+                pass
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            pass
+        try:
+            return date.fromisoformat(s)
+        except ValueError:
+            pass
+        raise ValueError(f"unrecognized date format: {value!r}")
+    raise TypeError(f"expected date, datetime, or ISO string, got {type(value).__name__}")
