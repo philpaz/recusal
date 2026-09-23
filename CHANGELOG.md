@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **The authorization expiry check gave different verdicts on different Pythons.** It
+  parsed `expires_at` and `now` with `datetime.fromisoformat`, which accepts far more
+  from Python 3.11 on, so `2026-12-31T23:59:59.5Z`, `20261231T235959Z`, a 9-digit
+  fraction, or an ISO week date was accepted on 3.12 and refused on 3.9: the same
+  authorization evidence, two verdicts. The check now parses one explicit grammar on
+  every version: `YYYY-MM-DD`, `T` or a space, `HH:MM` with optional `:SS` and a 3 or
+  6 digit fraction, then `Z` or `±HH:MM`. That is exactly the set 3.9 accepted (measured:
+  the old and new parsers agree on every listed input on 3.9, parsed values included),
+  so nothing changes on 3.9 and 3.11+ now refuses the formats only it accepted.
+  Present since 0.9.0; found while reviewing a contribution that used the same parser.
+
+### Added
+- `tests/test_cross_version_determinism.py`: CI fails if `recusal/` calls a
+  version-dependent parser (`fromisoformat`), and `CONTRIBUTING.md` states the rule: the
+  same evidence gives the same verdict on every supported Python.
+
 ## [0.10.1] - 2026-09-23
 
 Two first-run fixes found by installing 0.10.0 from PyPI into a fresh virtual

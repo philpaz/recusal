@@ -70,7 +70,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .evidence import Finding, Severity, Verdict, certify_evidence
@@ -592,16 +592,43 @@ def check_arguments(request: ActionRequest, context: AuthorizationContext) -> Fi
     )
 
 
+#: The one instant grammar the expiry check accepts, identical on every supported Python:
+#: ``YYYY-MM-DD``, ``T`` or a space, ``HH:MM`` with optional ``:SS`` and 3 or 6 fraction
+#: digits, then ``Z`` or ``±HH:MM``. ``datetime.fromisoformat`` is not used: it accepts far
+#: more from Python 3.11 on (basic format, week dates, 1 or 9 fraction digits), so the
+#: same expiry evidence was accepted on 3.12 and refused on 3.9. An instant without an
+#: offset is refused: a naive instant cannot be compared across systems.
+_INSTANT = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{6}|\d{3}))?)?"
+    r"(?:(Z)|([+-])(\d{2}):(\d{2}))"
+)
+
+
 def _parse_instant(text: Any) -> Optional[datetime]:
     if not isinstance(text, str):
         return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
+    match = _INSTANT.fullmatch(text)
+    if match is None:
         return None
-    if parsed.tzinfo is None:
-        return None  # a naive instant cannot be compared across systems
-    return parsed
+    year, month, day, hour, minute, second, fraction, zulu, sign, off_h, off_m = match.groups()
+    try:
+        offset = timedelta(0)
+        if not zulu:
+            offset = timedelta(hours=int(off_h), minutes=int(off_m))
+            if sign == "-":
+                offset = -offset
+        return datetime(
+            int(year),
+            int(month),
+            int(day),
+            int(hour),
+            int(minute),
+            int(second or 0),
+            int((fraction or "0").ljust(6, "0")),
+            tzinfo=timezone(offset),
+        )
+    except ValueError:  # an impossible date, time, or offset (2026-02-30, 25:00, +24:00)
+        return None
 
 
 def check_expiry(request: ActionRequest, context: AuthorizationContext) -> Finding:

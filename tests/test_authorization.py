@@ -413,6 +413,41 @@ def test_expiry_refuses_naive_or_unparseable_instants():
     assert not check_expiry(_request(), ctx).passed
 
 
+#: Accepted and refused expiry instants. CI runs this on every supported Python, so the
+#: same list passing everywhere IS the proof the verdict does not depend on the version.
+#: Before 0.10.2 the four marked "3.11+" were accepted on 3.11 and later only.
+INSTANTS_ACCEPTED = (
+    "2026-08-26T19:00:00Z",
+    "2026-08-26T19:00:00+00:00",
+    "2026-08-26T21:00:00+02:00",
+    "2026-08-26 19:00:00Z",
+    "2026-08-26T19:00Z",
+    "2026-08-26T19:00:00.123Z",
+    "2026-08-26T19:00:00.123456-05:30",
+)
+INSTANTS_REFUSED = (
+    "2026-08-26T19:00:00",  # naive: not comparable across systems
+    "2026-08-26T19:00:00.5Z",  # accepted on 3.11+ only
+    "20260826T190000Z",  # basic format, 3.11+ only
+    "2026-08-26T19:00:00.123456789Z",  # 9 fraction digits, 3.11+ only
+    "2026-W35-3T19:00:00Z",  # week date, 3.11+ only
+    "2026-02-30T19:00:00Z",  # impossible date
+    "2026-08-26T19:00:00+24:00",  # impossible offset
+    "soon",
+)
+
+
+def test_expiry_accepts_one_instant_grammar_on_every_python():
+    for text in INSTANTS_ACCEPTED:
+        ctx = _context(constraints=Supplied(Constraints(expires_at=text), "grant"))
+        finding = check_expiry(_request(), ctx)
+        assert "not a timezone-aware" not in finding.message, text
+    for text in INSTANTS_REFUSED:
+        ctx = _context(constraints=Supplied(Constraints(expires_at=text), "grant"))
+        finding = check_expiry(_request(), ctx)
+        assert not finding.passed and "not a timezone-aware" in finding.message, text
+
+
 def test_expiry_with_no_expiry_declared_passes_and_says_so():
     ctx = _context(constraints=Supplied(Constraints(), "grant"), now=None)
     f = check_expiry(_request(), ctx)
