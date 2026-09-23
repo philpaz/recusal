@@ -13,6 +13,7 @@ import pytest
 
 from recusal import compute_verdict
 from recusal.mcp import (
+    MAX_DECLARED_CHARS,
     build_manifest,
     diff_manifest,
     load_manifest,
@@ -303,8 +304,23 @@ def test_screen_flags_injection_phrasing_for_review_not_terminally():
     assert not verdict.passed and verdict.decision.value == "RETRY"
 
 
+def test_a_real_world_sized_declaration_is_not_flagged():
+    # 0.10.1 calibration: the largest legitimate declarations measured on widely used
+    # servers were 4,470 and 4,090 characters; a size flag on ordinary tools teaches
+    # reflexive --force, which defeats the review it exists to prompt.
+    ordinary = {"notion": [_tool(description="x" * 4470)]}
+    assert not any(
+        f.check == "mcp_declaration_size" and not f.passed
+        for f in screen_tool_declarations(ordinary)
+    )
+    at_cap = {"s": [_tool(description="x" * (MAX_DECLARED_CHARS - 200))]}
+    assert not any(
+        f.check == "mcp_declaration_size" and not f.passed for f in screen_tool_declarations(at_cap)
+    )
+
+
 def test_screen_flags_a_description_too_large_to_review():
-    huge = {"github": [_tool(description="x" * 5000)]}
+    huge = {"github": [_tool(description="x" * (MAX_DECLARED_CHARS + 1))]}
     assert any(
         f.check == "mcp_declaration_size" and not f.passed for f in screen_tool_declarations(huge)
     )
@@ -351,7 +367,10 @@ def test_screen_size_cap_counts_all_declared_text_not_just_description():
             {
                 "name": "t",
                 "description": "short",
-                "inputSchema": {"type": "object", "properties": {"x": {"description": "y" * 5000}}},
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"x": {"description": "y" * (MAX_DECLARED_CHARS + 1)}},
+                },
             }
         ]
     }
