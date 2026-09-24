@@ -161,3 +161,12 @@ def test_date_range_inverted_boundaries_fails_as_invalid_window():
 def test_date_range_date_and_datetime_objects():
     rows = [{"d": date(2026, 1, 15)}, {"d": datetime(2026, 1, 20, 10, 30)}]
     assert date_range(rows, "d", date(2026, 1, 1), date(2026, 1, 31)).passed
+
+
+def test_date_range_grammar_is_exact_ascii_with_no_trailing_characters():
+    # the whole string must be the grammar: no trailing newline, no non-ASCII digits
+    for value in ("2026-01-15\n", "2026-01-15T10:00:00\n", "\u0662\u0660\u0662\u0666-01-15"):
+        f = date_range([{"d": value}], "d", "2026-01-01", "2026-01-31")
+        assert not f.passed and f.context["violation_count"] == 1, repr(value)
+    boundary = date_range([{"d": "2026-01-15"}], "d", "2026-01-01\n", "2026-01-31")
+    assert not boundary.passed and "invalid date_range window" in boundary.message

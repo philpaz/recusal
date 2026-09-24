@@ -34,10 +34,12 @@ from .evidence import Finding, RuleSeverity
 
 Rows = Sequence[Any]  # each row supports row["column"]
 
-_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+# Matched with fullmatch and ASCII digits only: `$` would accept a trailing newline and
+# `\d` any Unicode digit, both looser than the one grammar the docstring promises.
+_DATE_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 _DATETIME_RE = re.compile(
-    r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{6}))?"
-    r"(?:(Z)|([+-])(\d{2}):(\d{2}))?$"
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{6}))?"
+    r"(?:(Z)|([+-])([0-9]{2}):([0-9]{2}))?"
 )
 
 
@@ -370,11 +372,11 @@ def _parse_date(value: Any) -> Any:
     if isinstance(value, date):
         return value
     if isinstance(value, str):
-        m_date = _DATE_RE.match(value)
+        m_date = _DATE_RE.fullmatch(value)
         if m_date:
             year, month, day = m_date.groups()
             return date(int(year), int(month), int(day))
-        m_dt = _DATETIME_RE.match(value)
+        m_dt = _DATETIME_RE.fullmatch(value)
         if m_dt:
             (
                 year,
