@@ -17,6 +17,29 @@ def _run_demo(rel_path: str) -> str:
     return buf.getvalue()
 
 
+def test_audit_sink_demo_mirrors_resumes_and_refuses_truncation():
+    out = _run_demo("examples/audit_sink.py")
+    assert "Mirrored 2 entries; verified resume extended the same chain" in out
+    assert "Saved head: count=2" in out
+    assert "REFUSED: truncated local log" in out
+    assert "Local mirror only" in out
+
+
+def test_audit_sink_keeps_head_when_delivery_fails(tmp_path):
+    import pytest
+
+    from recusal.audit import GENESIS
+
+    namespace = runpy.run_path(os.path.join(REPO, "examples/audit_sink.py"))
+    sink = namespace["MirrorSink"](tmp_path / "missing" / "mirror.jsonl")
+    with pytest.raises(OSError):
+        sink.write({"seq": 4, "hash": "head"})
+    assert sink.head == (0, GENESIS)
+    sink.path.parent.mkdir()
+    sink.write({"seq": 4, "hash": "head"})
+    assert sink.head == (5, "head")
+
+
 def test_claude_refusal_demo_refuses_then_allows():
     out = _run_demo("examples/claude_refusal.py")
     assert "REFUSED" in out

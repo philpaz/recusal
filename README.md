@@ -358,6 +358,10 @@ raises `AuditIntegrityError` rather than extend a file that fails strict verific
 and `AuditLog(path, expected_head=(count, hash))` also refuses truncation, a tail-suffix
 rewrite, or forged appends against that externally held head.
 
+Run `python examples/audit_sink.py` for a [custom sink example](examples/audit_sink.py)
+that mirrors entries, saves the head, and refuses a truncated log; its local mirror
+demonstrates the interface, not protected external storage.
+
 Deterministic, stdlib-only, and designed to support OWASP Agentic logging and EU AI Act
 Article 12 record-keeping: in a regulated deployment, this can provide one auditable
 decision artifact within the broader system of records, controls, evidence retention,
