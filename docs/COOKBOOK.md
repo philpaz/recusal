@@ -275,6 +275,13 @@ def screen_tool_output(text):
 
 ## 7. Cap runaway action volume
 
+For a runnable, tested version with an explicit counter seam and a durable SQLite
+counter, see [`examples/action_budget.py`](../examples/action_budget.py).
+It counts attempted calls across fresh processes using the same caller-chosen file;
+use a separate protected file per budget. It also documents reset and storage-failure
+behavior. The minimal file recipe below assumes serialized calls; its read/write
+pair is not safe for concurrent hooks.
+
 Tiered budget: warn over a soft cap, **stop** (RETRY) over a hard one. A `PreToolUse` hook
 is a fresh process per call, so persist the count (here, a small file).
 
