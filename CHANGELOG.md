@@ -24,6 +24,17 @@ All notable changes to this project are documented here. The format follows
     count across fresh hook processes and does not lose increments under concurrent
     hooks.
 
+### Fixed
+- **Cookbook recipe 5 (egress allowlist) could let data go to the wrong address.** The
+  copy-paste text read only the last `@` of an email `to`, so `a@evil.com,b@acme.com`
+  passed as `acme.com`, and a missing or unreadable destination was allowed. Both the
+  text and `examples/egress_allowlist.py` also trusted `https://evil.com\@acme.com/`,
+  which Python's `urlparse` reads as `acme.com` and a browser-style parser as
+  `evil.com`. Both now refuse lists, missing destinations, backslashes and userinfo, and
+  a new test runs the cookbook text exactly as printed so it cannot drift from the
+  tested example again. Documentation and examples only; the `recusal` package does not
+  change. (#28)
+
 ## [0.10.2] - 2026-09-23
 
 One determinism fix, found while reviewing a contribution. PATCH under `STABILITY.md`: on

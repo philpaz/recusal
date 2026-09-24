@@ -39,6 +39,11 @@ def test_allowed_destinations_defer(tool, arguments):
         ("http_post", {"to": "safe@example.com", "url": "https://evil.com/"}),
         ("http_post", {"url": None}),
         ("send_email", {}),
+        # Parser differentials (#28): urlparse sees example.com, a WHATWG client evil.com.
+        ("http_post", {"url": "https://evil.com\\@example.com/"}),
+        ("webhook", {"url": "https:\\\\evil.com\\@example.com/"}),
+        ("http_post", {"url": "https://user:pw@example.com/"}),
+        ("http_post", {"url": "https://example.com%2F@evil.com/"}),
     ],
 )
 def test_disallowed_or_missing_destinations_refuse(tool, arguments):

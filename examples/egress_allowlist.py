@@ -8,6 +8,8 @@ inside a shell/interpreter, redirects, DNS changes or a tool's internal requests
 An empty finding list defers; it does not certify that no data can leave. Use
 transport-level controls or a vetted default-deny tool policy for that boundary.
 Email inputs here are a single bare mailbox, not lists or display-name syntax.
+URLs with a backslash or userinfo (user@host) are refused: parsers disagree on
+their host, so the host this policy checks may not be the one a client contacts.
 """
 
 import os
@@ -35,10 +37,12 @@ def make_egress_allowlist(allowed_domains):
                     local, host = value.split("@")
                     if not local:
                         host = ""
-            else:
+            elif "\\" not in value:
+                # A backslash or userinfo is where URL parsers disagree: urlparse reads
+                # "https://evil.com\@example.com/" as example.com, a browser as evil.com.
                 try:
                     parsed = urlparse(value)
-                    if parsed.scheme in ("http", "https"):
+                    if parsed.scheme in ("http", "https") and "@" not in parsed.netloc:
                         host = parsed.hostname or ""
                 except ValueError:
                     pass

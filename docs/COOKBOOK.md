@@ -217,30 +217,44 @@ from recusal import Finding
 ALLOWED_DOMAINS = {"acme.com", "internal.example"}
 
 
-def _destination_host(tool_input):
-    # An email `to` (user@host) or a URL (http_post/webhook). Parse each properly:
-    # a naive split on "/" turns "https://acme.com/x" into "https:", refusing every URL.
-    to = str(tool_input.get("to") or "")
-    if to:
-        return to.rsplit("@", 1)[-1].split(">")[0].strip().lower()
-    url = str(tool_input.get("url") or "")
-    return (urlparse(url if "://" in url else "//" + url).hostname or "").lower()
+def _destination_host(tool_name, tool_input):
+    # One bare mailbox for email, one absolute http(s) URL otherwise; anything else is "".
+    # "a@evil.com,b@acme.com" must not be read as acme.com, so a list is refused whole.
+    value = tool_input.get("to" if tool_name == "send_email" else "url")
+    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+        return ""
+    if tool_name == "send_email":
+        local, _, host = value.partition("@")
+        if not local or "@" in host or any(c in value for c in ",;<>"):
+            return ""
+        return host.lower().rstrip(".")
+    # A backslash or userinfo is where URL parsers disagree: urlparse reads
+    # "https://evil.com\@acme.com/" as acme.com, a browser as evil.com.
+    if "\\" in value:
+        return ""
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https") or "@" in parsed.netloc:
+        return ""
+    return (parsed.hostname or "").rstrip(".")
 
 
 def policy(tool_name, tool_input):
     if tool_name not in ("send_email", "http_post", "webhook"):
         return []
-    host = _destination_host(tool_input)
-    allowed = any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)  # host + subdomains
-    if host and not allowed:
-        return [
-            Finding.fail(
-                "egress_allowlist",
-                severity="CRITICAL",
-                message=f"destination '{host}' is not on the egress allowlist",
-            )
-        ]
-    return []
+    host = _destination_host(tool_name, tool_input)
+    if any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS):  # host + subdomains
+        return []
+    # Missing or malformed refuses too: a destination the policy cannot read is not allowed.
+    return [
+        Finding.fail(
+            "egress_allowlist",
+            severity="CRITICAL",
+            message=f"destination {host or 'missing or malformed'} is not on the egress allowlist",
+        )
+    ]
 ```
 
 ## 6. Quarantine prompt-injection in tool output
