@@ -127,9 +127,36 @@ def test_date_range_non_date_value_is_a_violation():
 def test_date_range_invalid_boundary_fails_cleanly():
     f = date_range([{"d": "2026-01-15"}], "d", min_date="invalid", max_date="2026-01-31")
     assert not f.passed
-    assert "invalid date_range boundary" in f.message
+    assert "invalid date_range window" in f.message
+    assert "violation_count" not in f.context
+
+
+def test_date_range_rejects_version_dependent_formats():
+    # date.fromisoformat and datetime.fromisoformat accept these on 3.11+ but not on 3.9/3.10.
+    # Recusal parses against an explicit grammar so all Pythons agree.
+    for bad in ["20260615", "2026-06-15T10:00:00.5", "2026-W24-1"]:
+        f = date_range([{"d": bad}], "d", "2026-01-01", "2026-12-31")
+        assert not f.passed
+        assert f.context["violation_count"] == 1
+
+
+def test_date_range_mixed_boundary_kinds_fails_as_invalid_window():
+    f = date_range([{"d": "2026-06-01"}], "d", min_date="2026-01-01", max_date="2026-12-31T23:59:59")
+    assert not f.passed
+    assert "invalid date_range window" in f.message
+    assert "mixed boundary kinds" in f.message
+    assert "violation_count" not in f.context
+
+
+def test_date_range_inverted_boundaries_fails_as_invalid_window():
+    f = date_range([{"d": "2026-06-01"}], "d", min_date="2026-12-31", max_date="2026-01-01")
+    assert not f.passed
+    assert "invalid date_range window" in f.message
+    assert "is after max_date" in f.message
+    assert "violation_count" not in f.context
 
 
 def test_date_range_date_and_datetime_objects():
     rows = [{"d": date(2026, 1, 15)}, {"d": datetime(2026, 1, 20, 10, 30)}]
     assert date_range(rows, "d", date(2026, 1, 1), date(2026, 1, 31)).passed
+

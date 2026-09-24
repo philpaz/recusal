@@ -24,15 +24,21 @@ Typical use::
         date_range(orders, "created_at", min_date="2026-01-01", max_date="2026-12-31"),
     ]
     verdict = compute_verdict(findings)   # PASS / RETRY / FAIL
-
 """
 
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from .evidence import Finding, RuleSeverity
 
 Rows = Sequence[Any]  # each row supports row["column"]
+
+_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_DATETIME_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{6}))?"
+    r"(?:(Z)|([+-])(\d{2}):(\d{2}))?$"
+)
 
 
 def _passed(check_type: str, severity: str, message: str, **context: Any) -> Finding:
@@ -200,7 +206,8 @@ def date_range(
     """Fail if any date or datetime in ``column`` falls outside [min_date, max_date].
 
     Values and boundaries may be ``datetime.date``, ``datetime.datetime``, or
-    ISO-formatted strings. Null and empty values are ignored (use ``null_rate``
+    ISO-formatted strings (``YYYY-MM-DD`` or ``YYYY-MM-DDTHH:MM:SS[.ffffff]`` with
+    an optional ``Z`` or ``±HH:MM``). Null and empty values are ignored (use ``null_rate``
     to enforce presence). Values that cannot be parsed as dates, or that trigger
     offset-naive versus offset-aware comparison mismatches, are counted as
     violations.
@@ -219,11 +226,50 @@ def date_range(
         return _failed(
             "date_range",
             severity,
-            f"{column}: invalid date_range boundary: {err}.",
+            f"{column}: invalid date_range window: {err}.",
             column=column,
             min_date=str(min_date),
             max_date=str(max_date),
-            violation_count=len(rows),
+        )
+
+    if type(min_d) is not type(max_d):
+        return _failed(
+            "date_range",
+            severity,
+            f"{column}: invalid date_range window: mixed boundary kinds ({type(min_d).__name__} vs {type(max_d).__name__}).",
+            column=column,
+            min_date=str(min_date),
+            max_date=str(max_date),
+        )
+
+    if isinstance(min_d, datetime) and (min_d.tzinfo is None) != (max_d.tzinfo is None):
+        return _failed(
+            "date_range",
+            severity,
+            f"{column}: invalid date_range window: mixed timezone-awareness between boundaries.",
+            column=column,
+            min_date=str(min_date),
+            max_date=str(max_date),
+        )
+
+    try:
+        if min_d > max_d:
+            return _failed(
+                "date_range",
+                severity,
+                f"{column}: invalid date_range window: min_date ({min_date}) is after max_date ({max_date}).",
+                column=column,
+                min_date=str(min_date),
+                max_date=str(max_date),
+            )
+    except TypeError as err:
+        return _failed(
+            "date_range",
+            severity,
+            f"{column}: invalid date_range window: {err}.",
+            column=column,
+            min_date=str(min_date),
+            max_date=str(max_date),
         )
 
     violations = 0
@@ -233,11 +279,14 @@ def date_range(
             continue
         try:
             dv = _parse_date(v)
-            if isinstance(dv, datetime) and type(min_d) is date and type(max_d) is date:
+            if isinstance(dv, datetime) and type(min_d) is date:
                 dv = dv.date()
-            elif type(dv) is date and isinstance(min_d, datetime) and isinstance(max_d, datetime):
-                if min_d.tzinfo is None and max_d.tzinfo is None:
+            elif type(dv) is date and isinstance(min_d, datetime):
+                if min_d.tzinfo is None:
                     dv = datetime.combine(dv, datetime.min.time())
+                else:
+                    violations += 1
+                    continue
             if dv < min_d or dv > max_d:
                 violations += 1
         except (TypeError, ValueError):
@@ -321,23 +370,43 @@ def _parse_date(value: Any) -> Any:
     if isinstance(value, date):
         return value
     if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            raise ValueError("empty date string")
-        if s.endswith("Z") or s.endswith("z"):
-            s = s[:-1] + "+00:00"
-        if len(s) == 10 and s[4] == "-" and s[7] == "-":
-            try:
-                return date.fromisoformat(s)
-            except ValueError:
-                pass
-        try:
-            return datetime.fromisoformat(s)
-        except ValueError:
-            pass
-        try:
-            return date.fromisoformat(s)
-        except ValueError:
-            pass
+        m_date = _DATE_RE.match(value)
+        if m_date:
+            year, month, day = m_date.groups()
+            return date(int(year), int(month), int(day))
+        m_dt = _DATETIME_RE.match(value)
+        if m_dt:
+            (
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                microsecond,
+                z_mark,
+                tz_sign,
+                tz_hr,
+                tz_min,
+            ) = m_dt.groups()
+            us = int(microsecond) if microsecond else 0
+            tz = None
+            if z_mark:
+                tz = timezone.utc
+            elif tz_sign:
+                offset = timedelta(hours=int(tz_hr), minutes=int(tz_min))
+                if tz_sign == "-":
+                    offset = -offset
+                tz = timezone(offset)
+            return datetime(
+                int(year),
+                int(month),
+                int(day),
+                int(hour),
+                int(minute),
+                int(second),
+                us,
+                tzinfo=tz,
+            )
         raise ValueError(f"unrecognized date format: {value!r}")
     raise TypeError(f"expected date, datetime, or ISO string, got {type(value).__name__}")
