@@ -173,11 +173,12 @@ hook in `.claude/settings.json`:
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9; failing closed' >&2; exit 2" } ]}
+    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2" } ]}
 ]}}
 ```
 
-The command runs the first `python3` → `python` → `py` that is `>=3.9` and **fails
+The command runs the first `python3` → `python` → `py` that is `>=3.9` and can import
+recusal (so an interpreter without the package is skipped, not chosen), and **fails
 closed**. The exit-code semantics, stated exactly: Recusal's normal refusal exits `0`
 with `permissionDecision: "deny"` JSON, which Claude honors as a block; a clean verdict
 exits `0` with no output and defers to Claude's normal permission flow; exit `2` is
@@ -542,7 +543,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.10.0   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.10.2   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

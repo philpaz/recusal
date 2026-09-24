@@ -112,7 +112,7 @@ def test_screening_signatures_remain_stable():
         assert parameters["markers"].kind is inspect.Parameter.KEYWORD_ONLY
         assert parameters["markers"].default == mcp.DECLARATION_MARKERS
         assert parameters["max_chars"].kind is inspect.Parameter.KEYWORD_ONLY
-        assert parameters["max_chars"].default == 4000
+        assert parameters["max_chars"].default == 8000  # recalibrated in 0.10.1
 
 
 def test_representative_fingerprint_and_manifest_bytes_are_release_contracts():

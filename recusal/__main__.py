@@ -91,14 +91,32 @@ from .mcp_fetch import (
 #: error, exit 1, a NON-blocking code, i.e. the gate silently disables (live-verified).
 #: That is why ``init`` registers the PowerShell launcher below, with an explicit
 #: ``"shell": "powershell"``, on Windows.
-LAUNCHER_COMMAND_POSIX = (
-    'for p in python3 python py; do "$p" -c \'import sys; sys.exit(0 if sys.version_info'
-    ' >= (3, 9) else 1)\' 2>/dev/null && { "$p"'
-    ' "$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"; rc=$?; [ "$rc" = 0 ] ||'
-    " { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; };"
-    " exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing"
-    " closed' >&2; exit 2"
-)
+#:
+#: Interpreter choice: a candidate must be >=3.9 AND able to ``import recusal``, so a
+#: ``py`` or ``python3`` that lacks the package is skipped instead of chosen (before
+#: 0.10.1 the first >=3.9 interpreter won, and a recusal installed into a venv behind it
+#: turned into a gate that refused every call). No candidate that can import recusal
+#: still fails closed, with a message that names what is missing.
+_PROBE_RECUSAL = "import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal"
+#: The plugin ships its own vendored runtime, so its launcher needs only a Python.
+_PROBE_PYTHON = "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
+_NO_INTERPRETER_RECUSAL = "no python>=3.9 interpreter that can import recusal"
+_NO_INTERPRETER_PYTHON = "no working python>=3.9 interpreter"
+
+
+def posix_launcher(gate: str, probe: str = _PROBE_RECUSAL) -> str:
+    """The fail-closed POSIX launcher for ``gate`` (a quoted path expression)."""
+    missing = _NO_INTERPRETER_RECUSAL if probe == _PROBE_RECUSAL else _NO_INTERPRETER_PYTHON
+    return (
+        f'for p in python3 python py; do "$p" -c \'{probe}\' 2>/dev/null && {{ "$p"'
+        f' {gate}; rc=$?; [ "$rc" = 0 ] ||'
+        " { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; };"
+        f" exit 0; }}; done; echo 'recusal gate: {missing}; failing"
+        " closed' >&2; exit 2"
+    )
+
+
+LAUNCHER_COMMAND_POSIX = posix_launcher('"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"')
 
 #: Back-compat alias (the POSIX form was previously the only launcher).
 LAUNCHER_COMMAND = LAUNCHER_COMMAND_POSIX
@@ -112,14 +130,25 @@ LAUNCHER_COMMAND = LAUNCHER_COMMAND_POSIX
 LAUNCHER_COMMAND_POWERSHELL = (
     "$ErrorActionPreference = 'Continue'; foreach ($p in @('py', 'python', 'python3')) {"
     " if (-not (Get-Command $p -ErrorAction SilentlyContinue)) { continue };"
-    " & $p -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' *> $null;"
+    f" & $p -c '{_PROBE_RECUSAL}' *> $null;"
     " if ($LASTEXITCODE -ne 0) { continue };"
     ' & $p "$env:CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py";'
     " if ($LASTEXITCODE -eq 0) { exit 0 };"
     " [Console]::Error.WriteLine('recusal gate: hook did not run cleanly; failing closed');"
     " exit 2 };"
     " [Console]::Error.WriteLine("
-    "'recusal gate: no working python>=3.9 interpreter; failing closed'); exit 2"
+    f"'recusal gate: {_NO_INTERPRETER_RECUSAL}; failing closed'); exit 2"
+)
+
+#: The launchers ``init`` registered before 0.10.1 (version-only probe). ``--repair-launcher``
+#: recognizes them as canonical and replaces them; ``doctor`` names them as outdated.
+LEGACY_LAUNCHERS = frozenset(
+    {
+        posix_launcher('"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"', probe=_PROBE_PYTHON),
+        LAUNCHER_COMMAND_POWERSHELL.replace(_PROBE_RECUSAL, _PROBE_PYTHON).replace(
+            _NO_INTERPRETER_RECUSAL, _NO_INTERPRETER_PYTHON
+        ),
+    }
 )
 
 _WINDOWS = os.name == "nt"
@@ -318,7 +347,7 @@ def repair_launcher(project_dir: str, launcher: str = "auto", stdout=None) -> in
     if not isinstance(settings, dict):
         out.write(f"REFUSING to edit {settings_path} (unexpected shape)\n")
         return 1
-    canonical = {LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL}
+    canonical = {LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL} | LEGACY_LAUNCHERS
     hooks = settings.get("hooks")
     groups = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
     if not isinstance(groups, list):
@@ -641,6 +670,18 @@ def _launcher_platform_findings(gate_hooks: List[dict]) -> List[Finding]:
                 severity="CRITICAL",
                 message="only a PowerShell launcher is registered on a non-Windows host; "
                 "run `recusal init --repair-launcher` to register the POSIX launcher",
+            )
+        )
+    if any(str(h.get("command", "")) in LEGACY_LAUNCHERS for h in gate_hooks):
+        findings.append(
+            Finding.fail(
+                "launcher_shell_strategy",
+                severity="WARNING",
+                message="a launcher registered before 0.10.1 is in use: it runs the first "
+                "python>=3.9 on PATH even when recusal is not installed there, so a recusal "
+                "installed in a virtual environment can leave the gate refusing every call - "
+                "run `recusal init --repair-launcher` to register the launcher that skips "
+                "interpreters without recusal",
             )
         )
     if not findings and (posix or powershell):

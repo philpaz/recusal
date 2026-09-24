@@ -1,8 +1,8 @@
 """The recusal-gate Claude Code plugin must stay in lockstep with the package.
 
 Drift locks and end-to-end runs:
-- the plugin's launcher is the canonical fail-closed launcher, path-swapped for
-  ``${CLAUDE_PLUGIN_ROOT}``, byte-for-byte;
+- the plugin's launcher is the fail-closed launcher template with a Python-only probe (it
+  vendors its runtime), pointed at ``${CLAUDE_PLUGIN_ROOT}``, byte-for-byte;
 - the plugin gate shim carries the same policy wiring the scaffolder emits;
 - every version surface (pyproject, ``recusal.__version__``, plugin.json,
   marketplace.json) agrees;
@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 import recusal
-from recusal.__main__ import LAUNCHER_COMMAND
+from recusal.__main__ import _PROBE_PYTHON, LAUNCHER_COMMAND, posix_launcher
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN_DIR = os.path.join(REPO_ROOT, "claude-plugin")
@@ -64,11 +64,18 @@ def test_plugin_launcher_is_the_canonical_launcher_path_swapped():
     groups = hooks["hooks"]["PreToolUse"]
     assert len(groups) == 1 and groups[0]["matcher"] == ".*"
     plugin_cmd = groups[0]["hooks"][0]["command"]
-    expected = LAUNCHER_COMMAND.replace(
-        '"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"',
-        '"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"',
-    )
+    # the same fail-closed template, pointed at the plugin's gate; the plugin vendors its
+    # runtime, so its probe needs only a Python, never an installed recusal package
+    expected = posix_launcher('"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"', _PROBE_PYTHON)
     assert plugin_cmd == expected
+    assert "import recusal" not in plugin_cmd
+    assert (
+        LAUNCHER_COMMAND.replace(
+            '"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"',
+            '"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"',
+        )
+        != plugin_cmd
+    )  # init's launcher DOES require recusal; the two must not converge
 
 
 def test_plugin_manifest_relies_on_the_autoloaded_hooks_file():

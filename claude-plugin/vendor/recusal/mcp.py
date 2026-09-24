@@ -1672,7 +1672,12 @@ DECLARATION_MARKERS: Tuple[str, ...] = (
 
 #: A tool whose declared text is too long to plausibly be reviewed by a human at pin time
 #: is itself a finding: oversized declarations are where poisoned instructions hide.
-MAX_DECLARED_CHARS = 4000
+#: Calibrated against real servers (2026-09-23, this package's own screen over 10 widely
+#: used servers, 103 tools): the largest legitimate declarations were 4,470 (Notion) and
+#: 4,090 (sequential-thinking) characters, everything else 2,880 or less. The earlier cap
+#: of 4,000 flagged ordinary tools, which teaches reflexive ``--force``; 8,000 clears every
+#: measured tool with headroom and still flags a declaration of several pages.
+MAX_DECLARED_CHARS = 8000
 
 #: The depth analogue of the size cap: a declaration nested deeper than this cannot
 #: plausibly be reviewed either, so it is a finding, and the walk stops descending there.

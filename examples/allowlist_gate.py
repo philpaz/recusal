@@ -17,7 +17,7 @@ This file is both a demo and a real policy:
     # Use the interpreter-probe launcher, not a bare python3, so a missing interpreter fails
     # CLOSED (a hook that can't launch is a non-blocking error in Claude Code -> fail open):
     #   { "type": "command",
-    #     "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" .../examples/allowlist_gate.py --hook; rc=$?; [ \"$rc\" = 0 ] || exit 2; exit 0; }; done; exit 2" }
+    #     "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" .../examples/allowlist_gate.py --hook; rc=$?; [ \"$rc\" = 0 ] || exit 2; exit 0; }; done; exit 2" }
     # The --hook flag runs the gate against a real PreToolUse event instead of the demo.
 
 The trade-off is honest: an allowlist is stricter and needs maintenance (you add

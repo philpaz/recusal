@@ -12,6 +12,14 @@ almost every change:
   adjudication must stay deterministic.
 - **Don't grow the kernel.** New capability is a new check or a thin adapter, not a change
   to `compute_verdict`. See [`docs/EXTENDING.md`](docs/EXTENDING.md).
+- **The same evidence gives the same verdict on every supported Python.** A check that
+  passes on 3.12 and fails on 3.9 for the same input breaks the determinism the whole
+  project rests on. Standard-library parsers whose accepted input changed between
+  versions are therefore not used in `recusal/`: `date.fromisoformat`,
+  `datetime.fromisoformat` and `time.fromisoformat` accept more formats from Python 3.11
+  on (`20260615`, `2026-06-15T10:00:00.5`, `2026-W24-1`). Parse against one explicit
+  grammar instead, and reject everything else on every version.
+  `tests/test_cross_version_determinism.py` enforces this in CI.
 
 Before proposing anything that changes behavior, read [`STABILITY.md`](STABILITY.md): it
 lists what is frozen, what each version number promises, and why a manifest schema change

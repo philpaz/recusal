@@ -418,6 +418,137 @@ def test_launcher_runs_scaffolded_gate_and_denies(tmp_path):
     assert decision["permissionDecision"] == "deny"
 
 
+def _bash_path(path):
+    """A directory as a POSIX shell PATH entry: ``C:\\x\\y`` becomes ``/c/x/y`` for Git
+    Bash, where the drive colon would otherwise split the entry in two."""
+    path = path.replace("\\", "/")
+    if len(path) > 1 and path[1] == ":":
+        return "/" + path[0].lower() + path[2:]
+    return path
+
+
+def _shim_dir(tmp_path, without, with_, posix):
+    """A PATH directory where ``without`` names a real interpreter that CANNOT import
+    recusal (isolated mode, no site-packages) and ``with_`` names one that can."""
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    exe = sys.executable.replace("\\", "/") if posix else sys.executable
+    if posix:
+        for name, flags in ((without, "-I -S "), (with_, "")):
+            shim = shims / name
+            shim.write_text(f'#!/bin/sh\nexec "{exe}" {flags}"$@"\n', encoding="utf-8")
+            shim.chmod(0o755)
+    else:
+        for name, flags in ((without, "-I -S "), (with_, "")):
+            (shims / f"{name}.cmd").write_text(f'@"{exe}" {flags}%*\r\n', encoding="utf-8")
+    return str(shims)
+
+
+@pytest.mark.skipif(_BASH is None, reason="no usable POSIX shell for the launcher")
+def test_posix_launcher_skips_an_interpreter_that_cannot_import_recusal(tmp_path):
+    """0.10.1: the first python>=3.9 on PATH no longer wins when recusal is not in it
+    (a recusal installed in a venv behind a system python3 left a gate refusing every
+    call). Here python3 cannot import recusal and python can: the gate must run."""
+    _run_init(tmp_path)
+    shims = _shim_dir(tmp_path, "python3", "python", posix=True)
+    env = {**_gate_env(), "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    # precondition: the shell really resolves python3 to the shim that cannot import
+    # recusal, so this test cannot pass by falling through to some other interpreter
+    probe = subprocess.run(
+        [_BASH, "-c", f'PATH="{_bash_path(shims)}:$PATH"; python3 -c "import recusal"'],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert probe.returncode != 0 and "recusal" in probe.stderr, probe.stderr
+    proc = subprocess.run(
+        [_BASH, "-c", f'PATH="{_bash_path(shims)}:$PATH"; {LAUNCHER_COMMAND}'],
+        input='{"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}',
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell launcher is Windows-only")
+def test_powershell_launcher_skips_an_interpreter_that_cannot_import_recusal(tmp_path):
+    _run_init(tmp_path)
+    shims = _shim_dir(tmp_path, "py", "python", posix=False)
+    env = {**_gate_env(), "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    env["PATH"] = shims + os.pathsep + env.get("PATH", "")
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", LAUNCHER_COMMAND_POWERSHELL],
+        input='{"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}',
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.skipif(_BASH is None, reason="no usable POSIX shell for the launcher")
+def test_launcher_with_no_interpreter_that_can_import_recusal_fails_closed(tmp_path):
+    _run_init(tmp_path)
+    shims = _shim_dir(tmp_path, "python3", "python", posix=True)
+    # both shims now point at an interpreter that cannot import recusal
+    with open(os.path.join(shims, "python"), "w", encoding="utf-8") as fh:
+        exe = sys.executable.replace("\\", "/")
+        fh.write(f'#!/bin/sh\nexec "{exe}" -I -S "$@"\n')
+    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            f'PATH="{_bash_path(shims)}:/usr/bin:/bin"; {LAUNCHER_COMMAND}',
+        ],
+        input='{"tool_name": "Bash", "tool_input": {"command": "ls"}}',
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    assert "can import recusal" in proc.stderr
+
+
+@pytest.mark.parametrize("launcher", ["posix", "powershell"])
+def test_repair_launcher_upgrades_a_0_10_0_launcher(tmp_path, launcher):
+    from recusal.__main__ import LEGACY_LAUNCHERS, repair_launcher
+
+    legacy = [c for c in LEGACY_LAUNCHERS if ("foreach" in c) == (launcher == "powershell")][0]
+    hook = {"type": "command", "command": legacy}
+    if launcher == "powershell":
+        hook["shell"] = "powershell"
+    custom = {"type": "command", "command": "echo my-own-hook"}
+    settings = {"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [hook, custom]}]}}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    assert repair_launcher(str(tmp_path), launcher=launcher, stdout=io.StringIO()) == 0
+    after = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    commands = [h["command"] for g in after["hooks"]["PreToolUse"] for h in g["hooks"]]
+    expected = LAUNCHER_COMMAND_POWERSHELL if launcher == "powershell" else LAUNCHER_COMMAND_POSIX
+    assert expected in commands and legacy not in commands
+    assert "echo my-own-hook" in commands  # a hook that is not ours is never touched
+
+
+def test_doctor_names_a_pre_0_10_1_launcher_as_outdated():
+    from recusal.__main__ import LEGACY_LAUNCHERS
+
+    for legacy in LEGACY_LAUNCHERS:
+        shell = {"shell": "powershell"} if "foreach" in legacy else {}
+        findings = _launcher_platform_findings([_hook(legacy, **shell)])
+        assert any(
+            f.check == "launcher_shell_strategy" and not f.passed and "0.10.1" in f.message
+            for f in findings
+        )
+
+
 # --- launcher migration: the remediation path must actually remediate ----------------------
 
 
