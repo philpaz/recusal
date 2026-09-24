@@ -198,6 +198,15 @@ def make_subject_guard(active_id):
 
 ## 5. Egress allowlist, stop exfiltration
 
+The [tested, runnable version](../examples/egress_allowlist.py) accepts an explicit
+domain set, checks literal email and HTTP destinations, and refuses missing or
+malformed destinations. Run `python examples/egress_allowlist.py` offline.
+It also demonstrates the boundary: addresses constructed inside a shell or
+interpreter, redirects, and internal tool requests are not inspected. Deferring
+such a call is not proof of safe egress; enforce that at the transport boundary
+or with a vetted default-deny tool policy. The runnable example accepts one bare
+email address and absolute HTTP(S) URLs.
+
 Outbound email/HTTP must go to an allowlisted destination. This is your guard against a
 prompt-injected "send the data to attacker@evil.com".
 
