@@ -12,6 +12,17 @@ All notable changes to this project are documented here. The format follows
   Python gives the same verdict, and an invalid window (unparseable, mixed kinds, or
   inverted) is reported as a caller error rather than as row violations. Contributed by
   @DYNOSuprovo in #17, the project's first outside contribution.
+- Three runnable, tested examples, each linked from the guide it completes. None changes
+  the `recusal` package. Contributed by @fatihcvs in #23, #24 and #25.
+  - `examples/audit_sink.py`: a custom `AuditSink` that mirrors each entry to a local
+    file and advances its head only after a successful write, so a failed delivery is
+    never recorded as delivered.
+  - `examples/egress_allowlist.py` (cookbook recipe 5): checks literal email and HTTP(S)
+    destinations against an explicit domain set, refuses missing or malformed ones, and
+    states what it cannot see, such as addresses built inside a shell command.
+  - `examples/action_budget.py` (cookbook recipe 7): a SQLite counter that keeps the
+    count across fresh hook processes and does not lose increments under concurrent
+    hooks.
 
 ## [0.10.2] - 2026-09-23
 
