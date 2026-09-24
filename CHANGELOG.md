@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `recusal.checks.date_range`: fail when any date or datetime in a column falls outside
+  an inclusive window. Strings are parsed against one explicit grammar, so every supported
+  Python gives the same verdict, and an invalid window (unparseable, mixed kinds, or
+  inverted) is reported as a caller error rather than as row violations. Contributed by
+  @DYNOSuprovo in #17, the project's first outside contribution.
+
 ## [0.10.2] - 2026-09-23
 
 One determinism fix, found while reviewing a contribution. PATCH under `STABILITY.md`: on

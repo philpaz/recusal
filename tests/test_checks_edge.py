@@ -141,7 +141,9 @@ def test_date_range_rejects_version_dependent_formats():
 
 
 def test_date_range_mixed_boundary_kinds_fails_as_invalid_window():
-    f = date_range([{"d": "2026-06-01"}], "d", min_date="2026-01-01", max_date="2026-12-31T23:59:59")
+    f = date_range(
+        [{"d": "2026-06-01"}], "d", min_date="2026-01-01", max_date="2026-12-31T23:59:59"
+    )
     assert not f.passed
     assert "invalid date_range window" in f.message
     assert "mixed boundary kinds" in f.message
@@ -159,4 +161,3 @@ def test_date_range_inverted_boundaries_fails_as_invalid_window():
 def test_date_range_date_and_datetime_objects():
     rows = [{"d": date(2026, 1, 15)}, {"d": datetime(2026, 1, 20, 10, 30)}]
     assert date_range(rows, "d", date(2026, 1, 1), date(2026, 1, 31)).passed
-
