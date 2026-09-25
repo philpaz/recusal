@@ -125,45 +125,27 @@ def policy(tool_name, tool_input):
 
 ## 3. Protect secret files and confine writes to the workspace
 
-Refuse writes to credentials, keys, and anything outside an allowed root.
+The [tested, runnable policy](../examples/workspace_policy.py) checks explicit
+`Write`, `Edit` and `MultiEdit` paths against a trusted root and refuses secret
+path names. Run `python examples/workspace_policy.py` offline.
 
 ```python
-import os
-from recusal import Finding
+from examples.workspace_policy import make_workspace_policy
 
-SAFE_ROOT = os.path.abspath("./workspace")
-PROTECTED = (".env", ".pem", ".key", ".p12", "id_rsa", "credentials", "secrets")
-
-
-def policy(tool_name, tool_input):
-    if tool_name not in ("Write", "Edit", "MultiEdit"):
-        return []
-    path = tool_input.get("file_path", "")
-    low = path.lower()
-    if any(p in low for p in PROTECTED):
-        return [
-            Finding.fail(
-                "protected_file",
-                severity="CRITICAL",
-                message=f"refusing write to a secret/credential file: {path}",
-            )
-        ]
-    # commonpath, not startswith: "/workspace_evil".startswith("/workspace") is a bypass.
-    ap = os.path.abspath(path)
-    try:
-        inside = os.path.commonpath([SAFE_ROOT, ap]) == SAFE_ROOT
-    except ValueError:  # different drives on Windows
-        inside = False
-    if not inside:
-        return [
-            Finding.fail(
-                "path_confinement",
-                severity="CRITICAL",
-                message=f"write outside the workspace root: {path}",
-            )
-        ]
-    return []
+policy = make_workspace_policy("./workspace")
 ```
+
+Copy the example module into your hook project when installing from a wheel;
+`examples` is repository material, not an installed package API.
+
+The root is resolved when the policy is built. Relative write paths use the hook
+process's current directory. Existing symlink parents are resolved even for files
+that do not exist yet, and Windows drive/case rules are respected. Secret names
+remain a deliberate substring check: `docs/secrets-howto.md` is refused too.
+Both the supplied and resolved paths are checked.
+
+This is a teaching policy, not OS-level confinement: a symlink can change after
+the check, and shell commands or other tools are outside its inspection.
 
 ## 4. Wrong-subject write guard (the signature recipe)
 
