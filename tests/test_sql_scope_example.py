@@ -9,6 +9,10 @@ from recusal import compute_verdict
 @pytest.mark.parametrize(
     "sql",
     [
+        "DELETE FROM users # where id = 1",
+        "UPDATE t SET n=0 # where id=1\n",
+        "SELECT 1 # 2",
+        "DELETE FROM t WHERE id=(SELECT 1 # where\n)",
         "DELETE FROM users -- where id = 1",
         "DELETE FROM users /* where */",
         "SELECT 1; DELETE FROM t",
@@ -40,6 +44,12 @@ def test_unscoped_or_unsupported_statements_are_refused(sql, tool):
 @pytest.mark.parametrize(
     "sql",
     [
+        "SELECT '#'",
+        'SELECT "#" FROM t',
+        "SELECT `#` FROM t",
+        "SELECT [#] FROM t",
+        "SELECT 1 -- # ignored\n",
+        "SELECT 1 /* # ignored */",
         "SELECT updated_at FROM orders",
         "SELECT * FROM deleted_items",
         "SELECT 'DELETE; DROP TABLE users'",

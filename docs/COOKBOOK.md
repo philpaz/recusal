@@ -113,7 +113,9 @@ This is lexical screening, not a SQL parser. `WHERE 1=1` still defers because th
 policy does not evaluate predicates. Dynamic SQL, stored-procedure behavior,
 data-modifying statements inside CTEs and SQL built inside shell commands are
 outside this teaching recipe's guarantee. Unsupported dollar quoting and
-backslash escapes in quotes are refused. Use database permissions and transactions
+backslash escapes in quotes are refused. Unquoted `#` is also refused because it
+starts a comment in MySQL/MariaDB but can be an operator in PostgreSQL; a quoted
+`'#'` remains ordinary string content. Use database permissions and transactions
 for the real protection boundary.
 
 ## 3. Protect secret files and confine writes to the workspace
