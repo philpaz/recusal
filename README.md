@@ -620,6 +620,27 @@ way (no model in the verdict path, no runtime dependencies, don't grow the kerne
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 first. Security reports go through [`SECURITY.md`](SECURITY.md), privately.
 
+### Contributors
+
+Thank you to the people who have made Recusal better:
+
+- [@DYNOSuprovo](https://github.com/DYNOSuprovo) (Suprovo Mallick): the
+  `recusal.checks.date_range` check in [#17](https://github.com/philpaz/recusal/pull/17),
+  the project's first outside contribution. Reviewing it also exposed a
+  cross-Python bug in Recusal's own expiry check, fixed in 0.10.2.
+- [@fatihcvs](https://github.com/fatihcvs): five tested cookbook examples (a custom
+  audit sink, egress allowlist, action budget, workspace confinement and SQL scope) and
+  two follow-up fixes, in [#23](https://github.com/philpaz/recusal/pull/23),
+  [#24](https://github.com/philpaz/recusal/pull/24),
+  [#25](https://github.com/philpaz/recusal/pull/25),
+  [#33](https://github.com/philpaz/recusal/pull/33),
+  [#34](https://github.com/philpaz/recusal/pull/34),
+  [#38](https://github.com/philpaz/recusal/pull/38) and
+  [#39](https://github.com/philpaz/recusal/pull/39).
+
+Want to join them? Issues labeled `good first issue` are a friendly place to start;
+see the [open issues](https://github.com/philpaz/recusal/issues).
+
 ## Contact
 
 Built by [Philip Paz](https://www.linkedin.com/in/philippaz/). Messages are open,
