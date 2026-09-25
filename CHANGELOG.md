@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.3] - 2026-09-25
+
+One deny-list fix. PATCH under `STABILITY.md`: the reference deny list now refuses two
+command shapes it should have refused already; nothing it refused before is allowed now.
+
+### Fixed
+- **A pipe into an interpreter behind a wrapper or a path was not refused.** The
+  pipe-into-interpreter check matched only a bare interpreter name right after the pipe,
+  so `curl … | bash` was refused but `curl … | sudo bash`, `| sudo -E sh`, `| env bash`,
+  `| /usr/bin/env bash`, `| doas sh`, `| nohup sh`, `| timeout 60 bash` and
+  `| /bin/bash` were allowed. A second check now refuses an interpreter behind one of
+  those wrappers or a path. The interpreter must be a whole word, so `| grep bash` and
+  `| sudo tee /etc/bash.bashrc` still defer.
+- **Recursive `chmod` to a world-writable mode was refused in only one spelling.**
+  `chmod -R 777` was refused, but `chmod 777 -R`, `chmod -R a+rwx`, `chmod -R o+w` and
+  `chmod -R u+x,o+w` were not. The flag and the mode are now matched in either order,
+  including the symbolic modes that grant write to everyone; removing write
+  (`chmod -R o-w`) still defers.
+
+Found while turning cookbook recipe 1 into a contributor issue: the recipe was checked
+against the package's own deny list, and the package missed these too. 17 new red-team
+cases fail on 0.10.2 and pass here, alongside new cases that must keep deferring.
+
 ## [0.10.2] - 2026-09-23
 
 One determinism fix, found while reviewing a contribution. PATCH under `STABILITY.md`: on
