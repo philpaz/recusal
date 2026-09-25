@@ -67,9 +67,15 @@ _DESTRUCTIVE = (
 # whose body pipes itself into a backgrounded copy (":(){ :|:& };:" and its spaced
 # "\: () { : | : & } ; :" form). A *renamed* bomb is a runtime-name deny-list ceiling.
 _FORK_BOMB = re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&")
+# Recursive chmod to a world-writable mode, flags and mode in either order: `-R 777`,
+# `777 -R`, `--recursive`, and the symbolic forms (`a+rwx`, `o+w`, `u+x,o+w`).
+_CHMOD_MODE_CLAUSE = r"[ugoa]*[+=-][rwxst]*"
 _CHMOD_WORLD = re.compile(
-    r"\bchmod\b[^|&;]{0,256}-\w*r[^|&;]{0,256}\b0?777\b"
-)  # recursive chmod to 777
+    r"\bchmod\b"
+    r"(?=[^|&;\n]{0,256}\s(?:-[a-z]*r[a-z]*|--recursive)(?=\s|$))"
+    r"(?=[^|&;\n]{0,256}\s(?:[0-7]?777|(?:" + _CHMOD_MODE_CLAUSE + r",)*"
+    r"[ugoa]*[ao][ugoa]*[+=][rwxst]*w[rwxst]*(?:," + _CHMOD_MODE_CLAUSE + r")*)(?=\s|$))"
+)
 _GIT_FORCE_REFSPEC = re.compile(r"\bgit\s+push\b.*\s\+\S")  # force-push via +refspec
 # A force flag ANYWHERE in a git push (the literal markers above only see it right after
 # `push`): after the remote (`git push origin main --force`), combined short flags
@@ -83,6 +89,19 @@ _PIPE_TO_SHELL = re.compile(r"(curl|wget)\b.*(\|\s*" + _INTERP + r"\b|<\(\s*(cur
 _PROCESS_SUB_TO_SHELL = re.compile(r"\b" + _INTERP + r"\b\s*<\(\s*(curl|wget)\b")
 # Piping ANY output into a bare interpreter (defeats `... | base64 -d | sh|python|...`).
 _PIPE_INTO_SHELL = re.compile(r"\|\s*" + _INTERP + r"\b")
+# ...and into one behind a wrapper or a path, which the bare form above does not see:
+# `| sudo bash`, `| sudo -E sh`, `| env bash`, `| /usr/bin/env bash`, `| doas sh`,
+# `| /bin/bash`, `| nohup sh`.
+# The interpreter must be a whole word, so `| sudo tee /etc/bash.bashrc` or
+# `| grep bash` is not read as one.
+_WRAPPERS = r"(?:sudo|doas|env|command|exec|nohup|nice|time|stdbuf|timeout|xargs|busybox)"
+_PIPE_INTO_WRAPPED_SHELL = re.compile(
+    r"\|\s*(?:(?:[^\s|&;]*[/\\])?"
+    + _WRAPPERS
+    + r"\b[^|&;\n]{0,256}?\s)?(?:[^\s|&;]*[/\\])?"
+    + _INTERP
+    + r"(?:\.exe)?(?=\s|$|[|&;)])"
+)
 # Reverse / bind shells: /dev/tcp back-connect, nc/ncat -e, interactive bash back-connect,
 # and socat with an EXEC:/SYSTEM: payload (its shell-spawning form).
 _REVERSE_SHELL = re.compile(
@@ -552,6 +571,7 @@ def analyze_command(
         _search_any(_PIPE_TO_SHELL, variants)
         or _search_any(_PROCESS_SUB_TO_SHELL, variants)
         or _search_any(_PIPE_INTO_SHELL, variants)
+        or _search_any(_PIPE_INTO_WRAPPED_SHELL, variants)
     ):
         findings.append(
             Finding.fail(
