@@ -8,7 +8,7 @@ for an outer statement. Each semicolon-delimited statement is checked separately
 WHERE 1=1 still defers: predicates are not evaluated. Dynamic SQL, SQL constructed
 inside a shell command and tools other than run_sql/query are not inspected.
 Data-modifying statements inside CTEs are outside this top-level screening too.
-Dialect-specific dollar quoting and backslash escapes in quotes are refused
+Dialect-specific dollar quoting, unquoted # and backslash escapes in quotes are refused
 rather than guessed. Extend the grammar deliberately for your database, and use
 database permissions/transactions for the actual data-protection boundary.
 """
@@ -60,6 +60,9 @@ def _statements(sql):
             else:
                 return None
         elif sql[i] == "$" and re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$", sql[i:]):
+            return None
+        elif sql[i] == "#":
+            # MySQL/MariaDB comment syntax conflicts with PostgreSQL operators.
             return None
         elif sql[i] == "(":
             depth += 1
