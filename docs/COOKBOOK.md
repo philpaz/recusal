@@ -96,32 +96,25 @@ def policy(tool_name, tool_input):
 
 ## 2. Require a `WHERE` on destructive SQL
 
-The classic data-loss bug: a `DELETE`/`UPDATE` with no scope. (Applies to a custom `run_sql`
-tool, or to `Bash` invoking a DB client.)
+The [tested, runnable policy](../examples/sql_scope_policy.py) checks explicit
+`run_sql` and `query` arguments. Run `python examples/sql_scope_policy.py` offline.
 
 ```python
-from recusal import Finding
-
-
-def policy(tool_name, tool_input):
-    if tool_name not in ("run_sql", "query"):
-        return []
-    sql = str(tool_input.get("sql", "")).lower()
-    destructive = any(k in sql for k in ("delete", "update", "drop", "truncate"))
-    if destructive and "where" not in sql and "truncate" not in sql:
-        return [
-            Finding.fail(
-                "sql_scope", severity="CRITICAL", message="destructive SQL without a WHERE clause"
-            )
-        ]
-    if "drop table" in sql or "truncate" in sql:
-        return [
-            Finding.fail(
-                "sql_scope", severity="CRITICAL", message="schema-destructive SQL (DROP/TRUNCATE)"
-            )
-        ]
-    return []
+from examples.sql_scope_policy import policy
 ```
+
+Copy the example module into your hook project; `examples` is repository material,
+not an installed API. Comments and quoted strings/identifiers cannot supply
+`WHERE`; whole-word matching avoids treating `updated_at` or `deleted_items` as
+commands. Each statement is checked separately, and a nested query's `WHERE`
+does not scope the outer write. `DROP` and `TRUNCATE` are refused.
+
+This is lexical screening, not a SQL parser. `WHERE 1=1` still defers because the
+policy does not evaluate predicates. Dynamic SQL, stored-procedure behavior,
+data-modifying statements inside CTEs and SQL built inside shell commands are
+outside this teaching recipe's guarantee. Unsupported dollar quoting and
+backslash escapes in quotes are refused. Use database permissions and transactions
+for the real protection boundary.
 
 ## 3. Protect secret files and confine writes to the workspace
 
