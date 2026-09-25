@@ -12,8 +12,8 @@ All notable changes to this project are documented here. The format follows
   Python gives the same verdict, and an invalid window (unparseable, mixed kinds, or
   inverted) is reported as a caller error rather than as row violations. Contributed by
   @DYNOSuprovo in #17, the project's first outside contribution.
-- Three runnable, tested examples, each linked from the guide it completes. None changes
-  the `recusal` package. Contributed by @fatihcvs in #23, #24 and #25.
+- Five runnable, tested examples, each linked from the guide it completes. None changes
+  the `recusal` package. Contributed by @fatihcvs in #23, #24, #25, #33 and #34.
   - `examples/audit_sink.py`: a custom `AuditSink` that mirrors each entry to a local
     file and advances its head only after a successful write, so a failed delivery is
     never recorded as delivered.
@@ -23,6 +23,13 @@ All notable changes to this project are documented here. The format follows
   - `examples/action_budget.py` (cookbook recipe 7): a SQLite counter that keeps the
     count across fresh hook processes and does not lose increments under concurrent
     hooks.
+  - `examples/workspace_policy.py` (cookbook recipe 3): confines explicit writes to a
+    workspace root after resolving symlinks, so a link inside the workspace can no
+    longer point a write outside it, and refuses secret-looking paths.
+  - `examples/sql_scope_policy.py` (cookbook recipe 2): a lexical scanner that ignores
+    comments and quoted text, checks each statement on its own, and refuses a
+    `DELETE`/`UPDATE` with no top-level `WHERE`, so `updated_at` is no longer mistaken
+    for a command and a commented-out `WHERE` no longer counts.
 
 ### Fixed
 - **Cookbook recipe 5 (egress allowlist) could let data go to the wrong address.** The
