@@ -13,7 +13,8 @@ All notable changes to this project are documented here. The format follows
   inverted) is reported as a caller error rather than as row violations. Contributed by
   @DYNOSuprovo in #17, the project's first outside contribution.
 - Five runnable, tested examples, each linked from the guide it completes. None changes
-  the `recusal` package. Contributed by @fatihcvs in #23, #24, #25, #33 and #34.
+  the `recusal` package. Contributed by @fatihcvs in #23, #24, #25, #33, #34, #38 and
+  #39.
   - `examples/audit_sink.py`: a custom `AuditSink` that mirrors each entry to a local
     file and advances its head only after a successful write, so a failed delivery is
     never recorded as delivered.
@@ -25,11 +26,13 @@ All notable changes to this project are documented here. The format follows
     hooks.
   - `examples/workspace_policy.py` (cookbook recipe 3): confines explicit writes to a
     workspace root after resolving symlinks, so a link inside the workspace can no
-    longer point a write outside it, and refuses secret-looking paths.
+    longer point a write outside it, and refuses secret-looking paths below the
+    workspace root, so a project folder such as `credentials-api` is not refused.
   - `examples/sql_scope_policy.py` (cookbook recipe 2): a lexical scanner that ignores
     comments and quoted text, checks each statement on its own, and refuses a
     `DELETE`/`UPDATE` with no top-level `WHERE`, so `updated_at` is no longer mistaken
-    for a command and a commented-out `WHERE` no longer counts.
+    for a command and a commented-out `WHERE` no longer counts. An unquoted `#` is
+    refused, because it starts a comment in MySQL and MariaDB.
 
 ### Fixed
 - **Cookbook recipe 5 (egress allowlist) could let data go to the wrong address.** The
