@@ -94,3 +94,41 @@ def test_windows_case_and_different_drives(workspace):
 
 def test_uninspected_tools_defer(workspace):
     assert make_workspace_policy(workspace)("Read", {"file_path": ".env"}) == []
+
+
+@pytest.mark.parametrize(
+    "parent_name",
+    ["plain-project", "credentials-api", "secrets-rotation", "my.envoy", "keystone.keys"],
+)
+@pytest.mark.parametrize("relative", [False, True])
+def test_workspace_ancestors_do_not_trigger_secret_markers(
+    tmp_path, monkeypatch, parent_name, relative
+):
+    root = tmp_path / parent_name / "workspace"
+    root.mkdir(parents=True)
+    policy = make_workspace_policy(root)
+    monkeypatch.chdir(root)
+    path = "notes.md" if relative else str(root / "notes.md")
+    assert policy("Write", {"file_path": path}) == []
+    assert compute_verdict(
+        policy("Write", {"file_path": str(root / "docs" / "secrets-howto.md")})
+    ).refused
+
+
+def test_workspace_itself_can_have_a_secret_marker(tmp_path):
+    root = tmp_path / "credentials-api"
+    root.mkdir()
+    assert make_workspace_policy(root)("Write", {"file_path": str(root / "notes.md")}) == []
+
+
+def test_secret_named_symlink_to_ordinary_file_is_refused(workspace):
+    target = workspace / "notes.md"
+    target.touch()
+    link = workspace / "credentials.txt"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    assert compute_verdict(
+        make_workspace_policy(workspace)("Write", {"file_path": str(link)})
+    ).refused

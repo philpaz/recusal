@@ -7,8 +7,8 @@ agent project directory. The root is captured when the policy is constructed.
 realpath resolves existing symlinks, including parents of not-yet-created files;
 normcase follows the host's path rules (including drive/case handling on Windows).
 Secret matching deliberately remains a substring check: secrets-howto.md is denied.
-Both the supplied and resolved path are checked, so a harmless alias cannot hide
-a secret name. This is a teaching recipe, not a filesystem sandbox: links can
+Both supplied and resolved names below the workspace root are checked, so a
+harmless alias cannot hide a secret name. Ancestor directory names are ignored. This is a teaching recipe, not a filesystem sandbox: links can
 change after the check, and shell commands or tools other than those below are
 not inspected. Use OS-level confinement for protection against such races.
 """
@@ -25,6 +25,7 @@ PROTECTED = (".env", ".pem", ".key", ".p12", "id_rsa", "credentials", "secrets")
 
 def make_workspace_policy(root):
     """Bind a trusted root; paths in tool input must be nonempty strings."""
+    supplied_root = os.path.normcase(os.path.abspath(root))
     safe_root = os.path.normcase(os.path.realpath(root))
 
     def policy(tool_name, tool_input):
@@ -40,6 +41,8 @@ def make_workspace_policy(root):
         try:
             resolved = os.path.normcase(os.path.realpath(path))
             inside = os.path.commonpath([safe_root, resolved]) == safe_root
+            supplied_name = os.path.relpath(os.path.normcase(os.path.abspath(path)), supplied_root)
+            resolved_name = os.path.relpath(resolved, safe_root)
         except (OSError, ValueError):
             return [
                 Finding.fail(
@@ -47,7 +50,9 @@ def make_workspace_policy(root):
                 )
             ]
         if any(
-            marker in candidate.lower() for candidate in (path, resolved) for marker in PROTECTED
+            marker in candidate.lower()
+            for candidate in (supplied_name, resolved_name)
+            for marker in PROTECTED
         ):
             return [
                 Finding.fail(
