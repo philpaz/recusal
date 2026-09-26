@@ -356,22 +356,13 @@ def quality_gate(coverage, failed, min_coverage=75):
 Let the agent call only tools you've vetted; refuse anything else (guards a hijacked agent
 reaching for an unexpected capability).
 
+The tested version is [`examples/approved_tool_policy.py`](../examples/approved_tool_policy.py).
+Missing, empty, non-string and unknown names refuse. Matching is exact and
+case-sensitive; a tool's presence on this list does not validate its arguments.
+Pair this with argument-level rules, particularly for shell commands.
+
 ```python
-from recusal import Finding
-
-APPROVED = {"Read", "Grep", "Glob", "Bash", "update_record"}
-
-
-def policy(tool_name, tool_input):
-    if tool_name and tool_name not in APPROVED:
-        return [
-            Finding.fail(
-                "tool_allowlist",
-                severity="CRITICAL",
-                message=f"tool '{tool_name}' is not on the approved list",
-            )
-        ]
-    return []
+from examples.approved_tool_policy import policy
 ```
 
 ## 10. Compose several policies into one gate
