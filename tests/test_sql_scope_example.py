@@ -72,3 +72,36 @@ def test_missing_or_invalid_sql_is_refused(value):
 
 def test_shell_sql_is_explicitly_outside_scope():
     assert policy("Bash", {"command": "psql -c 'DELETE FROM users'"}) == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+        "WITH u AS (UPDATE t SET a=1 RETURNING id) SELECT count(*) FROM u",
+        "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d WHERE id=1",
+        "WITH a AS (SELECT * FROM t WHERE id=1), d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+        "WITH d AS (DELETE FROM t WHERE id=1 RETURNING *), u AS (UPDATE t SET a=1 RETURNING *) SELECT * FROM d",
+        "WITH d AS (DELETE FROM t RETURNING (SELECT id FROM u WHERE id=1)) SELECT * FROM d",
+        "WITH d AS (DELETE FROM t /* WHERE id=1 */ RETURNING *) SELECT * FROM d",
+        "WITH x AS (WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d) SELECT * FROM x",
+    ],
+)
+def test_unscoped_cte_mutations_refuse(sql):
+    assert compute_verdict(policy("run_sql", {"sql": sql})).refused
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH d AS (DELETE FROM t WHERE id=1 RETURNING *) SELECT * FROM d",
+        "WITH u AS (UPDATE t SET a=1 WHERE id=1 RETURNING id) SELECT * FROM u",
+        "WITH d AS (SELECT * FROM t) SELECT * FROM d",
+        "WITH RECURSIVE x(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM x WHERE n<4) SELECT * FROM x",
+        "WITH d AS (SELECT 'DELETE FROM t' AS note) SELECT * FROM d",
+        "WITH d AS MATERIALIZED (DELETE FROM t WHERE id=1 RETURNING *) SELECT * FROM d",
+        "WITH x AS (WITH d AS (DELETE FROM t WHERE id=1 RETURNING *) SELECT * FROM d) SELECT * FROM x",
+    ],
+)
+def test_scoped_and_read_only_ctes_defer(sql):
+    assert policy("run_sql", {"sql": sql}) == []

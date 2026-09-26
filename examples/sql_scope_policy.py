@@ -7,7 +7,7 @@ Comments, quoted strings/identifiers and nested expressions cannot supply WHERE
 for an outer statement. Each semicolon-delimited statement is checked separately.
 WHERE 1=1 still defers: predicates are not evaluated. Dynamic SQL, SQL constructed
 inside a shell command and tools other than run_sql/query are not inspected.
-Data-modifying statements inside CTEs are outside this top-level screening too.
+DELETE/UPDATE bodies inside CTEs require WHERE at their own parenthesis level.
 Dialect-specific dollar quoting, unquoted # and backslash escapes in quotes are refused
 rather than guessed. Extend the grammar deliberately for your database, and use
 database permissions/transactions for the actual data-protection boundary.
@@ -23,8 +23,9 @@ from recusal import Finding
 
 
 def _statements(sql):
-    """Return top-level word lists, or None for ambiguous/unclosed syntax."""
+    """Return statement and nested mutation word lists, or None for invalid syntax."""
     statements, words = [], []
+    parents = []
     i, depth = 0, 0
     while i < len(sql):
         if sql.startswith("--", i):
@@ -65,12 +66,19 @@ def _statements(sql):
             # MySQL/MariaDB comment syntax conflicts with PostgreSQL operators.
             return None
         elif sql[i] == "(":
+            parents.append(words)
+            words = []
             depth += 1
             i += 1
         elif sql[i] == ")":
             depth -= 1
             if depth < 0:
                 return None
+            # A CTE body may itself start with WITH. Keep each mutation's
+            # words separate so a sibling or subquery cannot lend it WHERE.
+            if words and words[0] in ("DELETE", "UPDATE", "WITH"):
+                statements.append(words)
+            words = parents.pop()
             i += 1
         elif sql[i] == ";":
             if depth:
@@ -82,8 +90,7 @@ def _statements(sql):
             start = i
             while i < len(sql) and (sql[i].isalnum() or sql[i] in "_$"):
                 i += 1
-            if depth == 0:
-                words.append(sql[start:i].upper())
+            words.append(sql[start:i].upper())
         else:
             i += 1
     return None if depth else statements + [words]

@@ -107,11 +107,13 @@ Copy the example module into your hook project; `examples` is repository materia
 not an installed API. Comments and quoted strings/identifiers cannot supply
 `WHERE`; whole-word matching avoids treating `updated_at` or `deleted_items` as
 commands. Each statement is checked separately, and a nested query's `WHERE`
-does not scope the outer write. `DROP` and `TRUNCATE` are refused.
+does not scope the outer write. `DELETE`/`UPDATE` bodies inside CTEs are checked
+at their own parenthesis level, including nested `WITH` bodies; a sibling CTE or
+the final query cannot supply their `WHERE`. `DROP` and `TRUNCATE` are refused.
 
 This is lexical screening, not a SQL parser. `WHERE 1=1` still defers because the
 policy does not evaluate predicates. Dynamic SQL, stored-procedure behavior,
-data-modifying statements inside CTEs and SQL built inside shell commands are
+and SQL built inside shell commands are
 outside this teaching recipe's guarantee. Unsupported dollar quoting and
 backslash escapes in quotes are refused. Unquoted `#` is also refused because it
 starts a comment in MySQL/MariaDB but can be an operator in PostgreSQL; a quoted
