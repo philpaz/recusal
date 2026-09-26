@@ -239,35 +239,18 @@ def policy(tool_name, tool_input):
 Untrusted content a tool returns (a web page, an MCP server, a file) can carry instructions
 that hijack the next action. Adjudicate the *observation* before the agent acts on it.
 
+The tested implementation lives in
+[`examples/injection_quarantine.py`](../examples/injection_quarantine.py). It
+removes Unicode format characters, casefolds and collapses whitespace before
+matching a few phrase families. This is a tripwire, not a defense: rewording can
+bypass it and quoted discussions can trigger it. Keep tool output untrusted even
+when no phrase matches.
+
 ```python
-from recusal import Finding
-
-INJECTION_MARKERS = (
-    "ignore previous instructions",
-    "disregard the above",
-    "ignore the system prompt",
-    "new instructions:",
-    "send the api key",
-    "exfiltrate",
-)
-
-
-def screen_tool_output(text):
-    low = (text or "").lower()
-    hits = [m for m in INJECTION_MARKERS if m in low]
-    if hits:
-        return [
-            Finding.fail(
-                "prompt_injection",
-                severity="CRITICAL",
-                message=f"tool output carries injected instructions: {hits[0]!r}",
-            )
-        ]
-    return []
-
+from examples.injection_quarantine import screen_tool_output
 
 # verdict = compute_verdict(screen_tool_output(observation))
-# if verdict.refused: quarantine the observation; do NOT feed it back as trusted context.
+# if verdict.refused: quarantine the observation; do NOT trust it as instructions.
 ```
 
 > Pair this with `classify_failure(...)`, which routes a `prompt_injection` failure to

@@ -14,43 +14,44 @@ the injected text is never fed back as trusted context. Clean output passes unto
 
     python examples/injection_quarantine.py
 
+This is a phrase-matching tripwire, not a prompt-injection defense. Rewording can
+evade it; quoted discussions can trigger it. Tool output must remain untrusted
+data even when no phrase matches.
+
 This is cookbook recipe 6, made runnable. `screen_tool_output` is the same shape you would
 put behind a real tool boundary or an MCP server response.
 """
 
 import os
+import re
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from recusal import Finding, classify_failure, compute_verdict  # noqa: E402
 
-# Case-insensitive markers of injected instructions. Kept in sync with the classifier's
-# own `prompt_injection` markers on purpose: the screen and the router should share one
-# vocabulary, so anything the screen refuses, the router reliably sends to `quarantine`
-# (a divergent list would refuse an observation but then route it to `ask-human`). A
-# deny-list is a baseline (a novel phrasing can evade it); the point here is the *seam*,
-# adjudicate the observation out of band before it becomes trusted context. Pair with an
-# allowlist of trusted sources for high-stakes tools (see docs/COOKBOOK.md recipe 11).
-INJECTION_MARKERS = (
-    "ignore previous instructions",
-    "disregard the above",
-    "ignore the system prompt",
-    "send the api key",
-    "exfiltrate",
+PATTERNS = (
+    r"\bignore (?:all )?(?:the )?previous instructions\b",
+    r"\bdisregard (?:the above|everything above)\b",
+    r"\bignore the system prompt\b",
+    r"\bnew instructions\s*:",
+    r"\bsend the api key\b",
+    r"\bexfiltrate\b",
 )
 
 
-def screen_tool_output(text: str) -> list:
-    """Return Findings for injected instructions in a tool's returned content."""
-    low = (text or "").lower()
-    hits = [m for m in INJECTION_MARKERS if m in low]
-    if hits:
+def screen_tool_output(text):
+    """Normalize format characters, case and whitespace before matching phrases."""
+    normalized = " ".join(
+        "".join(c for c in (text or "") if unicodedata.category(c) != "Cf").casefold().split()
+    )
+    if any(re.search(pattern, normalized) for pattern in PATTERNS):
         return [
             Finding.fail(
                 "prompt_injection",
                 severity="CRITICAL",
-                message=f"tool output carries injected instructions: {hits[0]!r}",
+                message="tool output matches the ignore previous instructions / exfiltrate tripwire",
             )
         ]
     return [Finding.ok("tool_output_clean", severity="CRITICAL")]
