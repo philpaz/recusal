@@ -70,29 +70,20 @@ if verdict.refused or verdict.retryable:
 
 Refuse `rm -rf`, disk wipes, recursive `chmod`, and pipe-to-shell installs before they run.
 
+The tested wrapper in [`examples/destructive_shell_policy.py`](../examples/destructive_shell_policy.py)
+uses `recusal.deny_list.deny_list_policy()` so its shell checks stay aligned with
+Recusal's reference policy. Its secret-file and control-path protections remain
+active too. Optional local markers add refusals without replacing those checks.
+
 ```python
-from recusal import Finding
+from examples.destructive_shell_policy import make_policy
 
-DESTRUCTIVE = ("rm -rf", "rm -fr", "mkfs", "dd if=", ":(){", "chmod -r 777", "> /dev/sd")
-
-
-def policy(tool_name, tool_input):
-    if tool_name != "Bash":
-        return []
-    cmd = tool_input.get("command", "").lower()
-    hits = [m for m in DESTRUCTIVE if m in cmd]
-    if "curl" in cmd and ("| sh" in cmd or "| bash" in cmd):
-        hits.append("curl | shell")
-    if hits:
-        return [
-            Finding.fail(
-                "destructive_shell",
-                severity="CRITICAL",
-                message=f"refusing destructive command: {', '.join(hits)}",
-            )
-        ]
-    return []
+policy = make_policy(extra_markers=("deploy production",))
 ```
+
+Markers are normalized substrings, not a shell parser. Commands built at runtime
+and code inside interpreters remain outside a deny list's reach; use recipe 11's
+allowlist mode where a default-deny boundary is needed.
 
 ## 2. Require a `WHERE` on destructive SQL
 
