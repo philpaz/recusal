@@ -45,8 +45,8 @@ if verdict.refused or verdict.retryable:
 ```
 
 Runnable LangGraph adapter: [`../examples/langgraph_gate.py`](../examples/langgraph_gate.py)
-wraps each tool call immediately before execution and hands a refusal reason back as the
-tool result. It is offline, requires **Python 3.10+**, and is tested with exactly
+uses LangGraph's `ToolNode(..., wrap_tool_call=recusal_gate(policy))` to gate each tool call
+immediately before execution and return a refusal as an error `ToolMessage`. It is offline, requires **Python 3.10+**, and is tested with exactly
 `langgraph==1.2.12` and `langchain-core==1.6.5`; neither package is a Recusal dependency.
 
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
