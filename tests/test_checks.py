@@ -30,10 +30,70 @@ def test_row_count_pass_and_fail():
     assert fail.severity == "CRITICAL"
 
 
+def test_row_count_rejects_nan_threshold():
+    finding = row_count([], min_rows=float("nan"))
+    assert not finding.passed
+    assert "invalid threshold" in finding.message
+
+
+def test_row_count_rejects_positive_infinity_threshold():
+    finding = row_count([], min_rows=float("inf"))
+    assert not finding.passed
+    assert "invalid threshold" in finding.message
+
+
+def test_row_count_rejects_negative_infinity_threshold():
+    finding = row_count([], min_rows=float("-inf"))
+    assert not finding.passed
+    assert "invalid threshold" in finding.message
+
+
+def test_row_count_rejects_bool_threshold():
+    finding = row_count([], min_rows=True)
+    assert not finding.passed
+    assert "invalid threshold" in finding.message
+
+
+def test_row_count_rejects_negative_threshold():
+    finding = row_count([], min_rows=-1)
+    assert not finding.passed
+    assert "invalid threshold" in finding.message
+
+
 def test_null_rate_flags_empty_string():
     f = null_rate(USERS, "email", max_rate=0.10)  # 1/3 = 33% > 10%
     assert not f.passed
     assert "33" in f.message or "0.33" in str(f.context["null_rate"])
+
+
+def test_null_rate_rejects_nan_threshold():
+    f = null_rate(USERS, "email", max_rate=float("nan"))
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_null_rate_rejects_inf_threshold():
+    f = null_rate(USERS, "email", max_rate=float("inf"))
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_null_rate_rejects_bool_threshold():
+    f = null_rate(USERS, "email", max_rate=True)
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_null_rate_rejects_rate_above_1():
+    f = null_rate(USERS, "email", max_rate=1.5)
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_null_rate_rejects_negative_rate():
+    f = null_rate(USERS, "email", max_rate=-0.1)
+    assert not f.passed
+    assert "invalid threshold" in f.message
 
 
 def test_referential_integrity_finds_orphan():
@@ -53,6 +113,30 @@ def test_in_range_flags_out_of_bounds():
     f2 = in_range(USERS, "score", min_value=50, max_value=100)
     assert not f2.passed
     assert f2.context["violation_count"] == 1
+
+
+def test_in_range_rejects_nan_min():
+    f = in_range(USERS, "score", min_value=float("nan"), max_value=100)
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_in_range_rejects_nan_max():
+    f = in_range(USERS, "score", min_value=0, max_value=float("nan"))
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_in_range_rejects_bool_threshold():
+    f = in_range(USERS, "score", min_value=True, max_value=100)
+    assert not f.passed
+    assert "invalid threshold" in f.message
+
+
+def test_in_range_rejects_inverted_bounds():
+    f = in_range(USERS, "score", min_value=100, max_value=50)
+    assert not f.passed
+    assert "invalid threshold" in f.message
 
 
 def test_date_range_pass_and_fail():

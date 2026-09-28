@@ -26,9 +26,10 @@ Typical use::
     verdict = compute_verdict(findings)   # PASS / RETRY / FAIL
 """
 
+import math
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 from .evidence import Finding, RuleSeverity
 
@@ -51,6 +52,33 @@ def _failed(check_type: str, severity: str, message: str, **context: Any) -> Fin
     return Finding.fail(check_type, severity=severity, message=message, **context)
 
 
+def _validate_threshold(
+    name: str,
+    value: Any,
+    *,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[str]:
+    if isinstance(value, bool):
+        return f"{name} must be a finite number, not bool"
+
+    try:
+        finite = math.isfinite(value)
+    except (TypeError, ValueError, OverflowError):
+        return f"{name} must be a finite number"
+
+    if not finite:
+        return f"{name} must be a finite number"
+
+    if minimum is not None and value < minimum:
+        return f"{name} must be >= {minimum}"
+
+    if maximum is not None and value > maximum:
+        return f"{name} must be <= {maximum}"
+
+    return None
+
+
 def row_count(
     rows: Rows,
     min_rows: int = 1,
@@ -59,6 +87,17 @@ def row_count(
 ) -> Finding:
     """Fail if there are fewer than ``min_rows`` rows (empty data usually means
     generation silently failed)."""
+    error = _validate_threshold("min_rows", min_rows, minimum=0)
+    if error:
+        return _failed(
+            "row_count",
+            severity,
+            f"{label}: invalid threshold: {error}.",
+            actual=len(rows),
+            min_rows=min_rows,
+            label=label,
+        )
+
     n = len(rows)
     if n < min_rows:
         return _failed(
@@ -79,6 +118,12 @@ def null_rate(
     severity: str = RuleSeverity.ERROR.value,
 ) -> Finding:
     """Fail if the fraction of null/empty values in ``column`` exceeds ``max_rate``."""
+    error = _validate_threshold("max_rate", max_rate, minimum=0.0, maximum=1.0)
+    if error:
+        return _failed(
+            "null_rate", severity, f"{column}: invalid threshold: {error}.", column=column
+        )
+
     total = len(rows)
     if total == 0:
         return _passed("null_rate", severity, f"{column}: no rows to check.", column=column)
@@ -170,6 +215,26 @@ def in_range(
     severity: str = RuleSeverity.ERROR.value,
 ) -> Finding:
     """Fail if any numeric value in ``column`` falls outside [min_value, max_value]."""
+    err_min = _validate_threshold("min_value", min_value)
+    if err_min:
+        return _failed(
+            "in_range", severity, f"{column}: invalid threshold: {err_min}.", column=column
+        )
+
+    err_max = _validate_threshold("max_value", max_value)
+    if err_max:
+        return _failed(
+            "in_range", severity, f"{column}: invalid threshold: {err_max}.", column=column
+        )
+
+    if min_value > max_value:
+        return _failed(
+            "in_range",
+            severity,
+            f"{column}: invalid threshold: min_value {min_value} > max_value {max_value}.",
+            column=column,
+        )
+
     violations = 0
     for r in rows:
         v = _get(r, column)
