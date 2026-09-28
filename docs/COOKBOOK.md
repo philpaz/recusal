@@ -44,6 +44,11 @@ if verdict.refused or verdict.retryable:
     ...  # don't execute; hand the agent verdict.reasons() so it self-corrects
 ```
 
+Runnable LangGraph adapter: [`../examples/langgraph_gate.py`](../examples/langgraph_gate.py)
+wraps each tool call immediately before execution and hands a refusal reason back as the
+tool result. It is offline, requires **Python 3.10+**, and is tested with exactly
+`langgraph==1.2.12` and `langchain-core==1.6.5`; neither package is a Recusal dependency.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.
