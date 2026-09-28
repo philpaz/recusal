@@ -72,6 +72,8 @@ They are the same for every contribution, large or small:
 | `Dogfood the GitHub Action` | the shipped GitHub Action still gates correctly |
 | `Action ref selects the implementation` | an Action ref runs the code at that ref |
 | `Hash-locked release environment builds` | the release build is unaffected |
+| `LangGraph example (Python 3.10)` | the pinned LangGraph adapter works on its minimum supported Python |
+| `LangGraph example (Python 3.12)` | the pinned LangGraph adapter works on the current cross-platform smoke Python |
 
 "The full gate" is the same four commands in every `test` job, and all four must pass:
 `ruff check .`, `ruff format --check .`, `mypy`, and `pytest -q` (the whole suite, not
