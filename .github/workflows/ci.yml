@@ -199,3 +199,34 @@ jobs:
             exit 1
           fi
           (cd /tmp && /tmp/wheelcheck/bin/python -c 'from recusal.mcp import build_manifest, diff_manifest, diff_observation, diff_source, load_manifest, manifest_policy, manifest_to_text, normalize_source, plugin_callable_name, screen_server_instructions, screen_tool_declarations, tool_fingerprint')
+
+
+  langgraph-example-py310:
+    name: LangGraph example (Python 3.10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+      - name: Install Recusal and pinned LangGraph example dependencies
+        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
+      - name: Test LangGraph example
+        run: pytest -q tests/test_langgraph_gate.py
+
+  langgraph-example-py312:
+    name: LangGraph example (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install Recusal and pinned LangGraph example dependencies
+        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
+      - name: Test LangGraph example
+        run: pytest -q tests/test_langgraph_gate.py
