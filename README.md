@@ -510,6 +510,13 @@ The Claude adapters are conveniences; the zero-dep core is framework-neutral.
 loop whose only import is `recusal`; the same `compute_verdict` seam drops into LangGraph,
 the OpenAI Agents SDK, or a homegrown runtime unchanged.
 
+For a concrete LangGraph integration, [`examples/langgraph_gate.py`](examples/langgraph_gate.py)
+wraps each harmless tool at the execution boundary so `recusal.claude_code.decide` runs
+before the tool. It is offline and deterministic (no model or API key), requires
+**Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
+`langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
+and its Python 3.9+ support are unchanged.
+
 ## Robustness, across the OWASP Agentic failure modes
 
 `python examples/gallery.py` runs the gate against the common autonomous-agent failure modes:
