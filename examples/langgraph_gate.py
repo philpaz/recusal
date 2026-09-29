@@ -29,7 +29,8 @@ LANGCHAIN_CORE_VERSION = "1.6.5"
 if sys.version_info < (3, 10):
     print(
         "langgraph_gate.py requires Python 3.10+ "
-        f"(LangGraph {LANGGRAPH_VERSION}); this is Python {sys.version_info[0]}.{sys.version_info[1]}.",
+        f"(LangGraph {LANGGRAPH_VERSION}); "
+        f"this is Python {sys.version_info[0]}.{sys.version_info[1]}.",
         file=sys.stderr,
     )
     raise SystemExit(2)
@@ -97,7 +98,11 @@ def run_calls(
     calls: list[dict[str, Any]], *, policy: Policy = sql_scope_policy, gated: bool = True
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     EXECUTED.clear()
-    node = ToolNode([echo, run_sql], wrap_tool_call=recusal_gate(policy)) if gated else ToolNode([echo, run_sql])
+    node = (
+        ToolNode([echo, run_sql], wrap_tool_call=recusal_gate(policy))
+        if gated
+        else ToolNode([echo, run_sql])
+    )
     result = node.invoke({"messages": [tool_message(calls)]})
     return result["messages"], list(EXECUTED)
 
