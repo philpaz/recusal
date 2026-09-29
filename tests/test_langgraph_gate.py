@@ -16,7 +16,9 @@ def test_python_version_refusal_is_clear_on_every_python():
         "sys.version_info = (3, 9, 0, 'final', 0); "
         f"runpy.run_path({str(EXAMPLE)!r}, run_name='__main__')"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
     assert result.returncode != 0
     assert "langgraph_gate.py requires Python 3.10+" in result.stderr
     assert "this is Python 3.9." in result.stderr
@@ -61,12 +63,16 @@ class TestLangGraphGate:
         return {"name": name, "args": args, "id": ident, "type": "tool_call"}
 
     def test_allowed_call_runs_its_tool(self, example):
-        messages, executed = example.run_calls([self.call("run_sql", {"sql": "SELECT * FROM audit_log"})])
+        messages, executed = example.run_calls(
+            [self.call("run_sql", {"sql": "SELECT * FROM audit_log"})]
+        )
         assert executed == [("run_sql", {"sql": "SELECT * FROM audit_log"})]
         assert messages[0].status == "success"
 
     def test_refused_call_does_not_run_and_reason_reaches_agent(self, example):
-        messages, executed = example.run_calls([self.call("run_sql", {"sql": "DELETE FROM audit_log"})])
+        messages, executed = example.run_calls(
+            [self.call("run_sql", {"sql": "DELETE FROM audit_log"})]
+        )
         assert executed == []
         assert messages[0].status == "error"
         assert "Recusal refused" in str(messages[0].content)
@@ -88,15 +94,25 @@ class TestLangGraphGate:
             """A tool unknown to the example's built-in list."""
             raise AssertionError("refused tool must not run")
 
-        node = example.ToolNode([erase], wrap_tool_call=example.recusal_gate(example.sql_scope_policy))
-        result = node.invoke({"messages": [example.tool_message([self.call("erase", {"sql": "DELETE FROM x"}, "x")])]})
+        node = example.ToolNode(
+            [erase], wrap_tool_call=example.recusal_gate(example.sql_scope_policy)
+        )
+        result = node.invoke(
+            {
+                "messages": [
+                    example.tool_message([self.call("erase", {"sql": "DELETE FROM x"}, "x")])
+                ]
+            }
+        )
         assert result["messages"][0].status == "error"
 
     def test_policy_exception_fails_closed(self, example):
         def broken_policy(tool_name, tool_input):
             raise RuntimeError("policy exploded")
 
-        messages, executed = example.run_calls([self.call("echo", {"text": "unsafe"})], policy=broken_policy)
+        messages, executed = example.run_calls(
+            [self.call("echo", {"text": "unsafe"})], policy=broken_policy
+        )
         assert executed == []
         assert messages[0].status == "error"
         assert "failed closed (policy error): policy exploded" in str(messages[0].content)
