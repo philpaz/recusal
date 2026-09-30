@@ -38,7 +38,8 @@ if sys.version_info < (3, 10):
 try:
     from langchain_core.messages import AIMessage, ToolMessage
     from langchain_core.tools import tool
-    from langgraph.prebuilt import ToolNode
+    from langgraph.graph import START, MessagesState, StateGraph
+    from langgraph.prebuilt import ToolNode, tools_condition
 except ImportError as exc:
     raise SystemExit(
         "Install the example dependencies first: "
@@ -94,17 +95,30 @@ def tool_message(calls: list[dict[str, Any]]) -> AIMessage:
     return AIMessage(content="", tool_calls=calls)
 
 
+def run_in_graph(node: ToolNode, calls: list[dict[str, Any]]) -> list[ToolMessage]:
+    """Run a ToolNode inside the MessagesState graph used by an agent."""
+    script = iter([tool_message(calls)])
+
+    def scripted_agent(state: MessagesState) -> dict[str, Any]:
+        return {"messages": [next(script, AIMessage(content="done"))]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", scripted_agent)
+    builder.add_node("tools", node)
+    builder.add_edge(START, "agent")
+    builder.add_conditional_edges("agent", tools_condition)
+    builder.add_edge("tools", "agent")
+    messages = builder.compile().invoke({"messages": []})["messages"]
+    return [message for message in messages if isinstance(message, ToolMessage)]
+
+
 def run_calls(
     calls: list[dict[str, Any]], *, policy: Policy = sql_scope_policy, gated: bool = True
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     EXECUTED.clear()
-    node = (
-        ToolNode([echo, run_sql], wrap_tool_call=recusal_gate(policy))
-        if gated
-        else ToolNode([echo, run_sql])
-    )
-    result = node.invoke({"messages": [tool_message(calls)]})
-    return result["messages"], list(EXECUTED)
+    tools = [echo, run_sql]
+    node = ToolNode(tools, wrap_tool_call=recusal_gate(policy)) if gated else ToolNode(tools)
+    return run_in_graph(node, calls), list(EXECUTED)
 
 
 def main() -> None:
