@@ -90,21 +90,17 @@ class TestLangGraphGate:
 
     def test_gate_is_plug_and_play_for_an_unseen_tool_list(self, example):
         @example.tool
-        def erase(sql: str) -> str:
-            """A tool unknown to the example's built-in list."""
+        def query(sql: str) -> str:
+            """A policy-covered tool unknown to the example's built-in list."""
             raise AssertionError("refused tool must not run")
 
         node = example.ToolNode(
-            [erase], wrap_tool_call=example.recusal_gate(example.sql_scope_policy)
+            [query], wrap_tool_call=example.recusal_gate(example.sql_scope_policy)
         )
-        result = node.invoke(
-            {
-                "messages": [
-                    example.tool_message([self.call("erase", {"sql": "DELETE FROM x"}, "x")])
-                ]
-            }
+        messages = example.run_in_graph(
+            node, [self.call("query", {"sql": "DELETE FROM x"}, "x")]
         )
-        assert result["messages"][0].status == "error"
+        assert messages[0].status == "error"
 
     def test_policy_exception_fails_closed(self, example):
         def broken_policy(tool_name, tool_input):
