@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-10-02
+
+One fix in `recusal.checks`, and the first adapter example for an agent framework other
+than Claude. PATCH under `STABILITY.md`: valid thresholds give exactly the verdicts they
+gave before; only an unusable threshold now fails loudly instead of passing. The example
+lives under `examples/` and is not part of the installed package.
+
+### Fixed
+- **A `NaN` or out-of-range threshold silently turned a data check off.** `row_count`,
+  `null_rate` and `in_range` did not validate their thresholds, and a `NaN` makes every
+  comparison false, so `null_rate(rows, "a", max_rate=float("nan"))` passed no matter how
+  many values were empty. A threshold that is `NaN`, infinite, a `bool`, or outside its
+  meaning (`max_rate` outside 0 to 1, a negative `min_rows`, `in_range` with
+  `min_value > max_value`) is now reported as a failing finding that says "invalid
+  threshold", the way `date_range` already reports an invalid window. Contributed by
+  @RugvedBane in #63. (#57)
+
+### Added
+- `examples/langgraph_gate.py`: gates a LangGraph agent's tool calls with Recusal.
+  A user's own `@tool` functions go unchanged into LangGraph's prebuilt `ToolNode`, and
+  `recusal_gate(policy)` is attached with `wrap_tool_call`, so every proposed call is
+  adjudicated before it runs and a refusal comes back to the agent as an error
+  `ToolMessage` carrying the reason. Offline and deterministic (no model or API key),
+  Python 3.10+, tested with exactly `langgraph==1.2.12` and `langchain-core==1.6.5`,
+  with two new CI jobs, and LangGraph stays out of the package's dependencies.
+  Contributed by @soyeladice-svg in #62. (#60)
+
+### Changed
+- The README and package description now say what Recusal already was: framework-neutral,
+  for Claude Code, MCP, LangGraph, or any agent loop, with a short note on what the
+  LangGraph gate guards and what it doesn't. (#64)
+
 ## [0.11.0] - 2026-09-27
 
 One new check and a set of tested cookbook examples, all from the project's first two
