@@ -7,9 +7,9 @@
 
 # Recusal
 
-**Recusal is a deterministic governance gate for Claude and MCP tool calls: it pins the capabilities you approved, detects represented drift, and refuses unsafe, unapproved, or policy-violating actions *before* execution, with no model in the decision path.** A judge recuses themselves from a case they cannot impartially decide; the same principle governs autonomous agents: the thing that generates the work must never be the thing that certifies it.
+**Recusal is a deterministic governance gate for AI agent tool calls, in Claude Code, MCP, LangGraph, or your own agent loop: it pins the capabilities you approved, detects represented drift, and refuses unsafe, unapproved, or policy-violating actions *before* execution, with no model in the decision path.** A judge recuses themselves from a case they cannot impartially decide; the same principle governs autonomous agents: the thing that generates the work must never be the thing that certifies it.
 
-**Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and a Claude Messages API loop or Managed Agents as a tool gate). The zero-dep core works in any agent loop.
+**Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and a Claude Messages API loop or Managed Agents as a tool gate) · **framework-neutral** (the zero-dep core works in any agent loop; in LangGraph it is one argument, `ToolNode(tools, wrap_tool_call=recusal_gate(policy))`, [a tested example](#any-agent-loop-no-claude-required)).
 
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -517,6 +517,13 @@ before each individual tool call. It is offline and deterministic (no model or A
 **Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
 `langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
 and its Python 3.9+ support are unchanged.
+
+**What the gate guards, and what it doesn't.** It judges each call the model proposes, the
+tool name and its arguments, before that tool runs. A policy covers only the tools it names:
+`examples/sql_scope_policy.py` inspects `run_sql` and `query`, so a SQL tool under another
+name passes through until the policy names it. And the gate sees the proposed call, not what
+a tool does internally once it runs, so a tool that builds a command or query at runtime
+needs checks of its own.
 
 ## Robustness, across the OWASP Agentic failure modes
 
