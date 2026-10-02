@@ -11,7 +11,7 @@ build-backend = "hatchling.build"
 [project]
 name = "recusal"
 dynamic = ["version"]
-description = "Lightweight, extensible, Claude-native governance for AI agents: an independent, deterministic verifier that can refuse to certify a tool call before it runs. Builders cannot grade their own work."
+description = "Lightweight, extensible governance for AI agent tool calls, Claude-native and framework-neutral: an independent, deterministic verifier that can refuse to certify a tool call before it runs. Builders cannot grade their own work."
 readme = "README.md"
 requires-python = ">=3.9"
 # PEP 639: an SPDX expression plus the file it names (hatchling >= 1.27)
