@@ -124,8 +124,18 @@ def run_calls(
 def main() -> None:
     calls = [
         {"name": "echo", "args": {"text": "hello"}, "id": "1", "type": "tool_call"},
-        {"name": "run_sql", "args": {"sql": "DELETE FROM audit_log"}, "id": "2", "type": "tool_call"},
-        {"name": "run_sql", "args": {"sql": "SELECT * FROM audit_log"}, "id": "3", "type": "tool_call"},
+        {
+            "name": "run_sql",
+            "args": {"sql": "DELETE FROM audit_log"},
+            "id": "2",
+            "type": "tool_call",
+        },
+        {
+            "name": "run_sql",
+            "args": {"sql": "SELECT * FROM audit_log"},
+            "id": "3",
+            "type": "tool_call",
+        },
     ]
     messages, executed = run_calls(calls)
     for message in messages:
