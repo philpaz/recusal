@@ -97,9 +97,7 @@ class TestLangGraphGate:
         node = example.ToolNode(
             [query], wrap_tool_call=example.recusal_gate(example.sql_scope_policy)
         )
-        messages = example.run_in_graph(
-            node, [self.call("query", {"sql": "DELETE FROM x"}, "x")]
-        )
+        messages = example.run_in_graph(node, [self.call("query", {"sql": "DELETE FROM x"}, "x")])
         assert messages[0].status == "error"
 
     def test_policy_exception_fails_closed(self, example):
