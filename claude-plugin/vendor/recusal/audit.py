@@ -137,8 +137,11 @@ def _interprocess_lock(lock_path: str) -> Iterator[None]:
         if sys.platform == "win32":
             fh.seek(0, os.SEEK_END)
             if fh.tell() == 0:
-                fh.write(b"\0")
-                fh.flush()
+                try:
+                    fh.write(b"\0")
+                    fh.flush()
+                except PermissionError:
+                    pass  # another writer's first append already created this byte
             _acquire_windows_lock(fh, lock_path)
             try:
                 yield
