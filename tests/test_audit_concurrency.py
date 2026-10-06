@@ -6,8 +6,10 @@ REAL processes hammering one file must yield one continuous, verifiable chain wi
 sequential seqs - no forks, no lost records, no interleaved JSON.
 """
 
+import errno
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -54,6 +56,129 @@ def test_parallel_processes_extend_one_chain(tmp_path):
     assert ok, problems  # one continuous chain, no siblings
     ok, problems = verify_file(path)
     assert ok, problems  # and no interleaved/corrupt JSON lines
+
+
+# --- Windows: a race on a fresh lock file's first byte must wait, not raise ----------------
+
+
+class _FakeWindowsLock:
+    """Stands in for ``msvcrt``: a real mutex, so the loser of the race below can be made
+    to actually wait for the winner instead of the test depending on thread-scheduling
+    luck."""
+
+    LK_NBLCK = 1
+    LK_UNLCK = 0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def locking(self, fd, mode, nbytes):
+        if mode == self.LK_UNLCK:
+            self._lock.release()
+            return
+        if not self._lock.acquire(blocking=False):
+            raise OSError(errno.EACCES, "locked")
+
+
+class _FirstByteRace:
+    """Exactly one writer "wins" the one-time write of a fresh lock file's first byte;
+    every other writer gets the ``PermissionError`` a real Windows writer gets when its
+    write lands on a byte another handle already holds locked (issue #67)."""
+
+    def __init__(self):
+        self._claim_lock = threading.Lock()
+        self._claimed = False
+
+    def claim_or_raise(self):
+        with self._claim_lock:
+            if self._claimed:
+                raise PermissionError(
+                    errno.EACCES,
+                    "The process cannot access the file because another process has "
+                    "locked a portion of the file",
+                )
+            self._claimed = True
+
+
+class _RacingLockFile:
+    """Wraps a real file handle so two threads' first ``tell()`` (the "is this file
+    still empty" check in ``_interprocess_lock``) line up before either writes, forcing
+    the race every run instead of leaving it to thread-scheduling luck."""
+
+    def __init__(self, fh, race, barrier):
+        self._fh = fh
+        self._race = race
+        self._barrier = barrier
+        self._told = False
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._fh.__exit__(*exc_info)
+
+    def tell(self):
+        if not self._told:
+            self._told = True
+            self._barrier.wait()  # both writers must see "empty" before either writes
+        return self._fh.tell()
+
+    def write(self, data):
+        if data == b"\0":
+            self._race.claim_or_raise()
+        return self._fh.write(data)
+
+
+def test_concurrent_first_appends_to_a_fresh_lock_file_do_not_raise(tmp_path, monkeypatch):
+    """Issue #67: on Windows, the first append from several writers can land at the same
+    instant; all of them see a fresh, empty ``<path>.lock`` and all try to write its
+    one-time byte. Only one write can land - today the losers' write raises
+    PermissionError straight out of ``_interprocess_lock`` instead of being treated as
+    "someone else already created the byte", the same contention ``_acquire_windows_lock``
+    already waits out for the lock itself.
+    """
+    from recusal import audit
+    from recusal.audit import _interprocess_lock
+
+    monkeypatch.setattr(audit.sys, "platform", "win32")
+    monkeypatch.setattr(audit, "msvcrt", _FakeWindowsLock(), raising=False)
+
+    for round_number in range(5):
+        lock_path = str(tmp_path / f"audit{round_number}.jsonl.lock")
+        race = _FirstByteRace()
+        barrier = threading.Barrier(2)
+        real_open = open
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            fh = real_open(path, mode, *args, **kwargs)
+            if path == lock_path and mode == "a+b":
+                return _RacingLockFile(fh, race, barrier)
+            return fh
+
+        monkeypatch.setattr(audit, "open", fake_open, raising=False)
+
+        errors = []
+
+        def run():
+            try:
+                with _interprocess_lock(lock_path):
+                    pass
+            except Exception as exc:  # noqa: BLE001 - captured across a thread boundary
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, (
+            f"round {round_number}: a concurrent first append raised instead of "
+            f"waiting: {errors!r}"
+        )
 
 
 # --- end-seek head recovery ----------------------------------------------------------------
