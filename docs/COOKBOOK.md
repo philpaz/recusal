@@ -305,32 +305,28 @@ def policy(tool_name, tool_input, soft=25, hard=100):
 
 ## 8. Quality gate before a merge or deploy
 
-A recoverable gate, below the coverage floor or with failing tests is `ERROR` (RETRY), not
-a terminal refusal. Drop this in a CI step or a `merge_pr` / `deploy` tool guard.
+A recoverable gate with coverage below the floor or failing tests returns
+`ERROR` (RETRY), not a terminal refusal. Missing, non-finite, negative or
+malformed inputs must **also stop the merge**: `NaN` comparisons and absent
+measurements cannot become an empty passing finding set.
+
+The [tested example](../examples/quality_gate.py) validates coverage as
+a finite percentage from 0 to 100 and failed tests as a nonnegative integer
+(not a boolean). Bad evidence becomes an explicit `ERROR` finding instead
+of raising or silently passing. The corresponding
+[regression tests](../tests/test_quality_gate_example.py) exercise the
+original good/bad table and invalid boundaries with Python 3.9-compatible code.
 
 ```python
-from recusal import Finding
+from examples.quality_gate import quality_gate
+from recusal import compute_verdict
 
-
-def quality_gate(coverage, failed, min_coverage=75):
-    findings = []
-    if coverage < min_coverage:
-        findings.append(
-            Finding.fail(
-                "coverage_floor",
-                severity="ERROR",
-                message=f"coverage {coverage}% < required {min_coverage}%",
-            )
-        )
-    if failed > 0:
-        findings.append(
-            Finding.fail("tests", severity="ERROR", message=f"{failed} test(s) failing")
-        )
-    return findings
-
-
-# verdict = compute_verdict(quality_gate(coverage=61, failed=2))   # RETRY
+verdict = compute_verdict(quality_gate(coverage=61, failed=2))
+assert verdict.retryable  # RETRY: fix test failures or missing quality evidence
 ```
+
+To run the example offline, use `python examples/quality_gate.py` from a
+checkout. The example never merges, deploys, or invokes a CI service.
 
 ## 9. Approved-tool allowlist
 
