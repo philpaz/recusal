@@ -27,6 +27,24 @@ def test_wrong_subject_refused_and_compliant_allowed():
     assert _decision(wrong_subject({"customer_id": "C1001"}, ACTIVE)) is Decision.PASS
 
 
+def test_wrong_subject_never_allows_unbound_session():
+    for active_id, target in (
+        (None, None),
+        ("", ""),
+        ("   ", "   "),
+        (False, False),
+    ):
+        evidence = wrong_subject({"customer_id": target}, active_id)
+        assert _decision(evidence) is Decision.FAIL
+        assert evidence[0].check == "subject_unbound"
+        assert "no active subject is bound" in evidence[0].message
+
+
+def test_wrong_subject_requires_explicit_matching_target():
+    assert _decision(wrong_subject({}, ACTIVE)) is Decision.FAIL
+    assert _decision(wrong_subject({"customer_id": ""}, ACTIVE)) is Decision.FAIL
+
+
 def test_destructive_path_refused():
     assert _decision(destructive_path({"path": "/etc/passwd"})) is Decision.FAIL
     assert _decision(destructive_path({"path": "/workspace/tmp/x"})) is Decision.PASS
