@@ -25,6 +25,7 @@ files are the long form, annotated and adaptable; the shipped demo is the thirty
 
 | Example | What it shows |
 |---|---|
+| [`composed_policies.py`](composed_policies.py) | **Cookbook recipe 10:** combine the existing shell, workspace and egress policies in one offline, test-backed gate. A clean call defers; a policy exception fails closed. No shell or network call is run. |
 | [`claude_code_gate.py`](claude_code_gate.py) | A drop-in Claude Code **`PreToolUse` hook**, refuses destructive bash and secret-file writes even under `bypassPermissions`; defers on anything it has no opinion on. |
 | [`allowlist_gate.py`](allowlist_gate.py) | **Default-deny** (the stronger posture), wiring the shipped `recusal.claude_code.allowlist_policy`: the same runtime-constructed `rm` that a deny-list *defers*, the allowlist *refuses*, bare interpreters (`python script.py`) included, while a vetted binary still runs. Shows the ceiling a deny-list cannot clear. Runs as a demo or a hook. |
 | [`mcp_governance.py`](mcp_governance.py) | **MCP calls through the same gate**: `mcp__<server>__<tool>` names hit the same `PreToolUse` policy seam as native tools, so approved-server pinning, destructive-verb refusal, repo/path scope, and allowlist mode (MCP tools refused unless affirmatively named) all apply with no MCP-specific adapter. Honest about the boundary: call-time, not discovery-time. Runs as a demo or a hook. |
