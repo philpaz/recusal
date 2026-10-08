@@ -50,9 +50,7 @@ def main():
         ("unbound session", None, None),
         ("empty session", "", ""),
     ):
-        decision, _reason = decide(
-            "update_record", {"id": target}, make_subject_guard(active_id)
-        )
+        decision, _reason = decide("update_record", {"id": target}, make_subject_guard(active_id))
         print(f"{name}: {decision}")
 
 
