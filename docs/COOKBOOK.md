@@ -348,24 +348,36 @@ from examples.approved_tool_policy import policy
 
 ## 10. Compose several policies into one gate
 
-Policies are just functions returning findings, concatenate them and let `compute_verdict`
-fold the lot. The worst severity across *all* of them decides the verdict.
+Each independent policy returns findings. Concatenate all findings and let the
+existing `compute_verdict` fold select the worst failing severity; the gate
+does not invent an approval when none of the individual policies objects.
+
+The [runnable recipe](../examples/composed_policies.py) composes the existing
+destructive-shell, workspace-write and explicit-egress policies. Its
+[tests](../tests/test_composed_policy_example.py) cover CRITICAL over passing
+checks, an empty clean call that still defers, policy exceptions that fail
+closed, and policy-order-independent verdicts. Run offline from a clone:
+
+```bash
+python examples/composed_policies.py
+```
+
+To install the **same** policy in a Claude Code `PreToolUse` hook:
 
 ```python
+from examples.composed_policies import make_policy
 from recusal.claude_code import run_pretooluse_hook
 
-POLICIES = [block_destructive_shell, protect_files, subject_guard, egress_allowlist]
-
-
-def policy(tool_name, tool_input):
-    findings = []
-    for p in POLICIES:
-        findings.extend(p(tool_name, tool_input))
-    return findings
-
-
-run_pretooluse_hook(policy)  # one hook, every rule; a clean verdict still defers
+policy = make_policy("./workspace", allowed_domains={"example.com"})
+run_pretooluse_hook(policy)  # fail_closed=True; allow_on_pass=False
 ```
+
+The composition function deliberately propagates sub-policy exceptions:
+`run_pretooluse_hook` / `decide` refuse on policy errors by default. A clean
+call **defers** to the host's normal permissions rather than auto-allowing it.
+These checks inspect explicit tool arguments only; they are not a filesystem
+sandbox, shell parser or network firewall. For default-deny execution, use
+recipe 11's allowlist instead of treating this deny-list as authorization.
 
 ## 11. Allowlist mode (default-deny), the refuse-by-default path
 
