@@ -142,34 +142,29 @@ the check, and shell commands or other tools are outside its inspection.
 
 ## 4. Wrong-subject write guard (the signature recipe)
 
-Mid-conversation about one subject, the agent stages a write against a *different* one. The
-data is valid; it's just applied to the wrong record, an invariant the model can't
-self-enforce, because it doesn't know which subject your system says is active.
+Mid-conversation about one subject, the agent may stage a write against a *different*
+one. The data can be valid but belongs to the wrong record; the guard uses the
+trusted active subject supplied by the host, not an identity invented by the model.
+
+**Unbound is not a valid identity.** If no nonempty active subject has been bound,
+the guard refuses the write with a CRITICAL `subject_unbound` finding even when
+the target is also missing or empty. A mismatched or missing target is refused
+with `subject_match`. Only an exact match to a bound active subject defers to
+the host's ordinary permissions. This is not independent authority to write.
+
+The runnable [tested example](../examples/subject_guard.py) and
+[regressions](../tests/test_subject_guard_example.py) cover valid, mismatched,
+missing, unset, empty and malformed identity values. The same unbound-subject
+rule is verified in [the scenario gallery](../examples/scenarios.py).
 
 ```python
-from recusal import Finding
+from examples.subject_guard import make_subject_guard
 
-
-def make_subject_guard(active_id):
-    def policy(tool_name, tool_input):
-        if tool_name != "update_record":
-            return []
-        target = tool_input.get("id")
-        if target != active_id:
-            return [
-                Finding.fail(
-                    "subject_match",
-                    severity="CRITICAL",
-                    message=f"write targets {target}, not the active subject {active_id}",
-                )
-            ]
-        return []
-
-    return policy
-
-
-# policy = make_subject_guard(active_id="C1001")   # bind the active subject per session/turn
+policy = make_subject_guard(active_id="C1001")  # bind from trusted session context
+# policy('update_record', {'id': 'C1001'})  # [] = defer, not auto-allow
 ```
+
+Run `python examples/subject_guard.py` from a clone for an offline demonstration.
 
 ## 5. Egress allowlist, stop exfiltration
 
