@@ -22,7 +22,15 @@ EMAIL_ALLOWLIST = {"acme.com"}
 def wrong_subject(tool_input: dict, active_id: str) -> list:
     """A write must target the session's active customer (the right-subject invariant)."""
     target = tool_input.get("customer_id")
-    if target != active_id:
+    if not isinstance(active_id, str) or not active_id.strip():
+        return [
+            Finding.fail(
+                "subject_unbound",
+                severity="CRITICAL",
+                message="no active subject is bound; write refused",
+            )
+        ]
+    if not isinstance(target, str) or not target.strip() or target != active_id:
         return [
             Finding.fail(
                 "subject_match",
