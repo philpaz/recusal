@@ -37,7 +37,13 @@ except ImportError as exc:
     ) from exc
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from examples.langgraph_gate import EXECUTED, echo, recusal_gate, run_sql, sql_scope_policy  # noqa: E402
+from examples.langgraph_gate import (  # noqa: E402
+    EXECUTED,
+    echo,
+    recusal_gate,
+    run_sql,
+    sql_scope_policy,
+)
 
 
 class ScriptedChatModel(GenericFakeChatModel):
@@ -53,11 +59,15 @@ def run_calls(
     """Run fake model proposals through create_agent, one policy gate per tool call."""
     EXECUTED.clear()
     model = ScriptedChatModel(
-        messages=iter([AIMessage(content="", tool_calls=calls), AIMessage(content="done")])
+        messages=iter(
+            [AIMessage(content="", tool_calls=calls), AIMessage(content="done")]
+        )
     )
     hooks = [wrap_tool_call(recusal_gate(policy))] if gated else []
     agent = create_agent(model=model, tools=[echo, run_sql], middleware=hooks)
-    result = agent.invoke({"messages": [HumanMessage(content="run the scripted tools")]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="run the scripted tools")]}
+    )
     messages = [item for item in result["messages"] if isinstance(item, ToolMessage)]
     return messages, list(EXECUTED)
 
@@ -65,7 +75,12 @@ def run_calls(
 def main() -> None:
     calls = [
         {"name": "echo", "args": {"text": "hi"}, "id": "e", "type": "tool_call"},
-        {"name": "run_sql", "args": {"sql": "DELETE FROM audit_log"}, "id": "d", "type": "tool_call"},
+        {
+            "name": "run_sql",
+            "args": {"sql": "DELETE FROM audit_log"},
+            "id": "d",
+            "type": "tool_call",
+        },
     ]
     messages, executed = run_calls(calls)
     for message in messages:
