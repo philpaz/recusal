@@ -519,6 +519,11 @@ and `ainvoke`. It is offline and deterministic (no model or API key), requires
 `langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
 and its Python 3.9+ support are unchanged.
 
+For LangChain's `create_agent` middleware, [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py)
+reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a second policy
+implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.12`,
+`langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins).
+
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
 `examples/sql_scope_policy.py` inspects `run_sql` and `query`, so a SQL tool under another
