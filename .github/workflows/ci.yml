@@ -238,9 +238,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install Recusal and pinned LangGraph example dependencies
-        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
+        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
       - name: Test LangGraph example and its surface probe
-        run: pytest -q tests/test_langgraph_gate.py tests/test_compat_langgraph.py
+        run: pytest -q tests/test_langgraph_gate.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py
 
   langgraph-example-py312:
     name: LangGraph example (Python 3.12)
@@ -253,9 +253,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and pinned LangGraph example dependencies
-        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
+        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
       - name: Test LangGraph example and its surface probe
-        run: pytest -q tests/test_langgraph_gate.py tests/test_compat_langgraph.py
+        run: pytest -q tests/test_langgraph_gate.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py
 
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK
