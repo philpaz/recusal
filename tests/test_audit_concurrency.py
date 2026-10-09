@@ -174,10 +174,10 @@ def test_concurrent_first_appends_to_a_fresh_lock_file_do_not_raise(tmp_path, mo
             t.start()
         for t in threads:
             t.join(timeout=5)
+            assert not t.is_alive()
 
         assert not errors, (
-            f"round {round_number}: a concurrent first append raised instead of "
-            f"waiting: {errors!r}"
+            f"round {round_number}: a concurrent first append raised instead of waiting: {errors!r}"
         )
 
 
