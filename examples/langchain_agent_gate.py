@@ -59,15 +59,11 @@ def run_calls(
     """Run fake model proposals through create_agent, one policy gate per tool call."""
     EXECUTED.clear()
     model = ScriptedChatModel(
-        messages=iter(
-            [AIMessage(content="", tool_calls=calls), AIMessage(content="done")]
-        )
+        messages=iter([AIMessage(content="", tool_calls=calls), AIMessage(content="done")])
     )
     hooks = [wrap_tool_call(recusal_gate(policy))] if gated else []
     agent = create_agent(model=model, tools=[echo, run_sql], middleware=hooks)
-    result = agent.invoke(
-        {"messages": [HumanMessage(content="run the scripted tools")]}
-    )
+    result = agent.invoke({"messages": [HumanMessage(content="run the scripted tools")]})
     messages = [item for item in result["messages"] if isinstance(item, ToolMessage)]
     return messages, list(EXECUTED)
 
