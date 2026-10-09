@@ -37,16 +37,12 @@ def test_langchain_pins_are_documented_and_in_existing_ci_jobs():
     assert ci.count("langchain==1.4.3") == 2
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="LangChain requires Python 3.10+"
-)
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangChain requires Python 3.10+")
 class TestLangChainAgentGate:
     @pytest.fixture
     def example(self):
         pytest.importorskip("langchain")
-        spec = importlib.util.spec_from_file_location(
-            "recusal_langchain_gate_example", EXAMPLE
-        )
+        spec = importlib.util.spec_from_file_location("recusal_langchain_gate_example", EXAMPLE)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
