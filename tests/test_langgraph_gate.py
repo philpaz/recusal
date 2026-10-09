@@ -1,5 +1,6 @@
 """Regression tests for the offline LangGraph + Recusal ToolNode example."""
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
@@ -114,6 +115,87 @@ class TestLangGraphGate:
     def test_negative_control_runs_delete_without_hook(self, example):
         messages, executed = example.run_calls(
             [self.call("run_sql", {"sql": "DELETE FROM audit_log"})], gated=False
+        )
+        assert executed == [("run_sql", {"sql": "DELETE FROM audit_log"})]
+        assert messages[0].status == "success"
+
+    def test_async_allowed_call_runs_its_tool(self, example):
+        messages, executed = asyncio.run(
+            example.run_calls_async([self.call("run_sql", {"sql": "SELECT * FROM audit_log"})])
+        )
+        assert executed == [("run_sql", {"sql": "SELECT * FROM audit_log"})]
+        assert messages[0].status == "success"
+
+    def test_async_refusal_reaches_agent_without_running_tool(self, example):
+        messages, executed = asyncio.run(
+            example.run_calls_async([self.call("run_sql", {"sql": "DELETE FROM audit_log"})])
+        )
+        assert executed == []
+        assert messages[0].status == "error"
+        assert messages[0].tool_call_id == "1"
+        assert messages[0].name == "run_sql"
+        assert "Recusal refused" in str(messages[0].content)
+        assert "top-level WHERE" in str(messages[0].content)
+
+    def test_async_several_calls_are_gated_separately(self, example):
+        messages, executed = asyncio.run(
+            example.run_calls_async(
+                [
+                    self.call("echo", {"text": "hello"}, "1"),
+                    self.call("run_sql", {"sql": "DELETE FROM audit_log"}, "2"),
+                    self.call("run_sql", {"sql": "SELECT * FROM audit_log"}, "3"),
+                ]
+            )
+        )
+        assert [(m.tool_call_id, m.status) for m in messages] == [
+            ("1", "success"),
+            ("2", "error"),
+            ("3", "success"),
+        ]
+        assert sorted(name for name, _ in executed) == ["echo", "run_sql"]
+        assert ("run_sql", {"sql": "DELETE FROM audit_log"}) not in executed
+
+    def test_async_gate_awaits_an_unseen_async_tool(self, example):
+        executed = []
+
+        @example.tool
+        async def query(sql: str) -> str:
+            """Record an async SQL call without a database."""
+            await asyncio.sleep(0)
+            executed.append(sql)
+            return sql
+
+        node = example.ToolNode(
+            [query], awrap_tool_call=example.recusal_agate(example.sql_scope_policy)
+        )
+        messages = asyncio.run(
+            example.run_in_graph_async(
+                node,
+                [
+                    self.call("query", {"sql": "SELECT * FROM x"}, "allowed"),
+                    self.call("query", {"sql": "DELETE FROM x"}, "refused"),
+                ],
+            )
+        )
+        assert executed == ["SELECT * FROM x"]
+        assert [m.status for m in messages] == ["success", "error"]
+
+    def test_async_policy_exception_fails_closed(self, example):
+        def broken_policy(tool_name, tool_input):
+            raise RuntimeError("policy exploded")
+
+        messages, executed = asyncio.run(
+            example.run_calls_async([self.call("echo", {"text": "unsafe"})], policy=broken_policy)
+        )
+        assert executed == []
+        assert messages[0].status == "error"
+        assert "failed closed (policy error): policy exploded" in str(messages[0].content)
+
+    def test_async_negative_control_runs_delete_without_hook(self, example):
+        messages, executed = asyncio.run(
+            example.run_calls_async(
+                [self.call("run_sql", {"sql": "DELETE FROM audit_log"})], gated=False
+            )
         )
         assert executed == [("run_sql", {"sql": "DELETE FROM audit_log"})]
         assert messages[0].status == "success"

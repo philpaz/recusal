@@ -7,8 +7,8 @@ langchain-core==1.6.5. Recusal itself remains Python 3.9+ and has no LangGraph d
 The hook is LangGraph-native: a user's existing @tool list goes unchanged into ToolNode and
 recusal_gate(policy) is attached with wrap_tool_call. Every call in a model message crosses
 the gate separately immediately before execution. Denials become error ToolMessages carrying
-Recusal's reason; allow/defer execute normally. Async graphs can attach the same policy shape
-through awrap_tool_call (this example stays synchronous).
+Recusal's reason; allow/defer execute normally. Async graphs attach recusal_agate(policy)
+through awrap_tool_call and run with ainvoke, using the same decision logic.
 
 No LLM, API key or database is used. run_sql only records SQL text.
 
@@ -69,23 +69,43 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
+def _refusal(request, policy: Policy):
+    """Return an error message for a refused call, or None to execute it."""
+    call = request.tool_call
+    try:
+        decision, reason = decide(call["name"], call["args"], policy)
+    except Exception as exc:
+        decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
+    if decision == "deny":
+        return ToolMessage(
+            content=reason,
+            tool_call_id=call["id"],
+            name=call["name"],
+            status="error",
+        )
+    return None
+
+
 def recusal_gate(policy: Policy):
-    """Return a LangGraph ToolNode hook that gates one tool call immediately before execution."""
+    """Return a synchronous ToolNode hook that gates each call before execution."""
 
     def gate(request, execute):
-        call = request.tool_call
-        try:
-            decision, reason = decide(call["name"], call["args"], policy)
-        except Exception as exc:
-            decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
-        if decision == "deny":
-            return ToolMessage(
-                content=reason,
-                tool_call_id=call["id"],
-                name=call["name"],
-                status="error",
-            )
+        refusal = _refusal(request, policy)
+        if refusal is not None:
+            return refusal
         return execute(request)
+
+    return gate
+
+
+def recusal_agate(policy: Policy):
+    """Return an asynchronous ToolNode hook for awrap_tool_call."""
+
+    async def gate(request, execute):
+        refusal = _refusal(request, policy)
+        if refusal is not None:
+            return refusal
+        return await execute(request)
 
     return gate
 
@@ -95,8 +115,8 @@ def tool_message(calls: list[dict[str, Any]]) -> AIMessage:
     return AIMessage(content="", tool_calls=calls)
 
 
-def run_in_graph(node: ToolNode, calls: list[dict[str, Any]]) -> list[ToolMessage]:
-    """Run a ToolNode inside the MessagesState graph used by an agent."""
+def _graph(node: ToolNode, calls: list[dict[str, Any]]):
+    """Build the same scripted agent graph for sync and async invocation."""
     script = iter([tool_message(calls)])
 
     def scripted_agent(state: MessagesState) -> dict[str, Any]:
@@ -108,7 +128,18 @@ def run_in_graph(node: ToolNode, calls: list[dict[str, Any]]) -> list[ToolMessag
     builder.add_edge(START, "agent")
     builder.add_conditional_edges("agent", tools_condition)
     builder.add_edge("tools", "agent")
-    messages = builder.compile().invoke({"messages": []})["messages"]
+    return builder.compile()
+
+
+def run_in_graph(node: ToolNode, calls: list[dict[str, Any]]) -> list[ToolMessage]:
+    """Run a ToolNode inside the MessagesState graph used by an agent."""
+    messages = _graph(node, calls).invoke({"messages": []})["messages"]
+    return [message for message in messages if isinstance(message, ToolMessage)]
+
+
+async def run_in_graph_async(node: ToolNode, calls: list[dict[str, Any]]) -> list[ToolMessage]:
+    """Run a ToolNode through ainvoke, exercising its async hook and async tools."""
+    messages = (await _graph(node, calls).ainvoke({"messages": []}))["messages"]
     return [message for message in messages if isinstance(message, ToolMessage)]
 
 
@@ -119,6 +150,15 @@ def run_calls(
     tools = [echo, run_sql]
     node = ToolNode(tools, wrap_tool_call=recusal_gate(policy)) if gated else ToolNode(tools)
     return run_in_graph(node, calls), list(EXECUTED)
+
+
+async def run_calls_async(
+    calls: list[dict[str, Any]], *, policy: Policy = sql_scope_policy, gated: bool = True
+) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
+    EXECUTED.clear()
+    tools = [echo, run_sql]
+    node = ToolNode(tools, awrap_tool_call=recusal_agate(policy)) if gated else ToolNode(tools)
+    return await run_in_graph_async(node, calls), list(EXECUTED)
 
 
 def main() -> None:
