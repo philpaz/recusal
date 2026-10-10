@@ -108,6 +108,35 @@ in a comment, `persist-credentials: false`, and no permissions beyond what the j
 The zizmor audit above enforces this. `tests/test_contributing_checks.py` fails if this
 table and the jobs in `.github/workflows/ci.yml` ever disagree.
 
+## Adding a runtime
+
+Every agent framework Recusal supports joins the same way, so "Tested" in the README's
+[Works with](README.md#works-with) table means the same thing for each one. Comment on
+the runtime's issue first; the maintainer will share what is already known about its
+hook and its traps. A runtime PR is done when it has all of these:
+
+1. **The example.** `examples/<runtime>_gate.py`, offline and deterministic (no model,
+   no API key), following the rules for examples above.
+2. **Its tests.** `tests/test_<runtime>_gate.py`: refusals, allowed calls, a policy that
+   raises, and an ungated negative control.
+3. **Its surface probe.** `tests/test_compat_<runtime>.py`, modeled on
+   `tests/test_compat_langgraph.py`, which pins what the gate can see in that framework:
+   every way the framework can run a tool passes through the hook (each one checked
+   against an ungated control); the hook sees the arguments the tool runs with; a hook
+   that raises stops the call. Anything the gate cannot see (tools that run on the
+   provider's servers, for example) is named in the example's docstring.
+4. **The pinned lane.** Jobs in `.github/workflows/ci.yml` named
+   `<Runtime> example (Python <version>)` that install exact versions (`package==x.y.z`)
+   and run the tests and the probe, plus their rows in the table above.
+5. **The latest lane.** The same packages, unpinned, in the matrix of
+   `.github/workflows/compat.yml`.
+6. **The README row.** Its status in Works with becomes Tested, linking the example.
+
+`tests/test_compat_process.py` fails if a pinned runtime is missing its surface probe or
+its latest-lane entry, or if the two lanes install different packages. After merge the
+maintainer adds the new pinned jobs to the required checks. How tested runtimes are kept
+working as frameworks release is in [`STABILITY.md`](STABILITY.md#integrations).
+
 ## What we'll likely decline
 
 - A runtime dependency in the core.

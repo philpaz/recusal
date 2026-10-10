@@ -103,6 +103,33 @@ and Windows.
 The 3.9 floor stays until holding it forces a compromise in the enforcement code, and the
 release toolchain is pinned to versions that still validate it.
 
+## Integrations
+
+An integration is a tested example for another agent framework, such as
+`examples/langgraph_gate.py`. It lives under `examples/`, not in the package, so it is
+outside the frozen list above; changing one is a PATCH. A runtime marked **Tested** in the
+README's [Works with](README.md#works-with) table is supported at the exact versions the
+README names, and it is checked in two lanes:
+
+- **Pinned lane, on every pull request.** Required CI jobs install exactly the versions
+  the README names and run the example's tests and its surface probe
+  (`tests/test_compat_<runtime>.py`), which pins what the gate can see in that framework.
+- **Latest lane, weekly and on demand.** `.github/workflows/compat.yml` installs the
+  newest release of the same packages and runs the same tests and probe. It never runs on
+  a pull request, so a framework release can never block a contribution.
+
+When the latest lane fails, the maintainer opens an issue naming the release and what
+broke. Until it is fixed, the pinned versions stay the supported ones and the README says
+which newer release is not supported yet. When the latest lane passes on a newer release,
+a pull request moves the pin in the example, the README and `ci.yml` together (a test
+keeps the three in step), so "Tested" always names a version CI ran. A runtime whose
+latest lane stays red through a whole minor release of Recusal, or whose framework is no
+longer maintained, goes back from Tested to Coming, and the changelog says so.
+
+Adding a runtime follows the checklist in
+[`CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-runtime). Where to ask for help is in
+[`SUPPORT.md`](SUPPORT.md).
+
 ## What 1.0 will mean, and what earns it
 
 1.0 is a promise that the perimeter above is stable **in practice**, not just in intent.

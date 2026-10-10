@@ -1,0 +1,67 @@
+name: Compat (latest releases)
+
+# The latest lane. ci.yml tests each integration at the exact versions the README names
+# (the pinned lane, required to merge). This workflow installs the NEWEST release of each
+# integration's framework and runs the same example tests plus its surface probe
+# (tests/test_compat_<runtime>.py), so a framework release that breaks the example or
+# changes what the gate can see turns red here within a week. It never runs on a pull
+# request, so an upstream release can never block a contributor. STABILITY.md
+# ("Integrations") says what happens when it fails.
+on:
+  schedule:
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# one run at a time; a manual run supersedes one still in progress
+concurrency:
+  group: compat
+  cancel-in-progress: true
+
+jobs:
+  latest:
+    name: ${{ matrix.runtime }} latest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per integration and Python. `packages` lists exactly the packages its
+        # ci.yml jobs pin, unpinned here; tests/test_compat_process.py keeps the two lists
+        # identical, so a new integration cannot join one lane and skip the other.
+        include:
+          - runtime: langgraph
+            python-version: "3.10"
+            packages: "langgraph langchain-core"
+            tests: "tests/test_langgraph_gate.py tests/test_compat_langgraph.py"
+          - runtime: langgraph
+            python-version: "3.12"
+            packages: "langgraph langchain-core"
+            tests: "tests/test_langgraph_gate.py tests/test_compat_langgraph.py"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the newest release of each framework package
+        env:
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          # shellcheck disable=SC2086  # PACKAGES is a space-separated list by design
+          pip install -e ".[dev]" --upgrade $PACKAGES
+      - name: Record the versions under test
+        env:
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          for p in $PACKAGES; do
+            echo "$p $(python -c "import importlib.metadata as m, sys; print(m.version(sys.argv[1]))" "$p")"
+          done | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Example tests and surface probe
+        env:
+          TESTS: ${{ matrix.tests }}
+        run: |
+          # shellcheck disable=SC2086  # TESTS is a space-separated list by design
+          pytest -q $TESTS
