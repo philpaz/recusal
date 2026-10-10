@@ -128,15 +128,137 @@ def decide(
     *,
     allow_on_pass: bool = False,
     fail_closed: bool = True,
+    audit: Optional["AuditLog"] = None,
+    surface: Optional[str] = None,
+    tool_use_id: Optional[str] = None,
+    actor: Optional[str] = None,
+    control: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str]:
-    """Pure decision: run the policy, fold to a verdict, return ``(decision, reason)``.
+    """Run the policy, fold to a verdict, return ``(decision, reason)``.
 
     ``decision`` is ``"defer"`` (PASS, and not auto-allowing), ``"allow"`` (PASS with
     ``allow_on_pass=True``), or ``"deny"`` (RETRY/FAIL).
+
+    Without ``audit`` this is a pure function. Pass ``audit=`` (a
+    :class:`recusal.audit.AuditLog`) to put the adjudication on the record as one
+    hash-chained entry, the same entry :func:`run_pretooluse_hook` writes: the tool, the
+    decision, the reasons, a SHA-256 fingerprint of ``tool_input`` (contents are never
+    embedded), and the control identity (see ``control`` on :func:`run_pretooluse_hook`).
+    ``surface`` is then required and names the runtime that adjudicated, for example
+    ``"my_runtime.tool_gate"``; there is no default, because a record that guesses where
+    it came from is not evidence. ``"claude_code.pretooluse"`` is reserved for
+    :func:`run_pretooluse_hook`. ``tool_use_id`` links the entry to the runtime's call
+    id, and ``actor`` labels it. If the log cannot be written the decision becomes a
+    deny, the record being part of the control, unless ``fail_closed=False``.
+
+    The recording arguments are refused (``ValueError``) without ``audit``, so a caller
+    who believes it is recording is never silently not recording.
     """
-    decision, reason, _ = _adjudicate(
+    if audit is None:
+        if any(v is not None for v in (surface, tool_use_id, actor, control)):
+            raise ValueError("surface, tool_use_id, actor and control require audit=")
+        decision, reason, _ = _adjudicate(
+            tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
+        )
+        return decision, reason
+    if not isinstance(surface, str) or not surface or surface != surface.strip():
+        raise ValueError("audit= requires surface, a nonempty name of the adjudicating runtime")
+    if surface == _HOOK_SURFACE:
+        raise ValueError(f"surface {_HOOK_SURFACE!r} is reserved for run_pretooluse_hook")
+    if tool_use_id is not None and (not isinstance(tool_use_id, str) or not tool_use_id):
+        raise ValueError("tool_use_id must be a nonempty string")
+    if control is not None and not isinstance(control, dict):
+        raise ValueError("control must be a dict")
+    _reset_control_identity(policy)
+    decision, reason, verdict = _adjudicate(
         tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
     )
+    input_sha256: Optional[str]
+    try:
+        input_sha256 = _input_fingerprint(tool_input)
+    except Exception as exc:  # noqa: BLE001 - an input the record cannot bind must not slip through
+        input_sha256 = None
+        if fail_closed:
+            decision = "deny"
+            reason = f"Recusal failed closed: tool_input cannot be fingerprinted ({exc})"
+            verdict = compute_verdict(
+                [
+                    Finding.fail(
+                        "recusal_unfingerprintable_input", severity="CRITICAL", message=str(exc)
+                    )
+                ]
+            )
+    return _record(
+        audit,
+        verdict,
+        surface=surface,
+        tool_name=tool_name,
+        decision=decision,
+        reason=reason,
+        input_sha256=input_sha256,
+        event_ids={"tool_use_id": tool_use_id} if tool_use_id is not None else {},
+        policy=policy,
+        control=control,
+        actor=actor,
+        fail_closed=fail_closed,
+    )
+
+
+#: The surface label :func:`run_pretooluse_hook` writes; :func:`decide` refuses it so an
+#: entry carrying it always came from a Claude Code PreToolUse event.
+_HOOK_SURFACE = "claude_code.pretooluse"
+
+
+def _reset_control_identity(policy: Policy) -> None:
+    """Clear invocation-local control identity before an adjudication, so a reused policy
+    object never lends the previous call's provenance (a manifest digest) to this record."""
+    reset = getattr(policy, "reset_control_identity", None)
+    if callable(reset):
+        try:
+            reset()
+        except Exception:  # noqa: BLE001, a broken reset must not take down the gate
+            pass
+
+
+def _record(
+    audit: "AuditLog",
+    verdict: Verdict,
+    *,
+    surface: str,
+    tool_name: Optional[str],
+    decision: str,
+    reason: str,
+    input_sha256: Optional[str],
+    event_ids: Dict[str, Any],
+    policy: Policy,
+    control: Optional[Dict[str, Any]],
+    actor: Optional[str],
+    fail_closed: bool,
+) -> Tuple[str, str]:
+    """Append one adjudication to ``audit``: the ONE recording path for every surface.
+
+    Returns the final ``(decision, reason)``: unchanged when the entry is written; a deny
+    when it cannot be and ``fail_closed`` (the record is part of the control); unchanged
+    when it cannot be and the caller chose fail-open."""
+    action: Dict[str, Any] = {
+        "surface": surface,
+        "tool": tool_name,
+        "decision": decision,
+        "reason": reason,
+    }
+    if input_sha256 is not None:
+        action["input_sha256"] = input_sha256
+    action.update(event_ids)
+    action["control"] = _control_identity(policy, control)
+    try:
+        audit.append(verdict, action=action, actor=actor)
+    except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed
+        if fail_closed:
+            return (
+                "deny",
+                f"Recusal failed closed: audit log unavailable ({exc}); "
+                "the record is part of the control",
+            )
     return decision, reason
 
 
@@ -260,12 +382,7 @@ def run_pretooluse_hook(
     # and in a reused process its audit record would otherwise inherit the manifest
     # digest of the last valid adjudication in this context. An event that never
     # reached the policy must never carry the policy's provenance.
-    reset = getattr(policy, "reset_control_identity", None)
-    if callable(reset):
-        try:
-            reset()
-        except Exception:  # noqa: BLE001, a broken reset must not take down the gate
-            pass
+    _reset_control_identity(policy)
 
     tool_name: Optional[str] = None
     input_sha256: Optional[str] = None
@@ -316,22 +433,23 @@ def run_pretooluse_hook(
                         )
                     ]
                 )
-                try:
-                    audit.append(
-                        verdict,
-                        action={
-                            "surface": "claude_code.pretooluse",
-                            "tool": tool_name,
-                            "decision": "defer",
-                            "reason": f"malformed PreToolUse event ignored: {exc}",
-                            # the SAME control-identity construction as every other
-                            # audit path: a fail-open record still names what decided
-                            "control": _control_identity(policy, control),
-                        },
-                        actor=actor,
-                    )
-                except Exception:  # noqa: BLE001 - fail-open mode was chosen explicitly
-                    pass
+                # the SAME recording path as every other adjudication: a fail-open
+                # record still names what decided; a write failure is swallowed
+                # because fail-open mode was chosen explicitly
+                _record(
+                    audit,
+                    verdict,
+                    surface=_HOOK_SURFACE,
+                    tool_name=tool_name,
+                    decision="defer",
+                    reason=f"malformed PreToolUse event ignored: {exc}",
+                    input_sha256=None,
+                    event_ids={},
+                    policy=policy,
+                    control=control,
+                    actor=actor,
+                    fail_closed=False,
+                )
             return None
         decision, reason = "deny", f"Recusal failed closed: malformed PreToolUse event ({exc})"
         verdict = compute_verdict(
@@ -339,25 +457,20 @@ def run_pretooluse_hook(
         )
 
     if audit is not None:
-        action: Dict[str, Any] = {
-            "surface": "claude_code.pretooluse",
-            "tool": tool_name,
-            "decision": decision,
-            "reason": reason,
-        }
-        if input_sha256 is not None:
-            action["input_sha256"] = input_sha256
-        action.update(event_ids)
-        action["control"] = _control_identity(policy, control)
-        try:
-            audit.append(verdict, action=action, actor=actor)
-        except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed
-            if fail_closed:
-                decision, reason = (
-                    "deny",
-                    f"Recusal failed closed: audit log unavailable ({exc}); "
-                    "the record is part of the control",
-                )
+        decision, reason = _record(
+            audit,
+            verdict,
+            surface=_HOOK_SURFACE,
+            tool_name=tool_name,
+            decision=decision,
+            reason=reason,
+            input_sha256=input_sha256,
+            event_ids=event_ids,
+            policy=policy,
+            control=control,
+            actor=actor,
+            fail_closed=fail_closed,
+        )
 
     if decision == "defer":
         return None

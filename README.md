@@ -348,6 +348,13 @@ loading or scanning the full log, and file-backed appends are serialized with an
 inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
 it.
 
+Any other runtime gets the same record from `decide`: `decide(tool_name, tool_input,
+policy, audit=log, surface="my_runtime.tool_gate", tool_use_id=call_id)` writes the same
+entry through the same recorder, with the same fail-closed rule. `surface` is required
+whenever `audit=` is passed and names the runtime that adjudicated, so every entry says
+where its decision was made; `claude_code.pretooluse` is reserved for the hook. Without
+`audit=`, `decide` is the same pure function it has always been.
+
 The external anchor is first-class: `AuditLog(..., sinks=[...])` mirrors every committed
 entry to any object with a `write(entry)` method (a WORM bucket, another host, a signer;
 `recusal.AuditSink` is the protocol), and a sink failure surfaces as a failed append, so
