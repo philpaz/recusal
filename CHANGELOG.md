@@ -4,6 +4,73 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-10-10
+
+Any runtime that calls `decide` can now write the same audit record the Claude Code hook
+writes, and two defects in the gate itself are fixed. MINOR under `STABILITY.md`: `decide`
+gains optional keyword-only parameters, and without them it is unchanged. The fixes change
+behavior only where the old behavior was wrong; who is affected is said in each entry. The
+examples live under `examples/` and are not part of the installed package.
+
+### Added
+- **`decide(audit=...)`.** `recusal.claude_code.decide` accepts an optional `AuditLog`, so
+  LangGraph, the OpenAI Agents SDK or a hand-written loop gets the same tamper-evident,
+  hash-chained record as the hook:
+  `decide(tool_name, tool_input, policy, audit=log, surface="my_runtime.tool_gate", tool_use_id=call_id)`.
+  `surface` is required whenever `audit=` is passed and names the runtime that
+  adjudicated; there is no default, so an entry cannot claim a runtime it did not come
+  from, and `claude_code.pretooluse` is reserved for the hook. Passing a recording
+  argument without `audit=` raises, rather than silently recording nothing. The hook and
+  `decide` now write through one shared recorder, with the same keys, the same chain and
+  the same fail-closed rule when the log cannot be written. (#76)
+- `recusal_agate(policy)` in `examples/langgraph_gate.py`: the LangGraph gate for
+  `awrap_tool_call`, so async agents run through `ainvoke` are gated the same way as sync
+  ones. Refusals and policy errors are handled by the same code in both paths, and a
+  policy that raises still denies. Contributed by @Sinkleberg in #74. (#73)
+- `examples/composed_policies.py` (cookbook recipe 10): composes the destructive-shell,
+  workspace-write and egress policies into one gate, with tests that pin CRITICAL
+  precedence, order independence and error-to-deny. Contributed by @soyeladice-svg in
+  #69. (#58)
+- `examples/quality_gate.py` (cookbook recipe 8): refuses unusable quality evidence. A
+  `NaN`, infinite or out-of-range coverage figure, or a negative, non-integer or `bool`
+  failed-test count, is now a named error instead of a pass or an exception.
+  Contributed by @soyeladice-svg in #70. (#55)
+- `examples/subject_guard.py` (cookbook recipe 4): refuses a write to a customer record
+  when the session has no subject, or the target does not match it. Contributed by
+  @soyeladice-svg in #71. (#56)
+
+### Fixed
+- **`allowlist_policy(allow=...)` was skipped for Read, Grep and Glob.** The built-in
+  read-only defaults were checked before the `allow=` predicates, so
+  `allow={"Read": lambda args: False}` still let every `Read` through and the predicate
+  never ran. The docstring always said the predicate is the whole decision for its tool;
+  it now is. Affects only policies that pass `allow=` for one of those three tools; every
+  other policy decides exactly as before. Found by an outside review. (#82)
+- **The audit fingerprint folded different inputs together.** The input fingerprint used
+  `json.dumps(..., default=str)`, so `{1: "x"}` and `{"1": "x"}` shared a fingerprint, an
+  object shared one with its `str()`, and `NaN` was recorded as if it were JSON. It now
+  uses the strict serializer `recusal.authorization` already uses. Every valid JSON input
+  hashes exactly as before (0 differences across 50,000 random inputs), so existing logs
+  keep their meaning. An input outside JSON is denied when it would be recorded, or keeps
+  its decision with no fingerprint under `fail_closed=False`. The hook now fingerprints
+  only when it has a log, so no unaudited decision changes. Found by an outside review.
+  (#82)
+- **Windows: concurrent first appends to a new audit log could raise.** Two processes
+  making their first append at the same instant both tried to write the lock file's
+  one-time first byte, and Windows refused the second with `PermissionError`. The second
+  writer now waits its turn through the existing lock retry, which still fails closed on
+  a real permission problem. Linux and macOS are unaffected. Contributed by @biggdawg320
+  in #68. (#67)
+- `examples/scenarios.py`: the wrong-subject scenario no longer treats an unset session
+  subject and an unset target as a match. Contributed by @soyeladice-svg in #71. (#56)
+
+### Changed
+- `CONTRIBUTING.md` and CI: a commit that names an Anthropic address as co-author,
+  author or committer is refused by a required check, because GitHub lists such an
+  address as a repository contributor. AI-assisted contributions are welcome; only the
+  trailer is refused, and `python tools/check_trailers.py origin/main..HEAD` checks a
+  branch before it is pushed. (#83)
+
 ## [0.11.1] - 2026-10-02
 
 One fix in `recusal.checks`, and the first adapter example for an agent framework other

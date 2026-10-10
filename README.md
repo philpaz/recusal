@@ -570,7 +570,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.11.1   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.12.0   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
@@ -665,6 +665,20 @@ Thank you to the people who have made Recusal better:
   [#49](https://github.com/philpaz/recusal/pull/49),
   [#50](https://github.com/philpaz/recusal/pull/50) and
   [#51](https://github.com/philpaz/recusal/pull/51).
+- [@RugvedBane](https://github.com/RugvedBane) (Rugved Bane): threshold validation in
+  `row_count`, `null_rate` and `in_range`, so a `NaN` threshold can no longer turn a
+  check off, in [#63](https://github.com/philpaz/recusal/pull/63).
+- [@soyeladice-svg](https://github.com/soyeladice-svg) (Alejandro Florez): the LangGraph
+  tool-call gate, and tested cookbook recipes for policy composition, quality evidence
+  and subject binding, in [#62](https://github.com/philpaz/recusal/pull/62),
+  [#69](https://github.com/philpaz/recusal/pull/69),
+  [#70](https://github.com/philpaz/recusal/pull/70) and
+  [#71](https://github.com/philpaz/recusal/pull/71).
+- [@biggdawg320](https://github.com/biggdawg320) (Jim Hall): a fix for concurrent first
+  appends to an audit log on Windows, in
+  [#68](https://github.com/philpaz/recusal/pull/68).
+- [@Sinkleberg](https://github.com/Sinkleberg): the async LangGraph gate, in
+  [#74](https://github.com/philpaz/recusal/pull/74).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).
