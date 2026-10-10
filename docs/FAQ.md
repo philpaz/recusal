@@ -184,7 +184,8 @@ No. The Claude adapters are conveniences; the enforcement core (`compute_verdict
 `Finding`, the checks, the audit log) is zero-dependency and framework-neutral. See
 [`../examples/agent_loop.py`](../examples/agent_loop.py), a complete gate in a plain
 agent loop whose only import is `recusal`, no Claude and no SDK. The same `compute_verdict`
-seam drops into LangGraph, the OpenAI Agents SDK, or a homegrown runtime unchanged.
+seam fits any runtime that lets you check a call before the tool runs. The README's
+[Works with](../README.md#works-with) table lists what is tested today and what is coming.
 
 ## Frameworks now ship tool guardrails. What is left for Recusal?
 

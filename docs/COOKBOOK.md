@@ -34,7 +34,8 @@ def policy(tool_name, tool_input):
 run_pretooluse_hook(policy)  # a clean verdict defers; a non-clean one denies
 ```
 
-**Any agent loop** (Claude Agent SDK, LangGraph, OpenAI Agents, homegrown):
+**Any agent loop** (tested and coming runtimes are listed under
+[Works with](../README.md#works-with)):
 
 ```python
 from recusal import compute_verdict

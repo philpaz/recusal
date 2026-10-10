@@ -2,8 +2,9 @@
 Framework-neutral agent loop, the zero-dependency core gating tool calls with no
 Claude, no SDK, no third-party anything. This is the proof behind the claim that
 Recusal works in *any* agent loop: the only import is ``recusal`` itself, and the
-loop below is a plain ``for`` over proposed actions. Swap it for LangGraph, the
-OpenAI Agents SDK, a homegrown runtime, the gate is identical.
+loop below is a plain ``for`` over proposed actions. The gate call itself is the
+same in any runtime that checks a call before the tool runs; the README's
+"Works with" table lists which runtimes are tested.
 
     python examples/agent_loop.py
 """

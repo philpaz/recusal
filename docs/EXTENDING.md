@@ -75,9 +75,11 @@ def gate(findings):
 ```
 
 For **LangGraph**: call `gate(...)` inside a node and route to a "refused" edge when
-`allow` is False. For **CrewAI**: call it in a task/tool guard. For **Claude Code /
-Agent SDK hooks**: call it in your `PreToolUse` hook and block on `allow is False`.
-The pattern is identical, *the core never changes; only the wire shape does.*
+`allow` is False. For **Claude Code / Agent SDK hooks**: call it in your `PreToolUse`
+hook and block on `allow is False`. The pattern is identical, *the core never changes;
+only the wire shape does.* Before relying on another framework's hook, check that it
+refuses the call when your hook raises, not only when it returns a refusal; the README's
+[Works with](../README.md#works-with) table lists the runtimes tested so far.
 
 ## 4. Custom severities / policy tiers
 

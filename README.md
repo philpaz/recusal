@@ -104,6 +104,35 @@ Deterministic and offline: the same normalized evidence and explicit policy inpu
 under the same recusal implementation version, produce the same verdict, including
 the **no**.
 
+## Works with
+
+The core is plain Python with no dependencies, so it gates any agent loop that lets you
+check a tool call before it runs. Each row says how far that is proved today: **Tested**
+means a runnable example with its own tests in this repository's CI. **Coming** links
+the open issue where the work is happening.
+
+<!-- works-with:start -->
+| Runtime | Status | Where |
+|---|---|---|
+| Claude Code, including MCP tools | Tested | [`PreToolUse` hook](#claude-code-drop-in-pretooluse-hook), [MCP](#mcp-tools-the-same-gate) |
+| MCP servers: pin approved tools, detect drift | Tested | [`examples/mcp_governance.py`](examples/mcp_governance.py) |
+| Claude Messages API, manual loop | Tested | [`examples/claude_refusal.py`](examples/claude_refusal.py) |
+| LangGraph `ToolNode`, sync and async | Tested | [`examples/langgraph_gate.py`](examples/langgraph_gate.py) |
+| Any Python agent loop | Tested | [`examples/agent_loop.py`](examples/agent_loop.py) |
+| LangChain `create_agent` middleware | Coming | [#75](https://github.com/philpaz/recusal/pull/75) |
+| LangGraph audit trail | Coming | [#77](https://github.com/philpaz/recusal/issues/77) |
+| LangGraph pause, resume and replay | Coming | [#80](https://github.com/philpaz/recusal/issues/80) |
+| OpenAI Agents SDK | Coming | [#78](https://github.com/philpaz/recusal/issues/78) |
+| OpenAI Responses and Chat Completions | Coming | [#81](https://github.com/philpaz/recusal/issues/81) |
+<!-- works-with:end -->
+
+xAI documents its Grok API as using the same request formats as OpenAI's, so #81 is
+also where Grok support will start. Want a runtime that isn't listed? Open an issue.
+
+**What no local gate can see.** Some tools run on the model provider's servers, such as
+hosted web search, a hosted code interpreter or hosted MCP. Those calls never pass
+through your code, so neither Recusal nor any other local gate can refuse them.
+
 ## Install
 
 ```bash
@@ -514,8 +543,9 @@ it decides only the calls the server pauses on (see [`docs/HOWTO.md`](docs/HOWTO
 
 The Claude adapters are conveniences; the zero-dep core is framework-neutral.
 [`examples/agent_loop.py`](examples/agent_loop.py) gates a plain `propose → gate → act`
-loop whose only import is `recusal`; the same `compute_verdict` seam drops into LangGraph,
-the OpenAI Agents SDK, or a homegrown runtime unchanged.
+loop whose only import is `recusal`. The same `compute_verdict` seam fits any runtime that
+lets you check a call before the tool runs; [Works with](#works-with) lists what is tested
+today and what is coming.
 
 For a concrete LangGraph integration, [`examples/langgraph_gate.py`](examples/langgraph_gate.py)
 puts existing `@tool` functions unchanged into LangGraph's `ToolNode` and attaches
