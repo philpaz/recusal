@@ -71,6 +71,32 @@ jobs:
       - name: Audit every workflow, blocking
         run: zizmor --no-progress .github/workflows
 
+  commit-trailers:
+    name: No Anthropic co-author trailer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0  # the PR's own commits, not only the merge ref
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      # GitHub lists every co-author address it can match as a repository contributor.
+      # This project credits people: a commit naming an Anthropic address is refused
+      # before it can merge (AI-assisted work is welcome; the trailer is not). A PR is
+      # judged on its own commits; a push or the weekly run re-checks all of main.
+      - name: Every commit credits people, not an Anthropic account
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            python tools/check_trailers.py "$BASE_SHA..$HEAD_SHA"
+          else
+            python tools/check_trailers.py HEAD
+          fi
+
   action-gate:
     name: Dogfood the GitHub Action
     runs-on: ubuntu-latest

@@ -69,6 +69,7 @@ They are the same for every contribution, large or small:
 | `test (macos-latest, 3.12)` | the full gate on macOS |
 | `test (windows-latest, 3.12)` | the full gate on Windows |
 | `Workflow audit (zizmor)` | every workflow passes the security audit |
+| `No Anthropic co-author trailer` | no commit lists an AI assistant's account as a contributor (see below) |
 | `Dogfood the GitHub Action` | the shipped GitHub Action still gates correctly |
 | `Action ref selects the implementation` | an Action ref runs the code at that ref |
 | `Hash-locked release environment builds` | the release build is unaffected |
@@ -79,6 +80,14 @@ They are the same for every contribution, large or small:
 `ruff check .`, `ruff format --check .`, `mypy`, and `pytest -q` (the whole suite, not
 only the tests you touched). Run them locally before you push; they are the commands in
 [Development setup](#development-setup).
+
+**AI-assisted contributions are welcome**, judged like any other by the checks above. What
+the project doesn't take is the `Co-authored-by: Claude <noreply@anthropic.com>` trailer
+some coding assistants add by default: GitHub turns it into a listed repository
+contributor, and this project credits people. `No Anthropic co-author trailer` refuses a
+PR whose commits carry one (or an Anthropic author or committer address), and prints the
+commits and the fix. A human co-author named Claude is fine; the check matches the address.
+Check locally with `python tools/check_trailers.py origin/main..HEAD`.
 
 What else a reviewer will check before merging:
 
