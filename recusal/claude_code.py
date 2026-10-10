@@ -62,7 +62,6 @@ unless affirmatively named), see the "Allowlist mode" section below.
 No Anthropic-SDK dependency, this only speaks the hook's stdin/stdout JSON.
 """
 
-import hashlib
 import json
 import os
 import re
@@ -70,6 +69,7 @@ import shlex
 import sys
 from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
+from .authorization import fingerprint as _strict_fingerprint
 from .evidence import Finding, Verdict, compute_verdict
 
 if TYPE_CHECKING:  # runtime never needs the import; the hook only calls audit.append
@@ -173,21 +173,9 @@ def decide(
     decision, reason, verdict = _adjudicate(
         tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
     )
-    input_sha256: Optional[str]
-    try:
-        input_sha256 = _input_fingerprint(tool_input)
-    except Exception as exc:  # noqa: BLE001 - an input the record cannot bind must not slip through
-        input_sha256 = None
-        if fail_closed:
-            decision = "deny"
-            reason = f"Recusal failed closed: tool_input cannot be fingerprinted ({exc})"
-            verdict = compute_verdict(
-                [
-                    Finding.fail(
-                        "recusal_unfingerprintable_input", severity="CRITICAL", message=str(exc)
-                    )
-                ]
-            )
+    input_sha256, decision, reason, verdict = _bind_input(
+        tool_input, decision, reason, verdict, fail_closed=fail_closed
+    )
     return _record(
         audit,
         verdict,
@@ -329,11 +317,39 @@ def _runtime_context(event: dict) -> Dict[str, str]:
 def _input_fingerprint(tool_input: dict) -> str:
     """SHA-256 over the canonical JSON of the proposed tool input. The audit entry binds
     to the exact proposed call without embedding its contents (a Write's file body, an
-    env value): hashes only, the same doctrine as the MCP manifest."""
-    canonical = json.dumps(
-        tool_input, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    env value): hashes only, the same doctrine as the MCP manifest.
+
+    The input is held to the strict JSON domain (the one serializer
+    :func:`recusal.authorization.fingerprint` uses): a non-string key, a non-finite
+    number or any non-JSON object raises ``ValueError`` instead of being folded into a
+    look-alike, so two different inputs can never share a fingerprint. Every valid JSON
+    input hashes exactly as before."""
+    return _strict_fingerprint(tool_input)
+
+
+def _bind_input(
+    tool_input: dict, decision: str, reason: str, verdict: Verdict, *, fail_closed: bool
+) -> Tuple[Optional[str], str, str, Verdict]:
+    """Fingerprint an adjudicated input for its audit record. An input the record cannot
+    bind is refused when ``fail_closed`` (the record is part of the control); fail-open
+    keeps the decision and records no fingerprint."""
+    try:
+        return _input_fingerprint(tool_input), decision, reason, verdict
+    except Exception as exc:  # noqa: BLE001 - an input the record cannot bind must not slip through
+        if not fail_closed:
+            return None, decision, reason, verdict
+        return (
+            None,
+            "deny",
+            f"Recusal failed closed: tool_input cannot be fingerprinted ({exc})",
+            compute_verdict(
+                [
+                    Finding.fail(
+                        "recusal_unfingerprintable_input", severity="CRITICAL", message=str(exc)
+                    )
+                ]
+            ),
+        )
 
 
 def run_pretooluse_hook(
@@ -386,6 +402,7 @@ def run_pretooluse_hook(
 
     tool_name: Optional[str] = None
     input_sha256: Optional[str] = None
+    adjudicated: Optional[dict] = None
     event_ids: Dict[str, Any] = {}
     try:
         event = json.load(stdin)
@@ -401,7 +418,6 @@ def run_pretooluse_hook(
         if not isinstance(tool_input, dict):
             raise ValueError("PreToolUse 'tool_input' is not an object")
         tool_name = event["tool_name"]
-        input_sha256 = _input_fingerprint(tool_input)
         # transcript linkage for the audit record: prompt_id is in the documented event
         # shape; tool_use_id is recorded defensively should the event ever carry one.
         for key in ("prompt_id", "tool_use_id"):
@@ -419,6 +435,7 @@ def run_pretooluse_hook(
             allow_on_pass=allow_on_pass,
             fail_closed=fail_closed,
         )
+        adjudicated = tool_input
     except Exception as exc:  # noqa: BLE001 - a malformed event must not silently disable the gate
         if not fail_closed:
             # fail-open: defer to Claude Code's normal flow. Still a decision: if a log
@@ -457,6 +474,12 @@ def run_pretooluse_hook(
         )
 
     if audit is not None:
+        if adjudicated is not None:
+            # fingerprinted only when recorded: without a log the hook never hashes, so
+            # its decision cannot depend on whether the input is fingerprintable
+            input_sha256, decision, reason, verdict = _bind_input(
+                adjudicated, decision, reason, verdict, fail_closed=fail_closed
+            )
         decision, reason = _record(
             audit,
             verdict,
@@ -620,7 +643,8 @@ def allowlist_policy(
 ) -> Policy:
     """Build a default-deny :data:`Policy`: refuse every call not affirmatively vetted.
 
-    - ``read_only_tools`` defer regardless of arguments (default: Read/Grep/Glob).
+    - ``read_only_tools`` defer regardless of arguments (default: Read/Grep/Glob), unless
+      ``allow`` names the tool, in which case its predicate decides.
     - ``Bash`` must have no shell metacharacters and a first binary in ``safe_binaries``.
       Bare interpreters (``python script.py``) are refused: the script is a program the
       gate cannot vet, the exact bypass that defeats a deny-list.
@@ -651,10 +675,12 @@ def allowlist_policy(
                 )
             ]
 
-        if tool_name in readonly:
-            return []
+        # an explicit predicate is the whole decision for its tool, ahead of every
+        # built-in default, so a read-only tool can be narrowed (Read of secrets)
         if tool_name in extra:
             return [] if extra[tool_name](tool_input) else refuse("predicate refused it")
+        if tool_name in readonly:
+            return []
         if tool_name == "Bash":
             reason = _vet_bash(str(tool_input.get("command", "")), safe)
             return [] if reason is None else refuse(reason)
