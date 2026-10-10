@@ -212,9 +212,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install Recusal and pinned LangGraph example dependencies
-        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
+        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
       - name: Test LangGraph example
-        run: pytest -q tests/test_langgraph_gate.py
+        run: pytest -q tests/test_langgraph_gate.py tests/test_langchain_agent_gate.py
 
   langgraph-example-py312:
     name: LangGraph example (Python 3.12)
@@ -227,6 +227,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and pinned LangGraph example dependencies
-        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
+        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
       - name: Test LangGraph example
-        run: pytest -q tests/test_langgraph_gate.py
+        run: pytest -q tests/test_langgraph_gate.py tests/test_langchain_agent_gate.py

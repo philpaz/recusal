@@ -49,6 +49,11 @@ uses LangGraph's `ToolNode(..., wrap_tool_call=recusal_gate(policy))` to gate ea
 immediately before execution and return a refusal as an error `ToolMessage`. It is offline, requires **Python 3.10+**, and is tested with exactly
 `langgraph==1.2.12` and `langchain-core==1.6.5`; neither package is a Recusal dependency.
 
+LangChain's [`create_agent` middleware example](../examples/langchain_agent_gate.py)
+imports the same `recusal_gate` and uses `wrap_tool_call` with scripted model messages.
+It also requires Python 3.10+ and exactly `langchain==1.4.3` on top of the LangGraph pins;
+no model key or database is used and the Recusal package has no new dependency.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

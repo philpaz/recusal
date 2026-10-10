@@ -29,9 +29,11 @@ def test_langgraph_stays_out_of_the_recusal_package_and_dependencies():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8").lower()
     assert "langgraph" not in pyproject
     assert "langchain-core" not in pyproject
+    assert "langchain" not in pyproject
     for path in (ROOT / "recusal").rglob("*.py"):
         source = path.read_text(encoding="utf-8").lower()
         assert "langgraph" not in source, path
+        assert "langchain" not in source, path
 
 
 def test_pinned_versions_are_explicit_in_example_docs_and_ci():
