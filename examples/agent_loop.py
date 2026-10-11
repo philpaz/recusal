@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from recusal import Finding, compute_verdict  # noqa: E402
+from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
 
 # --- your policy: a proposed tool call -> evidence findings. No model in here. -------
 ALLOWED_TABLES = {"audit_log", "staging"}
@@ -29,11 +30,9 @@ def evaluate(tool: str, args: dict) -> list:
             Finding.fail("destructive_shell", severity="CRITICAL", message="refusing rm -rf")
         )
     if tool == "sql":
-        sql = args.get("sql", "").lower()
-        if "delete" in sql and "where" not in sql:
-            findings.append(
-                Finding.fail("unscoped_delete", severity="CRITICAL", message="DELETE without WHERE")
-            )
+        # The tested SQL policy strips comments and quotes before looking for WHERE.
+        # This example names its SQL tool "sql"; the policy knows it as "run_sql".
+        findings.extend(sql_scope_policy("run_sql", args))
     if tool == "write_table" and args.get("table") not in ALLOWED_TABLES:
         findings.append(
             Finding.fail(
