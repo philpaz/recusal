@@ -291,7 +291,8 @@ def test_explicit_launcher_modes():
 
 def test_both_launchers_coerce_every_failure_to_the_blocking_exit_code():
     for launcher in (LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL):
-        assert launcher.count("exit 2") == 2  # gate-crash path AND no-interpreter path
+        # empty-project-dir path, gate-crash path AND no-interpreter path
+        assert launcher.count("exit 2") == 3
         assert "recusal_gate.py" in launcher
 
 

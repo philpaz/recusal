@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **An empty `CLAUDE_PROJECT_DIR` is refused by name.** The launcher builds the gate path
+  from `CLAUDE_PROJECT_DIR`, which has been reported empty in hook environments. Empty,
+  the path collapsed to `/.claude/hooks/recusal_gate.py`: the root of the current drive
+  under PowerShell, a folder any signed-in Windows user can create, and Git's install
+  folder under Git Bash. The launcher ran a gate found there, or refused every call with
+  "hook did not run cleanly" and no cause. Now it refuses before any interpreter starts:
+  `recusal gate: CLAUDE_PROJECT_DIR is empty, so the gate script cannot be found; failing
+  closed`. The plugin's launcher checks `CLAUDE_PLUGIN_ROOT` the same way, and the
+  launchers in the README, `docs/HOWTO.md`, `docs/EXAMPLE.md` and the examples carry the
+  same check. Who is affected: every install. Existing installs keep working as before;
+  `recusal doctor` names a launcher from 0.10.1 through 0.12.0 as outdated, and
+  `recusal init --repair-launcher` replaces it, touching nothing else.
+
 ### Changed
 - CI: the commit credit check is now a heads-up on pull requests and never blocks one.
   It points out a commit that would list an AI tool or a bot as a GitHub contributor

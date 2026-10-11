@@ -18,7 +18,7 @@ Claude Code runs them, even under `bypassPermissions` (a `PreToolUse` `deny` ove
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2" } ]}
+    { "type": "command", "command": "[ -n \"$CLAUDE_PROJECT_DIR\" ] || { echo 'gate: CLAUDE_PROJECT_DIR is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }; for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2" } ]}
 ]}}
 ```
 
@@ -40,13 +40,18 @@ failure modes; it does not cover Claude-level hook cancellation, the hook timeou
 timeout "doesn't block the tool call", [hooks reference](https://code.claude.com/docs/en/hooks#timeouts); an Agent SDK callback
 hook that times out does block), or a broken gate that exits 0 with irrelevant output. (Deny and defer both exit `0`, so any nonzero genuinely means
 "the hook did not run.")
+The first clause, `[ -n "$CLAUDE_PROJECT_DIR" ] || ...`, covers an empty project
+directory, which has been reported in hook environments: the gate path would collapse to
+`/.claude/hooks/my_gate.py`, outside your project, so the launcher refuses the call and
+says which variable is empty instead. It never guesses another folder.
 On Windows, Claude Code runs shell-form hooks under Git Bash when it is installed and
 **falls back to PowerShell when it is not**, where this POSIX one-liner is a parse error
 with a non-blocking exit code - the gate silently disables. `recusal init` registers a
 PowerShell-native launcher (explicit `"shell": "powershell"`) on Windows instead; use
 `--launcher both` for a settings.json shared across operating systems, and `recusal
-doctor` validates the registered launcher against the host. An EXISTING install with the
-old POSIX-only launcher migrates with `recusal init --repair-launcher`, which replaces
+doctor` validates the registered launcher against the host. An EXISTING install with an
+older launcher (POSIX-only, or one from 0.12.0 or earlier without the empty-directory
+check) migrates with `recusal init --repair-launcher`, which replaces
 exactly the canonical launcher and touches nothing else (plain `init` sees the existing
 gate and deliberately changes nothing). Verify your install end-to-end before trusting
 it:

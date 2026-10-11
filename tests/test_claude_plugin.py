@@ -66,8 +66,15 @@ def test_plugin_launcher_is_the_canonical_launcher_path_swapped():
     plugin_cmd = groups[0]["hooks"][0]["command"]
     # the same fail-closed template, pointed at the plugin's gate; the plugin vendors its
     # runtime, so its probe needs only a Python, never an installed recusal package
-    expected = posix_launcher('"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"', _PROBE_PYTHON)
+    expected = posix_launcher(
+        '"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"',
+        _PROBE_PYTHON,
+        root="${CLAUDE_PLUGIN_ROOT}",
+    )
     assert plugin_cmd == expected
+    # the empty-root guard reads the SAME token the gate path uses, so it sees the value
+    # the path will see whether the host substitutes the token or the shell expands it
+    assert plugin_cmd.startswith('[ -n "${CLAUDE_PLUGIN_ROOT}" ] || ')
     assert "import recusal" not in plugin_cmd
     assert (
         LAUNCHER_COMMAND.replace(

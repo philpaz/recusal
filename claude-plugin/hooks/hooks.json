@@ -1,5 +1,5 @@
 {
-  "_comment": "The same fail-closed POSIX launcher the recusal repo registers for itself (.claude/settings.json.example), pointed at the plugin's copy of the gate shim. It probes for a python3/python/py that is >=3.9 and coerces ANY nonzero exit -- missing interpreter, wrong version, a missing or substituted vendored runtime -- into exit 2, the one BLOCKING hook exit code, so the gate fails CLOSED rather than open. SCOPE: macOS, Linux, and Windows WITH Git Bash. On Windows without Git Bash, Claude Code falls back to PowerShell, where this POSIX command is a parse error with a NON-blocking exit code (the gate silently disables); use `python -m recusal init` there, which registers a PowerShell-native launcher. A drift-lock test (tests/test_claude_plugin.py) keeps this command in lockstep with the canonical launcher.",
+  "_comment": "The same fail-closed POSIX launcher the recusal repo registers for itself (.claude/settings.json.example), pointed at the plugin's copy of the gate shim. It probes for a python3/python/py that is >=3.9 and coerces ANY nonzero exit -- missing interpreter, wrong version, a missing or substituted vendored runtime -- into exit 2, the one BLOCKING hook exit code, so the gate fails CLOSED rather than open. An empty CLAUDE_PLUGIN_ROOT is refused by name before any interpreter starts, so the gate path never collapses to the filesystem root. SCOPE: macOS, Linux, and Windows WITH Git Bash. On Windows without Git Bash, Claude Code falls back to PowerShell, where this POSIX command is a parse error with a NON-blocking exit code (the gate silently disables); use `python -m recusal init` there, which registers a PowerShell-native launcher. A drift-lock test (tests/test_claude_plugin.py) keeps this command in lockstep with the canonical launcher.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing closed' >&2; exit 2"
+            "command": "[ -n \"${CLAUDE_PLUGIN_ROOT}\" ] || { echo 'recusal gate: CLAUDE_PLUGIN_ROOT is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }; for p in python3 python py; do \"$p\" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null && { \"$p\" \"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'recusal gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'recusal gate: no working python>=3.9 interpreter; failing closed' >&2; exit 2"
           }
         ]
       }

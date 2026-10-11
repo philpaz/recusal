@@ -97,15 +97,31 @@ from .mcp_fetch import (
 #: 0.10.1 the first >=3.9 interpreter won, and a recusal installed into a venv behind it
 #: turned into a gate that refused every call). No candidate that can import recusal
 #: still fails closed, with a message that names what is missing.
+#:
+#: Empty project directory: the gate path is built from a variable Claude Code sets
+#: (``CLAUDE_PROJECT_DIR``, or ``CLAUDE_PLUGIN_ROOT`` for the plugin), and it has been
+#: reported empty in hook environments. Empty, the path collapses to
+#: ``/.claude/hooks/recusal_gate.py``: the root of the current drive under PowerShell (a
+#: folder any signed-in Windows user can create) and Git's install folder under Git Bash.
+#: Before this guard the launcher ran whatever gate sat there, or, finding none, refused
+#: every call with a message that never named the cause. Now it refuses before any
+#: interpreter starts and says which variable is empty. It never guesses another folder
+#: (the current directory, ``git rev-parse``): that would pick the gate by where the
+#: agent happens to be.
 _PROBE_RECUSAL = "import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal"
 #: The plugin ships its own vendored runtime, so its launcher needs only a Python.
 _PROBE_PYTHON = "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
 _NO_INTERPRETER_RECUSAL = "no python>=3.9 interpreter that can import recusal"
 _NO_INTERPRETER_PYTHON = "no working python>=3.9 interpreter"
+_PROJECT_GATE = '"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"'
 
 
-def posix_launcher(gate: str, probe: str = _PROBE_RECUSAL) -> str:
-    """The fail-closed POSIX launcher for ``gate`` (a quoted path expression)."""
+def _empty_root_message(name: str) -> str:
+    return f"recusal gate: {name} is empty, so the gate script cannot be found; failing closed"
+
+
+def _posix_loop(gate: str, probe: str) -> str:
+    """The interpreter loop alone: the whole launcher from 0.10.1 through 0.12.0."""
     missing = _NO_INTERPRETER_RECUSAL if probe == _PROBE_RECUSAL else _NO_INTERPRETER_PYTHON
     return (
         f'for p in python3 python py; do "$p" -c \'{probe}\' 2>/dev/null && {{ "$p"'
@@ -116,7 +132,25 @@ def posix_launcher(gate: str, probe: str = _PROBE_RECUSAL) -> str:
     )
 
 
-LAUNCHER_COMMAND_POSIX = posix_launcher('"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"')
+def posix_launcher(
+    gate: str, probe: str = _PROBE_RECUSAL, root: str = "$CLAUDE_PROJECT_DIR"
+) -> str:
+    """The fail-closed POSIX launcher for ``gate`` (a quoted path expression).
+
+    ``root`` is the variable ``gate`` starts with, written exactly as it appears there
+    (``$CLAUDE_PROJECT_DIR``, ``${CLAUDE_PLUGIN_ROOT}``), so the guard reads the same
+    value the path does however the host expands it.
+    """
+    if not gate.startswith(f'"{root}/'):
+        raise ValueError(f"gate {gate!r} does not start with {root!r}")
+    name = root.strip("${}")
+    return (
+        f"[ -n \"{root}\" ] || {{ echo '{_empty_root_message(name)}' >&2; exit 2; }}; "
+        + _posix_loop(gate, probe)
+    )
+
+
+LAUNCHER_COMMAND_POSIX = posix_launcher(_PROJECT_GATE)
 
 #: Back-compat alias (the POSIX form was previously the only launcher).
 LAUNCHER_COMMAND = LAUNCHER_COMMAND_POSIX
@@ -127,7 +161,7 @@ LAUNCHER_COMMAND = LAUNCHER_COMMAND_POSIX
 #: present on Windows, so this launcher does not depend on Git Bash being installed.
 #: Registered with an explicit ``"shell": "powershell"`` so Git Bash, when present, never
 #: tries (and fails) to parse it.
-LAUNCHER_COMMAND_POWERSHELL = (
+_POWERSHELL_LOOP = (
     "$ErrorActionPreference = 'Continue'; foreach ($p in @('py', 'python', 'python3')) {"
     " if (-not (Get-Command $p -ErrorAction SilentlyContinue)) { continue };"
     f" & $p -c '{_PROBE_RECUSAL}' *> $null;"
@@ -139,17 +173,25 @@ LAUNCHER_COMMAND_POWERSHELL = (
     " [Console]::Error.WriteLine("
     f"'recusal gate: {_NO_INTERPRETER_RECUSAL}; failing closed'); exit 2"
 )
+LAUNCHER_COMMAND_POWERSHELL = (
+    "if (-not $env:CLAUDE_PROJECT_DIR) { [Console]::Error.WriteLine("
+    f"'{_empty_root_message('CLAUDE_PROJECT_DIR')}'); exit 2 }}; " + _POWERSHELL_LOOP
+)
 
 #: The launchers ``init`` registered before 0.10.1 (version-only probe). ``--repair-launcher``
 #: recognizes them as canonical and replaces them; ``doctor`` names them as outdated.
 LEGACY_LAUNCHERS = frozenset(
     {
-        posix_launcher('"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"', probe=_PROBE_PYTHON),
-        LAUNCHER_COMMAND_POWERSHELL.replace(_PROBE_RECUSAL, _PROBE_PYTHON).replace(
+        _posix_loop(_PROJECT_GATE, _PROBE_PYTHON),
+        _POWERSHELL_LOOP.replace(_PROBE_RECUSAL, _PROBE_PYTHON).replace(
             _NO_INTERPRETER_RECUSAL, _NO_INTERPRETER_PYTHON
         ),
     }
 )
+
+#: The launchers ``init`` registered from 0.10.1 through 0.12.0: no empty-variable guard.
+#: ``--repair-launcher`` replaces them; ``doctor`` names them as outdated.
+UNGUARDED_LAUNCHERS = frozenset({_posix_loop(_PROJECT_GATE, _PROBE_RECUSAL), _POWERSHELL_LOOP})
 
 _WINDOWS = os.name == "nt"
 
@@ -347,7 +389,11 @@ def repair_launcher(project_dir: str, launcher: str = "auto", stdout=None) -> in
     if not isinstance(settings, dict):
         out.write(f"REFUSING to edit {settings_path} (unexpected shape)\n")
         return 1
-    canonical = {LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL} | LEGACY_LAUNCHERS
+    canonical = (
+        {LAUNCHER_COMMAND_POSIX, LAUNCHER_COMMAND_POWERSHELL}
+        | LEGACY_LAUNCHERS
+        | UNGUARDED_LAUNCHERS
+    )
     hooks = settings.get("hooks")
     groups = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
     if not isinstance(groups, list):
@@ -682,6 +728,18 @@ def _launcher_platform_findings(gate_hooks: List[dict]) -> List[Finding]:
                 "installed in a virtual environment can leave the gate refusing every call - "
                 "run `recusal init --repair-launcher` to register the launcher that skips "
                 "interpreters without recusal",
+            )
+        )
+    if any(str(h.get("command", "")) in UNGUARDED_LAUNCHERS for h in gate_hooks):
+        findings.append(
+            Finding.fail(
+                "launcher_shell_strategy",
+                severity="WARNING",
+                message="a launcher registered by 0.10.1 through 0.12.0 is in use: if "
+                "CLAUDE_PROJECT_DIR is empty it looks for the gate at the filesystem root "
+                "instead of in this project, and refuses every call without naming the "
+                "cause when none is there - run `recusal init --repair-launcher` to register "
+                "the launcher that refuses an empty CLAUDE_PROJECT_DIR by name",
             )
         )
     if not findings and (posix or powershell):
