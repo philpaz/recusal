@@ -62,10 +62,14 @@ def policy(tool_name, tool_input):
                 )
             )
         if any(client in cmd for client in ("psql", "mysql", "sqlite3")):
-            # Do not check for the word "where" as a substring: a comment such as
-            # "DELETE FROM t -- where id=7" would pass. Use the SQL policy in
-            # examples/sql_scope_policy.py, which strips comments and quotes first.
-            findings.extend(sql_scope_policy("run_sql", {"sql": cmd}))
+            if ("delete" in cmd or "update" in cmd) and "where" not in cmd:
+                findings.append(
+                    Finding.fail(
+                        "sql_scope",
+                        severity="CRITICAL",
+                        message="refusing destructive SQL with no WHERE clause",
+                    )
+                )
             if "drop table" in cmd or "truncate" in cmd:
                 findings.append(
                     Finding.fail(
