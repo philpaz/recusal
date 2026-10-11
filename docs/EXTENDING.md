@@ -12,12 +12,17 @@ A check is any function that returns one or more `Finding`s. That's the whole in
 
 ```python
 from recusal import Finding
+from examples.sql_scope_policy import policy as sql_scope_policy
 
 
 def sql_is_safe(statement: str, *, severity="CRITICAL") -> Finding:
-    """Refuse destructive SQL without a WHERE clause."""
-    s = statement.lower()
-    if ("delete" in s or "update" in s) and "where" not in s:
+    """Refuse destructive SQL without a top-level WHERE clause.
+
+    A plain substring check for "where" is not enough: a WHERE inside a comment
+    or a quoted string would pass. The tested policy in
+    examples/sql_scope_policy.py strips those first.
+    """
+    if sql_scope_policy("run_sql", {"sql": statement}):
         return Finding.fail(
             "sql_safety",
             severity=severity,
