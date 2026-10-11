@@ -14,8 +14,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from recusal import Finding, compute_verdict  # noqa: E402
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
+from recusal import Finding, compute_verdict  # noqa: E402
 
 # --- your policy: a proposed tool call -> evidence findings. No model in here. -------
 ALLOWED_TABLES = {"audit_log", "staging"}
