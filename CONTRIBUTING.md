@@ -69,7 +69,7 @@ They are the same for every contribution, large or small:
 | `test (macos-latest, 3.12)` | the full gate on macOS |
 | `test (windows-latest, 3.12)` | the full gate on Windows |
 | `Workflow audit (zizmor)` | every workflow passes the security audit |
-| `No AI or bot contributor` | no commit lists an AI tool or a bot as a contributor (see below) |
+| `Contributor credit` | a heads-up if a commit lists an AI tool or a bot as a contributor; never blocks a PR (see below) |
 | `Dogfood the GitHub Action` | the shipped GitHub Action still gates correctly |
 | `Action ref selects the implementation` | an Action ref runs the code at that ref |
 | `Hash-locked release environment builds` | the release build is unaffected |
@@ -81,17 +81,13 @@ They are the same for every contribution, large or small:
 only the tests you touched). Run them locally before you push; they are the commands in
 [Development setup](#development-setup).
 
-**Contributors are people.** The contributor is the person whose GitHub account opens
-the PR, and the commits are theirs. Use any AI tool you like; the work is judged like any
-other by the checks above, and you answer for it. What the project doesn't take is a
-commit that lists the tool: the `Co-authored-by:` line many assistants add by default
-(Claude Code, Codex, Cursor, Grok and others), or a commit authored by a tool's or a
-bot's account. GitHub turns those into listed repository contributors. `No AI or bot
-contributor` refuses a PR whose commits carry an AI vendor's address, an AI tool's
-GitHub account or any `[bot]` account as co-author, author or committer, and prints the
-commits and the fix. A person who worked on the change with you can still be a co-author
-under their own address; the check matches addresses, so a person named Claude or Codex
-is fine. Check locally with `python tools/check_trailers.py origin/main..HEAD`.
+**AI-assisted contributions are welcome.** Use any tool you like; the work is judged like
+any other by the checks above, and you are credited as its author. Many assistants add a
+`Co-authored-by:` line for themselves (Claude Code, Codex, Cursor, Grok and others), and
+GitHub would list the tool as a repository contributor. You don't need to do anything
+about it: `Contributor credit` points it out as a heads-up, and the maintainer removes the
+line when merging, keeping you as the author. A person who worked on the change with you
+is credited as a co-author as usual.
 
 What else a reviewer will check before merging:
 

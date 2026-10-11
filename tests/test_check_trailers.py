@@ -1,10 +1,11 @@
-"""``tools/check_trailers.py``: no commit may list an AI tool or a bot as a contributor.
+"""``tools/check_trailers.py``: find commits that would list an AI tool or a bot as a contributor.
 
-The CI job ``No AI or bot contributor`` runs this script over every PR's commits.
-These tests pin what it refuses (an AI vendor's address, an AI tool's GitHub account or
-any ``[bot]`` account, as co-author, author or committer) and, as the negative control,
-what it must never refuse (people named Claude, Codex or Grok, look-alike domains, AI
-help mentioned in prose).
+The CI job ``Contributor credit`` runs this script as a heads-up over every PR's commits
+(``--advisory``, never blocking) and strictly over main. These tests pin what it flags
+(an AI vendor's address, an AI tool's GitHub account or any ``[bot]`` account, as
+co-author, author or committer), that a PR is never blocked, and, as the negative
+control, what it must never flag (people named Claude, Codex or Grok, look-alike
+domains, AI help mentioned in prose).
 """
 
 import shutil
@@ -146,6 +147,8 @@ def test_a_range_with_the_trailer_fails_and_says_how_to_fix_it(repo, capsys):
     assert "1 of 2 commit(s)" in out
     assert "Co-Authored-By: Claude <noreply@anthropic.com>" in out
     assert "git commit --amend" in out
+    # nobody has to touch git: the maintainer removes the line when merging
+    assert "Nothing for you to\ndo: the maintainer removes these lines when merging" in out
 
 
 @needs_git
@@ -159,6 +162,32 @@ def test_a_codex_trailer_fails(repo, capsys):
     _commit(repo, "a", "feat: a\n\nCo-authored-by: Codex <noreply@openai.com>")
     assert main(["base..HEAD"]) == 1
     assert "--reset-author" in capsys.readouterr().out
+
+
+@needs_git
+def test_advisory_mode_never_blocks_a_pr_but_still_says_what_it_found(repo, capsys, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    _commit(repo, "a", "feat: a\n\nCo-authored-by: Codex <noreply@openai.com>")
+    assert main(["--advisory", "base..HEAD"]) == 0
+    out = capsys.readouterr().out
+    assert "Heads-up: 1 of 1 commit(s)" in out
+    assert "::notice title=Contributor credit::" in out
+    assert "Co-authored-by: Codex <noreply@openai.com>" in out
+
+
+@needs_git
+def test_advisory_mode_on_a_clean_range(repo, capsys):
+    _commit(repo, "a", "feat: a")
+    assert main(["--advisory", "base..HEAD"]) == 0
+    assert "credits people only" in capsys.readouterr().out
+
+
+def test_advisory_mode_still_reports_a_bad_range(repo):
+    assert main(["--advisory", "no-such-ref..HEAD"]) == 2
+
+
+def test_advisory_usage_error():
+    assert main(["--advisory"]) == 2
 
 
 @needs_git

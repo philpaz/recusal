@@ -7,12 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
-- CI: the required check that keeps tools off the Contributors list now refuses every AI
-  vendor's address (Anthropic, OpenAI, xAI, Cursor), the GitHub accounts of AI coding
-  agents, and any `[bot]` account, as co-author, author or committer. It was renamed from
-  `No Anthropic co-author trailer` to `No AI or bot contributor`. `CONTRIBUTING.md` states
-  the rule: the contributor is the person whose account opens the PR, and using AI tools
-  is welcome.
+- CI: the commit credit check is now a heads-up on pull requests and never blocks one.
+  It points out a commit that would list an AI tool or a bot as a GitHub contributor
+  (any address at Anthropic, OpenAI, xAI or Cursor, the GitHub accounts of AI coding
+  agents, or any `[bot]` account), and the maintainer removes that line when merging,
+  keeping the contributor as the author. Main is still checked strictly. Renamed from
+  `No Anthropic co-author trailer` to `Contributor credit`; `CONTRIBUTING.md` says
+  AI-assisted contributions are welcome and there is nothing the contributor needs to do.
 
 ## [0.12.0] - 2026-10-10
 

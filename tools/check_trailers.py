@@ -1,21 +1,22 @@
-"""Refuse commits that would list an AI tool or a bot as a repository contributor.
+"""Find commits that would list an AI tool or a bot as a repository contributor.
 
 GitHub adds every ``Co-authored-by:`` address it can match to an account to the
-repository's Contributors list, and coding assistants add such a trailer by default.
-This project credits people, so a commit that names an AI tool's or a bot's address (as
-a co-author, author or committer) is refused here, in CI, before it can merge.
-Contributors are welcome to use any AI tool; only the line that turns the tool into a
-listed contributor is refused.
+repository's Contributors list, and coding assistants add such a line by default. This
+project credits the people who contribute, and AI-assisted work is welcome, so the line
+is simply removed when the change is merged; the contributor stays the author.
+
+On a pull request this is a heads-up and never blocks (``--advisory``). On main it is
+strict, so a line that reached main is noticed at once:
+
+    python tools/check_trailers.py <rev-range>              # strict, e.g. HEAD
+    python tools/check_trailers.py --advisory <rev-range>   # heads-up, always exit 0
 
 The match is on the address, never the name, so a person named Claude, Codex or Grok is
-never refused:
-
-    python tools/check_trailers.py <rev-range>     # e.g. origin/main..HEAD, or HEAD
-
-Exit 0 when every commit in the range is clean, 1 when any is not (each offending
-commit and line printed, with the fix), 2 when git cannot list the range.
+never flagged. Exit 0 when every commit in the range is clean (or in advisory mode), 1
+when any is not (each commit and line printed), 2 when git cannot list the range.
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -45,19 +46,18 @@ _COAUTHOR = re.compile(r"^\s*co-authored-by\s*:(.*)$", re.IGNORECASE | re.MULTIL
 _FIELD = "\x1f"
 _RECORD = "\x1e"
 
-FIX = (
-    "Remove the line and force-push your branch, for example:\n"
-    "  git rebase -i origin/main   (mark each listed commit 'reword', delete the line)\n"
-    "or, for the last commit only:\n"
+NOTE = (
+    "Thanks for contributing, and AI-assisted work is welcome here. Nothing for you to\n"
+    "do: the maintainer removes these lines when merging, and you stay the author.\n"
+    "\n"
+    "If you'd like to tidy it up yourself, for example:\n"
     "  git commit --amend          (delete the line), then git push --force-with-lease\n"
-    "If a tool made the commit under its own name, re-commit it under yours:\n"
-    "  git commit --amend --reset-author\n"
-    "Using AI tools is welcome; only listing one as a contributor is not."
+    "  git commit --amend --reset-author   (if a tool made the commit under its name)"
 )
 
 
 def offending_lines(author: str, committer: str, message: str) -> List[str]:
-    """The reasons one commit is refused, empty when it is clean."""
+    """The reasons one commit is flagged, empty when it is clean."""
     found = []
     for who, address in (("author", author), ("committer", committer)):
         if _AI_ADDRESS.search(address):
@@ -88,25 +88,30 @@ def commits(rev_range: str) -> List[Tuple[str, str, str, str]]:
 
 
 def main(argv: List[str]) -> int:
-    if len(argv) != 1:
-        print("usage: python tools/check_trailers.py <rev-range>", file=sys.stderr)
+    advisory = argv[:1] == ["--advisory"]
+    args = argv[1:] if advisory else argv
+    if len(args) != 1:
+        print("usage: python tools/check_trailers.py [--advisory] <rev-range>", file=sys.stderr)
         return 2
     try:
-        rows = commits(argv[0])
+        rows = commits(args[0])
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"cannot list commits in {argv[0]!r}: {exc}", file=sys.stderr)
+        print(f"cannot list commits in {args[0]!r}: {exc}", file=sys.stderr)
         return 2
     bad = [(sha, lines) for sha, a, c, m in rows if (lines := offending_lines(a, c, m))]
     if not bad:
-        print(f"{len(rows)} commit(s) checked: no AI tool or bot as co-author, author or committer")
+        print(f"{len(rows)} commit(s) checked: every one credits people only")
         return 0
-    print(f"{len(bad)} of {len(rows)} commit(s) would list an AI tool or a bot as a contributor:")
+    print(f"Heads-up: {len(bad)} of {len(rows)} commit(s) would list an AI tool or a bot")
+    print("as a GitHub contributor:")
     for sha, lines in bad:
         for line in lines:
             print(f"  {sha[:12]}  {line}")
+            if advisory and os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::notice title=Contributor credit::{sha[:12]} {line}")
     print()
-    print(FIX)
-    return 1
+    print(NOTE)
+    return 0 if advisory else 1
 
 
 if __name__ == "__main__":
