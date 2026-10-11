@@ -108,9 +108,35 @@ _REVERSE_SHELL = re.compile(
     r"/dev/(tcp|udp)/|\b(nc|ncat|netcat)\b[^|&;]{0,256}-\w*e|\b(bash|sh)\b\s+-\w*i\b"
     r"|\bsocat\b[^|&;]{0,256}(exec|system):"
 )
+# `git` and any global options before the subcommand (`git -C repo`, `git -c k=v`,
+# `git --work-tree=. `, `git --no-pager`), so an option in front of the verb can't hide
+# it. With no options it is exactly `git ` as before. A separate option argument may be
+# quoted (`git -C "my repo"`). Bounded repetition and token lengths (ReDoS guard).
+_GIT_ARG = r"(?:\"[^\"]{0,256}\"|'[^']{0,256}'|\S{1,256})"
+_GIT = (
+    r"\bgit(?:\.exe)?(?:\s+(?:-c\s+" + _GIT_ARG + r"|--(?:git-dir|work-tree|namespace|config-env"
+    r"|attr-source|super-prefix|exec-path)(?:=\S{0,256}|\s+" + _GIT_ARG + r")"
+    r"|--?[a-z][\w-]{0,64}(?:=\S{0,256})?)){0,16}\s+"
+)
+# The git subcommands that throw away working-tree changes, each matched after _GIT.
+_GIT_WORKTREE_LOSS = (
+    r"clean\b[^|&;]{0,256}-[a-z]{0,8}f",  # clean -f / -fd / -fdx (untracked loss)
+    r"checkout\b[^|&;]{0,256}\s--(\s|$)",  # checkout -- (discard working tree)
+    # checkout -f / --force (discard local changes on the way to a branch), and checkout of
+    # the `.` / `./path` pathspec, which overwrites those files without a `--`
+    r"checkout\b[^|&;]{0,256}?\s(?:--force|-[a-z]*f[a-z]*)(?=\s|$)",
+    r"checkout\b[^|&;]{0,256}?\s\.(?:/\S{0,256})?(?=\s|$)",
+    r"switch\b[^|&;]{0,256}?\s(?:--force|--discard-changes|-[a-z]*f[a-z]*)(?=\s|$)",
+    r"restore(?![\w-])",  # restore (discard/overwrite tree); not git-restore-mtime
+    # worktree remove --force deletes a worktree WITH its uncommitted changes (without
+    # --force git refuses a dirty worktree, so the plain form is not refused)
+    r"worktree\s+remove\b[^|&;]{0,256}?\s(?:--force|-[a-z]*f[a-z]*)(?=\s|$)",
+    r"stash\s+(?:drop|clear)(?![\w-])",  # discards saved working-tree changes
+)
 # Destructive commands beyond `rm`: POSIX (shred, find -delete / -exec rm, truncate -s 0,
-# unlink), git working-tree loss (clean -f, checkout -- , reset --hard), and Windows /
-# PowerShell (rd/rmdir /s, del /s|/q, Remove-Item -Recurse).
+# unlink), git working-tree loss (clean -f, checkout -- / -f / ., switch -f /
+# --discard-changes, restore, worktree remove --force, stash drop / clear; reset --hard is
+# in _DESTRUCTIVE), and Windows / PowerShell (rd/rmdir /s, del /s|/q, Remove-Item -Recurse).
 _EXTRA_DESTRUCTIVE = re.compile(
     r"\bshred\b"
     r"|\bunlink\b"
@@ -120,9 +146,7 @@ _EXTRA_DESTRUCTIVE = re.compile(
     r"|\b(rd|rmdir)\b[^|&;]{0,256}\s/s\b"
     r"|\bdel\b[^|&;]{0,256}\s/[sq]\b"
     r"|\bremove-item\b[^|&;]{0,256}-recurse\b"
-    r"|\bgit\s+clean\b[^|&;]{0,256}-[a-z]{0,8}f"  # git clean -f / -fd / -fdx (untracked loss)
-    r"|\bgit\s+checkout\b[^|&;]{0,256}\s--(\s|$)"  # git checkout -- (discard working tree)
-    r"|\bgit\s+restore(?![\w-])"  # git restore (discard/overwrite tree); not git-restore-mtime
+    r"|" + "|".join(_GIT + verb for verb in _GIT_WORKTREE_LOSS)
 )
 _MAX_CMD_LEN = 4096  # commands longer than this are refused, not adjudicated (DoS guard)
 # \S{0,256} (bounded), not \S*, so a long run of '>' can't make this O(n^2) (ReDoS guard).

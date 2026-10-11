@@ -19,6 +19,19 @@ All notable changes to this project are documented here. The format follows
   same check. Who is affected: every install. Existing installs keep working as before;
   `recusal doctor` names a launcher from 0.10.1 through 0.12.0 as outdated, and
   `recusal init --repair-launcher` replaces it, touching nothing else.
+- **The deny list refuses more git commands that throw away working-tree changes.** It
+  already refused `git clean -f`, `git checkout --`, `git restore` and `git reset --hard`;
+  it now also refuses `git checkout -f` / `--force`, `git checkout .` and `./path`,
+  `git switch -f` / `--force` / `--discard-changes`, `git worktree remove --force`, and
+  `git stash drop` / `clear`. Global options before the subcommand no longer hide it:
+  `git -C repo clean -fd`, `git -c k=v checkout -- .` and `git --work-tree=. restore x`
+  were allowed and are now refused. Safe neighbours still defer (`git checkout main`,
+  `git switch -c topic`, `git worktree remove` without `--force`, which git itself refuses
+  for a dirty worktree, `git stash list` / `pop`). Who is affected: deny-list users whose
+  agent runs one of these; each is refused with `refusing destructive command`. Not
+  covered: `git checkout <file>`, which a deny list cannot tell apart from
+  `git checkout <branch>`, and, as a separate kind of loss, deleting branches, tags,
+  remote refs or reflog history.
 
 ### Changed
 - CI: the commit credit check is now a heads-up on pull requests and never blocks one.
