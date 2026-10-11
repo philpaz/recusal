@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- CI: the required check that keeps tools off the Contributors list now refuses every AI
+  vendor's address (Anthropic, OpenAI, xAI, Cursor), the GitHub accounts of AI coding
+  agents, and any `[bot]` account, as co-author, author or committer. It was renamed from
+  `No Anthropic co-author trailer` to `No AI or bot contributor`. `CONTRIBUTING.md` states
+  the rule: the contributor is the person whose account opens the PR, and using AI tools
+  is welcome.
+
 ## [0.12.0] - 2026-10-10
 
 Any runtime that calls `decide` can now write the same audit record the Claude Code hook

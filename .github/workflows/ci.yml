@@ -72,7 +72,7 @@ jobs:
         run: zizmor --no-progress .github/workflows
 
   commit-trailers:
-    name: No Anthropic co-author trailer
+    name: No AI or bot contributor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -83,10 +83,10 @@ jobs:
         with:
           python-version: "3.12"
       # GitHub lists every co-author address it can match as a repository contributor.
-      # This project credits people: a commit naming an Anthropic address is refused
-      # before it can merge (AI-assisted work is welcome; the trailer is not). A PR is
+      # This project credits people: a commit naming an AI tool's or a bot's address is
+      # refused before it can merge (using AI is welcome; listing it is not). A PR is
       # judged on its own commits; a push or the weekly run re-checks all of main.
-      - name: Every commit credits people, not an Anthropic account
+      - name: Every commit credits people, not an AI tool or a bot
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

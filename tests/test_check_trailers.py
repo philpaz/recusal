@@ -1,9 +1,10 @@
-"""``tools/check_trailers.py``: no commit may list an Anthropic account as a contributor.
+"""``tools/check_trailers.py``: no commit may list an AI tool or a bot as a contributor.
 
-The CI job ``No Anthropic co-author trailer`` runs this script over every PR's commits.
-These tests pin what it refuses (an Anthropic address as co-author, author or
-committer, in any spelling a coding assistant writes) and, as the negative control, what
-it must never refuse (a human co-author named Claude, AI help mentioned in prose).
+The CI job ``No AI or bot contributor`` runs this script over every PR's commits.
+These tests pin what it refuses (an AI vendor's address, an AI tool's GitHub account or
+any ``[bot]`` account, as co-author, author or committer) and, as the negative control,
+what it must never refuse (people named Claude, Codex or Grok, look-alike domains, AI
+help mentioned in prose).
 """
 
 import shutil
@@ -27,6 +28,20 @@ REFUSED = [
     "  Co-authored-by: Someone <someone@anthropic.com>",
     "Co-authored-by: claude <209825114+claude@users.noreply.github.com>",
     "Co-authored-by: claude <claude@users.noreply.github.com>",
+    "Co-authored-by: Claude <209825114+claude[bot]@users.noreply.github.com>",
+    "Co-authored-by: Codex <noreply@openai.com>",
+    "Co-authored-by: Codex <codex@openai.com>",
+    "Co-authored-by: Codex <267193182+codex@users.noreply.github.com>",
+    "Co-authored-by: chatgpt-codex-connector[bot] <199175422+chatgpt-codex-connector[bot]@users.noreply.github.com>",
+    "Co-authored-by: Grok <noreply@x.ai>",
+    "Co-authored-by: Grok 4 <grok@x.ai>",
+    "Co-authored-by: Cursor Agent <cursoragent@cursor.com>",
+    "Co-authored-by: Copilot <198982749+Copilot@users.noreply.github.com>",
+    "Co-authored-by: OpenHands <175740463+openhands-agent@users.noreply.github.com>",
+    "Co-authored-by: Jules <161369871+google-labs-jules[bot]@users.noreply.github.com>",
+    "Co-authored-by: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>",
+    "Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+    "Co-authored-by: Someone <someone@research.openai.com>",
 ]
 
 ALLOWED = [
@@ -36,11 +51,19 @@ ALLOWED = [
     "Written with help from Claude Code; reviewed and tested by hand.",
     "Mentions noreply@anthropic.com in prose, not as a trailer.",
     "Co-authored-by: Notclaude <notclaude@users.noreply.github.com>",
+    "Co-authored-by: Codex Fan <codexfan@gmail.com>",
+    "Co-authored-by: Grok Smith <grok@example.com>",
+    "Co-authored-by: Max <max@max.ai>",
+    "Co-authored-by: Ana <ana@notopenai.com>",
+    "Co-authored-by: Ana <ana@openai.community>",
+    "Co-authored-by: Ana <ana@anthropic.com.example.org>",
+    "Co-authored-by: Ana <1+copilotfan@users.noreply.github.com>",
+    "Written with Codex, Cursor and Grok; every line reviewed by me.",
 ]
 
 
 @pytest.mark.parametrize("line", REFUSED)
-def test_an_anthropic_co_author_is_refused(line):
+def test_an_ai_or_bot_co_author_is_refused(line):
     message = f"fix: something\n\nBody.\n\n{line}\n"
     assert offending_lines(PHILIP, PHILIP, message) == [line.strip()]
 
@@ -50,10 +73,25 @@ def test_people_and_prose_are_never_refused(line):
     assert offending_lines(PHILIP, PHILIP, f"fix: something\n\n{line}\n") == []
 
 
-def test_an_anthropic_author_or_committer_is_refused():
-    bot = "Claude <noreply@anthropic.com>"
+@pytest.mark.parametrize(
+    "bot",
+    [
+        "Claude <noreply@anthropic.com>",
+        "Codex <noreply@openai.com>",
+        "Cursor Agent <cursoragent@cursor.com>",
+        "copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>",
+        "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+    ],
+)
+def test_an_ai_or_bot_author_or_committer_is_refused(bot):
     assert offending_lines(bot, PHILIP, "x") == [f"author: {bot}"]
     assert offending_lines(PHILIP, bot, "x") == [f"committer: {bot}"]
+
+
+def test_github_itself_as_committer_is_not_refused():
+    # A commit made in GitHub's web editor has GitHub as committer and the person as
+    # author; GitHub does not list itself as a contributor.
+    assert offending_lines(PHILIP, "GitHub <noreply@github.com>", "x") == []
 
 
 def test_every_offending_line_is_reported():
@@ -111,9 +149,16 @@ def test_a_range_with_the_trailer_fails_and_says_how_to_fix_it(repo, capsys):
 
 
 @needs_git
-def test_an_anthropic_author_fails(repo):
+def test_an_ai_author_fails(repo):
     _commit(repo, "a", "feat: a", author="Claude <noreply@anthropic.com>")
     assert main(["base..HEAD"]) == 1
+
+
+@needs_git
+def test_a_codex_trailer_fails(repo, capsys):
+    _commit(repo, "a", "feat: a\n\nCo-authored-by: Codex <noreply@openai.com>")
+    assert main(["base..HEAD"]) == 1
+    assert "--reset-author" in capsys.readouterr().out
 
 
 @needs_git
