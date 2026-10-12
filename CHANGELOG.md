@@ -76,6 +76,9 @@ All notable changes to this project are documented here. The format follows
   job instead of warning), `actions/attest-build-provenance` 4.2.2, `anchore/sbom-action`
   0.24.3, `sigstore/gh-action-sigstore-python` 3.5.0 and `pypa/gh-action-pypi-publish`
   1.14.2.
+- **ruff 0.16.10.** The dev pin and the pre-commit hook move together; nothing needed
+  reformatting. `tests/test_precommit_pins.py` fails if the hook's ruff differs from the
+  dev pin or its mypy leaves the 1.x line the dev extras allow.
 
 ## [0.12.0] - 2026-10-10
 
