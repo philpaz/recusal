@@ -70,6 +70,12 @@ All notable changes to this project are documented here. The format follows
   requests for the SHA-pinned GitHub Actions and the Python tooling (the hash-locked
   release environment and the dev tools), proposing a release only once it is 7 days old.
   Recusal itself still has no runtime dependencies.
+- **Workflow actions updated.** Every SHA pin was checked against its upstream tag:
+  `actions/checkout` 7.0.1, `actions/setup-python` 7.0.0, `actions/upload-artifact` 7.0.1,
+  `actions/download-artifact` 8.0.1 (a digest mismatch on download now fails the release
+  job instead of warning), `actions/attest-build-provenance` 4.2.2, `anchore/sbom-action`
+  0.24.3, `sigstore/gh-action-sigstore-python` 3.5.0 and `pypa/gh-action-pypi-publish`
+  1.14.2.
 
 ## [0.12.0] - 2026-10-10
 
