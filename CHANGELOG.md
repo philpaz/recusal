@@ -30,8 +30,19 @@ All notable changes to this project are documented here. The format follows
   for a dirty worktree, `git stash list` / `pop`). Who is affected: deny-list users whose
   agent runs one of these; each is refused with `refusing destructive command`. Not
   covered: `git checkout <file>`, which a deny list cannot tell apart from
-  `git checkout <branch>`, and, as a separate kind of loss, deleting branches, tags,
-  remote refs or reflog history.
+  `git checkout <branch>`.
+- **The deny list refuses git commands that delete branches, tags, remote refs or the
+  history that recovers them.** Now refused: `git branch -D`, `-d -f` / `--delete
+  --force`, and `-M` / `-C` (which rename or copy over an existing branch); `git tag -d`;
+  `git push --delete` / `-d`, a `:ref` refspec (`git push origin :old`), `--mirror` and
+  `--prune`; `git reflog expire` / `delete`; `git gc --prune=now` / `all`; `git prune`;
+  `git update-ref -d`. Global options before the subcommand don't hide them. What git
+  itself protects still defers: `git branch -d` (git refuses an unmerged branch), `-m`,
+  `-c` and `-f`, `git push origin HEAD:main` and a bare `:`, `git fetch --prune`,
+  `git remote prune`, `git worktree prune`, `git reflog show` and plain `git gc`. Git reads
+  `-d` and `-D` differently, so the branch check reads the command in its original case;
+  `git` and `branch` match in any case. Who is affected: deny-list users whose agent runs
+  one of these; each is refused with `refusing destructive command (git history loss)`.
 - **`examples/agent_loop.py` refuses a `DELETE` whose `WHERE` is only in a comment.**
   Its SQL check looked for the word `where` anywhere, so
   `DELETE FROM users -- where id = 1` was allowed. It now uses the tested SQL scope

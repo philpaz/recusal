@@ -133,6 +133,35 @@ _GIT_WORKTREE_LOSS = (
     r"worktree\s+remove\b[^|&;]{0,256}?\s(?:--force|-[a-z]*f[a-z]*)(?=\s|$)",
     r"stash\s+(?:drop|clear)(?![\w-])",  # discards saved working-tree changes
 )
+# The git subcommands that delete branches, tags, remote refs or the history that recovers
+# them, each matched after _GIT. Deleting a branch deletes its reflog too, so only the
+# unreferenced objects remain until git prunes them.
+_GIT_REF_LOSS = (
+    # branch delete WITH force (-d -f, -df, --delete --force); the plain `branch -d` defers,
+    # since git itself refuses to delete an unmerged branch. -D / -M / -C are case-sensitive
+    # and are matched on the original case by _GIT_BRANCH_FORCE below.
+    r"branch\b(?=[^|&;\n]{0,256}?\s(?:--delete|-[a-z]*d[a-z]*)(?=\s|$))"
+    r"(?=[^|&;\n]{0,256}?\s(?:--force|-[a-z]*f[a-z]*)(?=\s|$))",
+    r"tag\b[^|&;\n]{0,256}?\s(?:-d|--delete)(?=\s|$)",  # tag delete (no unmerged check)
+    # remote ref deletion: push --delete / -d, a `:ref` refspec, --mirror and --prune (both
+    # delete remote refs that are not local); a bare `:` (push matching refs) defers
+    r"push\b[^|&;\n]{0,256}?\s(?:--delete|-d|--mirror|--prune|:[^\s:]\S{0,256})(?=\s|$)",
+    r"reflog\s+(?:expire|delete)(?![\w-])",  # the history that recovers a lost commit
+    r"gc\b[^|&;\n]{0,256}?\s--prune=(?:now|all)(?=\s|$)",  # prune unreachable objects now
+    r"prune(?![\w-])",  # git prune (not prune-packed); `remote prune` / `fetch --prune` defer
+    r"update-ref\b[^|&;\n]{0,256}?\s-d(?=\s|$)",  # delete any ref by name
+)
+_GIT_HISTORY_LOSS = re.compile("|".join(_GIT + verb for verb in _GIT_REF_LOSS))
+# branch -D (delete), -M (rename over an existing branch) and -C (copy over one) force what
+# -d / -m / -c refuse. Git options are case-sensitive and the other checks read a lowercased
+# command, so this one reads the original case: `git` and `branch` in any case, the flag
+# exactly, alone or combined with branch's other short flags (-rD, -Df), so a word such as
+# `-Date` in a --format string is not read as one.
+_GIT_BRANCH_SHORT = "acdfilmqrtuvCDM"
+_GIT_BRANCH_FORCE = re.compile(
+    r"(?i:" + _GIT + r"branch\b)[^|&;\n]{0,256}?\s"
+    r"-[" + _GIT_BRANCH_SHORT + r"]{0,8}[DMC][" + _GIT_BRANCH_SHORT + r"]{0,8}(?=\s|$)"
+)
 # Destructive commands beyond `rm`: POSIX (shred, find -delete / -exec rm, truncate -s 0,
 # unlink), git working-tree loss (clean -f, checkout -- / -f / ., switch -f /
 # --discard-changes, restore, worktree remove --force, stash drop / clear; reset --hard is
@@ -431,7 +460,8 @@ def _norm(cmd: str) -> str:
 def _deobfuscate(cmd: str) -> str:
     # Catch simple token-splitting obfuscations: r''m, g""it, cu\rl, rm${IFS}-rf, etc.
     s = cmd.replace("'", "").replace('"', "").replace("`", "").replace("\\", "")
-    return re.sub(r"\$\{?ifs\}?", " ", s)  # $IFS / ${IFS} word-splitting -> space
+    # $IFS / ${IFS} word-splitting -> space (any case: the original-case reading uses it too)
+    return re.sub(r"\$\{?ifs\}?", " ", s, flags=re.I)
 
 
 def _norm_path(s: str) -> str:
@@ -582,6 +612,12 @@ def analyze_command(
         markers.append("control-directory move/remove")
     if _search_any(_EXTRA_DESTRUCTIVE, variants):
         markers.append("destructive")
+    # the original case, for the case-sensitive branch flags (-D vs -d)
+    cased = re.sub(r"\s+", " ", raw).strip()
+    if _search_any(_GIT_HISTORY_LOSS, variants) or _search_any(
+        _GIT_BRANCH_FORCE, (cased, _deobfuscate(cased))
+    ):
+        markers.append("git history loss")
     if markers:
         findings.append(
             Finding.fail(
