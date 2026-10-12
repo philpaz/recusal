@@ -79,6 +79,10 @@ All notable changes to this project are documented here. The format follows
 - **ruff 0.16.10.** The dev pin and the pre-commit hook move together; nothing needed
   reformatting. `tests/test_precommit_pins.py` fails if the hook's ruff differs from the
   dev pin or its mypy leaves the 1.x line the dev extras allow.
+- **Release toolchain relocked.** `release-requirements.txt` moves to build 1.6.1 and
+  twine 7.0.0 with 13 updated dependencies, every pin carrying the sha256 of each file
+  PyPI serves for it. hatchling stays on 1.27.0 and mypy on 1.x while Python 3.9 is
+  supported, and `.github/dependabot.yml` no longer proposes either past that line.
 
 ## [0.12.0] - 2026-10-10
 

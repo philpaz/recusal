@@ -30,5 +30,13 @@ updates:
         # ruff is pinned exactly and its upgrade comes with a reformat (see pyproject.toml),
         # so it gets its own pull request instead of holding up the rest
         exclude-patterns: ["ruff"]
+    # Held while Recusal supports Python 3.9: mypy 2 cannot check the 3.9 floor (the dev
+    # extras cap it below 2), and hatchling 1.28 dropped 3.9, while hatchling is also the
+    # backend a 3.9 user's pip runs to build the sdist.
+    ignore:
+      - dependency-name: mypy
+        versions: [">=2"]
+      - dependency-name: hatchling
+        versions: [">=1.28"]
     commit-message:
       prefix: build

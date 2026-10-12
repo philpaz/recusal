@@ -29,6 +29,17 @@ def test_what_dependabot_watches_is_really_pinned_here():
     assert "--hash=sha256:" in (ROOT / "release-requirements.txt").read_text(encoding="utf-8")
 
 
+def test_python_39_floor_holds_mypy_and_hatchling_back():
+    # while 3.9 is supported, an update past these lines can only open a red pull request
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    if 'requires-python = ">=3.9"' not in pyproject:
+        return
+    assert re.search(r"dependency-name: mypy\n\s+versions: \[\">=2\"\]", CONFIG)
+    assert re.search(r"dependency-name: hatchling\n\s+versions: \[\">=1\.28\"\]", CONFIG)
+    assert '"mypy>=1.8,<2"' in pyproject
+    assert 'requires = ["hatchling==1.27.0"]' in pyproject
+
+
 def test_updates_run_weekly_and_wait_a_week_for_new_releases():
     assert CONFIG.count("interval: weekly") == len(_ecosystems())
     # a release pulled or compromised in its first days never reaches a pull request
