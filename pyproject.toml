@@ -5,7 +5,7 @@
 # on 3.9 builds with it too), so the pin tracks the package floor, not the
 # release runner's Python.
 [build-system]
-requires = ["hatchling==1.27.0"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -48,7 +48,7 @@ dependencies = []  # zero runtime dependencies, standard library only
 # and an unpinned formatter let a new upstream release (0.16.0, markdown code-fence
 # formatting) fail CI against a local pass (caught live 2026-07-23). Upgrades are
 # deliberate: bump the pin, reformat, review the diff, commit together.
-dev = ["pytest>=8", "ruff==0.16.0", "mypy>=1.8,<2", "hypothesis>=6"]
+dev = ["pytest>=8", "ruff==0.16.0", "mypy>=1.8,<3", "hypothesis>=6"]
 
 [project.scripts]
 recusal = "recusal.__main__:main"
