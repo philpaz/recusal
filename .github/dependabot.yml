@@ -1,0 +1,34 @@
+# Weekly update pull requests for what the workflows and the release build depend on.
+# Recusal itself has no runtime dependencies; these are the SHA-pinned GitHub Actions, the
+# hash-locked release toolchain (release-requirements.txt) and the dev tools in
+# pyproject.toml. Each update is reviewed and merged like any other change. A release is
+# proposed only once it is 7 days old, so one that is pulled or compromised in its first
+# days never reaches a pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+        # ruff is pinned exactly and its upgrade comes with a reformat (see pyproject.toml),
+        # so it gets its own pull request instead of holding up the rest
+        exclude-patterns: ["ruff"]
+    commit-message:
+      prefix: build

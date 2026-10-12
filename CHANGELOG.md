@@ -66,6 +66,10 @@ All notable changes to this project are documented here. The format follows
   installs `mcp==2.3.0` on every pull request, and `compat.yml` installs the newest SDK
   each week; in both, a skipped recipe 14 fails the job. With the older 1.x SDK installed,
   the test now skips with a reason instead of failing.
+- **Dependabot keeps the pins current.** `.github/dependabot.yml` opens weekly pull
+  requests for the SHA-pinned GitHub Actions and the Python tooling (the hash-locked
+  release environment and the dev tools), proposing a release only once it is 7 days old.
+  Recusal itself still has no runtime dependencies.
 
 ## [0.12.0] - 2026-10-10
 
