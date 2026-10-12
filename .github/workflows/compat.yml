@@ -65,3 +65,25 @@ jobs:
         run: |
           # shellcheck disable=SC2086  # TESTS is a space-separated list by design
           pytest -q $TESTS
+
+  # The newest MCP SDK against cookbook recipe 14, which says "version 2.2 or later".
+  # ci.yml's "Cookbook with the MCP SDK" job runs the same test at the pinned version.
+  cookbook-mcp-sdk:
+    name: Cookbook with the MCP SDK latest (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install the newest MCP SDK release
+        run: pip install -e ".[dev]" --upgrade mcp
+      - name: Record the version under test
+        run: |
+          echo "mcp $(python -c "import importlib.metadata as m; print(m.version('mcp'))")" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Run every cookbook block; recipe 14 must run, not skip
+        env:
+          RECUSAL_REQUIRE_MCP_SDK: "1"
+        run: pytest -q tests/test_cookbook_blocks.py

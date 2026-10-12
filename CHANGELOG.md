@@ -32,6 +32,10 @@ All notable changes to this project are documented here. The format follows
   covered: `git checkout <file>`, which a deny list cannot tell apart from
   `git checkout <branch>`, and, as a separate kind of loss, deleting branches, tags,
   remote refs or reflog history.
+- **`examples/agent_loop.py` refuses a `DELETE` whose `WHERE` is only in a comment.**
+  Its SQL check looked for the word `where` anywhere, so
+  `DELETE FROM users -- where id = 1` was allowed. It now uses the tested SQL scope
+  policy, which strips comments and quotes first (#79, thanks @jay23606).
 
 ### Changed
 - CI: the commit credit check is now a heads-up on pull requests and never blocks one.
@@ -41,6 +45,16 @@ All notable changes to this project are documented here. The format follows
   keeping the contributor as the author. Main is still checked strictly. Renamed from
   `No Anthropic co-author trailer` to `Contributor credit`; `CONTRIBUTING.md` says
   AI-assisted contributions are welcome and there is nothing the contributor needs to do.
+
+### CI
+- **Every code block in the cookbook runs.** `tests/test_cookbook_blocks.py` executes each
+  Python block in `docs/COOKBOOK.md` as printed and checks the verdicts recipes 1 to 6, 8
+  and 9 promise, so a recipe can no longer drift from the code (#59, thanks @jum-apzn).
+- **Recipe 14 runs with the real MCP SDK.** The SDK is not a Recusal dependency, so the
+  main test job skips that recipe. A new job, `Cookbook with the MCP SDK (Python 3.12)`,
+  installs `mcp==2.3.0` on every pull request, and `compat.yml` installs the newest SDK
+  each week; in both, a skipped recipe 14 fails the job. With the older 1.x SDK installed,
+  the test now skips with a reason instead of failing.
 
 ## [0.12.0] - 2026-10-10
 

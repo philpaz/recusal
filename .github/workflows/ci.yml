@@ -256,3 +256,24 @@ jobs:
         run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5
       - name: Test LangGraph example and its surface probe
         run: pytest -q tests/test_langgraph_gate.py tests/test_compat_langgraph.py
+
+  # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
+  # a Recusal dependency, so the test job above always skips it. This job installs the SDK
+  # and makes the skip a failure, so the printed recipe runs on every pull request.
+  # compat.yml runs the same test against the newest SDK release each week.
+  cookbook-mcp-sdk:
+    name: Cookbook with the MCP SDK (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install Recusal and the pinned MCP SDK
+        run: pip install -e ".[dev]" mcp==2.3.0
+      - name: Run every cookbook block; recipe 14 must run, not skip
+        env:
+          RECUSAL_REQUIRE_MCP_SDK: "1"
+        run: pytest -q tests/test_cookbook_blocks.py

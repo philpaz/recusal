@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -60,9 +61,16 @@ def isolated_recipe(tmp_path, monkeypatch):
 
 
 def _remote_mcp(monkeypatch):
-    pytest.importorskip("mcp", reason="recipe 14 requires the optional MCP SDK (mcp>=2.2)")
-    # mcp 1.x has no httpx2; only the 2.x SDK the recipe names is exercised.
-    httpx2 = pytest.importorskip("httpx2", reason="recipe 14 requires the MCP SDK 2.x (mcp>=2.2)")
+    if os.environ.get("RECUSAL_REQUIRE_MCP_SDK") == "1":
+        # The CI lanes that install the SDK set this, so a broken install fails, not skips.
+        import httpx2
+        import mcp  # noqa: F401
+    else:
+        pytest.importorskip("mcp", reason="recipe 14 requires the optional MCP SDK (mcp>=2.2)")
+        # mcp 1.x has no httpx2; only the 2.x SDK the recipe names is exercised.
+        httpx2 = pytest.importorskip(
+            "httpx2", reason="recipe 14 requires the MCP SDK 2.x (mcp>=2.2)"
+        )
 
     # Exercise the real SDK and the printed dump loop without contacting example.com.
     # Two pages ensure the collection step does not silently pin only the first one.
