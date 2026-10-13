@@ -2,7 +2,8 @@
 
 A runtime marked Tested must link to something that exists: an example file that a test
 in this repository exercises, or a README section. A runtime that is not tested yet must
-be marked Coming and link the issue or pull request where the work happens. And no
+be marked Coming, linking the issue or pull request where the work happens, or Wanted,
+linking the open issue that invites someone to take it on. And no
 document may say the gate drops into a runtime unchanged unless that runtime is Tested,
 so the table cannot be contradicted by an older sentence elsewhere.
 """
@@ -12,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-STATUSES = {"Tested", "Coming"}
+STATUSES = {"Tested", "Coming", "Wanted"}
 ISSUE = re.compile(r"^\[#(\d+)\]\(https://github\.com/philpaz/recusal/(?:issues|pull)/(\d+)\)$")
 LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
@@ -44,7 +45,7 @@ def _anchors():
     return {_slug(h) for h in re.findall(r"^#{1,6} (.+)$", README, re.M)}
 
 
-def test_table_parses_with_both_statuses():
+def test_table_parses_with_every_status():
     # guards the parser: an empty or partial parse must not pass by accident
     rows = _rows()
     assert len(rows) >= 8
@@ -76,13 +77,16 @@ def test_tested_rows_link_to_proof_that_exists():
                 assert stem in tests_text, f"{runtime}: no test exercises {target}"
 
 
-def test_coming_rows_link_one_issue_or_pull_request():
+def test_untested_rows_link_one_issue_or_pull_request():
     for runtime, status, where in _rows():
-        if status != "Coming":
+        if status == "Tested":
             continue
         match = ISSUE.match(where)
-        assert match, f"{runtime}: a Coming row must link exactly one issue or PR, got {where!r}"
+        assert match, f"{runtime}: a {status} row must link exactly one issue or PR, got {where!r}"
         assert match.group(1) == match.group(2), f"{runtime}: link text and URL disagree"
+        if status == "Wanted":
+            # a Wanted row invites someone to start; a pull request means work has started
+            assert "/issues/" in where, f"{runtime}: a Wanted row must link an issue"
 
 
 def _sentences(text: str):

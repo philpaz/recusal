@@ -124,7 +124,7 @@ which newer release is not supported yet. When the latest lane passes on a newer
 a pull request moves the pin in the example, the README and `ci.yml` together (a test
 keeps the three in step), so "Tested" always names a version CI ran. A runtime whose
 latest lane stays red through a whole minor release of Recusal, or whose framework is no
-longer maintained, goes back from Tested to Coming, and the changelog says so.
+longer maintained, goes back from Tested to Wanted, and the changelog says so.
 
 Adding a runtime follows the checklist in
 [`CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-runtime). Where to ask for help is in

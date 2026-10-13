@@ -109,7 +109,8 @@ the **no**.
 The core is plain Python with no dependencies, so it gates any agent loop that lets you
 check a tool call before it runs. Each row says how far that is proved today: **Tested**
 means a runnable example with its own tests in this repository's CI. **Coming** links
-the open issue where the work is happening.
+the pull request or claimed issue where the work is happening. **Wanted** links an open
+issue nobody has taken yet: comment there to pick it up.
 
 <!-- works-with:start -->
 | Runtime | Status | Where |
@@ -120,10 +121,15 @@ the open issue where the work is happening.
 | LangGraph `ToolNode`, sync and async | Tested | [`examples/langgraph_gate.py`](examples/langgraph_gate.py) |
 | Any Python agent loop | Tested | [`examples/agent_loop.py`](examples/agent_loop.py) |
 | LangChain `create_agent` middleware | Coming | [#75](https://github.com/philpaz/recusal/pull/75) |
-| LangGraph audit trail | Coming | [#77](https://github.com/philpaz/recusal/issues/77) |
-| LangGraph pause, resume and replay | Coming | [#80](https://github.com/philpaz/recusal/issues/80) |
-| OpenAI Agents SDK | Coming | [#78](https://github.com/philpaz/recusal/issues/78) |
-| OpenAI Responses and Chat Completions | Coming | [#81](https://github.com/philpaz/recusal/issues/81) |
+| LangGraph audit trail | Wanted | [#77](https://github.com/philpaz/recusal/issues/77) |
+| LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
+| OpenAI Agents SDK, function tools | Wanted | [#78](https://github.com/philpaz/recusal/issues/78) |
+| OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
+| OpenAI Responses and Chat Completions | Wanted | [#81](https://github.com/philpaz/recusal/issues/81) |
+| Google ADK | Wanted | [#105](https://github.com/philpaz/recusal/issues/105) |
+| CrewAI | Wanted | [#106](https://github.com/philpaz/recusal/issues/106) |
+| Pydantic AI | Wanted | [#107](https://github.com/philpaz/recusal/issues/107) |
+| LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
 <!-- works-with:end -->
 
 xAI documents its Grok API as using the same request formats as OpenAI's, so #81 is

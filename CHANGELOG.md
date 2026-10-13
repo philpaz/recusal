@@ -49,6 +49,11 @@ All notable changes to this project are documented here. The format follows
   policy, which strips comments and quotes first (#79, thanks @jay23606).
 
 ### Changed
+- README "Works with": a new **Wanted** status marks an open issue nobody has taken yet,
+  and **Coming** now means work has started. The four unclaimed issues (#77, #78, #80,
+  #81) move to Wanted, and five new rows invite help with Google ADK (#105), CrewAI
+  (#106), Pydantic AI (#107), MCP tools in the OpenAI Agents SDK (#108) and LlamaIndex
+  (#109). `tests/test_works_with.py` requires every Wanted row to link an issue.
 - CI: the commit credit check is now a heads-up on pull requests and never blocks one.
   It points out a commit that would list an AI tool or a bot as a GitHub contributor
   (any address at Anthropic, OpenAI, xAI or Cursor, the GitHub accounts of AI coding

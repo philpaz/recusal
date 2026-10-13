@@ -23,5 +23,5 @@ GitHub and is best effort: there are no paid plans and no guaranteed response ti
   [Works with](README.md#works-with) table, at the exact versions the README names.
   Newer framework releases are checked every week; how that works, and what happens when
   a release breaks an integration, is in [`STABILITY.md`](STABILITY.md#integrations).
-- **Runtimes marked Coming or not listed** are not supported yet. Their issues say where
+- **Runtimes marked Coming or Wanted, or not listed,** are not supported yet. Their issues say where
   the work stands.
