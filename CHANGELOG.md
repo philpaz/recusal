@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.1] - 2026-10-13
+
+The deny list refuses more git commands that lose work or history, and the launcher refuses
+an empty `CLAUDE_PROJECT_DIR` before any interpreter starts. PATCH under `STABILITY.md`:
+no public surface changes. Both fixes refuse calls that were allowed before; who is
+affected is said in each entry. The examples live under `examples/` and are not part of
+the installed package.
 
 ### Fixed
 - **An empty `CLAUDE_PROJECT_DIR` is refused by name.** The launcher builds the gate path

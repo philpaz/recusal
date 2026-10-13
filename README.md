@@ -606,7 +606,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.12.0   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.12.1   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
@@ -715,6 +715,11 @@ Thank you to the people who have made Recusal better:
   [#68](https://github.com/philpaz/recusal/pull/68).
 - [@Sinkleberg](https://github.com/Sinkleberg): the async LangGraph gate, in
   [#74](https://github.com/philpaz/recusal/pull/74).
+- [@jum-apzn](https://github.com/jum-apzn): the test that runs every code block in the
+  cookbook, in [#90](https://github.com/philpaz/recusal/pull/90).
+- [@jay23606](https://github.com/jay23606) (Jay): the SQL check in the agent loop
+  example, which a `WHERE` hidden in a comment no longer fools, in
+  [#89](https://github.com/philpaz/recusal/pull/89).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).
