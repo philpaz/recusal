@@ -7,9 +7,14 @@
 
 # Recusal
 
-**Recusal is a deterministic governance gate for AI agent tool calls, in Claude Code, MCP, LangGraph, or your own agent loop: it pins the capabilities you approved, detects represented drift, and refuses unsafe, unapproved, or policy-violating actions *before* execution, with no model in the decision path.** A judge recuses themselves from a case they cannot impartially decide; the same principle governs autonomous agents: the thing that generates the work must never be the thing that certifies it.
+**Recusal checks each tool call an AI agent proposes against your policy, and refuses
+the unsafe or unapproved ones before the tool runs. No model makes that decision; your
+policy functions do.**
 
-**Lightweight** (zero dependencies) · **extensible** (a check is just a function that returns a finding) · **Claude-native** (drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate), and a Claude Messages API loop or Managed Agents as a tool gate) · **framework-neutral** (the zero-dep core works in any agent loop; in LangGraph it is one argument, `ToolNode(tools, wrap_tool_call=recusal_gate(policy))`, [a tested example](#any-agent-loop-no-claude-required)).
+It drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate),
+gates a Claude Messages API loop or any Python agent loop, and a
+[tested example](#any-agent-loop-no-claude-required) gates LangGraph's `ToolNode` with one
+argument. Zero runtime dependencies, Python 3.9+.
 
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -22,58 +27,6 @@
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="assets/demo-refusal.gif" width="880">
 </p>
 <p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then <code>pip install recusal &amp;&amp; recusal demo --scenario wrong-subject</code>, no API key and no clone. The second panel is rendered from that command's captured output by <a href="tools/render_demo_gif.py"><code>tools/render_demo_gif.py</code></a>, so "verbatim" is reproducible rather than asserted.</sub></p>
-
-## The problem
-
-An autonomous agent proposes a tool call, and then, in most stacks, something from the
-same model family effectively decides whether that action is acceptable. When the agent
-runs in auto or bypass mode, even that check thins out: what stands between a proposed
-`rm -rf`, a wrong-customer write, or an unapproved MCP tool and its execution is the
-model's own judgment about its own action.
-
-## What Recusal does
-
-Recusal places deterministic policy between the proposed action and its execution. No
-model makes the decision: explicit findings fold into a **`PASS` / `RETRY` / `FAIL`**
-verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
-
-- **A refusal that holds in bypass mode.** A Claude Code `deny` issued from the
-  `PreToolUse` seam is honored even under `bypassPermissions`, and the deny-list refuses
-  the obvious attempts on the gate's own control paths, including uninstalling or
-  shadowing the `recusal` package itself. The caveat, in one line and in full one click
-  away: the verdict is produced outside the model's decision path, but deployment
-  isolation (who owns `settings.json`, the file permissions, the runtime the gate runs
-  on) stays the adopter's responsibility ([`SECURITY.md`](SECURITY.md)).
-- **MCP capability integrity.** Pin the MCP server instructions and tool declarations a
-  human approved; `verify` refuses represented drift (the rug pull, the new tool, the
-  mutated schema), and the call-time gate refuses any MCP tool that was never pinned.
-  Stdio servers are observed over MCP 2026-07-28 or the `initialize` revisions, through
-  the same handshake Claude Code uses, so a pin is the catalog Claude actually loads.
-- **A record built for the auditor.** Every adjudication (defer, allow, deny) can land on
-  an append-only, hash-chained log with the proposed input bound by SHA-256 fingerprint:
-  deterministic, replayable, stdlib-only, shaped for OWASP Agentic logging and EU AI Act
-  Article 12 record-keeping.
-- **Authorization for this exact action** (0.9.0). Recusal is a deterministic
-  authorization adjudicator for agent actions: it verifies each proposed action against
-  explicit, provenance-bearing authority evidence and can refuse before execution. A
-  deny-list asks whether a command looks dangerous; `recusal.authorization` asks where
-  the authority for this call came from, what it permits, and whether the call is still
-  inside it: the bound principal, the active subject, the granted tool and operation,
-  the argument constraints, expiry, call budget, replay, and the policy and MCP manifest
-  the grant was approved under. Each dimension is one named finding; a required
-  dimension with no evidence refuses, and the decision can be bound into a digest-bound
-  `DecisionReceipt`. Stated exactly: it does not establish identity (a runtime label such
-  as Claude Code's `agent_id` passes only through a trust rule you supply), it does not
-  issue delegation, it reads no clock and keeps no counter (those are supplied evidence,
-  so it verifies budgets, it does not atomically enforce them), and the receipt is a
-  digest, not a signature. Not included, so it is not inferred: OAuth, delegation
-  chain validation, the hook's `updatedInput` rewriting and `ask` decision, and any
-  non-Claude adapter. `recusal demo --scenario expired-authorization` shows it.
-
-The same normalized evidence and policy inputs, under the same recusal version, produce
-the same verdict, including the "no".
-
-> Builders generate. Recusal certifies. Refusal is a feature.
 
 ## See it refuse (20 seconds, no API key, no clone)
 
@@ -138,6 +91,67 @@ also where Grok support will start. Want a runtime that isn't listed? Open an is
 **What no local gate can see.** Some tools run on the model provider's servers, such as
 hosted web search, a hosted code interpreter or hosted MCP. Those calls never pass
 through your code, so neither Recusal nor any other local gate can refuse them.
+
+## The problem
+
+An autonomous agent proposes a tool call, and then, in most stacks, something from the
+same model family effectively decides whether that action is acceptable. When the agent
+runs in auto or bypass mode, even that check thins out: what stands between a proposed
+`rm -rf`, a wrong-customer write, or an unapproved MCP tool and its execution is the
+model's own judgment about its own action.
+
+## What Recusal does
+
+A judge recuses themselves from a case they cannot impartially decide; the same principle
+governs autonomous agents: the thing that generates the work must never be the thing that
+certifies it.
+
+**Lightweight** (zero dependencies) · **extensible** (a check is just a function that
+returns a finding) · **Claude-native** (a Claude Code hook, a Claude Messages API loop or
+Managed Agents as a tool gate) · **framework-neutral** (the core works in any agent loop;
+in LangGraph it is `ToolNode(tools, wrap_tool_call=recusal_gate(policy))`).
+
+Recusal places deterministic policy between the proposed action and its execution. No
+model makes the decision: explicit findings fold into a **`PASS` / `RETRY` / `FAIL`**
+verdict, and a non-clean verdict **refuses before the tool runs**. Concretely:
+
+- **A refusal that holds in bypass mode.** A Claude Code `deny` issued from the
+  `PreToolUse` seam is honored even under `bypassPermissions`, and the deny-list refuses
+  the obvious attempts on the gate's own control paths, including uninstalling or
+  shadowing the `recusal` package itself. The caveat, in one line and in full one click
+  away: the verdict is produced outside the model's decision path, but deployment
+  isolation (who owns `settings.json`, the file permissions, the runtime the gate runs
+  on) stays the adopter's responsibility ([`SECURITY.md`](SECURITY.md)).
+- **MCP capability integrity.** Pin the MCP server instructions and tool declarations a
+  human approved; `verify` refuses represented drift (the rug pull, the new tool, the
+  mutated schema), and the call-time gate refuses any MCP tool that was never pinned.
+  Stdio servers are observed over MCP 2026-07-28 or the `initialize` revisions, through
+  the same handshake Claude Code uses, so a pin is the catalog Claude actually loads.
+- **A record built for the auditor.** Every adjudication (defer, allow, deny) can land on
+  an append-only, hash-chained log with the proposed input bound by SHA-256 fingerprint:
+  deterministic, replayable, stdlib-only, shaped for OWASP Agentic logging and EU AI Act
+  Article 12 record-keeping.
+- **Authorization for this exact action** (0.9.0). Recusal is a deterministic
+  authorization adjudicator for agent actions: it verifies each proposed action against
+  explicit, provenance-bearing authority evidence and can refuse before execution. A
+  deny-list asks whether a command looks dangerous; `recusal.authorization` asks where
+  the authority for this call came from, what it permits, and whether the call is still
+  inside it: the bound principal, the active subject, the granted tool and operation,
+  the argument constraints, expiry, call budget, replay, and the policy and MCP manifest
+  the grant was approved under. Each dimension is one named finding; a required
+  dimension with no evidence refuses, and the decision can be bound into a digest-bound
+  `DecisionReceipt`. Stated exactly: it does not establish identity (a runtime label such
+  as Claude Code's `agent_id` passes only through a trust rule you supply), it does not
+  issue delegation, it reads no clock and keeps no counter (those are supplied evidence,
+  so it verifies budgets, it does not atomically enforce them), and the receipt is a
+  digest, not a signature. Not included, so it is not inferred: OAuth, delegation
+  chain validation, the hook's `updatedInput` rewriting and `ask` decision, and any
+  non-Claude adapter. `recusal demo --scenario expired-authorization` shows it.
+
+The same normalized evidence and policy inputs, under the same recusal version, produce
+the same verdict, including the "no".
+
+> Builders generate. Recusal certifies. Refusal is a feature.
 
 ## Install
 

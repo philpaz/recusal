@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- README: the first screen says what Recusal does in two sentences, then shows the demo
+  and the "Works with" table; the longer explanation follows them, unchanged.
+  `docs/VERIFY.md` records the 0.12.1 verification run.
+
 ## [0.12.1] - 2026-10-13
 
 The deny list refuses more git commands that lose work or history, and the launcher refuses
