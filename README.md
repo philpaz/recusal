@@ -73,7 +73,7 @@ issue nobody has taken yet: comment there to pick it up.
 | Claude Messages API, manual loop | Tested | [`examples/claude_refusal.py`](examples/claude_refusal.py) |
 | LangGraph `ToolNode`, sync and async | Tested | [`examples/langgraph_gate.py`](examples/langgraph_gate.py) |
 | Any Python agent loop | Tested | [`examples/agent_loop.py`](examples/agent_loop.py) |
-| LangChain `create_agent` middleware | Coming | [#75](https://github.com/philpaz/recusal/pull/75) |
+| LangChain `create_agent` middleware, sync and async | Tested | [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py) |
 | LangGraph audit trail | Wanted | [#77](https://github.com/philpaz/recusal/issues/77) |
 | LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
 | OpenAI Agents SDK, function tools | Wanted | [#78](https://github.com/philpaz/recusal/issues/78) |
@@ -579,7 +579,11 @@ and its Python 3.9+ support are unchanged.
 For LangChain's `create_agent` middleware, [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py)
 reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a second policy
 implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.12`,
-`langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins).
+`langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins). List the gate **last**
+in `middleware=`, so it judges the call exactly as it will run: the first middleware is the
+outermost, and one listed after the gate (an argument rewriter, a human-in-the-loop edit,
+`LLMToolEmulator`) acts on a call the gate never saw. For `agent.ainvoke`, use
+`wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

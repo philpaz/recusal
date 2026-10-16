@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `examples/langchain_agent_gate.py`: gates LangChain `create_agent` tool calls with the
+  same `recusal_gate` as middleware, sync and async (`recusal_agate` for `ainvoke`), tested
+  with `langchain==1.4.3` on top of the LangGraph pins. The gate must be listed last in
+  `middleware=`: the tests show that an argument rewriter, a human-in-the-loop edit or
+  `LLMToolEmulator` listed after it acts on a call the gate never saw, and that the same
+  calls are refused when the gate is last. "Works with" marks LangChain `create_agent`
+  Tested. Contributed by @soyeladice-svg in #75. (#72)
+
 ### Changed
 - README: the first screen says what Recusal does in two sentences, then shows the demo
   and the "Works with" table; the longer explanation follows them, unchanged.

@@ -53,7 +53,9 @@ immediately before execution and return a refusal as an error `ToolMessage`. It 
 LangChain's [`create_agent` middleware example](../examples/langchain_agent_gate.py)
 imports the same `recusal_gate` and uses `wrap_tool_call` with scripted model messages.
 It also requires Python 3.10+ and exactly `langchain==1.4.3` on top of the LangGraph pins;
-no model key or database is used and the Recusal package has no new dependency.
+no model key or database is used and the Recusal package has no new dependency. List the
+gate last in `middleware=`, so it judges the call exactly as it will run, and use
+`recusal_agate` for `agent.ainvoke`.
 
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)

@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
     echo,
+    recusal_agate,
     recusal_gate,
     run_sql,
     sql_scope_policy,
@@ -53,19 +54,62 @@ class ScriptedChatModel(GenericFakeChatModel):
         return self
 
 
-def run_calls(
-    calls: list[dict[str, Any]], *, policy=sql_scope_policy, gated: bool = True
-) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
-    """Run fake model proposals through create_agent, one policy gate per tool call."""
-    EXECUTED.clear()
+def gate_middleware(policy=sql_scope_policy):
+    """The shared gate as create_agent middleware. List it LAST in ``middleware=``.
+
+    The first middleware in the list is the outermost, so anything listed after the gate
+    runs between the gate and the tool: a middleware that rewrites the arguments, a
+    human-in-the-loop edit, or a tool emulator would act on a call the gate never saw.
+    Listed last, the gate judges the call exactly as it will run.
+    """
+    return wrap_tool_call(recusal_gate(policy))
+
+
+def agate_middleware(policy=sql_scope_policy):
+    """The async gate for ``agent.ainvoke``; the sync gate alone raises there. List it LAST."""
+    return wrap_tool_call(recusal_agate(policy))
+
+
+def scripted_agent(calls, middleware, **kwargs):
     model = ScriptedChatModel(
         messages=iter([AIMessage(content="", tool_calls=calls), AIMessage(content="done")])
     )
-    hooks = [wrap_tool_call(recusal_gate(policy))] if gated else []
-    agent = create_agent(model=model, tools=[echo, run_sql], middleware=hooks)
+    return create_agent(model=model, tools=[echo, run_sql], middleware=middleware, **kwargs)
+
+
+def tool_messages(result) -> list[ToolMessage]:
+    return [item for item in result["messages"] if isinstance(item, ToolMessage)]
+
+
+def run_calls(
+    calls: list[dict[str, Any]],
+    *,
+    policy=sql_scope_policy,
+    gated: bool = True,
+    middleware: list[Any] | None = None,
+) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
+    """Run fake model proposals through create_agent, one policy gate per tool call.
+
+    ``middleware`` replaces the default list (the gate alone) when given.
+    """
+    EXECUTED.clear()
+    if middleware is None:
+        middleware = [gate_middleware(policy)] if gated else []
+    agent = scripted_agent(calls, middleware)
     result = agent.invoke({"messages": [HumanMessage(content="run the scripted tools")]})
-    messages = [item for item in result["messages"] if isinstance(item, ToolMessage)]
-    return messages, list(EXECUTED)
+    return tool_messages(result), list(EXECUTED)
+
+
+async def arun_calls(
+    calls: list[dict[str, Any]], *, policy=sql_scope_policy, middleware: list[Any] | None = None
+) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
+    """The same run through ``agent.ainvoke``, gated by the async gate by default."""
+    EXECUTED.clear()
+    if middleware is None:
+        middleware = [agate_middleware(policy)]
+    agent = scripted_agent(calls, middleware)
+    result = await agent.ainvoke({"messages": [HumanMessage(content="run the scripted tools")]})
+    return tool_messages(result), list(EXECUTED)
 
 
 def main() -> None:
