@@ -278,3 +278,22 @@ def test_plugin_gate_fails_closed_without_any_runtime(tmp_path):
     )
     assert proc.returncode == 3
     assert "vendored" in proc.stderr
+
+
+def test_plugin_readme_says_what_the_hook_does_and_how_to_install_it():
+    # A plugin directory reads the plugin folder, not the repository README: it needs its
+    # own README of at least 40 words that says plainly the hook denies tool calls, and
+    # the install commands must match the repository README's.
+    with open(os.path.join(PLUGIN_DIR, "README.md"), encoding="utf-8") as f:
+        plugin_readme = f.read()
+    with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    assert len(plugin_readme.split()) >= 40
+    assert "denies tool calls" in plugin_readme
+    for command in (
+        "claude plugin marketplace add philpaz/recusal",
+        "claude plugin install recusal-gate@recusal",
+    ):
+        assert command in plugin_readme and command in readme, command
+    with open(os.path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+        assert json.load(f)["license"] == "Apache-2.0"

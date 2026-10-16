@@ -16,6 +16,11 @@ All notable changes to this project are documented here. The format follows
   Tested. Contributed by @soyeladice-svg in #75. (#72)
 
 ### Changed
+- `claude-plugin/README.md`: the plugin folder has its own README, saying plainly that the
+  hook denies tool calls, what the shipped deny list refuses, how to install it and its
+  limits. Plugin directories read this folder, not the repository README.
+  `tests/test_claude_plugin.py` keeps it at least 40 words, keeps that sentence, and keeps
+  its install commands equal to the repository README's.
 - README: the first screen says what Recusal does in two sentences, then shows the demo
   and the "Works with" table; the longer explanation follows them, unchanged.
   `docs/VERIFY.md` records the 0.12.1 verification run.
