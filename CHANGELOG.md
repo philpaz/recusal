@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.2] - 2026-10-17
+
+Two more agent runtimes are Tested: LangChain `create_agent` and OpenAI Agents SDK function
+tools, each with its own example, pinned CI jobs and a weekly latest lane. PATCH under
+`STABILITY.md`: no public surface changes, and the gate behaves exactly as in 0.12.1. The
+examples live under `examples/` and are not part of the installed package.
 
 ### Added
 - `examples/langchain_agent_gate.py`: gates LangChain `create_agent` tool calls with the
