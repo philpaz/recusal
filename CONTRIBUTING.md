@@ -75,6 +75,8 @@ They are the same for every contribution, large or small:
 | `Hash-locked release environment builds` | the release build is unaffected |
 | `LangGraph example (Python 3.10)` | the pinned LangGraph adapter works on its minimum supported Python |
 | `LangGraph example (Python 3.12)` | the pinned LangGraph adapter works on the current cross-platform smoke Python |
+| `OpenAI Agents example (Python 3.10)` | the pinned OpenAI Agents SDK adapter works on its minimum supported Python |
+| `OpenAI Agents example (Python 3.12)` | the pinned OpenAI Agents SDK adapter works on the current cross-platform smoke Python |
 | `Cookbook with the MCP SDK (Python 3.12)` | cookbook recipe 14 runs with the real MCP SDK, not skipped |
 
 "The full gate" is the same four commands in every `test` job, and all four must pass:

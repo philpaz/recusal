@@ -39,6 +39,14 @@ jobs:
             python-version: "3.12"
             packages: "langgraph langchain-core langchain"
             tests: "tests/test_langgraph_gate.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_compat_langchain.py"
+          - runtime: openai_agents
+            python-version: "3.10"
+            packages: "openai-agents openai"
+            tests: "tests/test_openai_agents_gate.py tests/test_compat_openai_agents.py"
+          - runtime: openai_agents
+            python-version: "3.12"
+            packages: "openai-agents openai"
+            tests: "tests/test_openai_agents_gate.py tests/test_compat_openai_agents.py"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -14,6 +14,17 @@ All notable changes to this project are documented here. The format follows
   `LLMToolEmulator` listed after it acts on a call the gate never saw, and that the same
   calls are refused when the gate is last. "Works with" marks LangChain `create_agent`
   Tested. Contributed by @soyeladice-svg in #75. (#72)
+- `examples/openai_agents_gate.py`: gates OpenAI Agents SDK function tools with a Recusal
+  tool input guardrail, tested with `openai-agents==0.24.0` and `openai==3.34.0` in two
+  new CI jobs and the weekly latest lane, with a surface probe
+  (`tests/test_compat_openai_agents.py`). `gated_agent(agent, policy)` refuses what the
+  guardrail cannot see instead of skipping it: every tool type other than a function tool
+  (default-deny, so a type added in a later SDK release is refused too), `mcp_servers`,
+  handoffs, `Agent` subclasses such as `SandboxAgent`, the Codex tool, and an
+  `agent.as_tool(...)` whose sub-agent is not itself gated. The tests show why the last
+  one matters: a guardrail on the parent alone sees only the sub-agent's input, and the
+  ungated sub-agent runs a `DELETE`. "Works with" marks OpenAI Agents SDK function tools
+  Tested. (#78)
 
 ### Changed
 - `claude-plugin/README.md`: the plugin folder has its own README, saying plainly that the

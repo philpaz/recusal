@@ -57,6 +57,13 @@ no model key or database is used and the Recusal package has no new dependency. 
 gate last in `middleware=`, so it judges the call exactly as it will run, and use
 `recusal_agate` for `agent.ainvoke`.
 
+The [OpenAI Agents SDK example](../examples/openai_agents_gate.py) judges each function
+tool call in a tool input guardrail, and `gated_agent(agent, policy)` refuses an agent
+that could run something the guardrail never sees: a non-function tool, `mcp_servers`,
+handoffs, an ungated sub-agent behind `as_tool`, or an `Agent` subclass. It requires
+Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.34.0`; neither package is
+a Recusal dependency, and no API key is used.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

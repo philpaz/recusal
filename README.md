@@ -74,9 +74,9 @@ issue nobody has taken yet: comment there to pick it up.
 | LangGraph `ToolNode`, sync and async | Tested | [`examples/langgraph_gate.py`](examples/langgraph_gate.py) |
 | Any Python agent loop | Tested | [`examples/agent_loop.py`](examples/agent_loop.py) |
 | LangChain `create_agent` middleware, sync and async | Tested | [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py) |
+| OpenAI Agents SDK, function tools | Tested | [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py) |
 | LangGraph audit trail | Wanted | [#77](https://github.com/philpaz/recusal/issues/77) |
 | LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
-| OpenAI Agents SDK, function tools | Wanted | [#78](https://github.com/philpaz/recusal/issues/78) |
 | OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
 | OpenAI Responses and Chat Completions | Wanted | [#81](https://github.com/philpaz/recusal/issues/81) |
 | Google ADK | Wanted | [#105](https://github.com/philpaz/recusal/issues/105) |
@@ -584,6 +584,19 @@ in `middleware=`, so it judges the call exactly as it will run: the first middle
 outermost, and one listed after the gate (an argument rewriter, a human-in-the-loop edit,
 `LLMToolEmulator`) acts on a call the gate never saw. For `agent.ainvoke`, use
 `wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
+
+For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py)
+adds `recusal_guardrail(policy)` to each function tool as a tool input guardrail, which the
+SDK runs immediately before the tool executes. A refusal becomes the call's output, so the
+model reads Recusal's reason and the tool never runs. Gate a finished agent with
+`gated_agent(agent, policy)`: it returns a gated copy, and it refuses, rather than skips,
+anything the guardrail cannot see. That means hosted tools and the SDK's other non-function
+tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
+`agent.as_tool(...)` whose sub-agent is not itself gated, and `Agent` subclasses such as
+`SandboxAgent`. `Runner.run`, `Runner.run_streamed` and calls a person approved through
+`needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
+`ScriptedModel`, no API key) and needs Python 3.10+ with `openai-agents==0.24.0` and
+`openai==3.34.0` (example-only pins).
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
