@@ -1,4 +1,4 @@
-"""The same evidence must give the same verdict on every supported Python (3.9 to 3.14).
+"""The same evidence must give the same verdict on every supported Python (3.9 to 3.15).
 
 Some standard-library parsers accept different input on different Python versions:
 ``date.fromisoformat``, ``datetime.fromisoformat`` and ``time.fromisoformat`` accept far

@@ -77,9 +77,9 @@ def test_every_action_in_every_workflow_is_sha_pinned():
     for name in _workflow_files():
         for line in _read(name).splitlines():
             m = re.search(r"uses:\s*(\S+)", line)
-            if m and not m.group(1).startswith("./"):
+            if m and not m.group(1).startswith(("./", "$/")):
                 assert re.search(r"@[0-9a-f]{40}(\s|$)", m.group(1)), (
                     f"{name}: {m.group(1)!r} is not pinned to a full commit SHA; a "
-                    "moving tag is a rug-pull surface (a same-repo ./ reusable "
-                    "workflow runs at the caller's own commit and needs no pin)"
+                    "moving tag is a rug-pull surface (a same-repo ./ or $/ reference "
+                    "runs at the caller's own commit and needs no pin)"
                 )

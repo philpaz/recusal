@@ -98,7 +98,7 @@ by the procedure in [`docs/VERIFY.md`](docs/VERIFY.md).
 The latest minor receives fixes. Security fixes land on the latest minor; anything older is
 best-effort, and the report process is in [`SECURITY.md`](SECURITY.md).
 
-Python **3.9 or newer**, tested in CI on 3.9 through 3.14 on Linux, and on 3.12 on macOS
+Python **3.9 or newer**, tested in CI on 3.9 through 3.15 on Linux, and on 3.12 on macOS
 and Windows.
 The 3.9 floor stays until holding it forces a compromise in the enforcement code, and the
 release toolchain is pinned to versions that still validate it.

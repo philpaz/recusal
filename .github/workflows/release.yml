@@ -61,7 +61,10 @@ jobs:
       # actions/attest-build-provenance
       id-token: write
       attestations: write
-    uses: ./.github/workflows/build-dist.yml
+    # Kept on ./ rather than $/: the Sigstore certificate names this workflow as
+    # build-dist.yml@refs/tags/vX, and docs/VERIFY.md and verify-release.yml check that
+    # identity; $/ is not yet proven to keep it.
+    uses: ./.github/workflows/build-dist.yml # zizmor: ignore[self-repository]
 
   # Signatures live at the release boundary, in CI, by decision (2026-07-23): the
   # runtime stays stdlib-pure and verifies nothing; what IS signed are the built
