@@ -65,7 +65,8 @@ They are the same for every contribution, large or small:
 | `test (ubuntu-latest, 3.11)` | the full gate on 3.11 |
 | `test (ubuntu-latest, 3.12)` | the full gate on 3.12 |
 | `test (ubuntu-latest, 3.13)` | the full gate on 3.13 |
-| `test (ubuntu-latest, 3.14)` | the full gate on the newest supported Python |
+| `test (ubuntu-latest, 3.14)` | the full gate on 3.14 |
+| `test (ubuntu-latest, 3.15)` | the full gate on the newest supported Python |
 | `test (macos-latest, 3.12)` | the full gate on macOS |
 | `test (windows-latest, 3.12)` | the full gate on Windows |
 | `Workflow audit (zizmor)` | every workflow passes the security audit |

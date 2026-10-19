@@ -357,9 +357,10 @@ def test_action_inputs_flow_through_env_never_into_the_shell_body():
 
 
 def test_ci_dogfoods_the_action():
-    """The repo's own CI must run the action from this checkout (uses: ./), including
-    the negative case: a tampered audit log has to make the gate refuse."""
+    """The repo's own CI must run the action from the commit under test (uses: $/, GitHub's
+    self-repository syntax), including the negative case: a tampered audit log has to make
+    the gate refuse."""
     with open(os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as fh:
         ci = fh.read()
-    assert "uses: ./" in ci
+    assert "uses: $/\n" in ci
     assert "tampered" in ci

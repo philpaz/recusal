@@ -23,7 +23,7 @@ jobs:
         # version (the interpreter-probe launcher and the stdio fetcher have OS-specific
         # paths worth exercising on all three, without paying 3x for every Python).
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
         include:
           - os: macos-latest
             python-version: "3.12"
@@ -67,7 +67,7 @@ jobs:
       # files as a BLOCKING check. Version-pinned so a new zizmor release cannot
       # change what green means without a reviewed bump.
       - name: Install zizmor (version-pinned)
-        run: pip install zizmor==1.28.0
+        run: pip install zizmor==1.30.0
       - name: Audit every workflow, blocking
         run: zizmor --no-progress .github/workflows
 
@@ -129,7 +129,7 @@ jobs:
               fh.write(text.replace('"i": 1', '"i": 9'))
           PY
       - name: Gate (doctor + audit verify + verdict must all pass)
-        uses: ./
+        uses: $/
         with:
           doctor-dir: "."
           audit-log: /tmp/audit.jsonl
@@ -138,7 +138,7 @@ jobs:
       - name: Gate must refuse a tampered log
         id: tampered
         continue-on-error: true
-        uses: ./
+        uses: $/
         with:
           audit-log: /tmp/tampered.jsonl
           use-installed: "true"
@@ -163,7 +163,7 @@ jobs:
       # Clean runner: nothing preinstalled, so the action MUST install its own bundled
       # source (the GITHUB_ACTION_PATH branch, which the dogfood job never exercises).
       - name: Gate on a clean runner
-        uses: ./
+        uses: $/
         with:
           findings: /tmp/f.json
       - name: The executed implementation is this checkout's version
@@ -183,7 +183,7 @@ jobs:
       - name: Preinstall a conflicting older recusal
         run: python -m pip install --quiet --force-reinstall recusal==0.3.0
       - name: Gate must replace the conflicting package
-        uses: ./
+        uses: $/
         with:
           findings: /tmp/f.json
       - name: The conflicting package did not run the gate
