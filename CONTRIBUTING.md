@@ -60,7 +60,7 @@ They are the same for every contribution, large or small:
 
 | check | what it proves |
 |---|---|
-| `test (ubuntu-latest, 3.9)` | the full gate on the oldest supported Python |
+| `test (ubuntu-24.04, 3.9)` | the full gate on the oldest supported Python, on the last runner image that ships a 3.9 build |
 | `test (ubuntu-latest, 3.10)` | the full gate on 3.10 |
 | `test (ubuntu-latest, 3.11)` | the full gate on 3.11 |
 | `test (ubuntu-latest, 3.12)` | the full gate on 3.12 |

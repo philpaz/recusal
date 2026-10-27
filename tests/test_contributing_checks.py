@@ -22,7 +22,20 @@ def _ci_checks():
         r'"([\d.]+)"', re.search(r"^\s+python-version: \[(.*)\]$", test_job, re.M).group(1)
     )
     cells = {(o, p) for o in oses for p in pythons}
-    cells |= set(re.findall(r'^\s+- os: ([\w.-]+)\n\s+python-version: "([\d.]+)"$', test_job, re.M))
+    pair = r'^\s+- os: ([\w.-]+)\n\s+python-version: "([\d.]+)"$'
+    # `exclude:` cells come before `include:` cells in the matrix; GitHub drops the
+    # former and adds the latter, so the parse does the same, in that order.
+    exclude, include = (
+        set(re.findall(pair, part, re.M)) if part else set()
+        for part in (
+            test_job.split("\n        exclude:\n", 1)[1].split("\n        include:\n", 1)[0]
+            if "\n        exclude:\n" in test_job
+            else "",
+            test_job.split("\n        include:\n", 1)[1],
+        )
+    )
+    cells -= exclude
+    cells |= include
     names = {f"test ({o}, {p})" for o, p in cells}
     names |= set(re.findall(r"^    name: (.+)$", CI, re.M))
     return names
@@ -36,7 +49,9 @@ def _guide_checks():
 def test_ci_parse_finds_the_known_shape():
     # guards the parser itself: an empty or partial parse must not pass by accident
     checks = _ci_checks()
-    assert "test (ubuntu-latest, 3.9)" in checks
+    assert "test (ubuntu-24.04, 3.9)" in checks
+    assert "test (ubuntu-latest, 3.9)" not in checks  # the exclude: block is honored
+    assert "test (ubuntu-latest, 3.10)" in checks
     assert "test (windows-latest, 3.12)" in checks
     assert "Workflow audit (zizmor)" in checks
     assert len(checks) >= 12

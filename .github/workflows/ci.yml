@@ -24,7 +24,15 @@ jobs:
         # paths worth exercising on all three, without paying 3x for every Python).
         os: [ubuntu-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        exclude:
+          # ubuntu-latest became Ubuntu 26.04 in 2026-10, and setup-python has no 3.9
+          # build for it. The declared 3.9 floor keeps running on the last runner that
+          # ships one, so the oldest supported Python stays a required check.
+          - os: ubuntu-latest
+            python-version: "3.9"
         include:
+          - os: ubuntu-24.04
+            python-version: "3.9"
           - os: macos-latest
             python-version: "3.12"
           - os: windows-latest
