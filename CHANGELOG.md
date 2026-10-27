@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 - `docs/VERIFY.md` records the 0.12.2 verification run.
+- **ruff 0.17.1.** The dev pin and the pre-commit hook move together; nothing needed
+  reformatting and no new lint fires. 0.17.2 and 0.17.3 are inside the seven-day
+  cooldown. Lands Dependabot #125, which bumped only the dev pin.
 
 ## [0.12.2] - 2026-10-17
 

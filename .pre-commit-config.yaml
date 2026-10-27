@@ -2,7 +2,7 @@
 # Keep revs current with: pre-commit autoupdate
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.10  # matches the exact ruff pin in pyproject dev extras
+    rev: v0.17.1  # matches the exact ruff pin in pyproject dev extras
     hooks:
       - id: ruff
         args: [--fix]
