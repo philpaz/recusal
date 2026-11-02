@@ -60,21 +60,46 @@ def test_manifest_policy_is_the_same_object_through_mcp():
         assert getattr(facade, name).__module__ == "recusal.mcp", name
 
 
+def _shape(func):
+    """A signature's shape, independent of how a Python version renders annotations."""
+    return [
+        (
+            p.name,
+            p.kind.name,
+            p.default if p.default is not inspect.Parameter.empty else "<required>",
+        )
+        for p in inspect.signature(func).parameters.values()
+    ]
+
+
 def test_the_public_signatures_did_not_move():
     from recusal.claude_code import decide
     from recusal.mcp import manifest_policy
 
-    assert str(inspect.signature(decide)) == (
-        "(tool_name: str, tool_input: dict, policy: Callable[[str, dict], List[Any]], *, "
-        "allow_on_pass: bool = False, fail_closed: bool = True, "
-        "audit: Optional[ForwardRef('AuditLog')] = None, surface: Optional[str] = None, "
-        "tool_use_id: Optional[str] = None, actor: Optional[str] = None, "
-        "control: Optional[Dict[str, Any]] = None) -> Tuple[str, str]"
-    )
-    assert str(inspect.signature(manifest_policy)) == (
-        "(manifest_path: str, *, policy: Optional[Callable[[str, dict], List[Any]]] = None) "
-        "-> Callable[[str, dict], List[Any]]"
-    )
+    assert _shape(decide) == [
+        ("tool_name", "POSITIONAL_OR_KEYWORD", "<required>"),
+        ("tool_input", "POSITIONAL_OR_KEYWORD", "<required>"),
+        ("policy", "POSITIONAL_OR_KEYWORD", "<required>"),
+        ("allow_on_pass", "KEYWORD_ONLY", False),
+        ("fail_closed", "KEYWORD_ONLY", True),
+        ("audit", "KEYWORD_ONLY", None),
+        ("surface", "KEYWORD_ONLY", None),
+        ("tool_use_id", "KEYWORD_ONLY", None),
+        ("actor", "KEYWORD_ONLY", None),
+        ("control", "KEYWORD_ONLY", None),
+    ]
+    assert _shape(manifest_policy) == [
+        ("manifest_path", "POSITIONAL_OR_KEYWORD", "<required>"),
+        ("policy", "KEYWORD_ONLY", None),
+    ]
+    # the annotations are the moved function's own, compared as objects, never as the
+    # strings a given Python version renders them to
+    import recusal._adjudicate as adjudicate
+    import recusal._manifest_policy as manifest
+
+    for facade, inner in ((decide, adjudicate.decide), (manifest_policy, manifest.manifest_policy)):
+        assert inspect.signature(facade) == inspect.signature(inner)
+        assert inspect.get_annotations(facade) == inspect.get_annotations(inner)
 
 
 # --- the boundaries the extraction was for ------------------------------------------------------
