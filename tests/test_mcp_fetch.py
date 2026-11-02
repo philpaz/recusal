@@ -93,6 +93,16 @@ for line in sys.stdin:
         elif MODE == "bad-cursor":
             send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [TOOLS[0]],
                   "nextCursor": 42}})
+        elif MODE == "long-cursor":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [TOOLS[0]],
+                  "nextCursor": "c" * 2001}})
+        elif MODE == "stall-write":
+            # hand back a 10,000-character cursor the client must echo, then stop reading
+            # stdin for good: the client's next write (> 4 KiB, the Windows pipe buffer)
+            # has nowhere to go
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [TOOLS[0]],
+                  "nextCursor": "c" * 10000}})
+            time.sleep(60)
         elif MODE == "paginate":
             cursor = (msg.get("params") or {}).get("cursor")
             if cursor:
@@ -484,6 +494,64 @@ def test_hostile_nesting_depth_on_the_wire_is_a_refusal_not_a_crash(fake_server)
 def test_an_invalid_next_cursor_refuses(fake_server):
     with pytest.raises(McpFetchError, match="invalid nextCursor"):
         fetch_tools_stdio(fake_server("bad-cursor"), timeout=30)
+
+
+def test_an_overlong_next_cursor_refuses(fake_server):
+    with pytest.raises(McpFetchError, match="invalid nextCursor"):
+        fetch_tools_stdio(fake_server("long-cursor"), timeout=30)
+
+
+def test_a_server_that_stops_reading_stdin_is_refused_inside_the_deadline(fake_server, monkeypatch):
+    """The reproduced defect: a server hands back a 10,000-character cursor and stops
+    reading. The echoing request exceeds a 4 KiB pipe buffer (Windows), the write blocks,
+    and before 0.12.4 it had no deadline, so the collector hung until the server exited
+    (measured: 2 s against a 0.4 s observation deadline). The cursor cap now refuses such
+    a cursor outright; this test lifts the cap to reach the write itself and proves the
+    write is bounded on its own."""
+    import time
+
+    import recusal.mcp_fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "MAX_CURSOR_CHARS", 20_000)
+    started = time.monotonic()
+    with pytest.raises(McpFetchError):
+        fetch_tools_stdio(fake_server("stall-write"), timeout=0.5, observation_timeout=0.5)
+    elapsed = time.monotonic() - started
+    assert elapsed < 5, f"the collector hung for {elapsed:.1f}s past a 0.5s observation deadline"
+
+
+def test_a_write_that_outlives_the_deadline_is_a_refusal_not_a_hang(monkeypatch, fake_server):
+    """Pin the write bound itself: even with a pipe that never fills, a write that does not
+    return is refused when the observation deadline passes."""
+    import threading
+    import time
+
+    import recusal.mcp_fetch as fetch_mod
+
+    real_popen = fetch_mod.subprocess.Popen
+
+    class SlowStdin:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def write(self, text):
+            time.sleep(3)  # a write that blocks well past the deadline
+            return self._inner.write(text)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        proc.stdin = SlowStdin(proc.stdin)
+        return proc
+
+    monkeypatch.setattr(fetch_mod.subprocess, "Popen", popen)
+    started = time.monotonic()
+    with pytest.raises(McpFetchError, match="stopped reading its stdin"):
+        fetch_tools_stdio(fake_server("normal"), timeout=0.5, observation_timeout=0.5)
+    assert time.monotonic() - started < 2.5
+    assert threading.active_count() >= 1  # the daemon writer is released by terminate()
 
 
 def test_the_aggregate_character_budget_refuses(tmp_path, monkeypatch):

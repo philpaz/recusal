@@ -81,6 +81,10 @@ MAX_LINE_CHARS = 10_000_000
 #: the observer buffer and churn through in total before it refuses.
 MAX_TOTAL_CHARS = 50_000_000
 MAX_UNRELATED_MESSAGES = 1_000
+#: The longest ``nextCursor`` the collector echoes back. Cursors are opaque tokens a few
+#: dozen to a few hundred characters long; the cap bounds what one ``tools/list`` request
+#: can carry, and every request write is deadline-bounded regardless (see ``_send``).
+MAX_CURSOR_CHARS = 2_000
 
 #: Reader-to-adjudicator queue depth. Deliberately TINY: the aggregate budget is
 #: enforced by the READER before enqueue, and a small queue keeps the peak buffered
@@ -330,11 +334,35 @@ def _fetch_stdio(
     observation_deadline = time.monotonic() + observation_timeout
 
     def _send(payload: Dict[str, Any]) -> None:
-        try:
-            proc.stdin.write(json.dumps(payload) + "\n")  # type: ignore[union-attr]
-            proc.stdin.flush()  # type: ignore[union-attr]
-        except OSError as exc:
-            raise McpFetchError(f"MCP server closed its stdin: {exc}") from exc
+        """Write one request under the observation deadline.
+
+        A pipe write blocks once the server stops draining its stdin and the pipe buffer
+        is full (4 KiB on Windows, 64 KiB on Linux); a server that hands back a long
+        ``nextCursor`` and then stops reading would otherwise hold this thread past every
+        deadline until it exited. The write runs on a helper thread and is waited on for
+        the time the observation has left; past it, the observation is refused and the
+        ``finally`` below terminates the server, which releases the writer.
+        """
+        text = json.dumps(payload) + "\n"
+        failure: List[BaseException] = []
+
+        def _write() -> None:
+            try:
+                proc.stdin.write(text)  # type: ignore[union-attr]
+                proc.stdin.flush()  # type: ignore[union-attr]
+            except (OSError, ValueError) as exc:  # ValueError: stdin already closed
+                failure.append(exc)
+
+        writer = threading.Thread(target=_write, daemon=True)
+        writer.start()
+        writer.join(max(0.0, min(timeout, observation_deadline - time.monotonic())))
+        if writer.is_alive():
+            raise McpFetchError(
+                f"MCP server stopped reading its stdin; a {len(text)}-character request did "
+                f"not complete within the deadline, refusing a stalling server"
+            )
+        if failure:
+            raise McpFetchError(f"MCP server closed its stdin: {failure[0]}") from failure[0]
 
     def _stalled() -> McpFetchError:
         return McpFetchError(
@@ -568,7 +596,7 @@ def _fetch_stdio(
             cursor = result.get("nextCursor")
             if not cursor:
                 return tools
-            if not isinstance(cursor, str) or len(cursor) > 10_000:
+            if not isinstance(cursor, str) or len(cursor) > MAX_CURSOR_CHARS:
                 raise McpFetchError("tools/list returned an invalid nextCursor; refusing")
         raise McpFetchError("tools/list paginated past 100 pages; refusing a runaway catalog")
 
@@ -610,11 +638,14 @@ def _fetch_stdio(
             raise _refuse_modern("initialize", modern_error)
         return _discover_after_rejection(rejection)
     finally:
+        # Terminate FIRST: a writer still blocked on a full stdin pipe (see ``_send``) is
+        # released only when the reading end dies, and closing stdin before that waits on
+        # the writer's lock, which turned a refused stall back into a hang.
+        proc.terminate()
         try:
             proc.stdin.close()  # type: ignore[union-attr]
-        except OSError:
+        except (OSError, ValueError):
             pass
-        proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:

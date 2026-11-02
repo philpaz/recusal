@@ -166,3 +166,39 @@ def test_checks_compose_into_a_verdict():
     ]
     verdict = compute_verdict(findings)
     assert verdict.refused  # CRITICAL orphan dominates
+
+
+# --- 0.12.4: a value that becomes non-finite through conversion is a violation ------------
+
+
+def test_in_range_string_nan_is_a_violation_not_a_pass():
+    f = in_range([{"score": "NaN"}], "score", min_value=0, max_value=100)
+    assert not f.passed
+    assert "1 value(s) outside" in f.message
+
+
+def test_in_range_string_infinities_are_violations():
+    rows = [{"score": "inf"}, {"score": "-Infinity"}, {"score": "+inf"}]
+    f = in_range(rows, "score", min_value=0, max_value=100)
+    assert not f.passed
+    assert "3 value(s) outside" in f.message
+
+
+def test_in_range_float_nan_is_still_a_null_and_skipped():
+    # documented contract: a float NaN in the data is a null; null_rate accounts for it
+    f = in_range([{"score": float("nan")}, {"score": 50}], "score", min_value=0, max_value=100)
+    assert f.passed
+
+
+def test_in_range_none_and_empty_string_are_still_nulls():
+    f = in_range(
+        [{"score": None}, {"score": ""}, {"score": " "}], "score", min_value=0, max_value=1
+    )
+    assert f.passed
+
+
+def test_in_range_counts_string_nan_alongside_other_violations():
+    rows = [{"score": "NaN"}, {"score": 101}, {"score": 50}, {"score": "abc"}]
+    f = in_range(rows, "score", min_value=0, max_value=100)
+    assert not f.passed
+    assert "3 value(s) outside" in f.message

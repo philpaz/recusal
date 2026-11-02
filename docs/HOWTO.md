@@ -18,9 +18,16 @@ Claude Code runs them, even under `bypassPermissions` (a `PreToolUse` `deny` ove
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "[ -n \"$CLAUDE_PROJECT_DIR\" ] || { echo 'gate: CLAUDE_PROJECT_DIR is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }; for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2" } ]}
+    { "type": "command", "command": "[ -n \"$CLAUDE_PROJECT_DIR\" ] || { echo 'gate: CLAUDE_PROJECT_DIR is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }; for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2", "onFailure": "block" } ]}
 ]}}
 ```
+
+**Why `"onFailure": "block"`:** Claude Code (2.1.295 and later) otherwise runs the tool
+call when a hook times out, cannot start, or exits with a code other than 0 or 2. With the
+field, those failures block. Older versions do not honor it; there the launcher's `exit 2`
+below is the only block. Keep the hook synchronous: an `async` hook's result never gates
+the call, and a `matcher` narrower than `".*"` leaves every other tool ungated.
+`python -m recusal doctor` checks all three on an installed gate.
 
 **Why the interpreter loop, and why `exit 2`:** the exit-code semantics, stated
 exactly: Recusal's normal refusal exits `0` with valid `permissionDecision: "deny"`

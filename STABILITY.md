@@ -44,6 +44,14 @@ attached to it.
    the perimeter as a MINOR addition with the kernel byte-identical to 0.8.0 (pinned by
    test), and it is held to the same freeze from here on.
 
+The kernel's byte pin moved once, in 0.12.4, for a fix: a `Finding` built with a string
+severity, an unknown level, or a non-bool `passed` folded as a PASS, because the fold
+compared the enum by identity and read the outcome by truthiness. The fold rule for valid
+evidence is unchanged; the fix makes malformed evidence refuse instead of pass, which is
+the fail-closed promise in item 3 applied to the kernel's own inputs. A fix of that kind
+is a PATCH and is named in the CHANGELOG; a change to what valid evidence folds to is
+still a MAJOR.
+
 ## What a version number promises
 
 Recusal applies **full semantic versioning from 0.8.0 onward**, including at `0.x`. Pre-1.0

@@ -858,15 +858,25 @@ def test_malformed_parsed_values_never_escape_as_type_errors():
 
 
 def test_the_kernel_is_untouched():
-    """recusal/evidence.py at 0.9.0 is byte-identical to 0.8.0 (STABILITY.md, frozen item 1)."""
+    """recusal/evidence.py is byte-identical to the pinned kernel (STABILITY.md, frozen item 1).
+
+    The pin moved once, in 0.12.4, for a fix and nothing else: a Finding built with a
+    string severity, an unknown level, or a non-bool ``passed`` folded as a PASS, because
+    the fold compared the enum by identity and read the outcome by truthiness. The fold
+    rule for valid evidence (failed CRITICAL to FAIL, failed ERROR to RETRY, else PASS)
+    is unchanged; ``tests/test_evidence_validation.py`` proves the fix at every boundary.
+    A behavior-preserving change must still not touch this file; the next move of this
+    value is a MAJOR release, or another fix named in the CHANGELOG like this one.
+    """
     with open(os.path.join(REPO, "recusal", "evidence.py"), "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
-    assert digest == EVIDENCE_PY_SHA256_AT_0_8_0
+    assert digest == EVIDENCE_PY_SHA256_PINNED
 
 
-# Pinned from the v0.8.0 tag (tests/test_authorization.py is the only place that may
-# change this value, and only in a MAJOR release per STABILITY.md).
+# Pinned from the v0.8.0 tag through 0.12.3; re-pinned at 0.12.4 for the validation fix
+# above (tests/test_authorization.py is the only place that may change this value).
 EVIDENCE_PY_SHA256_AT_0_8_0 = "95c8f9635f5be8f018e6b9b9beb089d716d36ebcc15e73f1ae85a6e4c2028a3c"
+EVIDENCE_PY_SHA256_PINNED = "29820c153e085dc21c9503f03474516aeae6aff6cda24587db778d41b4c5a731"
 
 
 def test_module_depends_only_on_the_standard_library_and_the_evidence_kernel():

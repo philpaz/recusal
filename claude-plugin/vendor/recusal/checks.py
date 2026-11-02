@@ -245,7 +245,12 @@ def in_range(
         except (TypeError, ValueError):
             violations += 1
             continue
-        if fv < min_value or fv > max_value:
+        # A float NaN in the data is a null and was skipped above (``_is_null``); a value
+        # that only BECOMES non-finite through conversion (the string "NaN", "inf",
+        # "-Infinity") is not a number inside any range and counts as a violation. Before
+        # 0.12.4 the string "NaN" converted to a NaN whose comparisons are all False, so
+        # it passed every range.
+        if not math.isfinite(fv) or fv < min_value or fv > max_value:
             violations += 1
     if violations:
         return _failed(

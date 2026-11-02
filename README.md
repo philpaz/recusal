@@ -222,9 +222,15 @@ hook in `.claude/settings.json`:
 ```json
 { "hooks": { "PreToolUse": [
   { "matcher": ".*", "hooks": [
-    { "type": "command", "command": "[ -n \"$CLAUDE_PROJECT_DIR\" ] || { echo 'gate: CLAUDE_PROJECT_DIR is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }; for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2" } ]}
+    { "type": "command", "command": "[ -n \"$CLAUDE_PROJECT_DIR\" ] || { echo 'gate: CLAUDE_PROJECT_DIR is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }; for p in python3 python py; do \"$p\" -c 'import sys; sys.version_info >= (3, 9) or sys.exit(1); import recusal' 2>/dev/null && { \"$p\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_gate.py\"; rc=$?; [ \"$rc\" = 0 ] || { echo 'gate: hook did not run cleanly; failing closed' >&2; exit 2; }; exit 0; }; done; echo 'gate: no python>=3.9 that can import recusal; failing closed' >&2; exit 2", "onFailure": "block" } ]}
 ]}}
 ```
+
+`"onFailure": "block"` (Claude Code 2.1.295 and later) makes a hook that times out, cannot
+start, or exits with a code other than 0 or 2 block the call instead of letting it through;
+on an older Claude Code the field is not honored and the launcher's `exit 2` is the only
+block. An install registered before 0.12.4 lacks the field: `python -m recusal doctor`
+names it, and `python -m recusal init --repair-launcher` adds it to a canonical launcher.
 
 The command runs the first `python3` → `python` → `py` that is `>=3.9` and can import
 recusal (so an interpreter without the package is skipped, not chosen), and **fails

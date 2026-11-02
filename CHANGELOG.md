@@ -6,6 +6,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A malformed `Finding` can no longer fold as a pass.** `Finding("x", "CRITICAL", False)`
+  (a string severity), a Finding whose severity was set to an unknown level, and one whose
+  `passed` was a string such as `"no"` all folded to PASS: `compute_verdict` compared the
+  severity enum by identity and read the outcome by truthiness, so a failed CRITICAL
+  finding went uncounted. `Finding` now validates at construction (severity normalized to
+  the enum, `passed` must be a bool or exactly 0/1), the fold re-validates every instance
+  it is handed, and a loose dict whose `passed` is an arbitrary object (a list, a dict,
+  `None`, an instance) is refused in strict mode and reads as a failure in lenient mode,
+  never as a pass. `decide` and the Claude Code hook deny on every one of these, proven in
+  `tests/test_evidence_validation.py`. The kernel's byte pin in `tests/test_authorization.py`
+  moved for this fix and nothing else; the fold rule for valid evidence is unchanged
+  (`STABILITY.md`).
+- **`in_range` counts the string `"NaN"` as a violation.** It converted to a float NaN whose
+  comparisons are all false, so it passed every range; `"inf"` and `"-Infinity"` now count
+  too. A float NaN in the data is still a null and still skipped, as documented; `null_rate`
+  accounts for it.
+- **The MCP collector's request writes are deadline-bounded.** A server that handed back a
+  long `nextCursor` and then stopped reading its stdin held the collector past every
+  deadline until it exited, because the pipe write had none (reproduced: a 2 s hang against
+  a 0.4 s observation deadline on Windows, whose pipe buffer is 4 KiB). The write now runs
+  under the remaining observation time and a stalled server is refused; `nextCursor` is
+  capped at 2,000 characters. Two regression tests pin it.
+- **`doctor` judges the registration, not just the launcher text.** It passed with
+  `"async": true` (a background hook's verdict never gates the call), a matcher that names
+  no tool, and `"disableAllHooks": true`. New checks: `hooks_enabled`, `hook_synchronous`
+  and `hook_type` (CRITICAL), `hook_matcher_covers_every_tool` and `hook_blocks_on_failure`
+  (ERROR, exit 1 "degraded"), and the hook `timeout` reported as a metric only, since a
+  fast gate can legitimately run under a short one.
+- **Generated hooks set `"onFailure": "block"`.** Without it Claude Code runs the tool call
+  when the hook times out, cannot start, or exits with a code other than 0 or 2. `init`
+  registers the field on both launchers and the plugin's `hooks.json` carries it; Claude
+  Code 2.1.295 and later honor it, older versions block on `exit 2` only, and the README
+  and HOWTO say so. Existing installs: `init` on an installed gate now says when the field
+  is missing, `doctor` reports it, and `init --repair-launcher` adds it to a canonical
+  launcher without touching a customized hook.
+
 ## [0.12.3] - 2026-11-02
 
 Two more surfaces are Tested: the LangGraph audit trail (every `ToolNode` call on the

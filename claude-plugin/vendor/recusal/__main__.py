@@ -195,6 +195,18 @@ UNGUARDED_LAUNCHERS = frozenset({_posix_loop(_PROJECT_GATE, _PROBE_RECUSAL), _PO
 
 _WINDOWS = os.name == "nt"
 
+#: Registered on every launcher. Claude Code runs the tool call anyway when a hook times
+#: out, cannot start, or exits with a code other than 0 or 2; ``"onFailure": "block"``
+#: (Claude Code 2.1.295 and later) makes those failures block instead, so the gate's
+#: fail-closed promise no longer depends on the launcher getting as far as ``exit 2``.
+#: Older Claude Code versions do not honor the field: there, the launcher's own ``exit 2``
+#: remains the only block and a timed-out hook still lets the call through; ``doctor``
+#: names the field so an install can be checked, and ``init --repair-launcher`` adds it
+#: to an existing canonical launcher.
+HOOK_ON_FAILURE = "block"
+#: Claude Code's minimum version for ``onFailure``, as its hooks reference states it.
+HOOK_ON_FAILURE_MIN_CLAUDE_CODE = "2.1.295"
+
 
 def _hook_entries(launcher: str = "auto") -> List[dict]:
     """The PreToolUse entries to register for ``launcher``.
@@ -210,7 +222,16 @@ def _hook_entries(launcher: str = "auto") -> List[dict]:
     entries: List[dict] = []
     if launcher in ("posix", "both"):
         entries.append(
-            {"matcher": ".*", "hooks": [{"type": "command", "command": LAUNCHER_COMMAND_POSIX}]}
+            {
+                "matcher": ".*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": LAUNCHER_COMMAND_POSIX,
+                        "onFailure": HOOK_ON_FAILURE,
+                    }
+                ],
+            }
         )
     if launcher in ("powershell", "both"):
         entries.append(
@@ -223,6 +244,7 @@ def _hook_entries(launcher: str = "auto") -> List[dict]:
                         # load-bearing: without it, Git Bash (when installed) would try
                         # to parse PowerShell and fail with a NON-blocking exit code.
                         "shell": "powershell",
+                        "onFailure": HOOK_ON_FAILURE,
                     }
                 ],
             }
@@ -295,9 +317,13 @@ def gate_source(posture: str, writable_root: str = "./workspace") -> str:
     raise ValueError(f"unknown posture: {posture!r}")
 
 
-def _recusal_hooks(settings: dict) -> List[dict]:
-    """Every PreToolUse hook dict in ``settings`` that references the recusal gate."""
-    found: List[dict] = []
+def _recusal_hook_groups(settings: dict) -> List[Tuple[dict, dict]]:
+    """Every ``(group, hook)`` pair under PreToolUse whose hook references the recusal gate.
+
+    The group carries the ``matcher``; the hook carries the command and its flags. The
+    doctor needs both, because a gate registered under a narrow matcher, or as a
+    background hook, is a gate most tool calls never meet."""
+    found: List[Tuple[dict, dict]] = []
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
         return found
@@ -309,8 +335,131 @@ def _recusal_hooks(settings: dict) -> List[dict]:
             continue
         for hook in group.get("hooks", []) or []:
             if isinstance(hook, dict) and GATE_FILENAME in str(hook.get("command", "")):
-                found.append(hook)
+                found.append((group, hook))
     return found
+
+
+def _recusal_hooks(settings: dict) -> List[dict]:
+    """Every PreToolUse hook dict in ``settings`` that references the recusal gate."""
+    return [hook for _, hook in _recusal_hook_groups(settings)]
+
+
+#: Matchers under which a PreToolUse hook meets EVERY tool call. Claude Code treats a
+#: missing or empty matcher as "all tools"; ``.*`` and ``*`` are the explicit spellings.
+_EVERY_TOOL_MATCHERS = frozenset({"", ".*", "*", "^.*$", "(.*)"})
+
+
+def _registration_findings(settings: dict, gate_pairs: List[Tuple[dict, dict]]) -> List[Finding]:
+    """Does the registration let the gate decide? The launcher text alone cannot say.
+
+    Live-verified against Claude Code's hooks reference (2026-11): a hook with ``async``
+    or ``asyncRewake`` runs in the background and its result never gates the call; a
+    ``matcher`` names the tools the hook meets, so a narrowed one leaves every other tool
+    ungated; ``disableAllHooks`` switches every hook off; and without
+    ``"onFailure": "block"`` a hook that times out, cannot start, or exits with a code
+    other than 0 or 2 lets the tool call go ahead. A ``timeout`` is reported as a
+    metric only: a fast gate can legitimately run under a short one, and with failure
+    set to block a timeout refuses rather than waves through.
+    """
+    findings: List[Finding] = []
+    if settings.get("disableAllHooks") is True:
+        findings.append(
+            Finding.fail(
+                "hooks_enabled",
+                severity="CRITICAL",
+                message='settings.json sets "disableAllHooks": true, so the gate never runs',
+            )
+        )
+    else:
+        findings.append(
+            Finding.ok("hooks_enabled", severity="CRITICAL", message="hooks are not disabled")
+        )
+    background = [h for _, h in gate_pairs if h.get("async") or h.get("asyncRewake")]
+    if background:
+        findings.append(
+            Finding.fail(
+                "hook_synchronous",
+                severity="CRITICAL",
+                message=f"{len(background)} gate hook(s) run in the background (async / "
+                "asyncRewake); a background hook's verdict never gates the call",
+            )
+        )
+    else:
+        findings.append(
+            Finding.ok(
+                "hook_synchronous",
+                severity="CRITICAL",
+                message="gate hook(s) run synchronously, before the tool call",
+            )
+        )
+    not_command = [h for _, h in gate_pairs if h.get("type", "command") != "command"]
+    if not_command:
+        findings.append(
+            Finding.fail(
+                "hook_type",
+                severity="CRITICAL",
+                message=f"{len(not_command)} gate hook(s) are not command hooks; the launcher "
+                "is a shell command and runs only as one",
+            )
+        )
+    narrowed = sorted(
+        {
+            str(group.get("matcher"))
+            for group, _ in gate_pairs
+            if group.get("matcher") is not None
+            and str(group.get("matcher")).strip() not in _EVERY_TOOL_MATCHERS
+        }
+    )
+    if narrowed:
+        findings.append(
+            Finding.fail(
+                "hook_matcher_covers_every_tool",
+                severity="ERROR",
+                message=f"gate registered under matcher(s) {narrowed}; every tool the matcher "
+                'does not name runs ungated (the canonical entry uses ".*")',
+            )
+        )
+    else:
+        findings.append(
+            Finding.ok(
+                "hook_matcher_covers_every_tool",
+                severity="ERROR",
+                message="gate hook(s) match every tool call",
+            )
+        )
+    unblocked = [h for _, h in gate_pairs if h.get("onFailure") != HOOK_ON_FAILURE]
+    if unblocked:
+        findings.append(
+            Finding.fail(
+                "hook_blocks_on_failure",
+                severity="ERROR",
+                message=f'{len(unblocked)} gate hook(s) lack "onFailure": "block": a hook that '
+                "times out, cannot start, or exits with a code other than 0 or 2 lets the "
+                "call go ahead (Claude Code "
+                f"{HOOK_ON_FAILURE_MIN_CLAUDE_CODE}+ honors the field); run `python -m "
+                "recusal init --repair-launcher` to add it to a canonical launcher",
+            )
+        )
+    else:
+        findings.append(
+            Finding.ok(
+                "hook_blocks_on_failure",
+                severity="ERROR",
+                message='every gate hook sets "onFailure": "block" (honored by Claude Code '
+                f"{HOOK_ON_FAILURE_MIN_CLAUDE_CODE}+; older versions block on exit 2 only)",
+            )
+        )
+    timeouts = sorted({str(h["timeout"]) for _, h in gate_pairs if "timeout" in h})
+    if timeouts:
+        findings.append(
+            Finding.ok(
+                "hook_timeout",
+                severity="INFO",
+                message=f"gate hook timeout(s) {timeouts}s; with failure set to block, a "
+                "timeout refuses the call rather than waving it through",
+            )
+        )
+    return findings
 
 
 def _recusal_hook_commands(settings: dict) -> List[str]:
@@ -478,6 +627,19 @@ def init(
         return 1
     if status == "already-installed":
         out.write(f"settings already register the gate, no change: {settings_path}\n")
+        try:
+            installed = json.loads(existing or "{}")
+        except ValueError:
+            installed = {}
+        if isinstance(installed, dict) and any(
+            h.get("onFailure") != HOOK_ON_FAILURE for h in _recusal_hooks(installed)
+        ):
+            out.write(
+                'the registered launcher predates "onFailure": "block"; without it a hook '
+                "that times out or cannot start lets the call through. Run\n"
+                "  python -m recusal init --repair-launcher\n"
+                "to add it (canonical launchers only; a customized hook is yours to edit).\n"
+            )
     else:
         assert new_text is not None  # created/merged always carry a body
         with open(settings_path, "w", encoding="utf-8", newline="\n") as f:
@@ -829,7 +991,9 @@ def doctor_findings(project_dir: str) -> List[Finding]:
                 )
             )
         else:
-            gate_hooks = _recusal_hooks(settings if isinstance(settings, dict) else {})
+            settings_dict = settings if isinstance(settings, dict) else {}
+            gate_pairs = _recusal_hook_groups(settings_dict)
+            gate_hooks = [hook for _, hook in gate_pairs]
             commands = [str(h["command"]) for h in gate_hooks]
             if not commands:
                 findings.append(
@@ -865,6 +1029,7 @@ def doctor_findings(project_dir: str) -> List[Finding]:
                         )
                     )
                 findings.extend(_launcher_platform_findings(gate_hooks))
+                findings.extend(_registration_findings(settings_dict, gate_pairs))
 
     findings.append(
         Finding.ok(

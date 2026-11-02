@@ -60,14 +60,41 @@ _PASS_LIKE = frozenset({"pass", "passed", "ok", "okay", "success", "succeeded", 
 _TRUE_LIKE = frozenset({"true", "t", "1", "yes", "y", "on"}) | _PASS_LIKE
 
 
-def _as_bool(value: Any) -> bool:
-    """Interpret a loose ``passed`` value. A genuine ``bool``/``int`` is used directly; a
-    *string* passes only when it is an affirmative token (``"true"``/``"yes"``/``"1"``/
-    ``"pass"``/...). Anything unrecognized (``"maybe"``, ``"false"``, empty) fails closed,
-    mirroring how ``status`` is read."""
+def _as_bool(value: Any, *, strict: bool = False) -> bool:
+    """Interpret a loose ``passed`` value. A genuine ``bool``, or an ``int`` ``0``/``1``,
+    is used directly; a *string* passes only when it is an affirmative token
+    (``"true"``/``"yes"``/``"1"``/``"pass"``/...). Anything unrecognized (``"maybe"``,
+    ``"false"``, empty) fails closed, mirroring how ``status`` is read.
+
+    Any other object (a list, a dict, ``None``, an arbitrary instance) is not an outcome.
+    Python truthiness is never applied to it: a non-empty container or a bare object would
+    read as a pass, which is the failure this library exists to prevent. In strict mode it
+    is refused (``TypeError``); in lenient mode it reads as a failure."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
     if isinstance(value, str):
         return value.strip().lower() in _TRUE_LIKE
-    return bool(value)
+    if strict:
+        raise TypeError(
+            f"'passed' must be a bool, 0/1 or an outcome token, not {type(value).__name__}"
+        )
+    return False
+
+
+def _validated_passed(value: Any) -> bool:
+    """The ``passed`` an already-constructed Finding may carry: a ``bool``, or exactly
+    ``0``/``1``. A string, a container or any other object is refused, so a Finding that
+    says ``passed="no"`` can never fold as a pass."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise TypeError(
+        f"Finding.passed must be a bool, not {type(value).__name__}; build loose evidence "
+        "through Finding.coerce"
+    )
 
 
 @dataclass(frozen=True)
@@ -84,6 +111,19 @@ class Finding:
     passed: bool
     message: str = ""
     context: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Validate at construction, so a malformed Finding cannot exist.
+
+        ``severity`` is normalized to the :class:`Severity` enum (a string such as
+        ``"CRITICAL"`` is accepted; an unknown level raises ``ValueError``) and
+        ``passed`` must be a ``bool`` (``TypeError`` otherwise). Before this check, a
+        Finding built with a string severity, or with ``passed="no"``, folded as a PASS
+        in :func:`compute_verdict`: the fold compared the enum by identity and read the
+        outcome by truthiness, so a failed CRITICAL finding went uncounted.
+        """
+        object.__setattr__(self, "severity", _as_severity(self.severity))
+        object.__setattr__(self, "passed", _validated_passed(self.passed))
 
     @classmethod
     def ok(
@@ -132,11 +172,11 @@ class Finding:
         passing - fails closed rather than slipping through.
         """
         if isinstance(obj, Finding):
-            return obj
+            return _validated(obj)
         if isinstance(obj, Mapping):
             severity = _as_severity(obj.get("severity", Severity.INFO))
             if "passed" in obj:
-                passed = _as_bool(obj["passed"])
+                passed = _as_bool(obj["passed"], strict=strict)
             elif "status" in obj:
                 # Fail closed on any status we do not positively recognize as passing
                 # (see _PASS_LIKE): "failed"/"false"/"denied"/… must not read as a pass.
@@ -154,6 +194,21 @@ class Finding:
             context = {k: v for k, v in obj.items() if k not in known}
             return cls(str(check), severity, passed, str(message), context)
         raise TypeError(f"cannot coerce {type(obj).__name__} into a Finding")
+
+
+def _validated(finding: Finding) -> Finding:
+    """Re-check an existing Finding at the fold boundary.
+
+    Construction already validates, but a frozen dataclass can still be altered through
+    ``object.__setattr__``, and an enum member from a reloaded module is equal to but not
+    identical with ours. The fold therefore trusts no instance it did not just check:
+    severity is normalized by value and ``passed`` must be a bool, or the fold refuses.
+    """
+    severity = _as_severity(finding.severity)
+    passed = _validated_passed(finding.passed)
+    if severity is finding.severity and passed is finding.passed:
+        return finding
+    return Finding(finding.check, severity, passed, finding.message, finding.context)
 
 
 class Decision(str, Enum):
