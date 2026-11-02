@@ -800,6 +800,14 @@ Thank you to the people who have made Recusal better:
 - [@jay23606](https://github.com/jay23606) (Jay): the SQL check in the agent loop
   example, which a `WHERE` hidden in a comment no longer fools, in
   [#89](https://github.com/philpaz/recusal/pull/89).
+- [@dannyward630](https://github.com/dannyward630) (Danny Ward): the test that checks
+  every `recusal` import in the documentation's Python examples against the real module,
+  and the `EXTENDING.md` example it caught, in
+  [#140](https://github.com/philpaz/recusal/pull/140).
+- [@jdotc1](https://github.com/jdotc1) (Jeff): standalone smoke tests for the audit and
+  classifier demos, and the examples index with the test that keeps it complete, in
+  [#149](https://github.com/philpaz/recusal/pull/149) and
+  [#150](https://github.com/philpaz/recusal/pull/150).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).
