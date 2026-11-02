@@ -35,11 +35,43 @@ files are the long form, annotated and adaptable; the shipped demo is the thirty
 | [`claude_agent_live.py`](claude_agent_live.py) | The **live** version (real Anthropic SDK, manual agent loop): Claude proposes a wrong-subject write, Recusal refuses, Claude self-corrects. Needs `pip install anthropic` + a key. |
 | [`agent_loop.py`](agent_loop.py) | **Framework-neutral**, a full gate in a plain `propose → gate → act` loop whose only import is `recusal`. No Claude, no SDK. Proof it works in any agent loop. |
 
+## Cookbook recipe modules (offline, no key)
+
+These are the standalone policy implementations from the [cookbook](../docs/COOKBOOK.md).
+Some are imported by other examples rather than run directly.
+
+| Recipe | Example | What it refuses |
+|---|---|---|
+| 1 | [`destructive_shell_policy.py`](destructive_shell_policy.py) | Destructive shell commands, protected file operations and extra local deny-list markers. |
+| 2 | [`sql_scope_policy.py`](sql_scope_policy.py) | `DELETE` or `UPDATE` without a top-level `WHERE`, including nested mutations; it is a lexical guard, not a SQL parser. |
+| 3 | [`workspace_policy.py`](workspace_policy.py) | Explicit writes outside the allowed workspace or to protected credential paths. |
+| 4 | [`subject_guard.py`](subject_guard.py) | Record writes without a bound subject or to a different subject. |
+| 5 | [`egress_allowlist.py`](egress_allowlist.py) | Email or HTTP destinations missing from the configured allowlist (only literal tool arguments are inspected). |
+| 7 | [`action_budget.py`](action_budget.py) | Actions beyond a persisted hard attempt budget (returns a RETRY verdict; the soft limit only warns). |
+| 8 | [`quality_gate.py`](quality_gate.py) | Missing or invalid quality measurements, low coverage and failing tests (RETRY, without starting a deployment). |
+| 9 | [`approved_tool_policy.py`](approved_tool_policy.py) | Unnamed, malformed or unapproved tool names; approved names still need argument checks. |
+
+## Framework adapters (offline, optional pinned SDKs)
+
+Each adapter uses scripted calls, not a live model or API key. Install the versions shown
+in its module docstring before running it; the Recusal core itself has no SDK dependencies.
+
+| Example | Tested dependencies | What it shows |
+|---|---|---|
+| [`langgraph_gate.py`](langgraph_gate.py) | `langgraph==1.2.12`, `langchain-core==1.6.5` | A LangGraph `ToolNode` gate refuses unsafe sync and async tool calls before execution. |
+| [`langgraph_audit.py`](langgraph_audit.py) | `langgraph==1.2.12`, `langchain-core==1.6.5` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
+| [`langchain_agent_gate.py`](langchain_agent_gate.py) | `langchain==1.4.3`, `langgraph==1.2.12`, `langchain-core==1.6.5` | A LangChain `create_agent` middleware gates calls from a scripted model without a provider connection. |
+| [`openai_agents_gate.py`](openai_agents_gate.py) | `openai-agents==0.24.0`, `openai==3.34.0` | An Agents SDK input guardrail refuses unsafe function tools and unsupported tool surfaces. |
+| [`openai_responses_gate.py`](openai_responses_gate.py) | `openai==3.34.0` | An application-controlled Responses or Chat Completions loop refuses malformed, unknown or unsafe function calls. |
+| [`google_adk_gate.py`](google_adk_gate.py) | `google-adk==2.13.0`, `google-genai==2.34.0` | A Google ADK before-tool callback denies calls judged unsafe, including those in nested agents. |
+| [`crewai_gate.py`](crewai_gate.py) | `crewai==1.15.34` | CrewAI before/after hooks stop refused tool calls and return the gate's reason to the scripted model. |
+
 ## The other surfaces (offline, no key)
 
 | Example | What it shows |
 |---|---|
 | [`audit_demo.py`](audit_demo.py) | The tamper-evident **audit log**: record verdicts, verify the hash chain, edit one record, watch the chain catch it. |
+| [`audit_sink.py`](audit_sink.py) | A local audit-log mirror and saved-head check: truncated history is refused on resume. This is not an external tamper-proof anchor. |
 | [`classify_demo.py`](classify_demo.py) | The deterministic **failure classifier/router**, a failure string in, a class + remediation route out (retry / refuse / quarantine / ask-human). |
 | [`injection_quarantine.py`](injection_quarantine.py) | **Quarantine prompt-injection in tool output** (OWASP LLM01 / ASI01; MITRE ATLAS AML.T0086). Adjudicate what a tool *returned* before the agent acts on it: poisoned output is refused and routed to `quarantine`, never fed back as trusted context. Cookbook recipe 6, made runnable. |
 | [`scenarios.py`](scenarios.py) | The reusable policy library behind `gallery.py` *and* the test suite, the same policies are demonstrated **and** proven. Import, don't run. |
