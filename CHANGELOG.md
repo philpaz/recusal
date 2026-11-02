@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-11-02
+
+A hardening release. PATCH under `STABILITY.md`: no new public surface. Four enforcement
+gaps found by an outside review and reproduced on main are closed, each with tests that
+fail on 0.12.3: a malformed `Finding` folded as a pass, `in_range` passed the string
+`"NaN"`, the MCP collector's request write had no deadline, and `doctor` passed a hook
+registration that never gates (background, narrowed, disabled, or without
+`"onFailure": "block"`). The copied policy examples and cookbook recipes now refuse what
+they claimed to refuse. The kernel's byte pin moved for the first fix and nothing else;
+`STABILITY.md` records why and what stays frozen. Existing installs: run
+`python -m recusal doctor`, then `python -m recusal init --repair-launcher`.
+
 ### Fixed
 - **A malformed `Finding` can no longer fold as a pass.** `Finding("x", "CRITICAL", False)`
   (a string severity), a Finding whose severity was set to an unknown level, and one whose

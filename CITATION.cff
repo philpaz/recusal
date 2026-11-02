@@ -16,7 +16,7 @@ authors:
 license: Apache-2.0
 repository-code: "https://github.com/philpaz/recusal"
 url: "https://github.com/philpaz/recusal"
-version: "0.12.3"
+version: "0.12.4"
 date-released: "2026-11-02"
 keywords:
   - ai-agents
