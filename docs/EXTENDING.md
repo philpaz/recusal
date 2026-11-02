@@ -35,7 +35,8 @@ Use it anywhere evidence is gathered:
 
 ```python
 from recusal import compute_verdict
-verdict = compute_verdict([sql_is_safe(stmt), ...other findings...])
+
+verdict = compute_verdict([sql_is_safe(stmt), *additional_findings])
 ```
 
 **Guidelines:** one check = one concern; put structured detail in `context` (kwargs),
@@ -47,6 +48,9 @@ keep it pure (no I/O surprises) so verdicts stay deterministic.
 A "policy" is just a function that returns a list of findings, compose freely:
 
 ```python
+from recusal.claude import gate_tool_use
+
+
 def write_policy(tool_input, active_subject) -> list:
     return [
         subject_match(tool_input, active_subject),  # CRITICAL
