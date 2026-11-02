@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-11-02
+
+Two more agent runtimes are Tested, Pydantic AI and the OpenAI Agents SDK's MCP tools (local
+servers and hosted MCP), each at the runtime's own hook, and the Claude Code plugin's hook
+command is now the empty-root guard plus one path, for the plugin directory's rules. Three
+findings from an outside review of main are fixed: the OpenAI API example refused a turn with
+a duplicate call id only after its calls had run, the OpenAI MCP gate judged a prefixed public
+name instead of the server's own tool name, and two documents stated the hook-timeout outcome
+without its conditions. PATCH under `STABILITY.md`: no public surface changes, and the gate
+behaves exactly as in 0.12.5. The examples live under `examples/` and are not part of the
+installed package.
 ### Changed
 - `claude-plugin/hooks/hooks.json`: the plugin's hook command is now the empty-root guard
   followed by one path, `sh "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"`; the interpreter loop
