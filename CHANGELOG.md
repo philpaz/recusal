@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `docs/EXTENDING.md`: the `gate_tool_use` example now imports the function it calls, and the
+  `compute_verdict` line is valid Python. A new test, `tests/test_documentation_examples.py`,
+  parses every Python block in `docs/EXTENDING.md` and `docs/HOWTO.md` and checks that each
+  `from recusal... import` names a real attribute, so a documentation example can no longer
+  import something that does not exist. Contributed by @dannyward630 in #140. (#135)
+
 ## [0.12.5] - 2026-11-02
 
 Two more agent runtimes are Tested: Google ADK and CrewAI, each with its own offline example,
