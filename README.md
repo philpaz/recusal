@@ -79,7 +79,7 @@ issue nobody has taken yet: comment there to pick it up.
 | LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
 | OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py) |
-| Google ADK | Wanted | [#105](https://github.com/philpaz/recusal/issues/105) |
+| Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](examples/google_adk_gate.py) |
 | CrewAI | Wanted | [#106](https://github.com/philpaz/recusal/issues/106) |
 | Pydantic AI | Wanted | [#107](https://github.com/philpaz/recusal/issues/107) |
 | LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
@@ -620,6 +620,17 @@ and a call without an id is refused because the SDK's answer types do not requir
 Hosted tools (web search, file search, code interpreter, remote MCP) run on the provider's
 side and never reach this loop. Offline (`model_validate` builds real SDK objects, no key),
 Python 3.10+, tested with exactly `openai==3.34.0`.
+
+For Google's Agent Development Kit, [`examples/google_adk_gate.py`](examples/google_adk_gate.py)
+uses the ADK's own `before_tool_callback`: `recusal_before_tool(policy)` judges each tool call
+immediately before the `LlmAgent` runs it and answers a refusal as the tool's response, so the
+model reads the reason and the tool never runs. `gated_agent(agent, policy)` returns a gated
+copy with the gate as the last callback (a callback listed after it could change the
+arguments it judged) and gates `sub_agents` and the agent behind every `AgentTool` the same
+way; it refuses an agent with a `code_executor` or an `LlmAgent` subclass, which can run
+things the callback never sees. `RecusalPlugin(policy)` is the same gate as a runner plugin,
+covering every agent the runner drives. Offline (a scripted model, no key), Python 3.11+,
+tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

@@ -75,6 +75,13 @@ type it does not handle raises rather than slipping past. Hosted tools (web sear
 search, code interpreter, remote MCP) run on the provider's side and never reach this
 loop. Offline, Python 3.10+, tested with exactly `openai==3.34.0`.
 
+The [Google ADK example](../examples/google_adk_gate.py) judges each tool call in the
+ADK's `before_tool_callback` and answers a refusal as the tool's response;
+`gated_agent(agent, policy)` gates an agent, its `sub_agents` and its `AgentTool`s with the
+gate as the last callback, and refuses a `code_executor` or an `LlmAgent` subclass;
+`RecusalPlugin(policy)` does the same for every agent a runner drives. Python 3.11+, tested
+with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recusal dependency.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

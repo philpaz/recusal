@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `examples/google_adk_gate.py`: gates Google ADK tool calls with the ADK's own
+  `before_tool_callback`. `recusal_before_tool(policy)` judges each call immediately before
+  the `LlmAgent` runs it and answers a refusal as the tool's response; `gated_agent(agent,
+  policy)` returns a gated copy with the gate as the last callback and gates `sub_agents` and
+  the agent behind every `AgentTool`, refusing a `code_executor` or an `LlmAgent` subclass;
+  `RecusalPlugin(policy)` is the same gate as a runner plugin for every agent a runner
+  drives. The tests show why the gate is last (a later callback can change the arguments it
+  judged), that a gate on the parent alone misses a sub-agent reached by transfer, and that
+  the plugin covers it. Offline with a scripted model, Python 3.11+ (the ADK's minimum),
+  tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`, two new CI jobs and a
+  weekly latest lane; the ADK stays out of the package's dependencies. "Works with" marks
+  Google ADK Tested. (#105)
+
 ### Changed
 - `docs/VERIFY.md` records the 0.12.3 and 0.12.4 verification runs.
 
