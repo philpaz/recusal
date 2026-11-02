@@ -152,6 +152,30 @@ def posix_launcher(
 
 LAUNCHER_COMMAND_POSIX = posix_launcher(_PROJECT_GATE)
 
+#: The plugin (``claude-plugin/``) registers the SAME launcher, with a Python-only probe
+#: because it vendors its runtime, but split in two. The plugin directory's submission
+#: checklist requires a hook command to be a path written in full from
+#: ``${CLAUDE_PLUGIN_ROOT}`` with no other variable, command substitution, wildcard or
+#: inline program, so the interpreter loop lives in ``scripts/gate.sh`` and the hook
+#: command is the empty-root guard followed by that one path. The guard stays in the
+#: command on purpose: an empty root is refused by name before any file is looked up,
+#: on every Claude Code version, where ``onFailure`` alone would need 2.1.295 or later
+#: to turn the shell's "no such file" into a block.
+PLUGIN_ROOT = "${CLAUDE_PLUGIN_ROOT}"
+PLUGIN_GATE = f'"{PLUGIN_ROOT}/scripts/recusal_gate.py"'
+PLUGIN_LAUNCHER_SCRIPT = f"""#!/bin/sh
+# Recusal Gate launcher: the fail-closed POSIX launcher from recusal/__main__.py
+# (posix_launcher), pointed at this plugin's vendored gate. Registered by
+# hooks/hooks.json as `sh "${{CLAUDE_PLUGIN_ROOT}}/scripts/gate.sh"`. Regenerate with
+# `py tools/vendor_plugin.py`; tests/test_claude_plugin.py keeps it byte-for-byte.
+{posix_launcher(PLUGIN_GATE, _PROBE_PYTHON, root=PLUGIN_ROOT)}
+"""
+_PLUGIN_EMPTY_ROOT = _empty_root_message("CLAUDE_PLUGIN_ROOT")
+PLUGIN_HOOK_COMMAND = (
+    f"[ -n \"{PLUGIN_ROOT}\" ] || {{ echo '{_PLUGIN_EMPTY_ROOT}' >&2; exit 2; }}; "
+    f'sh "{PLUGIN_ROOT}/scripts/gate.sh"'
+)
+
 #: Back-compat alias (the POSIX form was previously the only launcher).
 LAUNCHER_COMMAND = LAUNCHER_COMMAND_POSIX
 

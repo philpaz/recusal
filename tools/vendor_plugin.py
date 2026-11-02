@@ -10,15 +10,23 @@ enforces it, and this script is the one way to re-sync:
 
 Deterministic: copies every ``*.py`` plus ``py.typed`` from ``recusal/`` into the
 vendor tree and deletes anything else found there, so the vendor tree is a pure
-function of the package source.
+function of the package source. It also writes ``claude-plugin/scripts/gate.sh``, the
+launcher the plugin's hook command runs, from ``recusal.__main__`` so the plugin's
+launcher is a pure function of the package too.
 """
 
 import os
 import shutil
+import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+
+from recusal.__main__ import PLUGIN_LAUNCHER_SCRIPT  # noqa: E402
+
 SOURCE = os.path.join(REPO_ROOT, "recusal")
 VENDOR = os.path.join(REPO_ROOT, "claude-plugin", "vendor", "recusal")
+LAUNCHER = os.path.join(REPO_ROOT, "claude-plugin", "scripts", "gate.sh")
 
 
 def vendored_names():
@@ -32,6 +40,9 @@ def main() -> int:
     for name in vendored_names():
         shutil.copyfile(os.path.join(SOURCE, name), os.path.join(VENDOR, name))
     print(f"vendored {len(vendored_names())} file(s) -> {os.path.relpath(VENDOR, REPO_ROOT)}")
+    with open(LAUNCHER, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(PLUGIN_LAUNCHER_SCRIPT)
+    print(f"wrote {os.path.relpath(LAUNCHER, REPO_ROOT)}")
     return 0
 
 

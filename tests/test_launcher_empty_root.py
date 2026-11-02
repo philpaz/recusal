@@ -276,18 +276,25 @@ _LAUNCHER_FILES = (
     "recusal/claude_code.py",
     ".claude/settings.json.example",
     "claude-plugin/hooks/hooks.json",
+    "claude-plugin/scripts/gate.sh",
 )
 _COMMAND = re.compile(r'"command":\s*"((?:[^"\\]|\\.)*)"')
 
 
 def _launcher_copies():
+    """Every POSIX launcher the repo ships: the interpreter loop, or (the plugin's hook
+    command) the guard plus the one path to the file that carries the loop."""
     copies = []
     for rel in _LAUNCHER_FILES:
         with open(os.path.join(REPO_ROOT, rel), encoding="utf-8") as fh:
-            for raw in _COMMAND.findall(fh.read()):
-                command = json.loads(f'"{raw}"')
-                if "for p in python3 python py" in command:
-                    copies.append((rel, command))
+            text = fh.read()
+        if rel.endswith(".sh"):
+            commands = [line for line in text.splitlines() if line and not line.startswith("#")]
+        else:
+            commands = [json.loads(f'"{raw}"') for raw in _COMMAND.findall(text)]
+        for command in commands:
+            if "for p in python3 python py" in command or "/scripts/gate.sh" in command:
+                copies.append((rel, command))
     return copies
 
 
@@ -295,14 +302,17 @@ def test_every_launcher_copy_refuses_an_empty_root_first():
     copies = _launcher_copies()
     assert {rel for rel, _ in copies} == set(_LAUNCHER_FILES)  # none silently skipped
     for rel, command in copies:
-        root = re.search(r'"\$p" "(\$\{?\w+\}?)/', command).group(1)
+        guard = re.match(r'\[ -n "(\$\{?\w+\}?)" \] \|\| \{ echo \'', command)
+        assert guard, (rel, command[:80])
+        root = guard.group(1)
         name = root.strip("${}")
-        guard = f'[ -n "{root}" ] || {{ echo \''
-        assert command.startswith(guard), (rel, command[:80])
-        assert (
-            f"{name} is empty, so the gate script cannot be found; failing closed' >&2; exit 2; }}; for p in"
-            in command
+        head, tail = command.split("; exit 2; }; ", 1)
+        assert head.endswith(
+            f"{name} is empty, so the gate script cannot be found; failing closed' >&2"
         ), rel
+        # the path the launcher runs starts with the SAME token the guard read
+        assert tail.startswith("for p in ") or tail == f'sh "{root}/scripts/gate.sh"', (rel, tail)
+        assert f'"{root}/' in tail, rel
 
 
 @needs_bash

@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `claude-plugin/hooks/hooks.json`: the plugin's hook command is now the empty-root guard
+  followed by one path, `sh "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"`; the interpreter loop
+  that was inline moved, unchanged, into that new file. The plugin directory's submission
+  checklist requires a hook command in a subfolder plugin to be a single path from
+  `${CLAUDE_PLUGIN_ROOT}` with no other variable, substitution, wildcard or inline program.
+  The guard stays in the command so an empty root is still refused by name on every Claude
+  Code version before any file is looked up. `gate.sh` is written by `tools/vendor_plugin.py`
+  from the same launcher function `init` uses, and `tests/test_claude_plugin.py` holds the
+  command and the file byte-for-byte; the empty-root and control runs in
+  `tests/test_launcher_empty_root.py` now exercise the two-part launcher.
+
 ### Added
 - `tests/test_langgraph_interrupt.py`: LangGraph pause, resume and replay against
   `recusal_gate`, on `langgraph==1.2.12` with an `InMemorySaver` checkpointer. A review node

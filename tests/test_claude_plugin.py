@@ -2,7 +2,9 @@
 
 Drift locks and end-to-end runs:
 - the plugin's launcher is the fail-closed launcher template with a Python-only probe (it
-  vendors its runtime), pointed at ``${CLAUDE_PLUGIN_ROOT}``, byte-for-byte;
+  vendors its runtime), pointed at ``${CLAUDE_PLUGIN_ROOT}``, byte-for-byte: the hook
+  command is the empty-root guard plus the one path ``scripts/gate.sh``, and that file
+  carries the interpreter loop;
 - the plugin gate shim carries the same policy wiring the scaffolder emits;
 - every version surface (pyproject, ``recusal.__version__``, plugin.json,
   marketplace.json) agrees;
@@ -23,7 +25,15 @@ import subprocess
 import sys
 
 import recusal
-from recusal.__main__ import _PROBE_PYTHON, LAUNCHER_COMMAND, posix_launcher
+from recusal.__main__ import (
+    _PROBE_PYTHON,
+    LAUNCHER_COMMAND,
+    PLUGIN_GATE,
+    PLUGIN_HOOK_COMMAND,
+    PLUGIN_LAUNCHER_SCRIPT,
+    PLUGIN_ROOT,
+    posix_launcher,
+)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN_DIR = os.path.join(REPO_ROOT, "claude-plugin")
@@ -64,24 +74,33 @@ def test_plugin_launcher_is_the_canonical_launcher_path_swapped():
     groups = hooks["hooks"]["PreToolUse"]
     assert len(groups) == 1 and groups[0]["matcher"] == ".*"
     plugin_cmd = groups[0]["hooks"][0]["command"]
-    # the same fail-closed template, pointed at the plugin's gate; the plugin vendors its
-    # runtime, so its probe needs only a Python, never an installed recusal package
-    expected = posix_launcher(
-        '"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"',
-        _PROBE_PYTHON,
-        root="${CLAUDE_PLUGIN_ROOT}",
-    )
-    assert plugin_cmd == expected
+    assert plugin_cmd == PLUGIN_HOOK_COMMAND
     # the empty-root guard reads the SAME token the gate path uses, so it sees the value
     # the path will see whether the host substitutes the token or the shell expands it
     assert plugin_cmd.startswith('[ -n "${CLAUDE_PLUGIN_ROOT}" ] || ')
-    assert "import recusal" not in plugin_cmd
+    # after the guard, the command is ONE path from ${CLAUDE_PLUGIN_ROOT}: no other
+    # variable, no command substitution, no wildcard, no inline program (the plugin
+    # directory's rule for a hook command in a plugin that is a subfolder of its repo)
+    _, tail = plugin_cmd.split("exit 2; }; ", 1)
+    assert tail == 'sh "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"'
+    assert re.findall(r"\$\{?\w+", tail) == ["${CLAUDE_PLUGIN_ROOT"]
+    assert "$(" not in tail and "`" not in tail and "*" not in tail and " -c " not in tail
+    # gate.sh IS the canonical launcher, pointed at the plugin's gate: the same fail-closed
+    # template with a Python-only probe (the plugin vendors its runtime, so it never
+    # requires an installed recusal package), byte-for-byte
+    with open(os.path.join(PLUGIN_DIR, "scripts", "gate.sh"), "rb") as fh:
+        script = fh.read()
+    assert b"\r" not in script  # sh reads it as written; a CRLF checkout would break it
+    assert script.decode("utf-8") == PLUGIN_LAUNCHER_SCRIPT
+    lines = [line for line in script.decode("utf-8").splitlines() if not line.startswith("#")]
+    assert lines == [posix_launcher(PLUGIN_GATE, _PROBE_PYTHON, root=PLUGIN_ROOT)]
+    assert "import recusal" not in PLUGIN_LAUNCHER_SCRIPT
     assert (
         LAUNCHER_COMMAND.replace(
             '"$CLAUDE_PROJECT_DIR/.claude/hooks/recusal_gate.py"',
             '"${CLAUDE_PLUGIN_ROOT}/scripts/recusal_gate.py"',
         )
-        != plugin_cmd
+        != lines[0]
     )  # init's launcher DOES require recusal; the two must not converge
 
 
