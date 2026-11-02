@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `tests/test_langgraph_interrupt.py`: LangGraph pause, resume and replay against
+  `recusal_gate`, on `langgraph==1.2.12` with an `InMemorySaver` checkpointer. A review node
+  that calls `interrupt()` before the `ToolNode` is judged once, on resume, as the call will
+  run (an edit to `DELETE` is refused; a policy revoked or a grant expired during the pause
+  refuses the resumed call); a tool that calls `interrupt()` itself is judged before the pause
+  and again on resume, one execution; a replay or fork from a checkpoint is a new execution
+  judged again under the current policy. Negative controls run the `DELETE` without the gate.
+  The one pattern outside a pre-tool gate, a value supplied on resume and consumed inside the
+  tool, is pinned as a known limitation (the test asserts the `DELETE` runs, so a LangGraph
+  change that routes resume values through the hook shows up). The file joins the two
+  LangGraph CI jobs and the weekly latest lane; README and cookbook paragraphs explain the
+  rule and the limitation. "Works with" marks the row Tested. (#80)
+
 ### Fixed
 - `docs/EXTENDING.md`: the `gate_tool_use` example now imports the function it calls, and the
   `compute_verdict` line is valid Python. A new test, `tests/test_documentation_examples.py`,
