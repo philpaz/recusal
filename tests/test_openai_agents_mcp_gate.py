@@ -48,6 +48,16 @@ def _text(output):
     return str(output)
 
 
+def _refuse_deletes(name, args):
+    """A policy keyed on arguments alone, so what it saw as the tool NAME is the evidence."""
+    from recusal import Finding
+
+    sql = args.get("sql", "") if isinstance(args, dict) else ""
+    if sql.upper().startswith("DELETE"):
+        return [Finding.fail("sql_scope", severity="CRITICAL", detail="destructive SQL")]
+    return []
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
 )
@@ -84,12 +94,13 @@ class TestOpenAIAgentsMcpGate:
     def test_refused_call_never_reaches_the_server_and_reason_reaches_the_model(self, example):
         outputs, called = example.run_calls([("run_sql", {"sql": DELETE}, "c1")])
         assert called == []
-        assert outputs["c1"].startswith(REFUSED) and "top-level WHERE" in outputs["c1"]
+        text = _text(outputs["c1"])
+        assert text.startswith(REFUSED) and "top-level WHERE" in text
 
     def test_several_calls_in_one_turn_are_gated_separately(self, example):
         outputs, called = example.run_calls(self.three_calls())
         assert _text(outputs["c1"]) == "hello"
-        assert outputs["c2"].startswith(REFUSED)
+        assert _text(outputs["c2"]).startswith(REFUSED)
         assert _text(outputs["c3"]) == f"recorded SQL: {SELECT}"
         assert called == [("db", "echo", {"text": "hello"}), ("db", "run_sql", {"sql": SELECT})]
 
@@ -99,14 +110,14 @@ class TestOpenAIAgentsMcpGate:
 
         outputs, called = example.run_calls([("echo", {"text": "x"}, "c1")], policy=broken_policy)
         assert called == []
-        assert outputs["c1"] == "Recusal failed closed (policy error): policy exploded"
+        assert _text(outputs["c1"]) == "Recusal failed closed (policy error): policy exploded"
 
     def test_negative_control_the_server_runs_delete_without_the_gate(self, example):
         outputs, called = example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False)
         assert called == [("db", "run_sql", {"sql": DELETE})]
         assert _text(outputs["c1"]) == f"recorded SQL: {DELETE}"
 
-    def test_gate_mcp_server_gates_in_place_and_keeps_existing_guardrails(self, example):
+    def test_gate_mcp_server_gates_in_place_once_and_leaves_guardrails_alone(self, example):
         from agents import ToolGuardrailFunctionOutput, tool_input_guardrail
 
         order = []
@@ -120,61 +131,121 @@ class TestOpenAIAgentsMcpGate:
         assert not example.is_gated_mcp_server(server)
         assert example.gate_mcp_server(server, example.sql_scope_policy) is server
         assert example.is_gated_mcp_server(server)
-        assert server.tool_input_guardrails[0] is first
+        gated_once = server.call_tool
+        assert example.gate_mcp_server(server, example.sql_scope_policy) is server
+        assert server.call_tool is gated_once  # idempotent: one gate, not a chain
+        assert server.tool_input_guardrails == [first]  # the app's guardrails stay as written
         outputs, called = example.run_calls(
             [("run_sql", {"sql": DELETE}, "c1")], gated=False, server=server
         )
-        assert order == ["first"] and called == [] and outputs["c1"].startswith(REFUSED)
+        assert order == ["first"] and called == [] and _text(outputs["c1"]).startswith(REFUSED)
 
     def test_gate_mcp_server_refuses_what_is_not_a_server(self, example):
         with pytest.raises(TypeError, match="not an agents.mcp.MCPServer"):
             example.gate_mcp_server(object(), example.sql_scope_policy)
 
-    def test_under_prefixed_public_names_the_policy_still_sees_the_servers_tool_name(self, example):
-        """With include_server_in_tool_names the model calls mcp_<server>__<tool>; the gate
-        maps that back to the name the server will run, so a policy keyed by the bare tool
-        name keeps matching. The name the gate judged is the one in the refusal."""
-        from agents import Agent
+    @pytest.mark.parametrize(
+        "label, server_specs, mcp_config, raw_names",
+        [
+            ("plain", [("db", ("run_sql",))], None, ["run_sql"]),
+            (
+                "prefixed",
+                [("db", ("run_sql",))],
+                {"include_server_in_tool_names": True},
+                ["run_sql"],
+            ),
+            (
+                "collision",
+                [("db.a", ("run_sql",)), ("db_a", ("run_sql",))],
+                {"include_server_in_tool_names": True},
+                ["run_sql", "run_sql"],
+            ),
+            (
+                "raw name looks prefixed",
+                [("db", ("mcp_db__run_sql",))],
+                None,
+                ["mcp_db__run_sql"],
+            ),
+            (
+                "sanitized",
+                [("db", ("run.sql",))],
+                {"include_server_in_tool_names": True},
+                ["run.sql"],
+            ),
+            (
+                "shortened",
+                [("db", ("run_sql_" + "x" * 70,))],
+                {"include_server_in_tool_names": True},
+                ["run_sql_" + "x" * 70],
+            ),
+        ],
+        ids=lambda v: v if isinstance(v, str) else "",
+    )
+    def test_the_policy_judges_the_servers_own_tool_name_under_every_public_naming(
+        self, example, label, server_specs, mcp_config, raw_names
+    ):
+        """The SDK prefixes, sanitizes, hashes and shortens public names; the gate sits at
+        call_tool, so the policy sees the raw name the server runs and nothing runs when
+        it refuses. The policy here keys on the arguments alone, so the names it recorded
+        are the evidence of what it was shown."""
+        from agents import Agent, RunContextWrapper
 
         seen = []
 
         def recording(name, args):
             seen.append(name)
-            return example.sql_scope_policy(name, args)
+            return _refuse_deletes(name, args)
 
+        servers = [
+            example.gate_mcp_server(example.InProcessMCPServer(name, tools), recording)
+            for name, tools in server_specs
+        ]
+        kwargs = {"mcp_config": mcp_config} if mcp_config else {}
+        probe = Agent(name="a", model=example.scripted_model([]), mcp_servers=servers, **kwargs)
+        public = [t.name for t in asyncio.run(probe.get_mcp_tools(RunContextWrapper(context=None)))]
+        assert len(public) == len(raw_names)
+        calls = [(name, {"sql": DELETE}, f"c{i}") for i, name in enumerate(public, 1)]
         example.CALLED.clear()
-        model = example.scripted_model([("mcp_db__run_sql", {"sql": DELETE}, "c1")])
-        server = example.gate_mcp_server(example.InProcessMCPServer(), recording)
-        agent = Agent(
-            name="a",
-            model=model,
-            mcp_servers=[server],
-            mcp_config={"include_server_in_tool_names": True},
-        )
-        asyncio.run(example.run_agent(agent))
-        assert seen == ["run_sql"]
+        model = example.scripted_model(calls)
+        asyncio.run(example.run_agent(Agent(name="a", model=model, mcp_servers=servers, **kwargs)))
+        assert sorted(seen) == sorted(raw_names), label
         assert example.CALLED == []
-        assert example.tool_outputs(model)["c1"].startswith(REFUSED)
+        for _, _, call_id in calls:
+            assert "[FAIL]: sql_scope" in _text(example.tool_outputs(model)[call_id])
 
-    def test_the_prefix_is_the_servers_own_so_another_servers_prefix_is_not_stripped(self, example):
+    def test_a_function_tool_holding_the_name_hides_the_mcp_tool_without_prefixing(self, example):
+        """Pinned as observed on the pinned SDK: an unprefixed MCP tool whose name a function
+        tool already holds is shadowed, so the model's call runs the function tool. The MCP
+        gate never saw a call because the server was never called; the function tool is
+        gated by the function-tool example, which gated_agent applies."""
+        from agents import Agent, RunContextWrapper
+
+        from examples.openai_agents_gate import run_sql
+
         seen = []
 
         def recording(name, args):
             seen.append(name)
-            return []
+            return _refuse_deletes(name, args)
 
-        example.gate_mcp_server(example.InProcessMCPServer(name="db"), recording)
-        guardrail = example.recusal_mcp_guardrail(recording, "db")
-        for public, expected in (
-            ("mcp_db__run_sql", "run_sql"),
-            ("run_sql", "run_sql"),
-            ("mcp_other__run_sql", "mcp_other__run_sql"),
-            ("mcp_db__", "mcp_db__"),
-        ):
-            assert example._judged_name(public, "db") == expected, public
-        assert guardrail.guardrail_function.recusal_gate is True
+        server = example.gate_mcp_server(example.InProcessMCPServer(tools=("run_sql",)), recording)
+        agent = Agent(
+            name="a", model=example.scripted_model([]), tools=[run_sql], mcp_servers=[server]
+        )
+        assert [
+            t.name for t in asyncio.run(agent.get_mcp_tools(RunContextWrapper(context=None)))
+        ] == ["run_sql"]
+        example.CALLED.clear()
+        model = example.scripted_model([("run_sql", {"sql": DELETE}, "c1")])
+        gated = example.gated_agent(
+            Agent(name="a", model=model, tools=[run_sql], mcp_servers=[server]), recording
+        )
+        asyncio.run(example.run_agent(gated))
+        assert example.CALLED == []
+        assert "[FAIL]: sql_scope" in _text(example.tool_outputs(model)["c1"])
+        assert seen == ["run_sql"]  # judged once, by the function-tool guardrail
 
-    def test_an_approval_never_skips_the_guardrail(self, example):
+    def test_an_approval_never_skips_the_gate(self, example):
         from agents import Agent, RunConfig, Runner
 
         model = example.scripted_model([("run_sql", {"sql": DELETE}, "c1")])
@@ -194,7 +265,7 @@ class TestOpenAIAgentsMcpGate:
         example.CALLED.clear()
         asyncio.run(flow())
         assert example.CALLED == []
-        assert example.tool_outputs(model)["c1"].startswith(REFUSED)
+        assert _text(example.tool_outputs(model)["c1"]).startswith(REFUSED)
 
     # --- hosted MCP ----------------------------------------------------------------------
 

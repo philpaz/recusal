@@ -1,16 +1,16 @@
 """What the OpenAI Agents SDK's MCP paths let a gate see, pinned so a new SDK release cannot change it quietly.
 
 `tests/test_openai_agents_mcp_gate.py` proves the example's behavior. This file pins the SDK
-surface that behavior depends on. For local MCP servers: `MCPServer` takes and keeps
-`tool_input_guardrails`, every tool a server lists becomes a function tool carrying those
-guardrails, the guardrail sees the public tool name and the JSON arguments the server is
-then called with, a rejection stops the call and becomes its output, a raising guardrail
-stops the call, and a person's approval never skips the guardrail. For hosted MCP: the
-`HostedMCPTool` fields the gate sets, the approval callback's request (name, arguments,
-server label) and the response the SDK sends back for a rejection with a reason, and that
-without a callback an approval request becomes an interruption rather than a call. An
-ungated server and tool are the negative controls, so a probe that stopped observing
-anything would fail rather than pass.
+surface that behavior depends on. For local MCP servers: the SDK invokes the server's
+`call_tool` with the server's own tool name and the parsed argument dict, whatever public
+name the model called (prefixed, sanitized, hashed or shortened), it honors an instance-level
+`call_tool`, it passes `meta` only when a resolver produced one, an error result's text is
+what the model reads, and a person's approval happens before `call_tool`. For hosted MCP: the
+`HostedMCPTool` fields the gate sets, the approval callback's request (name, arguments, server
+label) and the response the SDK sends back for a rejection with a reason, and that without a
+callback an approval request becomes an interruption rather than a call. An ungated server and
+tool are the negative controls, so a probe that stopped observing anything would fail rather
+than pass.
 
 It runs in the pinned CI jobs (the exact versions the README names) and weekly against the
 newest SDK in `.github/workflows/compat.yml`. A failure there means an SDK release changed
@@ -51,158 +51,161 @@ def ex():
     return module
 
 
-def _guardrail(func, name="probe"):
-    from agents import tool_input_guardrail
-
-    return tool_input_guardrail(func, name=name)
-
-
-def _allow():
-    from agents import ToolGuardrailFunctionOutput
-
-    return ToolGuardrailFunctionOutput.allow()
-
-
-def _run_server(ex, calls, server, **agent_kwargs):
+def _run_server(ex, calls, servers, **agent_kwargs):
     from agents import Agent
 
     ex.CALLED.clear()
     model = ex.scripted_model(calls)
-    agent = Agent(name="a", model=model, mcp_servers=[server], **agent_kwargs)
+    agent = Agent(name="a", model=model, mcp_servers=list(servers), **agent_kwargs)
     asyncio.run(ex.run_agent(agent))
     return ex.tool_outputs(model), list(ex.CALLED)
+
+
+def _public_names(ex, servers, **agent_kwargs):
+    from agents import Agent, RunContextWrapper
+
+    agent = Agent(name="a", model=ex.scripted_model([]), mcp_servers=list(servers), **agent_kwargs)
+    return [t.name for t in asyncio.run(agent.get_mcp_tools(RunContextWrapper(context=None)))]
+
+
+def _record_calls(server):
+    """Replace the server's call_tool with a recorder, the way the gate wraps it."""
+    from mcp.types import CallToolResult, TextContent
+
+    seen = []
+
+    async def recorder(tool_name, arguments, meta=None):
+        seen.append((tool_name, arguments, meta))
+        return CallToolResult(content=[TextContent(type="text", text="recorded")])
+
+    server.call_tool = recorder
+    return seen
 
 
 # --- local MCP servers ---------------------------------------------------------------------
 
 
-def test_mcp_server_takes_and_keeps_tool_input_guardrails(ex):
+def test_call_tool_takes_the_tool_name_the_arguments_and_an_optional_meta(ex):
     from agents.mcp import MCPServer
 
-    params = inspect.signature(MCPServer.__init__).parameters
-    assert "tool_input_guardrails" in params
-    assert params["tool_input_guardrails"].kind is inspect.Parameter.KEYWORD_ONLY
-    guardrail = _guardrail(lambda data: _allow())
-    server = ex.InProcessMCPServer(tool_input_guardrails=[guardrail])
-    assert server.tool_input_guardrails == [guardrail]
-    assert ex.InProcessMCPServer().tool_input_guardrails is None
+    params = inspect.signature(MCPServer.call_tool).parameters
+    assert list(params) == ["self", "tool_name", "arguments", "meta"]
+    assert params["meta"].default is None
 
 
-def test_every_listed_tool_becomes_a_function_tool_carrying_the_servers_guardrails(ex):
-    from agents import Agent, FunctionTool, RunContextWrapper
-
-    guardrail = _guardrail(lambda data: _allow())
-    server = ex.InProcessMCPServer(tool_input_guardrails=[guardrail])
-    agent = Agent(name="a", model=ex.scripted_model([]), mcp_servers=[server])
-    tools = asyncio.run(agent.get_mcp_tools(RunContextWrapper(context=None)))
-    assert sorted(tool.name for tool in tools) == ["echo", "run_sql"]
-    for tool in tools:
-        assert isinstance(tool, FunctionTool)
-        assert tool.tool_input_guardrails == [guardrail]
-        assert tool.tool_input_guardrails is not server.tool_input_guardrails  # a copy per tool
-
-
-def test_the_guardrail_sees_the_public_name_and_the_json_the_server_is_called_with(ex):
-    seen = []
-
-    def probe(data):
-        seen.append((data.context.tool_name, data.context.tool_arguments))
-        return _allow()
-
-    server = ex.InProcessMCPServer(tool_input_guardrails=[_guardrail(probe)])
+def test_the_sdk_calls_an_instance_level_call_tool_with_the_parsed_arguments(ex):
+    server = ex.InProcessMCPServer()
+    seen = _record_calls(server)
     arguments = json.dumps({"sql": SELECT})
-    _, called = _run_server(ex, [("run_sql", arguments, "c1")], server)
-    assert seen == [("run_sql", arguments)]
-    assert called == [("db", "run_sql", json.loads(arguments))]
+    outputs, called = _run_server(ex, [("run_sql", arguments, "c1")], [server])
+    assert seen == [("run_sql", json.loads(arguments), None)]
+    assert called == []  # the class method was not reached: the instance attribute won
+    assert ex._text(outputs["c1"]) == "recorded"
 
 
-def test_with_server_prefixed_names_the_guardrail_sees_the_prefixed_name(ex):
-    from agents.mcp.util import MCPUtil
+@pytest.mark.parametrize(
+    "label, server_specs, mcp_config, raw_names",
+    [
+        ("prefixed", [("db", ("run_sql",))], {"include_server_in_tool_names": True}, ["run_sql"]),
+        (
+            "collision",
+            [("db.a", ("run_sql",)), ("db_a", ("run_sql",))],
+            {"include_server_in_tool_names": True},
+            ["run_sql", "run_sql"],
+        ),
+        ("sanitized", [("db", ("run.sql",))], {"include_server_in_tool_names": True}, ["run.sql"]),
+        ("raw looks prefixed", [("db", ("mcp_db__run_sql",))], None, ["mcp_db__run_sql"]),
+        (
+            "shortened",
+            [("db", ("run_sql_" + "x" * 70,))],
+            {"include_server_in_tool_names": True},
+            ["run_sql_" + "x" * 70],
+        ),
+    ],
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_call_tool_receives_the_servers_own_name_whatever_the_public_name(
+    ex, label, server_specs, mcp_config, raw_names
+):
+    servers = [ex.InProcessMCPServer(name, tools) for name, tools in server_specs]
+    recorders = [_record_calls(server) for server in servers]
+    kwargs = {"mcp_config": mcp_config} if mcp_config else {}
+    public = _public_names(ex, servers, **kwargs)
+    assert len(public) == len(raw_names), label
+    if mcp_config:
+        assert all(name.startswith("mcp_") for name in public)  # the public names differ
+    calls = [(name, {"sql": SELECT}, f"c{i}") for i, name in enumerate(public, 1)]
+    _run_server(ex, calls, servers, **kwargs)
+    raw_seen = sorted(name for seen in recorders for name, _, _ in seen)
+    assert raw_seen == sorted(raw_names), label
+    assert all(args == {"sql": SELECT} for seen in recorders for _, args, _ in seen)
 
-    assert MCPUtil._build_prefixed_tool_base_name("db", "run_sql") == "mcp_db__run_sql"
-    # the example's own prefix helper agrees with the SDK for every kind of server name
-    for server_name in ("db", "my server", "a.b/c", "__x__", "Ünïcode", ""):
-        assert MCPUtil._build_prefixed_tool_base_name(server_name, "t") == (
-            ex._public_prefix(server_name) + "t"
-        ), server_name
-    seen = []
 
-    def probe(data):
-        seen.append(data.context.tool_name)
-        return _allow()
+def test_meta_is_passed_only_when_a_resolver_produced_one(ex):
+    plain = ex.InProcessMCPServer()
+    seen_plain = _record_calls(plain)
+    _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], [plain])
+    assert seen_plain[0][2] is None
 
-    server = ex.InProcessMCPServer(tool_input_guardrails=[_guardrail(probe)])
-    _, called = _run_server(
-        ex,
-        [("mcp_db__run_sql", {"sql": SELECT}, "c1")],
-        server,
-        mcp_config={"include_server_in_tool_names": True},
-    )
-    assert seen == ["mcp_db__run_sql"]
-    assert called == [("db", "run_sql", {"sql": SELECT})]  # the server still gets its own name
+    with_meta = ex.InProcessMCPServer(tool_meta_resolver=lambda *a, **k: {"trace": "t1"})
+    seen_meta = _record_calls(with_meta)
+    _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], [with_meta])
+    assert seen_meta[0][2] == {"trace": "t1"}
 
 
-def test_a_rejection_stops_the_call_and_becomes_its_output(ex):
-    from agents import ToolGuardrailFunctionOutput
+def test_an_error_results_text_is_what_the_model_reads_and_the_run_goes_on(ex):
+    from mcp.types import CallToolResult, TextContent
 
-    server = ex.InProcessMCPServer(
-        tool_input_guardrails=[
-            _guardrail(lambda data: ToolGuardrailFunctionOutput.reject_content("stopped here"))
-        ]
-    )
-    outputs, called = _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], server)
+    server = ex.InProcessMCPServer()
+
+    async def refuse(tool_name, arguments, meta=None):
+        return CallToolResult(content=[TextContent(type="text", text="stopped here")], isError=True)
+
+    server.call_tool = refuse
+    outputs, called = _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], [server])
     assert called == []
-    assert outputs["c1"] == "stopped here"
+    assert ex._text(outputs["c1"]) == "stopped here"
 
 
-def test_a_guardrail_that_raises_stops_the_call(ex):
-    def boom(data):
-        raise RuntimeError("guardrail exploded")
+def test_a_call_tool_that_raises_becomes_an_error_the_model_reads_not_a_tool_run(ex):
+    """The SDK turns an exception from call_tool into the call's error output (its default
+    failure handler) and the run goes on; nothing ran. The gate never relies on raising:
+    it returns an error result, so this is pinned only as the surrounding behavior."""
+    server = ex.InProcessMCPServer()
 
-    server = ex.InProcessMCPServer(tool_input_guardrails=[_guardrail(boom)])
-    with pytest.raises(Exception, match="guardrail exploded"):
-        _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], server)
-    assert ex.CALLED == []
+    async def boom(tool_name, arguments, meta=None):
+        raise RuntimeError("call_tool exploded")
+
+    server.call_tool = boom
+    outputs, called = _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], [server])
+    assert called == []
+    assert "error" in ex._text(outputs["c1"]).lower()
 
 
-@pytest.mark.parametrize("pre_approval", [False, True])
-def test_an_approval_never_skips_the_guardrail(ex, pre_approval):
+def test_a_persons_approval_happens_before_call_tool(ex):
     from agents import Agent, RunConfig, Runner
 
-    seen = []
-
-    def probe(data):
-        seen.append(data.context.tool_name)
-        return _allow()
-
-    server = ex.InProcessMCPServer(
-        require_approval="always", tool_input_guardrails=[_guardrail(probe)]
-    )
+    server = ex.InProcessMCPServer(require_approval="always")
+    seen = _record_calls(server)
     model = ex.scripted_model([("run_sql", {"sql": SELECT}, "c1")])
     agent = Agent(name="a", model=model, mcp_servers=[server])
-    config = RunConfig(
-        tracing_disabled=True, tool_execution={"pre_approval_tool_input_guardrails": pre_approval}
-    )
+    config = RunConfig(tracing_disabled=True)
 
     async def flow():
         result = await Runner.run(agent, "go", run_config=config)
-        if pre_approval:
-            assert seen == ["run_sql"] and len(result.interruptions) == 1
-        else:
-            assert seen == [] and len(result.interruptions) == 1
+        assert len(result.interruptions) == 1 and seen == []
         state = result.to_state()
         state.approve(result.interruptions[0])
         await Runner.run(agent, state, run_config=config)
 
-    ex.CALLED.clear()
     asyncio.run(flow())
-    # judged when it runs; with pre-approval guardrails on, also before the person is asked
-    assert seen == ["run_sql", "run_sql"] if pre_approval else ["run_sql"]
-    assert ex.CALLED == [("db", "run_sql", {"sql": SELECT})]
+    assert seen == [("run_sql", {"sql": SELECT}, None)]
 
 
 def test_negative_control_an_ungated_server_runs_delete(ex):
-    outputs, called = _run_server(ex, [("run_sql", {"sql": DELETE}, "c1")], ex.InProcessMCPServer())
+    outputs, called = _run_server(
+        ex, [("run_sql", {"sql": DELETE}, "c1")], [ex.InProcessMCPServer()]
+    )
     assert called == [("db", "run_sql", {"sql": DELETE})]
     assert ex._text(outputs["c1"]) == f"recorded SQL: {DELETE}"
 

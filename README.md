@@ -630,11 +630,13 @@ tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
 
 For the SDK's MCP tools, [`examples/openai_agents_mcp_gate.py`](examples/openai_agents_mcp_gate.py)
 covers the two paths that example names as out of its sight. A local MCP server
-(`mcp_servers=`) has its tools turned into function tools at run time, and the SDK copies
-the server's `tool_input_guardrails` onto each one, so `gate_mcp_server(server, policy)`
-appends the same guardrail to the server, in place: every tool it lists is judged
-immediately before it runs, after any approval, and a refusal becomes the call's output.
-The policy sees the server's own tool name even when the SDK prefixes public names.
+(`mcp_servers=`) has its tools listed and renamed for the model at run time, prefixed,
+sanitized, hashed on collision or shortened, so a gate keyed on the public name judges a
+presentation of the capability. `gate_mcp_server(server, policy)` instead wraps the
+server's own `call_tool`, in place, the one point where the SDK hands over the server's
+tool name and the exact arguments it will run, after any approval; a refusal is returned
+as an MCP error result carrying the reason, so the model reads it and the server is never
+called. A policy keyed by tool name names the server's own tools.
 Hosted MCP runs on OpenAI's servers, and the one local point is the approval callback, so
 `gate_hosted_mcp(tool, policy)` returns a copy that requires approval for every call and
 answers a refusal as a rejection with Recusal's reason; a call OpenAI does not ask approval

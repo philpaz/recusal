@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `examples/openai_agents_mcp_gate.py`: the local-server gate moved from a tool input
+  guardrail on the public tool name to a wrapper on the server's own `call_tool`, the one
+  point where the SDK hands over the server's tool name and the exact argument dict it will
+  run, after any approval. The 0.12.6 fix mapped one prefix back; the SDK also sanitizes,
+  hashes on collision or on a name a function tool holds, and shortens, so a policy keyed
+  on the server's tool name could still miss the capability that executed. The tests now
+  run the SDK's naming pipeline (plain, prefixed, colliding servers, a sanitized name, a raw
+  name that looks prefixed, a shortened name) and assert the policy saw the raw name and
+  nothing ran; the surface probe pins what `call_tool` receives under each. (Found in the
+  2026-11-02 architecture review.)
+- `examples/composed_policies.py` (recipe 10): `compose_policies` returns a `ComposedPolicy`
+  that forwards `get_control_identity` and `reset_control_identity`, so a composition
+  containing `manifest_policy` records the same `manifest_sha256` the direct policy does;
+  before, the verdict survived and the manifest provenance silently disappeared from the
+  audit record. Adding a no-op policy changes neither the verdict nor the control
+  identity, pinned by the tests; two manifest policies in one gate are refused up front.
+  (Same review.)
+
 ## [0.12.6] - 2026-11-02
 
 Two more agent runtimes are Tested, Pydantic AI and the OpenAI Agents SDK's MCP tools (local
