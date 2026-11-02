@@ -7,6 +7,8 @@ import runpy
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -15,6 +17,29 @@ def _run_demo(rel_path: str) -> str:
     with contextlib.redirect_stdout(buf):
         runpy.run_path(os.path.join(REPO, rel_path), run_name="__main__")
     return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("audit_demo.py", ("verify: INTACT", "verify: TAMPERED", "content tampered")),
+        ("classify_demo.py", ("transient", "retry", "prompt_injection", "quarantine", "unknown")),
+    ],
+)
+def test_offline_demos_run_as_standalone_programs(script, expected, tmp_path):
+    """The documented demo commands work outside the checkout, without a service."""
+    proc = subprocess.run(
+        [sys.executable, os.path.join(REPO, "examples", script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    assert proc.stderr == ""
+    for marker in expected:
+        assert marker in proc.stdout
 
 
 def test_audit_sink_demo_mirrors_resumes_and_refuses_truncation():
