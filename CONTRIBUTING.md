@@ -141,9 +141,19 @@ hook and its traps. A runtime PR is done when it has all of these:
 5. **The latest lane.** The same packages, unpinned, in the matrix of
    `.github/workflows/compat.yml`.
 6. **The README row.** Its status in Works with becomes Tested, linking the example.
+7. **The conformance row.** Register the example in `tests/test_adapter_conformance.py`:
+   one normalizer per route the framework offers, from the example's `run_calls` to the
+   suite's `(refused, text)` outcomes and `(name, arguments)` executions. The suite then
+   runs the same five invariants against it as against every other adapter (the policy
+   judged what ran, a refusal runs nothing and is read by the model, calls are judged
+   separately, a raising policy fails closed, the ungated control runs), and the file
+   joins the runtime's pinned jobs and latest-lane rows. A drift lock fails when a Tested
+   `*_gate.py` example is missing from the registry.
 
 `tests/test_compat_process.py` fails if a pinned runtime is missing its surface probe or
-its latest-lane entry, or if the two lanes install different packages. After merge the
+its latest-lane entry, or if the two lanes install different packages, and
+`tests/test_adapter_conformance.py` fails if a runtime lane does not run the conformance
+suite. After merge the
 maintainer adds the new pinned jobs to the required checks. How tested runtimes are kept
 working as frameworks release is in [`STABILITY.md`](STABILITY.md#integrations).
 

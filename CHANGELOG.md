@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `tests/test_adapter_conformance.py`: one contract for every framework adapter. Five
+  invariants, stated once and run against each adapter through a normalizer per route
+  (LangGraph sync and async, LangChain sync and async, OpenAI Agents run and streamed, the
+  OpenAI Agents local MCP server, the Responses and Chat Completions loops, Google ADK
+  callback and plugin, CrewAI hooks, Pydantic AI capability and hooks): the arguments the
+  policy judged are the arguments the tool ran with; a refusal runs nothing and its reason
+  reaches the model; calls in one turn are judged separately; a raising policy fails
+  closed; the ungated control runs the same call. Invariants only some adapters can express
+  (batch rejection, renaming, delegation, composition provenance) stay in their own tests
+  and the docstring says where. Two drift locks: every Tested `*_gate.py` example is
+  registered, and the file runs in every runtime lane of `ci.yml` and `compat.yml`.
+  `CONTRIBUTING.md` adds the registration step to "Adding a runtime". (From the
+  2026-11-02 architecture review.)
+
 ### Fixed
 - `examples/openai_agents_mcp_gate.py`: the local-server gate moved from a tool input
   guardrail on the public tool name to a wrapper on the server's own `call_tool`, the one

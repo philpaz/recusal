@@ -120,8 +120,10 @@ README's [Works with](README.md#works-with) table is supported at the exact vers
 README names, and it is checked in two lanes:
 
 - **Pinned lane, on every pull request.** Required CI jobs install exactly the versions
-  the README names and run the example's tests and its surface probe
-  (`tests/test_compat_<runtime>.py`), which pins what the gate can see in that framework.
+  the README names and run the example's tests, its surface probe
+  (`tests/test_compat_<runtime>.py`), which pins what the gate can see in that framework,
+  and the shared conformance suite (`tests/test_adapter_conformance.py`), which holds
+  every adapter to the same invariants.
 - **Latest lane, weekly and on demand.** `.github/workflows/compat.yml` installs the
   newest release of the same packages and runs the same tests and probe. It never runs on
   a pull request, so a framework release can never block a contribution.

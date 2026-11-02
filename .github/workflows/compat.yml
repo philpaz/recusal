@@ -34,43 +34,43 @@ jobs:
           - runtime: langgraph
             python-version: "3.10"
             packages: "langgraph langchain-core langchain"
-            tests: "tests/test_langgraph_gate.py tests/test_langgraph_audit.py tests/test_langgraph_interrupt.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_compat_langchain.py"
+            tests: "tests/test_langgraph_gate.py tests/test_langgraph_audit.py tests/test_langgraph_interrupt.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_compat_langchain.py tests/test_adapter_conformance.py"
           - runtime: langgraph
             python-version: "3.12"
             packages: "langgraph langchain-core langchain"
-            tests: "tests/test_langgraph_gate.py tests/test_langgraph_audit.py tests/test_langgraph_interrupt.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_compat_langchain.py"
+            tests: "tests/test_langgraph_gate.py tests/test_langgraph_audit.py tests/test_langgraph_interrupt.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_compat_langchain.py tests/test_adapter_conformance.py"
           - runtime: openai_agents
             python-version: "3.10"
             packages: "openai-agents openai"
-            tests: "tests/test_openai_agents_gate.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py"
+            tests: "tests/test_openai_agents_gate.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py"
           - runtime: openai_agents
             python-version: "3.12"
             packages: "openai-agents openai"
-            tests: "tests/test_openai_agents_gate.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py"
+            tests: "tests/test_openai_agents_gate.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py"
           - runtime: google_adk
             python-version: "3.11"
             packages: "google-adk google-genai"
-            tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py"
+            tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py"
           - runtime: google_adk
             python-version: "3.12"
             packages: "google-adk google-genai"
-            tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py"
+            tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py"
           - runtime: crewai
             python-version: "3.10"
             packages: "crewai"
-            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py"
+            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py tests/test_adapter_conformance.py"
           - runtime: crewai
             python-version: "3.12"
             packages: "crewai"
-            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py"
+            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py tests/test_adapter_conformance.py"
           - runtime: pydantic_ai
             python-version: "3.11"
             packages: "pydantic-ai-slim"
-            tests: "tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py"
+            tests: "tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py"
           - runtime: pydantic_ai
             python-version: "3.12"
             packages: "pydantic-ai-slim"
-            tests: "tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py"
+            tests: "tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
