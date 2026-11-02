@@ -12,6 +12,9 @@ on an MCP event. See also ``examples/mcp_governance.py`` and cookbook recipe 12.
 import io
 import json
 
+import pytest
+
+from examples.mcp_governance import mcp_policy as example_mcp_policy
 from recusal import Finding
 from recusal.claude_code import allowlist_policy, decide, run_pretooluse_hook
 
@@ -68,6 +71,43 @@ def test_a_clean_mcp_call_defers_it_never_auto_allows():
     # PASS defers to Claude Code's own permission flow; the gate only ever adds refusals.
     decision, _ = decide("mcp__github__create_issue", {"repo": "philpaz/recusal"}, mcp_policy)
     assert decision == "defer"
+
+
+# --- the shipped example: a destructive verb is caught in any position and any case -------
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__github__delete_repo",
+        "mcp__github__Delete_repo",
+        "mcp__github__DELETE_REPO",
+        "mcp__github__deleteRepository",
+        "mcp__github__repo_delete",
+        "mcp__github__force_delete_branch",
+        "mcp__filesystem__removeFile",
+        "mcp__salesforce__DestroyAll",
+        "mcp__salesforce__truncate",
+    ],
+)
+def test_the_example_refuses_a_destructive_verb_in_any_position_and_case(tool_name):
+    decision, reason = decide(tool_name, {"repo": "philpaz/recusal"}, example_mcp_policy)
+    assert decision == "deny", tool_name
+    assert "destructive" in reason and tool_name in reason
+
+
+def test_the_example_refuses_an_mcp_call_that_names_no_action():
+    decision, _ = decide("mcp__github__", {}, example_mcp_policy)
+    assert decision == "deny"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["mcp__github__create_issue", "mcp__github__list_issues", "mcp__filesystem__read_file"],
+)
+def test_the_example_defers_a_benign_action(tool_name):
+    decision, _ = decide(tool_name, {"repo": "philpaz/recusal"}, example_mcp_policy)
+    assert decision == "defer", tool_name
 
 
 # --- end to end: a real PreToolUse event carrying an MCP tool name ----------------------

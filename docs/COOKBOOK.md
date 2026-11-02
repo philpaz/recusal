@@ -201,29 +201,36 @@ It also demonstrates the boundary: addresses constructed inside a shell or
 interpreter, redirects, and internal tool requests are not inspected. Deferring
 such a call is not proof of safe egress; enforce that at the transport boundary
 or with a vetted default-deny tool policy. The runnable example accepts one bare
-email address and absolute HTTP(S) URLs.
+email address per recipient field and absolute HTTP(S) URLs.
 
 Outbound email/HTTP must go to an allowlisted destination. This is your guard against a
-prompt-injected "send the data to attacker@evil.com".
+prompt-injected "send the data to attacker@evil.com". Every recipient of an email counts:
+`to` is required, and `cc`, `bcc` and `reply_to` are checked whenever present, because a
+copy to `attacker@evil.com` leaks the data as surely as the primary recipient does.
 
 ```python
 from urllib.parse import urlparse
 from recusal import Finding
 
 ALLOWED_DOMAINS = {"acme.com", "internal.example"}
+RECIPIENT_FIELDS = ("to", "cc", "bcc", "reply_to")  # to is required; the rest when present
 
 
-def _destination_host(tool_name, tool_input):
-    # One bare mailbox for email, one absolute http(s) URL otherwise; anything else is "".
-    # "a@evil.com,b@acme.com" must not be read as acme.com, so a list is refused whole.
-    value = tool_input.get("to" if tool_name == "send_email" else "url")
+def _mailbox_host(value):
+    # Exactly one bare mailbox; anything else is "". "a@evil.com,b@acme.com" must not be
+    # read as acme.com, so a list, a display name or a second "@" is refused whole.
     if not isinstance(value, str) or not value or any(c.isspace() for c in value):
         return ""
-    if tool_name == "send_email":
-        local, _, host = value.partition("@")
-        if not local or "@" in host or any(c in value for c in ",;<>"):
-            return ""
-        return host.lower().rstrip(".")
+    local, _, host = value.partition("@")
+    if not local or "@" in host or any(c in value for c in ",;<>"):
+        return ""
+    return host.lower().rstrip(".")
+
+
+def _url_host(value):
+    # One absolute http(s) URL; anything else is "".
+    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+        return ""
     # A backslash or userinfo is where URL parsers disagree: urlparse reads
     # "https://evil.com\@acme.com/" as acme.com, a browser as evil.com.
     if "\\" in value:
@@ -237,13 +244,29 @@ def _destination_host(tool_name, tool_input):
     return (parsed.hostname or "").rstrip(".")
 
 
+def _destination_hosts(tool_name, tool_input):
+    # One host per destination the call names; an unreadable one is "" and refuses below.
+    if tool_name == "send_email":
+        return [
+            _mailbox_host(tool_input.get(f))
+            for f in RECIPIENT_FIELDS
+            if f == "to" or f in tool_input
+        ]
+    return [_url_host(tool_input.get("url"))]
+
+
+def _allowed(host):
+    return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)  # host + subdomains
+
+
 def policy(tool_name, tool_input):
     if tool_name not in ("send_email", "http_post", "webhook"):
         return []
-    host = _destination_host(tool_name, tool_input)
-    if any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS):  # host + subdomains
+    hosts = _destination_hosts(tool_name, tool_input)
+    if all(_allowed(host) for host in hosts):
         return []
     # Missing or malformed refuses too: a destination the policy cannot read is not allowed.
+    host = next(h for h in hosts if not _allowed(h))
     return [
         Finding.fail(
             "egress_allowlist",
@@ -436,13 +459,21 @@ SHELL_META = set(";|&`$<>(){}\n\\")  # chaining / substitution / redirection / e
 
 
 def _under(root, path):
+    # A non-string or empty path is not a path this policy can vet -> refuse.
+    if not isinstance(path, str) or not path:
+        return False
+    # realpath BOTH sides (as recusal.claude_code.allowlist_policy does), so a symlink or
+    # junction inside the workspace that points outside it cannot pass as "inside".
     try:
-        return os.path.commonpath([root, os.path.abspath(path)]) == root
+        root_real = os.path.realpath(root)
+        return os.path.commonpath([root_real, os.path.realpath(path)]) == root_real
     except ValueError:  # different drives on Windows
         return False
 
 
 def _bash_ok(cmd):
+    if not isinstance(cmd, str):  # a command that is not text cannot be vetted -> refuse
+        return False
     if set(cmd) & SHELL_META:  # can't reason about an expanded command -> refuse
         return False
     try:
@@ -484,20 +515,28 @@ high-stakes agents prefer this to a deny-list, or compose both (recipe 10).
 MCP server tools arrive at the hook as ordinary tools named `mcp__<server>__<tool>`
 (`mcp__github__create_issue`), so every recipe above already applies to them. This one adds
 the MCP-shaped rules: pin the servers you expect (a tool from a server you never installed
-should refuse, not run), refuse destructive verbs, scope the rest.
+should refuse, not run), refuse destructive verbs wherever they sit in the action name and
+whatever their case, refuse a call that names no action, scope the rest.
 
 ```python
-import os
+import re
 from recusal import Finding
 
 APPROVED_SERVERS = {"github", "salesforce", "filesystem"}
 APPROVED_REPOS = {"philpaz/recusal"}
 DESTRUCTIVE_VERBS = {"delete", "drop", "truncate", "remove", "destroy"}  # tune to your servers
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def _mcp(tool_name):
     parts = tool_name.split("__", 2)  # "mcp__github__create_issue" -> (github, create_issue)
     return (parts[1], parts[2]) if len(parts) == 3 and parts[0] == "mcp" else None
+
+
+def _action_words(action):
+    # Casefolded words split on "_", other separators and camelCase, so the verb is caught
+    # in any position and case: repo_delete, force_delete_branch, deleteRepository, DELETE_REPO.
+    return {w.casefold() for w in re.split(r"[^A-Za-z0-9]+", _CAMEL_BOUNDARY.sub("_", action)) if w}
 
 
 def policy(tool_name, tool_input):
@@ -513,7 +552,15 @@ def policy(tool_name, tool_input):
                 message=f"MCP server '{server}' is not on the approved list",
             )
         ]
-    if action.split("_", 1)[0] in DESTRUCTIVE_VERBS:
+    if not action:
+        return [
+            Finding.fail(
+                "mcp_unnamed_action",
+                severity="CRITICAL",
+                message=f"MCP call `{tool_name}` names no action",
+            )
+        ]
+    if _action_words(action) & DESTRUCTIVE_VERBS:
         return [
             Finding.fail(
                 "mcp_destructive_action",

@@ -36,6 +36,7 @@ is the same seam).
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,15 +51,23 @@ APPROVED_SERVERS = frozenset({"github", "salesforce", "filesystem"})
 APPROVED_REPOS = frozenset({"philpaz/recusal"})
 WORKSPACE = os.path.abspath("./workspace")
 
-# First verb of the MCP action name; tune to your servers (a server whose "remove_label"
-# is benign wants that call vetted by an explicit rule instead).
+# A destructive verb anywhere in the MCP action name, in any case: ``delete_repo``,
+# ``repo_delete``, ``force_delete_branch``, ``deleteRepository`` and ``DELETE_REPO`` all
+# refuse. Tune to your servers (a server whose "remove_label" is benign wants that call
+# vetted by an explicit rule instead).
 _DESTRUCTIVE_VERBS = frozenset({"delete", "drop", "truncate", "remove", "destroy"})
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def _mcp(tool_name: str):
     """``mcp__github__create_issue`` -> ``("github", "create_issue")``, else None."""
     parts = tool_name.split("__", 2)
     return (parts[1], parts[2]) if len(parts) == 3 and parts[0] == "mcp" else None
+
+
+def _action_words(action: str) -> set:
+    """Casefolded words of an action name, split on ``_``, other separators and camelCase."""
+    return {w.casefold() for w in re.split(r"[^A-Za-z0-9]+", _CAMEL_BOUNDARY.sub("_", action)) if w}
 
 
 def _under(root: str, path: str) -> bool:
@@ -84,7 +93,16 @@ def mcp_policy(tool_name: str, tool_input: dict) -> list:
                 tool=tool_name,
             )
         ]
-    if action.split("_", 1)[0] in _DESTRUCTIVE_VERBS:
+    if not action:
+        return [
+            Finding.fail(
+                "mcp_unnamed_action",
+                severity="CRITICAL",
+                message=f"MCP call `{tool_name}` names no action",
+                tool=tool_name,
+            )
+        ]
+    if _action_words(action) & _DESTRUCTIVE_VERBS:
         return [
             Finding.fail(
                 "mcp_destructive_action",
