@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `docs/VERIFY.md` records the 0.12.3 and 0.12.4 verification runs.
+
 ## [0.12.4] - 2026-11-02
 
 A hardening release. PATCH under `STABILITY.md`: no new public surface. Four enforcement
