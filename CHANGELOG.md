@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-11-02
+
+Two more surfaces are Tested: the LangGraph audit trail (every `ToolNode` call on the
+hash-chained log, labeled `langgraph.toolnode`) and OpenAI function calls gated in an
+application's own loop, Responses API and Chat Completions alike. PATCH under
+`STABILITY.md`: no public surface changes, and the gate behaves exactly as in 0.12.2. The
+examples live under `examples/` and are not part of the installed package; no new CI jobs,
+the existing LangGraph and OpenAI Agents jobs run their tests.
+
 ### Added
 - `examples/langgraph_audit.py`: the LangGraph audit trail. `recusal_audited_gate(policy,
   log)` and `recusal_audited_agate(policy, log)` are the `ToolNode` gates from
