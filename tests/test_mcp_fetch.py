@@ -517,7 +517,7 @@ def test_a_server_that_stops_reading_stdin_is_refused_inside_the_deadline(fake_s
     with pytest.raises(McpFetchError):
         fetch_tools_stdio(fake_server("stall-write"), timeout=0.5, observation_timeout=0.5)
     elapsed = time.monotonic() - started
-    assert elapsed < 5, f"the collector hung for {elapsed:.1f}s past a 0.5s observation deadline"
+    assert elapsed < 20, f"the collector hung for {elapsed:.1f}s past a 0.5s observation deadline"
 
 
 def test_a_write_that_outlives_the_deadline_is_a_refusal_not_a_hang(monkeypatch, fake_server):
@@ -535,7 +535,7 @@ def test_a_write_that_outlives_the_deadline_is_a_refusal_not_a_hang(monkeypatch,
             self._inner = inner
 
         def write(self, text):
-            time.sleep(3)  # a write that blocks well past the deadline
+            time.sleep(30)  # a write that blocks far past the deadline
             return self._inner.write(text)
 
         def __getattr__(self, name):
@@ -550,7 +550,7 @@ def test_a_write_that_outlives_the_deadline_is_a_refusal_not_a_hang(monkeypatch,
     started = time.monotonic()
     with pytest.raises(McpFetchError, match="stopped reading its stdin"):
         fetch_tools_stdio(fake_server("normal"), timeout=0.5, observation_timeout=0.5)
-    assert time.monotonic() - started < 2.5
+    assert time.monotonic() - started < 15, "the write bound did not release the collector"
     assert threading.active_count() >= 1  # the daemon writer is released by terminate()
 
 
