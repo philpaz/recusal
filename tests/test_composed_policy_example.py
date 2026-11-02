@@ -140,3 +140,45 @@ def test_a_composition_of_plain_policies_carries_no_identity_of_its_own():
     composed = compose_policies(_passed, _noop)
     assert composed.get_control_identity() == {}
     composed.reset_control_identity()  # nothing to reset, nothing raised
+
+
+# --- nested compositions ---------------------------------------------------------------------
+
+
+def test_nested_groups_of_plain_policies_compose_and_keep_their_order():
+    order = []
+
+    def a(_n, _i):
+        order.append("a")
+        return []
+
+    def b(_n, _i):
+        order.append("b")
+        return []
+
+    def c(_n, _i):
+        order.append("c")
+        return [Finding.fail("c", severity="CRITICAL")]
+
+    composed = compose_policies(compose_policies(a), compose_policies(b, compose_policies(c)))
+    assert [p.__name__ for p in composed.policies] == ["a", "b", "c"]  # flattened, in order
+    decision, _ = decide("Bash", {}, composed)
+    assert decision == "deny" and order == ["a", "b", "c"]
+    assert composed.get_control_identity() == {}
+
+
+def test_a_nested_plain_group_beside_one_manifest_policy_keeps_its_identity(tmp_path):
+    manifest = _manifest_and_log(tmp_path)
+    composed = compose_policies(compose_policies(_noop, _passed), manifest, compose_policies(_noop))
+    direct = _record(tmp_path, manifest, "direct")
+    assert _record(tmp_path, composed, "nested") == direct
+
+
+def test_two_manifest_policies_across_nesting_are_still_refused(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="one manifest_policy per gate"):
+        compose_policies(
+            compose_policies(_manifest_and_log(tmp_path, "a")),
+            compose_policies(_noop, _manifest_and_log(tmp_path, "b")),
+        )

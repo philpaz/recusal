@@ -37,6 +37,11 @@ function-tool example's ``gate_tools``), every server in ``mcp_servers`` in plac
 ``HostedMCPTool`` as a gated copy. It refuses, rather than skips, what no gate can see:
 handoffs, a sub-agent behind ``as_tool`` that is not itself gated, and ``Agent`` subclasses.
 
+A server carries one policy. Because the gate is installed on the server object, every
+agent that lists that object shares it: gating it again with the same policy is a no-op,
+and gating it with a different policy is refused with a ``ValueError`` rather than kept or
+replaced silently. Use a separate server object per policy.
+
 No model, API key, process or network is used: ``agents.testing.ScriptedModel`` proposes
 the calls, ``InProcessMCPServer`` is an MCP server that lives in this process and records
 what it was asked to run, and a scripted approval request stands in for OpenAI's.
@@ -132,7 +137,18 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
     if is_gated_mcp_server(server):
-        return server
+        # A server object is a connection, shared by every agent that lists it, and it
+        # carries ONE policy. Installing the same policy again is a no-op; asking for a
+        # different one is refused, because silently keeping the first would leave the
+        # caller believing a stricter policy took effect, and silently replacing it would
+        # change the policy under every other agent sharing the connection.
+        if server.call_tool.recusal_policy is policy:  # type: ignore[attr-defined]
+            return server
+        raise ValueError(
+            f"Recusal: server {server.name!r} is already gated with a different policy; a "
+            "connection carries one policy for every agent that shares it. Gate a separate "
+            "server object for a different policy."
+        )
     original = server.call_tool
 
     async def gated_call_tool(
@@ -146,6 +162,7 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
         return await original(tool_name, arguments, meta=meta)
 
     gated_call_tool.recusal_gate = True  # type: ignore[attr-defined]
+    gated_call_tool.recusal_policy = policy  # type: ignore[attr-defined]
     server.call_tool = gated_call_tool  # type: ignore[method-assign]
     return server
 

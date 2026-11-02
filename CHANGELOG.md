@@ -37,6 +37,18 @@ All notable changes to this project are documented here. The format follows
   2026-11-02 architecture review.)
 
 ### Fixed
+- `examples/openai_agents_mcp_gate.py`: a gated server carries one policy. `gate_mcp_server`
+  on an already gated server is a no-op for the same policy object and refuses a different
+  one with a `ValueError`; before, it returned silently and the first policy kept running
+  while an agent sharing the connection reported itself gated under the second (the
+  connection is shared by every agent that lists the server object, so replacing it silently
+  would be wrong too). Pinned by the reviewer's sequence as a test. (Found in the third
+  2026-11-02 review.)
+- `examples/composed_policies.py`: nested compositions are flattened into their leaves, in
+  order, before the manifest-policy count, so a group of plain policies no longer counts as
+  a carrier; `compose_policies(compose_policies(a), compose_policies(b))` composes, a plain
+  group beside one manifest policy keeps that policy's identity, and two manifest policies
+  across nesting are still refused. (Same review.)
 - `examples/openai_agents_mcp_gate.py`: the local-server gate moved from a tool input
   guardrail on the public tool name to a wrapper on the server's own `call_tool`, the one
   point where the SDK hands over the server's tool name and the exact argument dict it will

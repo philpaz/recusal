@@ -140,6 +140,57 @@ class TestOpenAIAgentsMcpGate:
         )
         assert order == ["first"] and called == [] and _text(outputs["c1"]).startswith(REFUSED)
 
+    def test_a_server_carries_one_policy_the_same_again_is_a_no_op_a_different_one_is_refused(
+        self, example
+    ):
+        from agents import Agent
+
+        server = example.InProcessMCPServer()
+        assert example.gate_mcp_server(server, example.sql_scope_policy) is server
+        gated_once = server.call_tool
+        assert example.gate_mcp_server(server, example.sql_scope_policy) is server
+        assert server.call_tool is gated_once  # the same policy again: nothing changed
+        with pytest.raises(ValueError, match="already gated with a different policy"):
+            example.gate_mcp_server(server, _refuse_deletes)
+        assert server.call_tool is gated_once  # neither kept silently nor replaced
+        # the same refusal through gated_agent on a second agent that shares the connection
+        other = Agent(name="b", model=example.scripted_model([]), mcp_servers=[server])
+        with pytest.raises(ValueError, match="one policy for every agent that shares it"):
+            example.gated_agent(other, _refuse_deletes)
+
+    def test_negative_control_the_reviewers_sequence_no_longer_runs_under_the_first_policy(
+        self, example
+    ):
+        """1. gate a server with an allowing policy; 2. reuse the connection in another agent;
+        3. ask gated_agent for a policy that refuses everything. Before the fix the agent
+        reported itself gated, only the first policy ran, and the tool executed."""
+        from agents import Agent
+
+        def allow_all(name, args):
+            return []
+
+        def refuse_all(name, args):
+            from recusal import Finding
+
+            return [Finding.fail("refuse_all", severity="CRITICAL", message="no")]
+
+        server = example.gate_mcp_server(example.InProcessMCPServer(), allow_all)
+        second = Agent(
+            name="b",
+            model=example.scripted_model([("run_sql", {"sql": SELECT}, "c1")]),
+            mcp_servers=[server],
+        )
+        with pytest.raises(ValueError, match="different policy"):
+            example.gated_agent(second, refuse_all)
+        # and with its own server object, the stricter policy is the one that runs
+        own = example.InProcessMCPServer()
+        model = example.scripted_model([("run_sql", {"sql": SELECT}, "c1")])
+        strict = example.gated_agent(Agent(name="c", model=model, mcp_servers=[own]), refuse_all)
+        example.CALLED.clear()
+        asyncio.run(example.run_agent(strict))
+        assert example.CALLED == []
+        assert "Recusal refused" in _text(example.tool_outputs(model)["c1"])
+
     def test_gate_mcp_server_refuses_what_is_not_a_server(self, example):
         with pytest.raises(TypeError, match="not an agents.mcp.MCPServer"):
             example.gate_mcp_server(object(), example.sql_scope_policy)

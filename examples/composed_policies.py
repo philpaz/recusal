@@ -34,14 +34,22 @@ class ComposedPolicy:
     ``reset_control_identity()`` before each adjudication. A composition that forwarded
     findings but not these two would keep the verdict and lose the evidence of which
     approved manifest governed it, so both are forwarded here. Exactly one inner policy may
-    carry a control identity: two manifest policies in one gate would have two digests and
+    carry a control identity (a nested composition is flattened into its leaves first, so a
+    group of plain policies never counts as one): two manifest policies in one gate would
+    have two digests and
     one record, so that composition is refused up front rather than recorded ambiguously.
     The invariant the tests pin: adding a no-op policy changes neither the verdict nor the
     control identity.
     """
 
     def __init__(self, *policies):
-        self.policies = tuple(policies)
+        # A nested composition is unwrapped into its leaves, in order: a group of plain
+        # policies carries no identity of its own, so counting it as a carrier would
+        # refuse harmless groups and miscount the real manifest policy beside one.
+        leaves = []
+        for check in policies:
+            leaves.extend(check.policies if isinstance(check, ComposedPolicy) else (check,))
+        self.policies = tuple(leaves)
         carriers = [p for p in self.policies if callable(getattr(p, "get_control_identity", None))]
         if len(carriers) > 1:
             raise ValueError(
