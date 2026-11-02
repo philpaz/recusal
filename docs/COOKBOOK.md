@@ -96,6 +96,14 @@ Recusal's reason in the model's answer; `install_recusal_hooks(policy)` register
 every crew in the process and returns the uninstall. Install it after your other hooks.
 Python 3.10+, tested with exactly `crewai==1.15.34`; not a Recusal dependency.
 
+The [Pydantic AI example](../examples/pydantic_ai_gate.py) judges each tool call in the
+framework's `before_tool_execute` hook and raises `ToolFailed` with Recusal's reason on a
+refusal, a failed tool result the model reads with no retry budget spent;
+`RecusalGate(policy)` is the capability form, sorted `innermost` so it judges the arguments
+as they reach the tool, and `recusal_before_tool_execute(policy)` the plain hook for `Hooks`.
+An agent called from inside a tool needs its own gate. Python 3.11+, tested with exactly
+`pydantic-ai-slim==2.64.0`; not a Recusal dependency.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

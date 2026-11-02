@@ -355,6 +355,36 @@ jobs:
       - name: Test CrewAI example and its surface probe
         run: pytest -q tests/test_crewai_gate.py tests/test_compat_crewai.py
 
+  pydantic-ai-example-py311:
+    name: Pydantic AI example (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install Recusal and the pinned Pydantic AI example dependency
+        run: pip install -e ".[dev]" pydantic-ai-slim==2.64.0
+      - name: Test Pydantic AI example and its surface probe
+        run: pytest -q tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py
+
+  pydantic-ai-example-py312:
+    name: Pydantic AI example (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install Recusal and the pinned Pydantic AI example dependency
+        run: pip install -e ".[dev]" pydantic-ai-slim==2.64.0
+      - name: Test Pydantic AI example and its surface probe
+        run: pytest -q tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py
+
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK
   # and makes the skip a failure, so the printed recipe runs on every pull request.

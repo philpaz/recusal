@@ -19,6 +19,21 @@ All notable changes to this project are documented here. The format follows
   `tests/test_launcher_empty_root.py` now exercise the two-part launcher.
 
 ### Added
+- `examples/pydantic_ai_gate.py`: gates Pydantic AI tool calls with the framework's own
+  `before_tool_execute` hook, which runs with the validated argument dict immediately before a
+  tool runs. `RecusalGate(policy)` is a capability that judges each call there with `decide`
+  and raises `ToolFailed(reason)` on a refusal, so the model reads the reason as a failed tool
+  result, the tool never runs, and no retry budget is spent; it declares itself `innermost`,
+  so the framework sorts it after every ordinary capability and it judges the arguments as
+  they reach the tool. `recusal_before_tool_execute(policy)` is the same gate as a plain hook
+  for `Hooks`. The tests pin the ordering trap (a later hook can change the arguments the gate
+  judged; a plain hook must be listed last, another `innermost` capability after the gate is
+  the one remaining way past it), that a refusal spends no retry budget, that `tools=`,
+  `toolsets=` and per-run capabilities all pass through the hook, and that an agent called
+  from inside a tool runs under its own capabilities (the miss, and a gate on the child or
+  per run as the fixes). Offline with a scripted `FunctionModel`, Python 3.11+, tested with
+  exactly `pydantic-ai-slim==2.64.0`, two new CI jobs and a weekly latest lane; Pydantic AI
+  stays out of the package's dependencies. "Works with" marks Pydantic AI Tested. (#107)
 - `claude-plugin/.claude-plugin/icon.png`: a 1024 px listing icon for the plugin directory (a ring
   with a bar across it), generated deterministically; the directory takes the icon once, on first
   submission. `*.png` is pinned binary in `.gitattributes`.

@@ -82,6 +82,8 @@ They are the same for every contribution, large or small:
 | `Google ADK example (Python 3.12)` | the pinned Google ADK adapter works on the current cross-platform smoke Python |
 | `CrewAI example (Python 3.10)` | the pinned CrewAI adapter works on its minimum supported Python |
 | `CrewAI example (Python 3.12)` | the pinned CrewAI adapter works on the current cross-platform smoke Python |
+| `Pydantic AI example (Python 3.11)` | the pinned Pydantic AI adapter works on its minimum supported Python |
+| `Pydantic AI example (Python 3.12)` | the pinned Pydantic AI adapter works on the current cross-platform smoke Python |
 | `Cookbook with the MCP SDK (Python 3.12)` | cookbook recipe 14 runs with the real MCP SDK, not skipped |
 
 "The full gate" is the same four commands in every `test` job, and all four must pass:

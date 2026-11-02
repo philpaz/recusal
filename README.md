@@ -81,7 +81,7 @@ issue nobody has taken yet: comment there to pick it up.
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](examples/google_adk_gate.py) |
 | CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](examples/crewai_gate.py) |
-| Pydantic AI | Wanted | [#107](https://github.com/philpaz/recusal/issues/107) |
+| Pydantic AI `Agent`, capability and hook | Tested | [`examples/pydantic_ai_gate.py`](examples/pydantic_ai_gate.py) |
 | LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
 <!-- works-with:end -->
 
@@ -653,6 +653,20 @@ function it returns uninstalls both hooks. Install it after your other hooks, be
 that runs after the gate can change the argument dict the gate judged; the tests show the
 bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.10+, tested with
 exactly `crewai==1.15.34`.
+
+For Pydantic AI, [`examples/pydantic_ai_gate.py`](examples/pydantic_ai_gate.py) uses the
+framework's own `before_tool_execute` hook, which runs with the validated argument dict
+immediately before a tool runs. `RecusalGate(policy)` is a capability that judges each call
+there and raises `ToolFailed(reason)` on a refusal, so the model reads the reason as a failed
+tool result, the tool never runs, and no retry budget is spent; attach it with
+`Agent(..., capabilities=[RecusalGate(policy)])` or per run. It declares itself `innermost`,
+so Pydantic AI sorts it after every ordinary capability (a hook that ran after the gate could
+change the arguments it judged); only another `innermost` capability listed after it still
+runs after it, so list the gate last. `Hooks(before_tool_execute=recusal_before_tool_execute(policy))`
+is the same gate as a plain hook function with no ordering of its own. An agent called from
+inside a tool function runs under its own capabilities and needs its own gate; the tests show
+the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
+with exactly `pydantic-ai-slim==2.64.0`.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
