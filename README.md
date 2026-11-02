@@ -76,7 +76,7 @@ issue nobody has taken yet: comment there to pick it up.
 | LangChain `create_agent` middleware, sync and async | Tested | [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py) |
 | OpenAI Agents SDK, function tools | Tested | [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py) |
 | LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](examples/langgraph_audit.py) |
-| LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
+| LangGraph pause, resume and replay | Tested | [`examples/langgraph_gate.py`](examples/langgraph_gate.py) across `interrupt()`, `Command(resume=)` and checkpoint replay |
 | OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](examples/google_adk_gate.py) |
@@ -586,6 +586,18 @@ and its Python 3.9+ support are unchanged. To put every one of those calls on th
 same decision, written as a hash-chained `AuditLog` entry labeled `langgraph.toolnode` with
 LangGraph's tool call id and a fingerprint of the arguments, before the call runs or is
 refused, and an unwritable log refuses the call.
+
+**Pause, resume and replay.** The gate decides at execution time, under the policy in force
+at that moment, so a decision made before a pause never becomes permission that outlives
+it. A review node that calls `interrupt()` before the `ToolNode` is judged once, on resume,
+as the call will run: a reviewer's edit to a `DELETE` is refused, and a policy revoked or a
+grant expired during the pause refuses the resumed call. A tool that calls `interrupt()`
+itself is judged before the pause and judged again on resume, one execution. A replay or
+fork from a checkpoint is a new execution and is judged again. One pattern is outside any
+pre-tool gate: a value supplied on resume and consumed inside the tool, which the gate never
+sees; route reviewer edits through a review node before the `ToolNode` instead. All of it is
+pinned, with zero executions on every refusal and the limitation asserted on purpose, in
+[`tests/test_langgraph_interrupt.py`](tests/test_langgraph_interrupt.py).
 
 For LangChain's `create_agent` middleware, [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py)
 reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a second policy

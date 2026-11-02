@@ -54,6 +54,14 @@ record: `recusal_audited_gate(policy, log)` writes each decision, allowed or ref
 hash-chained `AuditLog` entry labeled `langgraph.toolnode` under LangGraph's tool call id,
 and `recusal audit verify` catches an edited entry.
 
+Pause, resume and replay: the gate decides at execution time under the current policy. A
+review node that calls `interrupt()` before the `ToolNode` is judged on resume, as the call
+will run; a tool that pauses itself is judged before the pause and judged again on resume; a
+replay or fork from a checkpoint is a new execution and is judged again. A value supplied on
+resume and consumed inside a tool is outside the gate, so route reviewer edits through a
+review node before the `ToolNode`. Pinned, with zero executions on every refusal, in
+[`../tests/test_langgraph_interrupt.py`](../tests/test_langgraph_interrupt.py).
+
 LangChain's [`create_agent` middleware example](../examples/langchain_agent_gate.py)
 imports the same `recusal_gate` and uses `wrap_tool_call` with scripted model messages.
 It also requires Python 3.10+ and exactly `langchain==1.4.3` on top of the LangGraph pins;
