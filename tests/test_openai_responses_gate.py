@@ -34,6 +34,7 @@ def test_python_version_refusal_is_clear_on_every_python():
     assert "this is Python 3.9." in result.stderr
 
 
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="below 3.10 the version refusal fires first")
 def test_missing_sdk_is_an_install_message_not_a_traceback():
     code = (
         "import sys, runpy; "
