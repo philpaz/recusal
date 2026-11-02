@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
   `tests/test_launcher_empty_root.py` now exercise the two-part launcher.
 
 ### Added
+- `claude-plugin/.claude-plugin/icon.png`: a 1024 px listing icon for the plugin directory (a ring
+  with a bar across it), generated deterministically; the directory takes the icon once, on first
+  submission. `*.png` is pinned binary in `.gitattributes`.
 - `tests/test_langgraph_interrupt.py`: LangGraph pause, resume and replay against
   `recusal_gate`, on `langgraph==1.2.12` with an `InMemorySaver` checkpointer. A review node
   that calls `interrupt()` before the `ToolNode` is judged once, on resume, as the call will
