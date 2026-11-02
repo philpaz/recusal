@@ -91,4 +91,4 @@ __all__ = [
     "DEFAULT_TAXONOMY",
 ]
 
-__version__ = "0.12.4"
+__version__ = "0.12.5"

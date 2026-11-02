@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-11-02
+
+Two more agent runtimes are Tested: Google ADK and CrewAI, each with its own offline example,
+pinned CI jobs and a weekly latest lane, each at the runtime's own hook. PATCH under
+`STABILITY.md`: no public surface changes, and the gate behaves exactly as in 0.12.4. The
+examples live under `examples/` and are not part of the installed package.
+
 ### Added
 - `examples/crewai_gate.py`: gates CrewAI tool calls with CrewAI's own hooks.
   `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each call

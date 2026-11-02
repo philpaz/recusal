@@ -229,7 +229,7 @@ hook in `.claude/settings.json`:
 `"onFailure": "block"` (Claude Code 2.1.295 and later) makes a hook that times out, cannot
 start, or exits with a code other than 0 or 2 block the call instead of letting it through;
 on an older Claude Code the field is not honored and the launcher's `exit 2` is the only
-block. An install registered before 0.12.4 lacks the field: `python -m recusal doctor`
+block. An install registered before 0.12.5 lacks the field: `python -m recusal doctor`
 names it, and `python -m recusal init --repair-launcher` adds it to a canonical launcher.
 
 The command runs the first `python3` → `python` → `py` that is `>=3.9` and can import
@@ -686,7 +686,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.12.4   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.12.5   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
