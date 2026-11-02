@@ -99,7 +99,7 @@ def test_the_public_signatures_did_not_move():
 
     for facade, inner in ((decide, adjudicate.decide), (manifest_policy, manifest.manifest_policy)):
         assert inspect.signature(facade) == inspect.signature(inner)
-        assert inspect.get_annotations(facade) == inspect.get_annotations(inner)
+        assert facade.__annotations__ == inner.__annotations__  # 3.9-safe, no get_annotations
 
 
 # --- the boundaries the extraction was for ------------------------------------------------------
