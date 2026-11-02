@@ -29,8 +29,10 @@ All notable changes to this project are documented here. The format follows
   approval for every call and answers a refusal as a rejection with the reason, an existing
   callback still running for allowed calls; a hosted tool with any other `require_approval`
   is reported ungated, since a call OpenAI does not ask about is never seen. `gated_agent`
-  gates function tools, servers and hosted tools together. The tests pin the prefixed public
-  name under `include_server_in_tool_names`, that an approval never skips the guardrail, and
+  gates function tools, servers and hosted tools together. The policy sees the server's own
+  tool name: under `include_server_in_tool_names` the gate maps the prefixed public name back
+  before judging (a hash-shortened name is the one form it cannot map). The tests pin that,
+  that an approval never skips the guardrail, and
   the rejection the SDK sends back; the surface probe pins the server and hosted-tool fields.
   Offline with an in-process MCP server and a scripted approval request, the same pins and
   CI jobs as the function-tool example. "Works with" marks the row Tested. (#108)
@@ -66,6 +68,23 @@ All notable changes to this project are documented here. The format follows
   rule and the limitation. "Works with" marks the row Tested. (#80)
 
 ### Fixed
+- `examples/openai_responses_gate.py`: a turn with a duplicate call id, a call without one, or
+  an output item this adapter does not handle is refused before any call in it runs. Both the
+  Responses and the Chat Completions adapter validated ids only after dispatch, so two accepted
+  calls with the same id both ran and the refusal arrived after their side effects, which a
+  caller's retry would repeat; an unhandled item mid-turn likewise raised after the calls
+  before it had run. The turn is now checked in a first pass and nothing is dispatched until
+  it passes; the tests assert zero executions for each refused turn on both APIs. A policy
+  denial was never bypassed by this; it was an adapter ordering defect. (Found in the
+  2026-11-02 outside review.)
+- `README.md` and `SECURITY.md`: the hook-timeout outcome is stated with its two conditions.
+  It is fail-open on Claude Code before 2.1.295 or for a registration without
+  `"onFailure": "block"`, and a block otherwise; both documents said fail-open without
+  qualification while `docs/HOWTO.md` and the generated launchers already carried the field.
+  The README also said an install registered before 0.12.5 lacks the field; the field arrived
+  in 0.12.4. The README's "what no local gate can see" paragraph now names the hosted MCP
+  approval callback as the one provider-side point a local gate reaches, for the calls sent
+  for approval. (Same review.)
 - `tests/test_demos_smoke.py`: `examples/audit_demo.py` and `examples/classify_demo.py` now run as
   standalone programs from a temporary directory in the suite, with their verdict and route
   markers asserted, so the examples README claim that the offline demos are what CI runs is true

@@ -120,6 +120,11 @@ def test_with_server_prefixed_names_the_guardrail_sees_the_prefixed_name(ex):
     from agents.mcp.util import MCPUtil
 
     assert MCPUtil._build_prefixed_tool_base_name("db", "run_sql") == "mcp_db__run_sql"
+    # the example's own prefix helper agrees with the SDK for every kind of server name
+    for server_name in ("db", "my server", "a.b/c", "__x__", "Ünïcode", ""):
+        assert MCPUtil._build_prefixed_tool_base_name(server_name, "t") == (
+            ex._public_prefix(server_name) + "t"
+        ), server_name
     seen = []
 
     def probe(data):

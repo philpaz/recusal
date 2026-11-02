@@ -130,10 +130,10 @@ class TestOpenAIAgentsMcpGate:
         with pytest.raises(TypeError, match="not an agents.mcp.MCPServer"):
             example.gate_mcp_server(object(), example.sql_scope_policy)
 
-    def test_the_guardrail_judges_the_name_the_model_called_prefixed_or_not(self, example):
-        """With include_server_in_tool_names the public name is mcp_<server>__<tool>; a
-        policy keyed by the bare tool name no longer matches, pinned here as the documented
-        limit, and a policy naming the prefixed form refuses the call."""
+    def test_under_prefixed_public_names_the_policy_still_sees_the_servers_tool_name(self, example):
+        """With include_server_in_tool_names the model calls mcp_<server>__<tool>; the gate
+        maps that back to the name the server will run, so a policy keyed by the bare tool
+        name keeps matching. The name the gate judged is the one in the refusal."""
         from agents import Agent
 
         seen = []
@@ -142,22 +142,37 @@ class TestOpenAIAgentsMcpGate:
             seen.append(name)
             return example.sql_scope_policy(name, args)
 
-        def prefixed_policy(name, args):
-            return example.sql_scope_policy(name.removeprefix("mcp_db__"), args)
+        example.CALLED.clear()
+        model = example.scripted_model([("mcp_db__run_sql", {"sql": DELETE}, "c1")])
+        server = example.gate_mcp_server(example.InProcessMCPServer(), recording)
+        agent = Agent(
+            name="a",
+            model=model,
+            mcp_servers=[server],
+            mcp_config={"include_server_in_tool_names": True},
+        )
+        asyncio.run(example.run_agent(agent))
+        assert seen == ["run_sql"]
+        assert example.CALLED == []
+        assert example.tool_outputs(model)["c1"].startswith(REFUSED)
 
-        for policy, expect_called in ((recording, True), (prefixed_policy, False)):
-            example.CALLED.clear()
-            model = example.scripted_model([("mcp_db__run_sql", {"sql": DELETE}, "c1")])
-            server = example.gate_mcp_server(example.InProcessMCPServer(), policy)
-            agent = Agent(
-                name="a",
-                model=model,
-                mcp_servers=[server],
-                mcp_config={"include_server_in_tool_names": True},
-            )
-            asyncio.run(example.run_agent(agent))
-            assert (example.CALLED == [("db", "run_sql", {"sql": DELETE})]) is expect_called
-        assert seen == ["mcp_db__run_sql"]
+    def test_the_prefix_is_the_servers_own_so_another_servers_prefix_is_not_stripped(self, example):
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        example.gate_mcp_server(example.InProcessMCPServer(name="db"), recording)
+        guardrail = example.recusal_mcp_guardrail(recording, "db")
+        for public, expected in (
+            ("mcp_db__run_sql", "run_sql"),
+            ("run_sql", "run_sql"),
+            ("mcp_other__run_sql", "mcp_other__run_sql"),
+            ("mcp_db__", "mcp_db__"),
+        ):
+            assert example._judged_name(public, "db") == expected, public
+        assert guardrail.guardrail_function.recusal_gate is True
 
     def test_an_approval_never_skips_the_guardrail(self, example):
         from agents import Agent, RunConfig, Runner

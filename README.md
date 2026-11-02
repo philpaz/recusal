@@ -90,7 +90,11 @@ also where Grok support will start. Want a runtime that isn't listed? Open an is
 
 **What no local gate can see.** Some tools run on the model provider's servers, such as
 hosted web search, a hosted code interpreter or hosted MCP. Those calls never pass
-through your code, so neither Recusal nor any other local gate can refuse them.
+through your code, so neither Recusal nor any other local gate can refuse them. The one
+exception is a hosted call the provider asks your code to approve first: the OpenAI Agents
+SDK's hosted MCP approval callback is such a point, and
+[`examples/openai_agents_mcp_gate.py`](examples/openai_agents_mcp_gate.py) gates it, for
+the calls that are sent for approval and no others.
 
 ## The problem
 
@@ -201,12 +205,14 @@ For production, pin the runtime the gate runs on: a dedicated venv with
 governed session, the deny-list refuses package-manager commands that uninstall,
 reinstall, or shadow the `recusal` package: managing the gate's own runtime is the
 operator's job, outside the session.) One named residual, stated in full in
-[`docs/HOWTO.md`](docs/HOWTO.md): hook timeout is **fail-open**. Claude Code documents
-that a `PreToolUse` command hook canceled at its timeout (600 seconds unless the
+[`docs/HOWTO.md`](docs/HOWTO.md): hook timeout is **fail-open on Claude Code before 2.1.295**.
+There, a `PreToolUse` command hook canceled at its timeout (600 seconds unless the
 registration sets `timeout`) "doesn't block the tool call" and the call continues through
-the normal permission flow ([hooks reference](https://code.claude.com/docs/en/hooks#timeouts)). Recusal's shipped policies
-adjudicate in milliseconds; keep custom policies fast and bounded, and keep a native deny
-rule for anything that must hold even if the gate stalls.
+the normal permission flow ([hooks reference](https://code.claude.com/docs/en/hooks#timeouts)). On 2.1.295 and later a
+registration that sets `"onFailure": "block"`, as `init` and the plugin do, blocks the call
+instead; an older registration or an older Claude Code keeps the fail-open outcome. Recusal's
+shipped policies adjudicate in milliseconds; keep custom policies fast and bounded, and keep
+a native deny rule for anything that must hold even if the gate stalls.
 
 Verifying what you installed is a first-class step, not an afterthought:
 [`docs/VERIFY.md`](docs/VERIFY.md) shows how to check the build provenance, the
@@ -229,7 +235,7 @@ hook in `.claude/settings.json`:
 `"onFailure": "block"` (Claude Code 2.1.295 and later) makes a hook that times out, cannot
 start, or exits with a code other than 0 or 2 block the call instead of letting it through;
 on an older Claude Code the field is not honored and the launcher's `exit 2` is the only
-block. An install registered before 0.12.5 lacks the field: `python -m recusal doctor`
+block. An install registered before 0.12.4 lacks the field: `python -m recusal doctor`
 names it, and `python -m recusal init --repair-launcher` adds it to a canonical launcher.
 
 The command runs the first `python3` → `python` → `py` that is `>=3.9` and can import
@@ -244,7 +250,8 @@ bare `python3` on a Windows machine (no `python3` on PATH), a `python` that is P
 silently disabled gate. The loop coerces exactly those gate-process failure modes -
 missing interpreter, unsupported interpreter, import failure, nonzero gate-process
 exit - into `exit 2`, so they refuse instead of waving the call through. It does not
-cover Claude-level hook cancellation or the hook timeout, which is fail-open (above).
+cover Claude-level hook cancellation or the hook timeout, which `"onFailure": "block"`
+covers only on Claude Code 2.1.295 and later (above).
 
 **Windows:** shell-form hooks run under Git Bash when it is installed, and Claude Code
 *falls back to PowerShell* when it is not - where this POSIX loop is a parse error with a
@@ -627,6 +634,7 @@ covers the two paths that example names as out of its sight. A local MCP server
 the server's `tool_input_guardrails` onto each one, so `gate_mcp_server(server, policy)`
 appends the same guardrail to the server, in place: every tool it lists is judged
 immediately before it runs, after any approval, and a refusal becomes the call's output.
+The policy sees the server's own tool name even when the SDK prefixes public names.
 Hosted MCP runs on OpenAI's servers, and the one local point is the approval callback, so
 `gate_hosted_mcp(tool, policy)` returns a copy that requires approval for every call and
 answers a refusal as a rejection with Recusal's reason; a call OpenAI does not ask approval

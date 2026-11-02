@@ -209,8 +209,9 @@ class TestOpenAIResponsesGate:
         response = ex.response_with([ex.function_call("run_sql", {"sql": SELECT}, "a"), item])
         with pytest.raises(TypeError, match=item["type"]):
             ex.gate_function_calls(response, ex.TOOLS, ex.sql_scope_policy)
-        # the SELECT before it ran, so the raise surfaces mid-turn; nothing after it runs
-        assert ex.EXECUTED == [("run_sql", {"sql": SELECT})]
+        # the whole turn is checked before anything is dispatched, so the SELECT listed
+        # before the unhandled item did not run either: a refused turn has run nothing
+        assert ex.EXECUTED == []
 
     def test_a_plain_message_and_reasoning_pass_a_function_call_is_judged(self, ex):
         response = ex.response_with(
@@ -271,7 +272,10 @@ class TestOpenAIResponsesGate:
             ex.gate_tool_calls(completion, ex.TOOLS, ex.sql_scope_policy)
         assert ex.EXECUTED == []
 
-    def test_duplicate_call_ids_are_refused(self, ex):
+    def test_duplicate_call_ids_are_refused_before_anything_runs(self, ex):
+        """Ids are validated before dispatch: a turn refused for a duplicate id has run
+        nothing, so a caller that retries the turn cannot repeat a side effect."""
+        ex.EXECUTED.clear()
         response = ex.response_with(
             [
                 ex.function_call("echo", {"text": "1"}, "same"),
@@ -280,6 +284,28 @@ class TestOpenAIResponsesGate:
         )
         with pytest.raises(ValueError, match="duplicate call ids"):
             ex.gate_function_calls(response, ex.TOOLS, ex.sql_scope_policy)
+        assert ex.EXECUTED == []
+        completion = ex.completion_with(
+            [
+                ex.tool_call("echo", {"text": "1"}, "same"),
+                ex.tool_call("echo", {"text": "2"}, "same"),
+            ]
+        )
+        with pytest.raises(ValueError, match="duplicate call ids"):
+            ex.gate_tool_calls(completion, ex.TOOLS, ex.sql_scope_policy)
+        assert ex.EXECUTED == []
+
+    def test_a_missing_id_anywhere_in_the_batch_refuses_the_turn_before_anything_runs(self, ex):
+        ex.EXECUTED.clear()
+        response = ex.response_with(
+            [
+                ex.function_call("echo", {"text": "1"}, "ok"),
+                ex.function_call("echo", {"text": "2"}, ""),
+            ]
+        )
+        with pytest.raises(ValueError, match="no call id"):
+            ex.gate_function_calls(response, ex.TOOLS, ex.sql_scope_policy)
+        assert ex.EXECUTED == []
 
     def test_an_answer_for_a_call_that_was_not_made_is_refused(self, ex):
         with pytest.raises(ValueError, match="calls \\['a'\\] but answers \\['a', 'ghost'\\]"):

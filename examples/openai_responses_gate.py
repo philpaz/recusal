@@ -120,6 +120,14 @@ def _require_id(call_id: Any, what: str) -> str:
     return call_id
 
 
+def _check_ids(call_ids: list[str]) -> None:
+    """Refuse a turn with a duplicate id BEFORE any call in it runs: the turn's answers are
+    keyed by id, so a duplicate could not be answered once, and a refusal raised after
+    dispatch would leave a side effect behind for the caller's retry to repeat."""
+    if len(set(call_ids)) != len(call_ids):
+        raise ValueError(f"Recusal refused the turn: duplicate call ids {call_ids}")
+
+
 def _check_answered_once(call_ids: list[str], answered: list[str]) -> None:
     """Every proposed call gets exactly one answer, and no answer invents a call."""
     if sorted(call_ids) != sorted(answered):
@@ -136,8 +144,9 @@ def gate_function_calls(response: Response, tools: Tools, policy: Policy) -> lis
     Raises TypeError for an output item type this adapter does not handle, and ValueError for
     a call without an id. Pass the returned list as the next request's ``input``.
     """
-    call_ids: list[str] = []
-    outputs: list[dict[str, Any]] = []
+    # pass 1: every item is one this adapter handles and carries a usable, unique id;
+    # nothing runs until the whole turn has passed, so a refused turn has run nothing
+    calls: list[tuple[str, str, Any]] = []
     for item in response.output:
         item_type = getattr(item, "type", None)
         if item_type in PASSIVE_OUTPUT_TYPES:
@@ -148,14 +157,18 @@ def gate_function_calls(response: Response, tools: Tools, policy: Policy) -> lis
                 "this adapter handles function_call items only"
             )
         call_id = _require_id(getattr(item, "call_id", None), f"function_call {item.name!r}")
-        call_ids.append(call_id)
-        outputs.append(
-            {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": judge_and_run(item.name, item.arguments, tools, policy),
-            }
-        )
+        calls.append((call_id, item.name, item.arguments))
+    call_ids = [call_id for call_id, _, _ in calls]
+    _check_ids(call_ids)
+    # pass 2: judge and run each call, answering it under its own id
+    outputs = [
+        {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": judge_and_run(name, arguments, tools, policy),
+        }
+        for call_id, name, arguments in calls
+    ]
     _check_answered_once(call_ids, [o["call_id"] for o in outputs])
     return outputs
 
@@ -169,8 +182,7 @@ def gate_tool_calls(
     ValueError for a call without an id. Append the returned messages after the assistant
     message in the next request.
     """
-    call_ids: list[str] = []
-    outputs: list[dict[str, Any]] = []
+    calls: list[tuple[str, str, Any]] = []
     for choice in completion.choices:
         for call in choice.message.tool_calls or []:
             if call.type != "function":
@@ -179,16 +191,17 @@ def gate_tool_calls(
                     "this adapter handles function tool calls only"
                 )
             call_id = _require_id(call.id, f"tool call {call.function.name!r}")
-            call_ids.append(call_id)
-            outputs.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": judge_and_run(
-                        call.function.name, call.function.arguments, tools, policy
-                    ),
-                }
-            )
+            calls.append((call_id, call.function.name, call.function.arguments))
+    call_ids = [call_id for call_id, _, _ in calls]
+    _check_ids(call_ids)
+    outputs = [
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": judge_and_run(name, arguments, tools, policy),
+        }
+        for call_id, name, arguments in calls
+    ]
     _check_answered_once(call_ids, [o["tool_call_id"] for o in outputs])
     return outputs
 

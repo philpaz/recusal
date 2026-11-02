@@ -13,10 +13,12 @@ guardrail as the function-tool example: ``gate_mcp_server(server, policy)`` appe
 ``recusal_guardrail(policy)`` to the server's list, in place, because a server object is a
 connection and a copy would be a second one. The guardrail then runs immediately before
 each MCP tool executes, after any approval a person gave; a refusal becomes the call's
-output, so the model reads Recusal's reason and the server is never called. The guardrail
-judges the name the model called. By default that is the server's own tool name; with
-``mcp_config={"include_server_in_tool_names": True}`` it is the prefixed public name,
-``mcp_<server>__<tool>``, and a policy keyed by tool name must name that form.
+output, so the model reads Recusal's reason and the server is never called. The policy
+sees the server's own tool name, the one the server will run. With
+``mcp_config={"include_server_in_tool_names": True}`` the model calls the prefixed public
+name ``mcp_<server>__<tool>``, and the gate, which knows its server's name, maps that back
+before judging; a public name shortened to a hash (a very long server or tool name) cannot
+be mapped and is judged as the model called it.
 
 Hosted MCP (``HostedMCPTool``). Those calls run on OpenAI's servers, and the one local point
 is the SDK's approval callback, which runs only for a call OpenAI asks approval for.
@@ -62,6 +64,7 @@ if sys.version_info < (3, 10):
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.openai_agents_gate import (  # noqa: E402
+    GUARDRAIL_NAME,
     OPENAI_AGENTS_VERSION,
     OPENAI_VERSION,
     Agent,
@@ -71,7 +74,6 @@ from examples.openai_agents_gate import (  # noqa: E402
     _refusal,
     assistant_message,
     gate_tools,
-    recusal_guardrail,
     scripted_model,
     sql_scope_policy,
     tool_outputs,
@@ -81,7 +83,12 @@ from examples.openai_agents_gate import (
 )
 
 try:
-    from agents import HostedMCPTool, MCPToolApprovalRequest
+    from agents import (
+        HostedMCPTool,
+        MCPToolApprovalRequest,
+        ToolGuardrailFunctionOutput,
+        tool_input_guardrail,
+    )
     from agents.mcp import MCPServer
     from mcp.types import CallToolResult, GetPromptResult, ListPromptsResult, TextContent, Tool
     from openai.types.responses.response_output_item import McpApprovalRequest
@@ -106,6 +113,39 @@ def _carries_gate(guardrails: Any) -> bool:
     )
 
 
+def _public_prefix(server_name: str) -> str:
+    """The prefix the SDK puts on this server's tool names under
+    ``include_server_in_tool_names``: ``mcp_<server>__``, the server part reduced to ASCII
+    letters, digits, ``_`` and ``-`` (the compat probe pins this against the SDK's own)."""
+    safe = "".join(
+        char if char.isascii() and (char.isalnum() or char in "_-") else "_" for char in server_name
+    ).strip("_-")
+    return f"mcp_{safe or 'server'}__"
+
+
+def _judged_name(public_name: str, server_name: str) -> str:
+    """The server's own tool name behind a public name, when it carries this server's prefix."""
+    prefix = _public_prefix(server_name)
+    if public_name.startswith(prefix) and len(public_name) > len(prefix):
+        return public_name[len(prefix) :]
+    return public_name
+
+
+def recusal_mcp_guardrail(policy: Policy, server_name: str):
+    """The tool input guardrail for one server: judges each call by the server's own tool
+    name and the arguments the server will receive."""
+
+    def gate(data) -> ToolGuardrailFunctionOutput:
+        name = _judged_name(data.context.tool_name, server_name)
+        reason = _refusal(name, data.context.tool_arguments, policy)
+        if reason is not None:
+            return ToolGuardrailFunctionOutput.reject_content(reason)
+        return ToolGuardrailFunctionOutput.allow()
+
+    gate.recusal_gate = True  # type: ignore[attr-defined]
+    return tool_input_guardrail(gate, name=GUARDRAIL_NAME)
+
+
 def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
     """Append the Recusal guardrail to the server's tool input guardrails, in place.
 
@@ -116,7 +156,7 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
     server.tool_input_guardrails = [
         *(server.tool_input_guardrails or ()),
-        recusal_guardrail(policy),
+        recusal_mcp_guardrail(policy, server.name),
     ]
     return server
 

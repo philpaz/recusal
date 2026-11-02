@@ -114,11 +114,16 @@ best-effort. The full policy is in [`STABILITY.md`](STABILITY.md#supported-versi
   its digest or audit head is anchored somewhere the writer cannot reach, not an identity
   assertion, and not authenticated by its digest alone. No key, no signature, by design,
   until a real deployment needs portable verification across a trust boundary.
-- **Hook timeout is fail-open.** Claude Code documents the outcome: a `PreToolUse`
-  command hook canceled at its timeout (600 seconds unless the registration sets `timeout`)
-  "doesn't block the tool call. The call continues through the normal permission flow, so
-  don't count on a stalled hook to act as a gate" ([hooks reference](https://code.claude.com/docs/en/hooks#timeouts)). Recusal
-  therefore never describes hook timeout as fail-closed. Its shipped policies adjudicate in
+- **Hook timeout is fail-open unless the registration and the Claude Code version both
+  close it.** Claude Code documents the default outcome: a `PreToolUse` command hook
+  canceled at its timeout (600 seconds unless the registration sets `timeout`) "doesn't
+  block the tool call. The call continues through the normal permission flow, so don't
+  count on a stalled hook to act as a gate" ([hooks reference](https://code.claude.com/docs/en/hooks#timeouts)).
+  A registration that sets `"onFailure": "block"`, which `init` writes and the plugin
+  carries since 0.12.4, turns that outcome into a block on Claude Code 2.1.295 and later;
+  an older registration, or an older Claude Code, keeps the fail-open outcome, and `doctor`
+  names a registration that lacks the field. Recusal therefore describes hook timeout as
+  fail-closed only under those two conditions. Its shipped policies adjudicate in
   milliseconds; a custom policy that can stall is a policy that can be bypassed, and a
   native deny rule is the layer for anything that must hold even then. (An Agent SDK
   callback hook that exceeds its timeout blocks the call; that is a different hook family.)
