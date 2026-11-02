@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `tests/test_demos_smoke.py`: `examples/audit_demo.py` and `examples/classify_demo.py` now run as
+  standalone programs from a temporary directory in the suite, with their verdict and route
+  markers asserted, so the examples README claim that the offline demos are what CI runs is true
+  for both. Contributed by @jdotc1 in #149. (#133)
+- `examples/README.md`: two new tables index every module that was missing from it, the eight
+  cookbook recipe modules with what each refuses and the seven framework adapters with their
+  pinned SDK versions, plus the `audit_sink.py` row. `tests/test_examples_readme_index.py` keeps
+  the index and `examples/*.py` in sync, so an example can no longer ship unlisted. Contributed by
+  @jdotc1 in #150. (#134)
 - `docs/EXTENDING.md`: the `gate_tool_use` example now imports the function it calls, and the
   `compute_verdict` line is valid Python. A new test, `tests/test_documentation_examples.py`,
   parses every Python block in `docs/EXTENDING.md` and `docs/HOWTO.md` and checks that each
