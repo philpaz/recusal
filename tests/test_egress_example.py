@@ -18,6 +18,15 @@ make_policy = runpy.run_path(str(EXAMPLE))["make_egress_allowlist"]
         ("send_email", {"to": "person@sub.example.com"}),
         ("http_post", {"url": "https://EXAMPLE.COM/path?q=1"}),
         ("webhook", {"url": "http://api.example.com:8080/path"}),
+        (
+            "send_email",
+            {
+                "to": "person@example.com",
+                "cc": "ops@example.com",
+                "bcc": "audit@sub.example.com",
+                "reply_to": "me@example.com",
+            },
+        ),
     ],
 )
 def test_allowed_destinations_defer(tool, arguments):
@@ -44,6 +53,14 @@ def test_allowed_destinations_defer(tool, arguments):
         ("webhook", {"url": "https:\\\\evil.com\\@example.com/"}),
         ("http_post", {"url": "https://user:pw@example.com/"}),
         ("http_post", {"url": "https://example.com%2F@evil.com/"}),
+        # Every recipient field is governed, not only `to`.
+        ("send_email", {"to": "a@example.com", "cc": "x@evil.com"}),
+        ("send_email", {"to": "a@example.com", "bcc": "x@evil.com"}),
+        ("send_email", {"to": "a@example.com", "reply_to": "x@evil.com"}),
+        ("send_email", {"to": "a@example.com", "cc": "a@example.com,x@evil.com"}),
+        ("send_email", {"to": "a@example.com", "bcc": ["x@evil.com"]}),
+        ("send_email", {"to": "a@example.com", "cc": None}),
+        ("send_email", {"cc": "a@example.com"}),
     ],
 )
 def test_disallowed_or_missing_destinations_refuse(tool, arguments):

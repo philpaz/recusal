@@ -29,6 +29,15 @@ policy = _recipe_policy()
         ("send_email", {"to": "ops@mail.acme.com"}),
         ("http_post", {"url": "https://ACME.com/x"}),
         ("webhook", {"url": "http://hooks.internal.example:8080/"}),
+        (
+            "send_email",
+            {
+                "to": "ops@acme.com",
+                "cc": "audit@acme.com",
+                "bcc": "me@mail.acme.com",
+                "reply_to": "ops@internal.example",
+            },
+        ),
     ],
 )
 def test_allowed_destinations_defer(tool, arguments):
@@ -53,6 +62,13 @@ def test_allowed_destinations_defer(tool, arguments):
         ("http_post", {"url": "https://user@acme.com/"}),
         ("webhook", {"url": "https://acme.com.evil.com/"}),
         ("webhook", {"url": "https://evil-acme.com/"}),
+        # Every recipient field is governed, not only `to`.
+        ("send_email", {"to": "ops@acme.com", "cc": "x@evil.com"}),
+        ("send_email", {"to": "ops@acme.com", "bcc": "x@evil.com"}),
+        ("send_email", {"to": "ops@acme.com", "reply_to": "x@evil.com"}),
+        ("send_email", {"to": "ops@acme.com", "cc": "ops@acme.com,x@evil.com"}),
+        ("send_email", {"to": "ops@acme.com", "bcc": ["x@evil.com"]}),
+        ("send_email", {"cc": "ops@acme.com"}),
     ],
 )
 def test_other_destinations_refuse(tool, arguments):

@@ -12,7 +12,12 @@ volume is WARNING (allow, but record it).
 """
 
 import os
+import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from examples.egress_allowlist import recipient_hosts
+from examples.sql_scope_policy import policy as sql_scope_policy
 from recusal import Finding
 
 SAFE_PATH = os.path.abspath("/workspace/tmp")
@@ -64,30 +69,35 @@ def destructive_path(tool_input: dict) -> list:
 
 
 def unscoped_sql(tool_input: dict) -> list:
-    """Destructive SQL must be scoped by a WHERE clause."""
-    sql = str(tool_input.get("sql", "")).lower()
-    if ("delete" in sql or "update" in sql) and "where" not in sql:
-        return [
-            Finding.fail(
-                "sql_scope",
-                severity="CRITICAL",
-                message="destructive SQL without a WHERE clause",
-                sql=tool_input.get("sql"),
-            )
-        ]
+    """Destructive SQL must be scoped by a top-level WHERE clause.
+
+    Delegates to the tested recipe 2 scanner (examples/sql_scope_policy.py): comments and
+    quoted text cannot supply WHERE, each statement is checked on its own, DROP/TRUNCATE
+    and missing or unsupported SQL refuse. A lowercase substring test let
+    ``DELETE FROM users -- where id=1`` through; this does not.
+    """
+    refusals = sql_scope_policy("run_sql", tool_input)
+    if refusals:
+        return refusals
     return [Finding.ok("sql_scope", severity="CRITICAL")]
 
 
 def data_exfiltration(tool_input: dict) -> list:
-    """Outbound email must go to an allowlisted domain (guards prompt-injected exfiltration)."""
-    to = str(tool_input.get("to", ""))
-    domain = to.split("@")[-1].lower() if "@" in to else ""
-    if domain not in EMAIL_ALLOWLIST:
+    """Outbound email must go to an allowlisted domain (guards prompt-injected exfiltration).
+
+    Every recipient field is governed (``to`` required; ``cc``, ``bcc``, ``reply_to`` when
+    present), and each must read as exactly one bare mailbox on an allowed domain, the
+    parsing recipe 5 (examples/egress_allowlist.py) uses. A list, a display name or a
+    second ``@`` is refused whole rather than read by its last ``@``.
+    """
+    to = tool_input.get("to")
+    hosts = recipient_hosts(tool_input)
+    if not all(host in EMAIL_ALLOWLIST for host in hosts):
         return [
             Finding.fail(
                 "egress_allowlist",
                 severity="CRITICAL",
-                message=f"recipient domain '{domain}' is not on the allowlist",
+                message="a recipient is not exactly one mailbox on an allowlisted domain",
                 to=to,
             )
         ]
