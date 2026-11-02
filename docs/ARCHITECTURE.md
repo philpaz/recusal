@@ -63,6 +63,21 @@ is done (0.6.0): declaration and server-instruction screening lives in the priva
 manifest serialization, runtime authorization caching, process collection, or hook
 protocol handling. `recusal.mcp` still exposes it.
 
+The second extraction is done (unreleased): the call-time manifest policy, the file-backed,
+locked, cached half with its invocation-local digest, lives in the private
+`recusal._manifest_policy`, and `recusal.mcp` keeps `manifest_policy` as a wrapper with the same
+signature, docstring and module. The policy module imports the artifact half's validator only at call time, so
+either module can be imported first. What remains in `recusal.mcp` is the pure artifact
+half: building, comparing and validating manifests and observations.
+
+The same pattern was applied to `recusal.claude_code` in the same change: the neutral
+evaluator that every adapter reuses (`decide`, the one audit-record path and the control
+identity it writes) lives in the private `recusal._adjudicate`, and `recusal.claude_code`
+keeps the hook, its event parsing and the allowlist, with `decide` as the same kind of wrapper and
+every private name re-exported. The evaluator imports no adapter,
+persistence or MCP code; `tests/test_extractions.py` pins both facades, both boundaries
+and a golden audit record captured before the move.
+
 The safe sequence is:
 
 1. lock the observable contract with source and installed-wheel tests;

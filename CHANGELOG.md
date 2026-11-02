@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Two facade-preserving extractions, code moved verbatim and every public import path
+  unchanged. The neutral evaluator (`decide`, the one audit-record path and the control
+  identity it writes) moved from `recusal/claude_code.py` to the private
+  `recusal/_adjudicate.py`; `claude_code` keeps the hook, its event parsing and the allowlist,
+  and keeps `decide` as a wrapper with the same signature, docstring and module, re-exporting
+  The call-time manifest policy (file-backed, locked, cached, with its invocation-local
+  digest) moved from `recusal/mcp.py` to the private `recusal/_manifest_policy.py`; `mcp`
+  keeps the artifact half (build, compare, validate) and `manifest_policy` as the same kind of
+  wrapper. `tests/test_extractions.py` pins the facades (wrappers over the moved code, same
+  boundaries (the evaluator imports no adapter, persistence or MCP code; the policy module
+  imports `mcp` only at call time, so either private module can be imported first), and
+  holds `decide` to an audit record captured before the move. (From the 2026-11-02
+  architecture review.)
+
 ### Added
 - `tests/test_adapter_conformance.py`: one contract for every framework adapter. Five
   invariants, stated once and run against each adapter through a normalizer per route
