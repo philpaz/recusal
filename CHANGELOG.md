@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `examples/crewai_gate.py`: gates CrewAI tool calls with CrewAI's own hooks.
+  `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each call
+  with `decide` and blocks a refusal, and an `after_tool_call` hook that replaces CrewAI's
+  fixed "Tool execution blocked by hook" line with Recusal's reason, so the model reads why;
+  it returns the function that uninstalls both. The registry is process-global, so one
+  install covers every agent, task and crew in the process; the tests pin that, the
+  registration-order trap (a hook after the gate can change the argument dict it judged, so
+  install the gate last), that another hook's block keeps CrewAI's own line, and that a hook
+  exception is swallowed by CrewAI (the gate never relies on raising). Offline with a scripted
+  `BaseLLM`, Python 3.10+, tested with exactly `crewai==1.15.34`, two new CI jobs and a weekly
+  latest lane; CrewAI stays out of the package's dependencies. "Works with" marks CrewAI
+  Tested. (#106)
 - `examples/google_adk_gate.py`: gates Google ADK tool calls with the ADK's own
   `before_tool_callback`. `recusal_before_tool(policy)` judges each call immediately before
   the `LlmAgent` runs it and answers a refusal as the tool's response; `gated_agent(agent,

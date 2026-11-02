@@ -55,6 +55,14 @@ jobs:
             python-version: "3.12"
             packages: "google-adk google-genai"
             tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py"
+          - runtime: crewai
+            python-version: "3.10"
+            packages: "crewai"
+            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py"
+          - runtime: crewai
+            python-version: "3.12"
+            packages: "crewai"
+            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

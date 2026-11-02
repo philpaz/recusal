@@ -82,6 +82,12 @@ gate as the last callback, and refuses a `code_executor` or an `LlmAgent` subcla
 `RecusalPlugin(policy)` does the same for every agent a runner drives. Python 3.11+, tested
 with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recusal dependency.
 
+The [CrewAI example](../examples/crewai_gate.py) installs a `before_tool_call` hook that
+judges each call and blocks a refusal, paired with an `after_tool_call` hook that puts
+Recusal's reason in the model's answer; `install_recusal_hooks(policy)` registers both for
+every crew in the process and returns the uninstall. Install it after your other hooks.
+Python 3.10+, tested with exactly `crewai==1.15.34`; not a Recusal dependency.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

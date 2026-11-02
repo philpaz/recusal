@@ -80,7 +80,7 @@ issue nobody has taken yet: comment there to pick it up.
 | OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](examples/google_adk_gate.py) |
-| CrewAI | Wanted | [#106](https://github.com/philpaz/recusal/issues/106) |
+| CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](examples/crewai_gate.py) |
 | Pydantic AI | Wanted | [#107](https://github.com/philpaz/recusal/issues/107) |
 | LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
 <!-- works-with:end -->
@@ -631,6 +631,16 @@ way; it refuses an agent with a `code_executor` or an `LlmAgent` subclass, which
 things the callback never sees. `RecusalPlugin(policy)` is the same gate as a runner plugin,
 covering every agent the runner drives. Offline (a scripted model, no key), Python 3.11+,
 tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`.
+
+For CrewAI, [`examples/crewai_gate.py`](examples/crewai_gate.py) uses CrewAI's own tool-call
+hooks: `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each
+call and blocks a refusal, and an `after_tool_call` hook that replaces CrewAI's fixed
+"blocked by hook" line with Recusal's reason, so the model reads why. The registry is
+process-global: one install covers every agent, task and crew in the process, and the
+function it returns uninstalls both hooks. Install it after your other hooks, because a hook
+that runs after the gate can change the argument dict the gate judged; the tests show the
+bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.10+, tested with
+exactly `crewai==1.15.34`.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
