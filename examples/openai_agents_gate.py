@@ -18,7 +18,8 @@ What the guardrail cannot see, so gated_agent refuses it rather than skipping it
   local ones the SDK executes itself (shell, local shell, apply patch, computer, custom,
   programmatic tool calling). The rule is default-deny: anything but a FunctionTool is
   refused, so a tool type added in a later SDK release is refused too;
-- MCP servers attached with mcp_servers=, and handoffs to other agents;
+- MCP servers attached with mcp_servers= (examples/openai_agents_mcp_gate.py gates those,
+  and hosted MCP through its approval callback), and handoffs to other agents;
 - a sub-agent behind agent.as_tool(...) whose own tools are not gated: the guardrail sees
   only the input handed to the sub-agent, never the calls it then makes. Gate the sub-agent
   first, gated_agent(sub, policy).as_tool(...), and the parent accepts it;

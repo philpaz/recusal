@@ -76,6 +76,12 @@ handoffs, an ungated sub-agent behind `as_tool`, or an `Agent` subclass. It requ
 Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.34.0`; neither package is
 a Recusal dependency, and no API key is used.
 
+The [OpenAI Agents SDK MCP example](../examples/openai_agents_mcp_gate.py) gates the two
+MCP paths: `gate_mcp_server(server, policy)` appends the guardrail to a local server's
+`tool_input_guardrails`, which the SDK copies onto every tool the server lists, and
+`gate_hosted_mcp(tool, policy)` makes a hosted MCP tool require approval for every call and
+judges each approval request, the only local point a hosted call has. Same pins and jobs.
+
 Calling the OpenAI API directly, no framework: [`../examples/openai_responses_gate.py`](../examples/openai_responses_gate.py)
 judges each `function_call` item (Responses API) or `tool_calls` entry (Chat Completions)
 in your own loop before you run it and answers every call once under its own id; an item

@@ -19,6 +19,21 @@ All notable changes to this project are documented here. The format follows
   `tests/test_launcher_empty_root.py` now exercise the two-part launcher.
 
 ### Added
+- `examples/openai_agents_mcp_gate.py`: gates the OpenAI Agents SDK's MCP tools, the two
+  paths the function-tool example names as out of its sight. A local MCP server's tools
+  become function tools at run time and the SDK copies the server's `tool_input_guardrails`
+  onto each one, so `gate_mcp_server(server, policy)` appends `recusal_guardrail` to the
+  server in place and every tool it lists is judged before it runs, after any approval; a
+  refusal is the call's output. Hosted MCP runs on OpenAI's servers, and its one local point
+  is the approval callback: `gate_hosted_mcp(tool, policy)` returns a copy that requires
+  approval for every call and answers a refusal as a rejection with the reason, an existing
+  callback still running for allowed calls; a hosted tool with any other `require_approval`
+  is reported ungated, since a call OpenAI does not ask about is never seen. `gated_agent`
+  gates function tools, servers and hosted tools together. The tests pin the prefixed public
+  name under `include_server_in_tool_names`, that an approval never skips the guardrail, and
+  the rejection the SDK sends back; the surface probe pins the server and hosted-tool fields.
+  Offline with an in-process MCP server and a scripted approval request, the same pins and
+  CI jobs as the function-tool example. "Works with" marks the row Tested. (#108)
 - `examples/pydantic_ai_gate.py`: gates Pydantic AI tool calls with the framework's own
   `before_tool_execute` hook, which runs with the validated argument dict immediately before a
   tool runs. `RecusalGate(policy)` is a capability that judges each call there with `decide`

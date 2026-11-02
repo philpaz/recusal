@@ -77,7 +77,7 @@ issue nobody has taken yet: comment there to pick it up.
 | OpenAI Agents SDK, function tools | Tested | [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py) |
 | LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](examples/langgraph_audit.py) |
 | LangGraph pause, resume and replay | Tested | [`examples/langgraph_gate.py`](examples/langgraph_gate.py) across `interrupt()`, `Command(resume=)` and checkpoint replay |
-| OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
+| OpenAI Agents SDK, MCP tools, local servers and hosted MCP | Tested | [`examples/openai_agents_mcp_gate.py`](examples/openai_agents_mcp_gate.py) |
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](examples/google_adk_gate.py) |
 | CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](examples/crewai_gate.py) |
@@ -620,6 +620,19 @@ tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
 `needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
 `ScriptedModel`, no API key) and needs Python 3.10+ with `openai-agents==0.24.0` and
 `openai==3.34.0` (example-only pins).
+
+For the SDK's MCP tools, [`examples/openai_agents_mcp_gate.py`](examples/openai_agents_mcp_gate.py)
+covers the two paths that example names as out of its sight. A local MCP server
+(`mcp_servers=`) has its tools turned into function tools at run time, and the SDK copies
+the server's `tool_input_guardrails` onto each one, so `gate_mcp_server(server, policy)`
+appends the same guardrail to the server, in place: every tool it lists is judged
+immediately before it runs, after any approval, and a refusal becomes the call's output.
+Hosted MCP runs on OpenAI's servers, and the one local point is the approval callback, so
+`gate_hosted_mcp(tool, policy)` returns a copy that requires approval for every call and
+answers a refusal as a rejection with Recusal's reason; a call OpenAI does not ask approval
+for is never seen, which is why a hosted tool with any other `require_approval` is reported
+ungated. `gated_agent(agent, policy)` there gates function tools, servers and hosted tools
+together. Same pins, same CI jobs, same offline fixtures, plus an in-process MCP server.
 
 No framework at all, the OpenAI API called directly: [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py)
 gates the loop your application already owns. `gate_function_calls(response, tools, policy)`
