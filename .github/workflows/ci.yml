@@ -278,7 +278,7 @@ jobs:
       - name: Install Recusal and pinned OpenAI Agents SDK example dependencies
         run: pip install -e ".[dev]" openai-agents==0.24.0 openai==3.34.0
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_compat_openai_agents.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_responses_gate.py tests/test_compat_openai_agents.py
 
   openai-agents-example-py312:
     name: OpenAI Agents example (Python 3.12)
@@ -293,7 +293,7 @@ jobs:
       - name: Install Recusal and pinned OpenAI Agents SDK example dependencies
         run: pip install -e ".[dev]" openai-agents==0.24.0 openai==3.34.0
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_compat_openai_agents.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_responses_gate.py tests/test_compat_openai_agents.py
 
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK

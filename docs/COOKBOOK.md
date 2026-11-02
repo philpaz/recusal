@@ -68,6 +68,13 @@ handoffs, an ungated sub-agent behind `as_tool`, or an `Agent` subclass. It requ
 Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.34.0`; neither package is
 a Recusal dependency, and no API key is used.
 
+Calling the OpenAI API directly, no framework: [`../examples/openai_responses_gate.py`](../examples/openai_responses_gate.py)
+judges each `function_call` item (Responses API) or `tool_calls` entry (Chat Completions)
+in your own loop before you run it and answers every call once under its own id; an item
+type it does not handle raises rather than slipping past. Hosted tools (web search, file
+search, code interpreter, remote MCP) run on the provider's side and never reach this
+loop. Offline, Python 3.10+, tested with exactly `openai==3.34.0`.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

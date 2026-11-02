@@ -18,6 +18,20 @@ All notable changes to this project are documented here. The format follows
   tool runs. `main()` records three calls, verifies the log with `recusal audit verify`,
   edits one entry and shows the verifier refusing it. "Works with" marks the LangGraph audit
   trail Tested; the two LangGraph CI jobs and the weekly lane run its tests. (#77)
+- `examples/openai_responses_gate.py`: gate OpenAI function calls in the loop your own
+  application runs, no framework. `gate_function_calls(response, tools, policy)` judges every
+  `function_call` item of a Responses API result and returns one `function_call_output` per
+  call under its own `call_id`; `gate_tool_calls(completion, tools, policy)` does the same for
+  Chat Completions `tool_calls` with `role: "tool"` messages. One decision function serves
+  both shapes: arguments are decoded as the tool would receive them, invalid JSON, non-object
+  arguments, an unknown tool and a raising policy are refused and never run. Default-deny on
+  what the adapter does not understand: any other output item or tool call type
+  (`custom_tool_call`, hosted tool calls, a type a later SDK adds) raises, naming the type;
+  a call without an id is refused, because on `openai==3.34.0` neither `FunctionCallOutput`
+  nor `ChatCompletionToolMessageParam` requires one; and every call must be answered exactly
+  once. The fixtures are real SDK objects built with `model_validate`, offline. "Works with"
+  marks OpenAI Responses and Chat Completions Tested; the two OpenAI Agents CI jobs and the
+  weekly lane run its tests. (#81)
 
 ### Changed
 - `docs/VERIFY.md` records the 0.12.2 verification run.

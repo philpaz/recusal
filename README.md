@@ -78,7 +78,7 @@ issue nobody has taken yet: comment there to pick it up.
 | LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](examples/langgraph_audit.py) |
 | LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
 | OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
-| OpenAI Responses and Chat Completions | Wanted | [#81](https://github.com/philpaz/recusal/issues/81) |
+| OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py) |
 | Google ADK | Wanted | [#105](https://github.com/philpaz/recusal/issues/105) |
 | CrewAI | Wanted | [#106](https://github.com/philpaz/recusal/issues/106) |
 | Pydantic AI | Wanted | [#107](https://github.com/philpaz/recusal/issues/107) |
@@ -602,6 +602,18 @@ tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
 `needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
 `ScriptedModel`, no API key) and needs Python 3.10+ with `openai-agents==0.24.0` and
 `openai==3.34.0` (example-only pins).
+
+No framework at all, the OpenAI API called directly: [`examples/openai_responses_gate.py`](examples/openai_responses_gate.py)
+gates the loop your application already owns. `gate_function_calls(response, tools, policy)`
+judges every `function_call` item in a Responses API result and returns one
+`function_call_output` per call under its own `call_id`; `gate_tool_calls(completion, tools,
+policy)` does the same for Chat Completions `tool_calls`, returning `role: "tool"` messages.
+Invalid JSON, non-object arguments, an unknown tool and a raising policy are refused, never
+run; an output item or tool call of a type the adapter does not handle raises, naming it,
+and a call without an id is refused because the SDK's answer types do not require one.
+Hosted tools (web search, file search, code interpreter, remote MCP) run on the provider's
+side and never reach this loop. Offline (`model_validate` builds real SDK objects, no key),
+Python 3.10+, tested with exactly `openai==3.34.0`.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
