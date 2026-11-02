@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `examples/langgraph_audit.py`: the LangGraph audit trail. `recusal_audited_gate(policy,
+  log)` and `recusal_audited_agate(policy, log)` are the `ToolNode` gates from
+  `langgraph_gate.py` with the decision written to a hash-chained `AuditLog` entry labeled
+  `langgraph.toolnode`, keyed by LangGraph's tool call id, holding a SHA-256 fingerprint of
+  the arguments and never their text. The decision logic is the one function the plain gate
+  uses, with the recording arguments passed through to `decide`, so the two cannot drift;
+  the tests prove the same decision and the same `ToolMessage` across a corpus of policies
+  and inputs, sync and async. An unwritable log or a failing sink refuses the call and no
+  tool runs. `main()` records three calls, verifies the log with `recusal audit verify`,
+  edits one entry and shows the verifier refusing it. "Works with" marks the LangGraph audit
+  trail Tested; the two LangGraph CI jobs and the weekly lane run its tests. (#77)
+
 ### Changed
 - `docs/VERIFY.md` records the 0.12.2 verification run.
 - **ruff 0.17.1.** The dev pin and the pre-commit hook move together; nothing needed

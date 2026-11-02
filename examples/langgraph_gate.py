@@ -69,11 +69,16 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
-def _refusal(request, policy: Policy):
-    """Return an error message for a refused call, or None to execute it."""
+def _refusal(request, policy: Policy, **record: Any):
+    """Return an error message for a refused call, or None to execute it.
+
+    ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
+    so a gate that puts the decision on a log (examples/langgraph_audit.py) decides, and
+    refuses, exactly as this one does: one function, no second copy to drift.
+    """
     call = request.tool_call
     try:
-        decision, reason = decide(call["name"], call["args"], policy)
+        decision, reason = decide(call["name"], call["args"], policy, **record)
     except Exception as exc:
         decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
     if decision == "deny":

@@ -49,6 +49,10 @@ Runnable LangGraph adapter: [`../examples/langgraph_gate.py`](../examples/langgr
 uses LangGraph's `ToolNode(..., wrap_tool_call=recusal_gate(policy))` to gate each tool call
 immediately before execution and return a refusal as an error `ToolMessage`. It is offline, requires **Python 3.10+**, and is tested with exactly
 `langgraph==1.2.12` and `langchain-core==1.6.5`; neither package is a Recusal dependency.
+[`../examples/langgraph_audit.py`](../examples/langgraph_audit.py) is the same gate with a
+record: `recusal_audited_gate(policy, log)` writes each decision, allowed or refused, to a
+hash-chained `AuditLog` entry labeled `langgraph.toolnode` under LangGraph's tool call id,
+and `recusal audit verify` catches an edited entry.
 
 LangChain's [`create_agent` middleware example](../examples/langchain_agent_gate.py)
 imports the same `recusal_gate` and uses `wrap_tool_call` with scripted model messages.

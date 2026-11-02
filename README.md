@@ -75,7 +75,7 @@ issue nobody has taken yet: comment there to pick it up.
 | Any Python agent loop | Tested | [`examples/agent_loop.py`](examples/agent_loop.py) |
 | LangChain `create_agent` middleware, sync and async | Tested | [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py) |
 | OpenAI Agents SDK, function tools | Tested | [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py) |
-| LangGraph audit trail | Wanted | [#77](https://github.com/philpaz/recusal/issues/77) |
+| LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](examples/langgraph_audit.py) |
 | LangGraph pause, resume and replay | Wanted | [#80](https://github.com/philpaz/recusal/issues/80) |
 | OpenAI Agents SDK, MCP tools | Wanted | [#108](https://github.com/philpaz/recusal/issues/108) |
 | OpenAI Responses and Chat Completions | Wanted | [#81](https://github.com/philpaz/recusal/issues/81) |
@@ -574,7 +574,12 @@ before each individual tool call. Async graphs use `recusal_agate(policy)` with 
 and `ainvoke`. It is offline and deterministic (no model or API key), requires
 **Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
 `langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
-and its Python 3.9+ support are unchanged.
+and its Python 3.9+ support are unchanged. To put every one of those calls on the record,
+[`examples/langgraph_audit.py`](examples/langgraph_audit.py) swaps in
+`recusal_audited_gate(policy, log)` (or `recusal_audited_agate` for `awrap_tool_call`): the
+same decision, written as a hash-chained `AuditLog` entry labeled `langgraph.toolnode` with
+LangGraph's tool call id and a fingerprint of the arguments, before the call runs or is
+refused, and an unwritable log refuses the call.
 
 For LangChain's `create_agent` middleware, [`examples/langchain_agent_gate.py`](examples/langchain_agent_gate.py)
 reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a second policy
