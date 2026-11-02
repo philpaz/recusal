@@ -7,18 +7,20 @@ builds on is examples/openai_agents_gate.py; this example covers the two MCP pat
 names as out of its sight.
 
 Local MCP servers (``Agent(mcp_servers=[...])``). The SDK connects to these from your own
-process and turns every tool a server lists into a function tool at run time, copying the
-server's ``tool_input_guardrails`` onto each one. So the seam is the same tool input
-guardrail as the function-tool example: ``gate_mcp_server(server, policy)`` appends
-``recusal_guardrail(policy)`` to the server's list, in place, because a server object is a
-connection and a copy would be a second one. The guardrail then runs immediately before
-each MCP tool executes, after any approval a person gave; a refusal becomes the call's
-output, so the model reads Recusal's reason and the server is never called. The policy
-sees the server's own tool name, the one the server will run. With
-``mcp_config={"include_server_in_tool_names": True}`` the model calls the prefixed public
-name ``mcp_<server>__<tool>``, and the gate, which knows its server's name, maps that back
-before judging; a public name shortened to a hash (a very long server or tool name) cannot
-be mapped and is judged as the model called it.
+process, lists each server's tools, and gives every tool a public name the model calls:
+the tool's own name by default, or under ``mcp_config={"include_server_in_tool_names":
+True}`` a prefixed form, sanitized to the characters the model API accepts, hashed when two
+names collide or a function tool already holds the name, and shortened when too long. A
+gate keyed on that public name judges a presentation of the capability, not the
+capability. The seam this example uses is the one place the SDK hands the server the
+capability itself: ``server.call_tool(tool_name, arguments)``, invoked with the server's own
+tool name and the exact argument dict the server will run, after any approval a person
+gave. ``gate_mcp_server(server, policy)`` wraps that method on the server, in place, because
+a server object is a connection and a copy would be a second one. A refusal returns an MCP
+error result carrying Recusal's reason, which the SDK surfaces to the model as the call's
+output, and the server's own ``call_tool`` is never reached. The policy therefore sees the
+name the server executes under, whatever the model called it, and a policy keyed by tool
+name must name the server's own tools.
 
 Hosted MCP (``HostedMCPTool``). Those calls run on OpenAI's servers, and the one local point
 is the SDK's approval callback, which runs only for a call OpenAI asks approval for.
@@ -64,7 +66,6 @@ if sys.version_info < (3, 10):
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.openai_agents_gate import (  # noqa: E402
-    GUARDRAIL_NAME,
     OPENAI_AGENTS_VERSION,
     OPENAI_VERSION,
     Agent,
@@ -78,17 +79,13 @@ from examples.openai_agents_gate import (  # noqa: E402
     sql_scope_policy,
     tool_outputs,
 )
-from examples.openai_agents_gate import (
+from examples.openai_agents_gate import (  # noqa: E402
     is_gated as function_tools_gated,
 )
+from recusal.claude_code import decide  # noqa: E402
 
 try:
-    from agents import (
-        HostedMCPTool,
-        MCPToolApprovalRequest,
-        ToolGuardrailFunctionOutput,
-        tool_input_guardrail,
-    )
+    from agents import HostedMCPTool, MCPToolApprovalRequest
     from agents.mcp import MCPServer
     from mcp.types import CallToolResult, GetPromptResult, ListPromptsResult, TextContent, Tool
     from openai.types.responses.response_output_item import McpApprovalRequest
@@ -106,64 +103,56 @@ CALLED: list[tuple[str, str, dict[str, Any]]] = []
 # --- local MCP servers -----------------------------------------------------------------------
 
 
-def _carries_gate(guardrails: Any) -> bool:
-    return any(
-        getattr(guardrail.guardrail_function, "recusal_gate", False)
-        for guardrail in guardrails or ()
-    )
+def _refusal_for_call(tool_name: str, arguments: Any, policy: Policy) -> Optional[str]:
+    """Return the reason a server call is refused, or None to let it through.
 
-
-def _public_prefix(server_name: str) -> str:
-    """The prefix the SDK puts on this server's tool names under
-    ``include_server_in_tool_names``: ``mcp_<server>__``, the server part reduced to ASCII
-    letters, digits, ``_`` and ``-`` (the compat probe pins this against the SDK's own)."""
-    safe = "".join(
-        char if char.isascii() and (char.isalnum() or char in "_-") else "_" for char in server_name
-    ).strip("_-")
-    return f"mcp_{safe or 'server'}__"
-
-
-def _judged_name(public_name: str, server_name: str) -> str:
-    """The server's own tool name behind a public name, when it carries this server's prefix."""
-    prefix = _public_prefix(server_name)
-    if public_name.startswith(prefix) and len(public_name) > len(prefix):
-        return public_name[len(prefix) :]
-    return public_name
-
-
-def recusal_mcp_guardrail(policy: Policy, server_name: str):
-    """The tool input guardrail for one server: judges each call by the server's own tool
-    name and the arguments the server will receive."""
-
-    def gate(data) -> ToolGuardrailFunctionOutput:
-        name = _judged_name(data.context.tool_name, server_name)
-        reason = _refusal(name, data.context.tool_arguments, policy)
-        if reason is not None:
-            return ToolGuardrailFunctionOutput.reject_content(reason)
-        return ToolGuardrailFunctionOutput.allow()
-
-    gate.recusal_gate = True  # type: ignore[attr-defined]
-    return tool_input_guardrail(gate, name=GUARDRAIL_NAME)
+    ``arguments`` is the dict the SDK hands ``call_tool`` (``None`` for a call without
+    any), so the policy judges exactly what the server will receive. A non-mapping is
+    refused: the server would not accept it either, and the policy cannot read it.
+    """
+    args = {} if arguments is None else arguments
+    if not isinstance(args, dict):
+        return f"Recusal refused `{tool_name}`: arguments are not a mapping"
+    try:
+        decision, reason = decide(tool_name, args, policy)
+    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
+        return f"Recusal failed closed (policy error): {exc}"
+    return reason if decision == "deny" else None
 
 
 def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
-    """Append the Recusal guardrail to the server's tool input guardrails, in place.
+    """Wrap the server's ``call_tool`` so every call is judged by the server's own tool
+    name and the exact arguments it would run, in place; returns the same server.
 
-    The SDK copies a server's guardrails onto every tool it lists, so one gate on the server
-    covers each of its tools in every agent that uses it. Returns the same server.
+    The SDK invokes ``call_tool`` with the raw tool name whatever public name the model
+    used, after any approval, so this is the point where the policy judges the capability
+    that executes. A refusal is returned as an MCP error result carrying the reason, and
+    the server's own ``call_tool`` is not reached.
     """
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
-    server.tool_input_guardrails = [
-        *(server.tool_input_guardrails or ()),
-        recusal_mcp_guardrail(policy, server.name),
-    ]
+    if is_gated_mcp_server(server):
+        return server
+    original = server.call_tool
+
+    async def gated_call_tool(
+        tool_name: str, arguments: Optional[dict[str, Any]], meta: Any = None
+    ) -> CallToolResult:
+        reason = _refusal_for_call(tool_name, arguments, policy)
+        if reason is not None:
+            return CallToolResult(content=[TextContent(type="text", text=reason)], isError=True)
+        if meta is None:
+            return await original(tool_name, arguments)
+        return await original(tool_name, arguments, meta=meta)
+
+    gated_call_tool.recusal_gate = True  # type: ignore[attr-defined]
+    server.call_tool = gated_call_tool  # type: ignore[method-assign]
     return server
 
 
 def is_gated_mcp_server(server: Any) -> bool:
-    """True if the server carries the Recusal guardrail."""
-    return isinstance(server, MCPServer) and _carries_gate(server.tool_input_guardrails)
+    """True if the server's ``call_tool`` is wrapped by the Recusal gate."""
+    return isinstance(server, MCPServer) and bool(getattr(server.call_tool, "recusal_gate", False))
 
 
 # --- hosted MCP -------------------------------------------------------------------------------
@@ -265,11 +254,14 @@ def gated_agent(agent: Agent, policy: Policy) -> Agent:
 
 
 class InProcessMCPServer(MCPServer):
-    """An MCP server that lives in this process: lists echo and run_sql, records every call."""
+    """An MCP server that lives in this process: lists its tools, records every call."""
 
-    def __init__(self, name: str = "db", **kwargs: Any):
+    def __init__(
+        self, name: str = "db", tools: tuple[str, ...] = ("echo", "run_sql"), **kwargs: Any
+    ):
         super().__init__(**kwargs)
         self._name = name
+        self._tools = tuple(tools)
 
     @property
     def name(self) -> str:
@@ -282,26 +274,30 @@ class InProcessMCPServer(MCPServer):
         pass
 
     async def list_tools(self, run_context: Any = None, agent: Any = None) -> list[Tool]:
-        return [
-            Tool(
-                name="echo",
-                description="Return harmless text.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
-                },
+        schemas = {
+            "echo": ("Return harmless text.", {"text": {"type": "string"}}),
+            "run_sql": (
+                "Record SQL text without connecting to a database.",
+                {"sql": {"type": "string"}},
             ),
-            Tool(
-                name="run_sql",
-                description="Record SQL text without connecting to a database.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"sql": {"type": "string"}},
-                    "required": ["sql"],
-                },
-            ),
-        ]
+        }
+        listed = []
+        for name in self._tools:
+            description, properties = schemas.get(
+                name, ("Record SQL text.", {"sql": {"type": "string"}})
+            )
+            listed.append(
+                Tool(
+                    name=name,
+                    description=description,
+                    inputSchema={
+                        "type": "object",
+                        "properties": properties,
+                        "required": list(properties),
+                    },
+                )
+            )
+        return listed
 
     async def call_tool(
         self, tool_name: str, arguments: Optional[dict[str, Any]], meta: Any = None

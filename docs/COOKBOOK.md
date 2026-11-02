@@ -77,8 +77,9 @@ Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.34.0`; neither p
 a Recusal dependency, and no API key is used.
 
 The [OpenAI Agents SDK MCP example](../examples/openai_agents_mcp_gate.py) gates the two
-MCP paths: `gate_mcp_server(server, policy)` appends the guardrail to a local server's
-`tool_input_guardrails`, which the SDK copies onto every tool the server lists, and
+MCP paths: `gate_mcp_server(server, policy)` wraps a local server's `call_tool`, where the
+SDK hands over the server's own tool name and the exact arguments whatever public name
+the model called, and
 `gate_hosted_mcp(tool, policy)` makes a hosted MCP tool require approval for every call and
 judges each approval request, the only local point a hosted call has. Same pins and jobs.
 
@@ -431,7 +432,10 @@ The [runnable recipe](../examples/composed_policies.py) composes the existing
 destructive-shell, workspace-write and explicit-egress policies. Its
 [tests](../tests/test_composed_policy_example.py) cover CRITICAL over passing
 checks, an empty clean call that still defers, policy exceptions that fail
-closed, and policy-order-independent verdicts. Run offline from a clone:
+closed, policy-order-independent verdicts, and that the composition forwards the
+control identity of a `manifest_policy` inside it, so the audit record names the
+manifest that governed the call exactly as the direct policy would (one manifest
+policy per gate). Run offline from a clone:
 
 ```bash
 python examples/composed_policies.py
