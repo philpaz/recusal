@@ -34,8 +34,9 @@ class ComposedPolicy:
     ``reset_control_identity()`` before each adjudication. A composition that forwarded
     findings but not these two would keep the verdict and lose the evidence of which
     approved manifest governed it, so both are forwarded here. Exactly one inner policy may
-    carry a control identity (a nested composition is flattened into its leaves first, so a
-    group of plain policies never counts as one): two manifest policies in one gate would
+    carry a control identity (a nested composition of this exact class is flattened into its
+    leaves first, so a group of plain policies never counts as one; a subclass stays one
+    leaf, so an overridden ``__call__`` keeps running): two manifest policies in one gate would
     have two digests and
     one record, so that composition is refused up front rather than recorded ambiguously.
     The invariant the tests pin: adding a no-op policy changes neither the verdict nor the
@@ -43,14 +44,26 @@ class ComposedPolicy:
     """
 
     def __init__(self, *policies):
-        # A nested composition is unwrapped into its leaves, in order: a group of plain
-        # policies carries no identity of its own, so counting it as a carrier would
-        # refuse harmless groups and miscount the real manifest policy beside one.
+        # A nested composition of this exact class is unwrapped into its leaves, in order:
+        # a group of plain policies carries no identity of its own, so counting it as a
+        # carrier would refuse harmless groups and miscount the real manifest policy beside
+        # one. A SUBCLASS is kept whole as one leaf: it may override ``__call__`` to add or
+        # change checks, and unwrapping it to its ``.policies`` would run those leaves and
+        # silently skip the override, so a refusal (or a raise) it adds would be lost at the
+        # composition boundary.
         leaves = []
         for check in policies:
-            leaves.extend(check.policies if isinstance(check, ComposedPolicy) else (check,))
+            leaves.extend(check.policies if type(check) is ComposedPolicy else (check,))
         self.policies = tuple(leaves)
-        carriers = [p for p in self.policies if callable(getattr(p, "get_control_identity", None))]
+        # A kept subclass counts as a carrier only when it carries a manifest policy itself:
+        # its ``get_control_identity`` always exists, but reports {} for a plain group.
+        carriers = []
+        for p in self.policies:
+            if isinstance(p, ComposedPolicy):
+                if p._carrier is not None:
+                    carriers.append(p)
+            elif callable(getattr(p, "get_control_identity", None)):
+                carriers.append(p)
         if len(carriers) > 1:
             raise ValueError(
                 "compose_policies: more than one policy carries a control identity; one gate "

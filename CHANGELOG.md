@@ -37,6 +37,14 @@ All notable changes to this project are documented here. The format follows
   2026-11-02 architecture review.)
 
 ### Fixed
+- `examples/composed_policies.py`: a `ComposedPolicy` subclass is kept as one leaf when
+  composed. Flattening unwrapped every instance, subclasses included, to its `.policies`,
+  so a subclass that overrode `__call__` to add a refusal lost that refusal inside
+  `compose_policies` (deny alone, defer wrapped; a raising override was skipped the same
+  way). Only the exact class is flattened now; a subclass runs whole, its own manifest
+  carrier counts once toward the one-per-gate rule, and plain subclasses are not mistaken
+  for carriers. Pinned by the reviewer's probe as tests. (Found in the fourth 2026-11-02
+  review.)
 - `examples/openai_agents_mcp_gate.py`: a gated server carries one policy. `gate_mcp_server`
   on an already gated server is a no-op for the same policy object and refuses a different
   one with a `ValueError`; before, it returned silently and the first policy kept running

@@ -2,7 +2,7 @@
 
 from itertools import permutations
 
-from examples.composed_policies import compose_policies, make_policy
+from examples.composed_policies import ComposedPolicy, compose_policies, make_policy
 from recusal import Decision, Finding, Severity, compute_verdict
 from recusal.claude_code import decide
 
@@ -182,3 +182,53 @@ def test_two_manifest_policies_across_nesting_are_still_refused(tmp_path):
             compose_policies(_manifest_and_log(tmp_path, "a")),
             compose_policies(_noop, _manifest_and_log(tmp_path, "b")),
         )
+
+
+# --- a subclass is a leaf, not a transparent group ------------------------------------------
+
+
+class _Stricter(ComposedPolicy):
+    """A ComposedPolicy subclass that adds its own refusal in ``__call__``."""
+
+    def __call__(self, tool_name, tool_input):
+        findings = super().__call__(tool_name, tool_input)
+        return findings + [Finding.fail("stricter", severity="CRITICAL", message="subclass")]
+
+
+class _Raising(ComposedPolicy):
+    def __call__(self, tool_name, tool_input):
+        raise RuntimeError("synthetic subclass policy error")
+
+
+def test_a_subclass_refusal_survives_composition():
+    """Review 4: used directly the subclass denied; wrapped, flattening skipped its override."""
+    direct = _Stricter(_noop)
+    assert decide("Bash", {"command": "ls"}, direct)[0] == "deny"
+    wrapped = compose_policies(_noop, _Stricter(_noop), _noop)
+    assert [type(p).__name__ for p in wrapped.policies] == ["function", "_Stricter", "function"]
+    decision, reason = decide("Bash", {"command": "ls"}, wrapped)
+    assert decision == "deny" and "[FAIL]: subclass" in reason
+
+
+def test_a_raising_subclass_override_still_fails_closed_through_composition():
+    decision, reason = decide("Read", {}, compose_policies(_Raising(_noop)))
+    assert decision == "deny"
+    assert "subclass policy error" in reason.lower()
+
+
+def test_a_subclass_wrapping_a_manifest_policy_keeps_its_identity_and_counts_once(tmp_path):
+    import pytest
+
+    inner = _Stricter(_manifest_and_log(tmp_path))
+    direct = _record(tmp_path, inner, "direct")
+    assert _record(tmp_path, compose_policies(_noop, inner), "wrapped") == direct
+    assert direct[0] == "deny"  # the subclass refusal, with the manifest digest on the record
+    assert direct[1]["manifest_sha256"].startswith("sha256:")
+    with pytest.raises(ValueError, match="one manifest_policy per gate"):
+        compose_policies(inner, _manifest_and_log(tmp_path, "b"))
+
+
+def test_two_plain_subclasses_are_not_mistaken_for_two_manifests():
+    composed = compose_policies(_Stricter(_noop), _Stricter(_passed))
+    assert composed.get_control_identity() == {}
+    assert decide("Read", {}, composed)[0] == "deny"
