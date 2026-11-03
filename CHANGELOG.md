@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-11-02
+
+Package changes and example changes, stated apart. In the installed package: two
+facade-preserving extractions (the neutral evaluator to `recusal/_adjudicate.py`, the
+call-time manifest policy to `recusal/_manifest_policy.py`), code moved verbatim with every
+public import, signature and audit record pinned unchanged; no behaviour changes. Under
+`examples/`, outside the wheel: the OpenAI Agents MCP gate now binds one policy per server
+connection and refuses a different one, `compose_policies` flattens nested groups and keeps
+a `ComposedPolicy` subclass whole so an overridden `__call__` keeps running, and one
+conformance suite runs the same five invariants against every Tested adapter. Three outside
+reviews of main on 2026-11-02 found the example defects; each fix carries the reviewer's
+probe as a test. PATCH under `STABILITY.md`: the gate behaves exactly as in 0.12.6.
+
 ### Changed
 - Two facade-preserving extractions, code moved verbatim and every public import path
   unchanged. The neutral evaluator (`decide`, the one audit-record path and the control
