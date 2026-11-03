@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `.editorconfig` at the repository root, stating the conventions the repository already
+  enforces (UTF-8, LF, final newline, spaces; 4 for Python with a 100-column line, 2 for
+  YAML and JSON), and `tests/test_editorconfig_contract.py`, which holds its Python line
+  length equal to Ruff's `line-length` in `pyproject.toml` so the two cannot drift apart.
+  Contributed by @Varma0604 in #178. (#170)
+
 ## [0.12.7] - 2026-11-02
 
 Package changes and example changes, stated apart. In the installed package: two

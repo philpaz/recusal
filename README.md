@@ -857,6 +857,9 @@ Thank you to the people who have made Recusal better:
   classifier demos, and the examples index with the test that keeps it complete, in
   [#149](https://github.com/philpaz/recusal/pull/149) and
   [#150](https://github.com/philpaz/recusal/pull/150).
+- [@Varma0604](https://github.com/Varma0604) (Mouli Varma Sagi): the `.editorconfig` and the
+  test that keeps its line length equal to Ruff's, in
+  [#178](https://github.com/philpaz/recusal/pull/178).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).
