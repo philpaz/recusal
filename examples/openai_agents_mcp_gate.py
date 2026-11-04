@@ -77,6 +77,7 @@ from examples.openai_agents_gate import (  # noqa: E402
     RunConfig,
     Runner,
     ScriptedModel,
+    _duplicate_names,
     _refusal,
     assistant_message,
     gate_tools,
@@ -294,6 +295,12 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
         )
     if agent.handoffs:
         return "it has handoffs, which hand the conversation to another agent's tools"
+    duplicates = _duplicate_names(agent.tools)
+    if duplicates:
+        return (
+            f"its function tools share a name {duplicates!r}; the SDK resolves a shared name "
+            "last-wins at execution, so a guardrail could judge one tool while another runs"
+        )
     return None
 
 

@@ -601,6 +601,31 @@ class TestNameDomainBinding:
         )
         assert called == [("db", "run_sql", {"sql": SELECT})]
 
+    def test_the_combined_gated_agent_refuses_function_tools_that_share_a_name(self, example):
+        """The combined entry point gated function tools one at a time, so a batch-only
+        duplicate check would never see the pair; it checks the whole list first."""
+        from examples.openai_agents_gate import echo, transforming_sql_tool
+
+        sub = example.Agent(
+            name="sub",
+            model=example.scripted_model([("echo", {"text": "x"}, "s1")]),
+            tools=[echo],
+        )
+        agent_tool = example.gated_agent(sub, example.sql_scope_policy).as_tool(
+            tool_name="run_sql", tool_description="same name"
+        )
+        model = example.scripted_model([("run_sql", {"sql": SELECT}, "c1")])
+        agent = example.Agent(
+            name="dup",
+            model=model,
+            tools=[agent_tool, transforming_sql_tool()],
+            mcp_servers=[example.InProcessMCPServer()],
+        )
+        with pytest.raises(ValueError, match="share a name"):
+            example.gated_agent(agent, example.sql_scope_policy)
+        assert not example.is_gated(agent)
+        assert example.CALLED == []
+
     def test_claude_named_needs_a_server_name(self, example):
         with pytest.raises(ValueError, match="name of the server"):
             example.claude_named("", example.sql_scope_policy)

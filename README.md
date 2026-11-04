@@ -628,8 +628,11 @@ the call is never judged. Listed last, the gate judges whatever the others produ
 `wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
 
 For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py)
-adds `recusal_guardrail(policy)` to each function tool as a tool input guardrail, which the
-SDK runs immediately before the tool executes. The guardrail judges the invocation the SDK
+attaches a tool input guardrail to each function tool through `gate_tools`, bound to that
+tool (a standalone `recusal_guardrail(policy)` is bound to nothing and refuses every
+call), which the SDK runs immediately before the tool executes. Function tools must have
+unique names: the SDK resolves a shared name last-wins, so `gate_tools`, `gated_agent`
+and `is_gated` refuse an agent whose tools share one. The guardrail judges the invocation the SDK
 prepares from the model's arguments, validated against the tool's parameter model with
 defaults filled and types coerced (`{"amount": "50"}` reaches an `int` parameter as
 `50`), and pins that invocation so the SDK executes exactly what was judged. A parameter

@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `examples/openai_agents_gate.py` and `examples/openai_agents_mcp_gate.py`: each
+  guardrail is bound to the tool it protects, and an agent whose function tools share a
+  name is refused. The guardrail looked its tool up by name from the agent's tool list and
+  took the first match, while the SDK's lookup map (`agents/_tool_identity.py`) is
+  last-wins: with a gated sub-agent exposed as `run_sql` listed before a function tool of
+  the same name, the guardrail judged the agent tool's raw `SELECT` and the SDK executed
+  the function tool, whose schema rewrote it to `DELETE`, in both the run and streamed
+  routes, with `is_gated` true. `gate_tools` now builds one guardrail per tool, bound to
+  the gated copy it returns, so the guardrail judges and pins the very object the agent
+  executes; `gate_tools` raises on tools sharing a name, and `gated_agent` (both modules)
+  and `is_gated` refuse an agent whose function tools do, checked over the whole tool list
+  before any wrapping. A standalone `recusal_guardrail(policy)` is bound to no tool and
+  refuses every call. (Found in the 2026-11-04 adapters review.)
+
 ## [0.12.9] - 2026-11-04
 
 Package changes and example changes, stated apart. In the installed package, two

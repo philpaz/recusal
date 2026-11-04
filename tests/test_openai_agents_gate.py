@@ -222,14 +222,24 @@ class TestOpenAIAgentsGate:
         assert example.EXECUTED == []
 
     def test_negative_control_a_gate_on_the_agent_tool_alone_misses_the_sub_agent(self, example):
-        # what gate_tools refuses to build: the parent's guardrail sees only the sub-agent's
-        # input, and the ungated sub-agent runs the DELETE
+        # what gate_tools refuses to build: the parent's guardrail (bound by hand to the
+        # agent tool) sees only the sub-agent's input, and the ungated sub-agent runs the DELETE
         _, parent = self._parent_and_sub(example, gate_sub=False)
         (tool,) = parent.tools
-        tool.tool_input_guardrails = [example.recusal_guardrail(example.sql_scope_policy)]
+        holder = [tool]
+        tool.tool_input_guardrails = [example._guardrail_for(example.sql_scope_policy, holder)]
         example.EXECUTED.clear()
         asyncio.run(example.run_agent(parent))
         assert example.EXECUTED == [("run_sql", {"sql": DELETE})]
+
+    def test_a_standalone_recusal_guardrail_is_bound_to_nothing_and_refuses(self, example):
+        tool = copy.copy(example.run_sql)
+        tool.tool_input_guardrails = [example.recusal_guardrail(example.sql_scope_policy)]
+        model = example.scripted_model([("run_sql", {"sql": SELECT}, "c1")])
+        example.EXECUTED.clear()
+        asyncio.run(example.run_agent(example.Agent(name="a", model=model, tools=[tool])))
+        assert example.EXECUTED == []
+        assert "bound to no tool" in example.tool_outputs(model)["c1"]
 
     @pytest.mark.parametrize("sql, ran", [(SELECT, True), (DELETE, False)])
     def test_an_approved_call_is_still_judged_when_it_runs(self, example, sql, ran):
@@ -419,3 +429,94 @@ class TestEffectiveArguments:
         outputs, executed = example.run_calls([("run_sql", {"sql": SELECT}, "c1")], policy=policy)
         assert policy.seen == [("run_sql", {"sql": SELECT})]
         assert executed == [("run_sql", {"sql": SELECT})]
+
+
+class TestCapabilityIdentity:
+    """Adapters review, finding 1: the guardrail looked its tool up by name (first match)
+    while the SDK executes the last tool of that name. With a gated sub-agent exposed as
+    `run_sql` listed before a function tool of the same name whose schema rewrites SELECT
+    to DELETE, the guardrail judged raw SELECT and the function tool ran DELETE. Each
+    guardrail is now bound to its own tool, and shared names are refused at setup."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("agents.testing", reason="openai-agents is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_openai_identity_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def sub_agent_as_run_sql(example):
+        sub = example.Agent(
+            name="sub",
+            model=example.scripted_model([("echo", {"text": "hi"}, "s1")]),
+            tools=[example.echo],
+        )
+        sub = example.gated_agent(sub, example.sql_scope_policy)
+        return sub.as_tool(tool_name="run_sql", tool_description="A sub-agent named like the tool.")
+
+    @pytest.mark.parametrize(
+        "agent_tool_first", [True, False], ids=["agent-tool-first", "function-first"]
+    )
+    @pytest.mark.parametrize("streamed", [False, True], ids=["run", "streamed"])
+    def test_the_reviewers_duplicate_configuration_is_refused_at_setup(
+        self, example, agent_tool_first, streamed
+    ):
+        agent_tool = self.sub_agent_as_run_sql(example)
+        function = example.transforming_sql_tool()
+        tools = [agent_tool, function] if agent_tool_first else [function, agent_tool]
+        with pytest.raises(TypeError, match="share a name \\['run_sql'\\]"):
+            example.gate_tools(tools, example.sql_scope_policy)
+        model = example.scripted_model([("run_sql", {"sql": SELECT}, "c1")])
+        agent = example.Agent(name="dup", model=model, tools=tools)
+        with pytest.raises(ValueError, match="share a name"):
+            example.gated_agent(agent, example.sql_scope_policy)
+        example.EXECUTED.clear()
+        assert example.EXECUTED == [], "nothing ran: the agent was never built"
+
+    def test_is_gated_is_false_for_an_agent_whose_gated_tools_share_a_name(self, example):
+        (a,) = example.gate_tools([example.run_sql], example.sql_scope_policy)
+        (b,) = example.gate_tools([example.transforming_sql_tool()], example.sql_scope_policy)
+        model = example.scripted_model([])
+        agent = example.Agent(name="dup", model=model, tools=[a, b])
+        assert not example.is_gated(agent)
+        assert example.is_gated(example.Agent(name="one", model=model, tools=[a]))
+
+    def test_a_bound_guardrail_judges_its_own_tool_whatever_the_agent_lists(self, example):
+        """Kills the lookup mutant on its own: the agent's metadata lists a same-named
+        agent tool FIRST, which a name lookup would find and judge as raw SELECT (allowed);
+        the bound guardrail judges the transforming function tool it was built for and
+        refuses it as unjudgeable."""
+        import json
+        from types import SimpleNamespace
+
+        (gated,) = example.gate_tools([example.transforming_sql_tool()], example.sql_scope_policy)
+        decoy = self.sub_agent_as_run_sql(example)
+        misleading_agent = SimpleNamespace(name="misleading", tools=[decoy, gated])
+        guardrail = gated.tool_input_guardrails[-1]
+        ctx = SimpleNamespace(tool_name="run_sql", tool_arguments=json.dumps({"sql": SELECT}))
+        output = guardrail.guardrail_function(SimpleNamespace(context=ctx, agent=misleading_agent))
+        text = str(output.output_info) + str(getattr(output, "output", "")) + str(output)
+        assert "cannot be judged" in text, text
+        assert not getattr(ctx, "_function_tool_arguments", None)
+
+    def test_a_bound_guardrail_refuses_a_call_for_another_name(self, example):
+        import json
+        from types import SimpleNamespace
+
+        (gated,) = example.gate_tools([example.run_sql], example.sql_scope_policy)
+        guardrail = gated.tool_input_guardrails[-1]
+        ctx = SimpleNamespace(tool_name="echo", tool_arguments=json.dumps({"text": "x"}))
+        output = guardrail.guardrail_function(SimpleNamespace(context=ctx, agent=None))
+        assert "bound to 'run_sql'" in str(output)
+
+    def test_unique_names_run_exactly_as_before(self, example):
+        outputs, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1"), ("echo", {"text": "hi"}, "c2")]
+        )
+        assert executed == [("run_sql", {"sql": SELECT}), ("echo", {"text": "hi"})]

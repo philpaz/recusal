@@ -252,23 +252,31 @@ def _function_tool_refusal(
     return None
 
 
-def _tool_named(agent: Any, name: str) -> Optional[FunctionTool]:
-    return next(
-        (t for t in getattr(agent, "tools", ()) if isinstance(t, FunctionTool) and t.name == name),
-        None,
-    )
+def _duplicate_names(tools: Any) -> list[str]:
+    """Function-tool names that appear more than once, sorted; the SDK resolves such names
+    last-wins at execution, so a guardrail could judge one tool while another runs."""
+    names = [t.name for t in tools if isinstance(t, FunctionTool)]
+    return sorted({n for n in names if names.count(n) > 1})
 
 
-def recusal_guardrail(policy: Policy):
-    """Return a tool input guardrail that judges each function tool call before it runs."""
+def _guardrail_for(policy: Policy, holder: list):
+    """A tool input guardrail bound to ONE tool: the gated copy ``gate_tools`` puts into
+    ``holder`` after building it. The guardrail judges and pins that object, never a tool
+    rediscovered by name from the agent (``data.agent.tools`` is metadata, and with a shared
+    name the SDK executes the last tool while a lookup would find the first). Unbound, it
+    refuses every call."""
 
     def gate(data) -> ToolGuardrailFunctionOutput:
         ctx = data.context
-        tool = _tool_named(data.agent, ctx.tool_name)
-        if tool is None:
+        if not holder:
             return ToolGuardrailFunctionOutput.reject_content(
-                f"Recusal refused `{ctx.tool_name}`: no function tool by that name on agent "
-                f"{getattr(data.agent, 'name', '?')!r}"
+                f"Recusal refused `{ctx.tool_name}`: this guardrail is bound to no tool; "
+                "attach it with gate_tools or gated_agent"
+            )
+        tool = holder[0]
+        if ctx.tool_name != tool.name:
+            return ToolGuardrailFunctionOutput.reject_content(
+                f"Recusal refused `{ctx.tool_name}`: this guardrail is bound to {tool.name!r}"
             )
         reason = _function_tool_refusal(ctx.tool_name, ctx.tool_arguments, policy, tool, ctx)
         if reason is not None:
@@ -277,6 +285,13 @@ def recusal_guardrail(policy: Policy):
 
     gate.recusal_gate = True  # type: ignore[attr-defined]
     return tool_input_guardrail(gate, name=GUARDRAIL_NAME)
+
+
+def recusal_guardrail(policy: Policy):
+    """The guardrail as a standalone object, kept for the documented name: it is bound to no
+    tool and therefore refuses every call. Attach guardrails with ``gate_tools`` or
+    ``gated_agent``, which bind each one to the tool it protects."""
+    return _guardrail_for(policy, [])
 
 
 def _carries_gate(tool: FunctionTool) -> bool:
@@ -297,6 +312,12 @@ def _ungateable_reason(agent: Any) -> str | None:
         return "it has mcp_servers, whose tools the guardrail cannot see"
     if agent.handoffs:
         return "it has handoffs, which hand the conversation to another agent's tools"
+    duplicates = _duplicate_names(agent.tools)
+    if duplicates:
+        return (
+            f"its function tools share a name {duplicates!r}; the SDK resolves a shared name "
+            "last-wins at execution, so a guardrail could judge one tool while another runs"
+        )
     return None
 
 
@@ -324,7 +345,13 @@ def gate_tools(tools: list[Any], policy: Policy) -> list[FunctionTool]:
 
     Raises TypeError, naming the tool, for anything the guardrail cannot see.
     """
-    guardrail = recusal_guardrail(policy)
+    duplicates = _duplicate_names(tools)
+    if duplicates:
+        raise TypeError(
+            f"Recusal cannot gate tools that share a name {duplicates!r}: the SDK resolves a "
+            "shared name last-wins at execution, so a guardrail could judge one tool while "
+            "another runs; give every function tool a unique name"
+        )
     gated = []
     for tool in tools:
         name = getattr(tool, "name", None) or "(unnamed)"
@@ -352,11 +379,13 @@ def gate_tools(tools: list[Any], policy: Policy) -> list[FunctionTool]:
                 f"Recusal cannot gate agent tool {name!r}: its agent's own tool calls are not "
                 "gated. Use gated_agent(sub_agent, policy).as_tool(...)"
             )
-        gated.append(
-            dataclasses.replace(
-                tool, tool_input_guardrails=[*(tool.tool_input_guardrails or ()), guardrail]
-            )
+        holder: list = []
+        guardrail = _guardrail_for(policy, holder)
+        copy = dataclasses.replace(
+            tool, tool_input_guardrails=[*(tool.tool_input_guardrails or ()), guardrail]
         )
+        holder.append(copy)  # the guardrail judges the very object the agent will execute
+        gated.append(copy)
     return gated
 
 
