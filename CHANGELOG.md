@@ -12,6 +12,13 @@ All notable changes to this project are documented here. The format follows
   YAML and JSON), and `tests/test_editorconfig_contract.py`, which holds its Python line
   length equal to Ruff's `line-length` in `pyproject.toml` so the two cannot drift apart.
   Contributed by @Varma0604 in #178. (#170)
+- `tests/test_mcp_name_properties.py`: Hypothesis property tests for the two MCP name
+  helpers at the project's deterministic settings. `plugin_callable_name` is idempotent,
+  every output character is in the documented safe class, and the result equals the
+  docstring rule applied by hand; `split_mcp_tool_name` is None without the `mcp__` prefix
+  and round-trips `mcp__{server}__{tool}` whenever the two parts form one flat name. The
+  flat-namespace ambiguity of `mcp__a__b__c` stays unpinned, as `manifest_policy`
+  documents. Contributed by @ZYZ666-RGB in #183. (#169)
 
 ## [0.12.7] - 2026-11-02
 
