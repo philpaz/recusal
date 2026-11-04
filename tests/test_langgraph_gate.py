@@ -975,6 +975,147 @@ class TestFinalInvocation:
         assert "sql: Input should be a valid string" in messages[0].content
         assert "MODEL_SECRET_SENTINEL" not in messages[0].content
 
+    # --- a parameter the parse suppressed is completed from the callable --------------------
+
+    @staticmethod
+    def suppressed_tool(shape, ran, default=100):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel, Field, model_serializer
+
+        if shape == "excluded_field":
+
+            class Args(BaseModel):
+                amount: int = Field(default=default, exclude=True)
+
+        elif shape == "root_serializer":
+
+            class Args(BaseModel):
+                amount: int = default
+
+                @model_serializer
+                def display(self):
+                    return {}
+
+        else:
+
+            class Args(BaseModel):
+                amount: int = default
+
+        def charge(amount: int = default) -> str:
+            """Record a hypothetical charge; contact no service."""
+            ran.append(amount)
+            return "recorded"
+
+        return tool("charge", args_schema=Args)(charge)
+
+    @staticmethod
+    def budget(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append(dict(args))
+            if args.get("amount", 0) > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        return policy
+
+    @pytest.mark.parametrize("shape", ["excluded_field", "root_serializer"])
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_suppressed_parameter_is_judged_at_the_value_the_function_would_use(
+        self, example, shape, route
+    ):
+        """The review's probe: the parse drops `amount`, the function would run its default
+        of 100, and the policy saw `{}`. It now sees 100 and refuses."""
+        ran, seen = [], []
+        calls = [self.call("charge", {"amount": 5})]
+        tools = [self.suppressed_tool(shape, ran)]
+        if route == "sync":
+            messages, _ = example.run_calls(calls, policy=self.budget(seen), tools=tools)
+        else:
+            messages, _ = asyncio.run(
+                example.run_calls_async(calls, policy=self.budget(seen), tools=tools)
+            )
+        assert seen == [{"amount": 100}], seen
+        assert ran == [] and "over 10" in messages[0].content
+
+    @pytest.mark.parametrize("shape", ["excluded_field", "root_serializer"])
+    def test_negative_control_ungated_the_suppressed_default_runs(self, example, shape):
+        ran = []
+        example.run_calls(
+            [self.call("charge", {"amount": 5})],
+            gated=False,
+            tools=[self.suppressed_tool(shape, ran)],
+        )
+        assert ran == [100]
+
+    def test_a_suppressed_default_under_the_cap_runs_as_judged(self, example):
+        ran, seen = [], []
+        messages, _ = example.run_calls(
+            [self.call("charge", {"amount": 5})],
+            policy=self.budget(seen),
+            tools=[self.suppressed_tool("excluded_field", ran, default=7)],
+        )
+        assert seen == [{"amount": 7}] and ran == [7]
+        assert messages[0].status == "success"
+
+    def test_an_ordinary_schema_keeps_the_proposal_and_its_judged_view(self, example):
+        ran, seen = [], []
+        messages, _ = example.run_calls(
+            [self.call("charge", {"amount": 5})],
+            policy=self.budget(seen),
+            tools=[self.suppressed_tool("plain", ran)],
+        )
+        assert seen == [{"amount": 5}] and ran == [5] and messages[0].status == "success"
+
+    def test_a_suppressed_parameter_with_no_default_is_refused_not_executed(self, example):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel, Field
+
+        class Args(BaseModel):
+            amount: int = Field(default=100, exclude=True)
+
+        ran = []
+
+        @tool("charge", args_schema=Args)
+        def charge(amount: int) -> str:
+            """Record a charge; the callable has no default of its own."""
+            ran.append(amount)
+            return "recorded"
+
+        seen = []
+        messages, _ = example.run_calls(
+            [self.call("charge", {"amount": 5})], policy=self.budget(seen), tools=[charge]
+        )
+        assert ran == [] and seen == []
+        assert "the schema suppressed `amount`" in messages[0].content
+
+    def test_framework_filled_parameters_are_not_completed(self, example):
+        from langchain_core.callbacks import CallbackManagerForToolRun
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        @tool
+        def with_runtime_params(
+            sql: str,
+            config: RunnableConfig,
+            run_manager: CallbackManagerForToolRun | None = None,
+        ) -> str:
+            """Record SQL; config and run_manager come from the framework at call time."""
+            ran.append((sql, type(config).__name__, run_manager is not None))
+            return "recorded"
+
+        messages, _ = example.run_calls(
+            [self.call("with_runtime_params", {"sql": SELECT})],
+            policy=self.recording(seen, example.sql_scope_policy),
+            tools=[with_runtime_params],
+        )
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [{"sql": SELECT}]
+        assert ran == [(SELECT, "dict", False)], "config came from the framework, not the gate"
+
     # --- the old comparison machinery is gone -------------------------------------------------
 
     def test_no_second_validation_and_no_comparison_remain(self):

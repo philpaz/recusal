@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `examples/langgraph_gate.py`: a schema parameter the framework's parse suppressed is
+  completed from the callable's default before judgment and executed as judged.
+  LangChain's `_parse_input` selects the kwargs it returns through the argument model's own
+  `model_dump()`, so a field with `exclude=True`, or a root `model_serializer` returning
+  `{}`, dropped the model's proposal before the gate's projection ran: a proposed amount
+  of 5 reached a budget policy as `{}`, which raised no objection, and the function ran
+  its default of 100 (reproduced on the LangGraph, LangChain and audited routes). The
+  seam now reads the callable's signature (`func`/`coroutine`, else `_run`) and passes each
+  schema-declared, non-host parameter the parse left out explicitly from its default, so
+  the policy sees 100 and refuses; a suppressed parameter with no default is refused as
+  unjudgeable. Framework-filled parameters (`run_manager`, `callbacks`, config) are not
+  schema fields and are untouched, so an ordinary tool's judged view is unchanged. The
+  docs no longer say no serializer runs in the parse path, only that the projection runs
+  none. (Found in the 2026-11-04 follow-up review.)
+
 ## [0.12.8] - 2026-11-04
 
 Package changes and example changes, stated apart. In the installed package, two

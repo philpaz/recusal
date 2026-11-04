@@ -13,11 +13,14 @@ through awrap_tool_call and run with ainvoke, using the same decision logic.
 The policy judges the invocation the tool executes, not the dict the model wrote: the hook
 hands execution a per-call copy of the tool whose parse step (``_to_args_and_kwargs``, run by
 ``BaseTool.run``/``arun`` after ToolNode has injected the host's state, store and runtime)
-validates the input once, projects every model-controlled argument without running any
-serializer, decides, and on allow passes those same parsed objects to the function. Host
-arguments are excluded from judgment and can never be supplied by the model; a tool whose
-class or instance overrides the standard lifecycle is refused rather than judged in the wrong
-place.
+validates the input once, completes any schema parameter the framework's parse dropped
+(``_parse_input`` selects the kwargs it returns through the argument model's own
+``model_dump``, so a field with ``exclude=True`` or a root serializer can vanish) from the
+callable's default, projects every model-controlled argument through a projection that runs
+no serializer of its own, decides, and on allow passes those same completed objects to the
+function. Host arguments are excluded from judgment and can never be supplied by the model;
+a tool whose class or instance overrides the standard lifecycle is refused rather than judged
+in the wrong place.
 
 No LLM, API key or database is used. run_sql only records SQL text.
 
@@ -32,6 +35,7 @@ import dataclasses
 import datetime
 import decimal
 import enum
+import inspect
 import math
 import os
 import sys
@@ -132,6 +136,57 @@ def _host_keys(tool) -> frozenset[str]:
     )
 
 
+def _schema_fields(tool) -> frozenset[str]:
+    """The parameter names the tool's ``args_schema`` declares (host-injected ones included;
+    they are excluded elsewhere), or none for a tool without a model schema."""
+    schema = tool.args_schema
+    if isinstance(schema, dict):
+        return frozenset(schema.get("properties", {}))
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        return frozenset(schema.model_fields)
+    return frozenset()
+
+
+def _callable_of(tool):
+    """The function the tool finally calls: ``func`` or ``coroutine`` for a StructuredTool,
+    else the class's ``_run``."""
+    func = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    return func if func is not None else type(tool)._run
+
+
+def _completed(kwargs: dict[str, Any], tool, host_keys: frozenset[str]) -> dict[str, Any]:
+    """The parsed kwargs with every suppressed schema parameter restored from the callable.
+
+    ``_parse_input`` returns only the fields present in the validated model's
+    ``model_dump()``, so a schema field with ``exclude=True`` or a model-wide serializer that
+    omits it never reaches the kwargs, and the function would fill its own Python default
+    after the policy judged an invocation without it. Each parameter the schema declares, the
+    host does not inject, and the parse did not return is taken from the callable's default
+    here, and passed explicitly, so the judged invocation is the executed one; a suppressed
+    parameter with no default raises ``TypeError`` and the call is refused as unjudgeable.
+    Parameters the framework fills at call time (``run_manager``, ``callbacks``, the config
+    parameter) are not schema fields and are untouched.
+    """
+    fields = _schema_fields(tool)
+    try:
+        parameters = inspect.signature(_callable_of(tool)).parameters
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"the tool's callable cannot be inspected for its parameters ({exc})")
+    completed = dict(kwargs)
+    for name, parameter in parameters.items():
+        if name in completed or name not in fields or name in host_keys:
+            continue
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            continue
+        if parameter.default is parameter.empty:
+            raise TypeError(
+                f"the schema suppressed `{name}` and the callable has no default for it, so "
+                "the invocation cannot be judged"
+            )
+        completed[name] = parameter.default
+    return completed
+
+
 def _faithful(value: Any, _stack: tuple[int, ...] = ()) -> Any:
     """A detached, serializer-free data projection of one parsed argument, for judgment.
 
@@ -227,9 +282,10 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any])
     result to ``_run``/``_arun``; ToolNode injects the host's state, store and runtime into
     the input before that (``_inject_tool_args``), whatever hook or middleware ran earlier.
     The copy's parse step therefore sees the final input: it runs the tool's own parser once,
-    projects every model-controlled argument with :func:`_faithful`, calls ``decide`` once,
-    and on allow returns the very objects it parsed, so the tool executes what was judged
-    with no second validation and nothing to compare. A deny, an input the parser rejects,
+    completes any schema parameter that parse suppressed from the callable's default
+    (:func:`_completed`), projects every model-controlled argument with :func:`_faithful`,
+    calls ``decide`` once, and on allow returns the very objects it judged, so the tool
+    executes what was judged with no second validation and nothing to compare. A deny, an input the parser rejects,
     a positional input, or a value that cannot be projected raises :class:`RecusalRefusal`,
     which the copy's ``handle_tool_error`` turns into the error ToolMessage the model reads;
     any other ``ToolException`` keeps the original tool's handling. The copy serves one call
@@ -262,6 +318,7 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any])
             detail = "a positional tool input cannot be judged by name"
             raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
         try:
+            kwargs = _completed(kwargs, tool, host_keys)
             judged = {k: _faithful(v) for k, v in kwargs.items() if k not in host_keys}
         except TypeError as exc:
             raise RecusalRefusal(_unjudgeable(name, str(exc), proposal(tool_input), policy, record))

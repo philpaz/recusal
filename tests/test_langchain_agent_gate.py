@@ -376,6 +376,52 @@ class TestEffectiveArgumentsThroughCreateAgent:
         assert seen == [{"query": {"sql": DELETE}}] and ran == []
         assert "not the approved SELECT" in messages[0].content
 
+    @pytest.mark.parametrize("shape", ["excluded_field", "root_serializer"])
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_suppressed_parameter_is_judged_at_the_value_the_function_would_use(
+        self, example, shape, route
+    ):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel, Field, model_serializer
+
+        from recusal import Finding
+
+        if shape == "excluded_field":
+
+            class Args(BaseModel):
+                amount: int = Field(default=100, exclude=True)
+
+        else:
+
+            class Args(BaseModel):
+                amount: int = 100
+
+                @model_serializer
+                def display(self):
+                    return {}
+
+        ran, seen = [], []
+
+        @tool("charge", args_schema=Args)
+        def charge(amount: int = 100) -> str:
+            """Record a hypothetical charge; contact no service."""
+            ran.append(amount)
+            return "recorded"
+
+        def budget(name, args):
+            seen.append(dict(args))
+            if args.get("amount", 0) > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        calls = [self.call("charge", {"amount": 5})]
+        if route == "sync":
+            messages, _ = example.run_calls(calls, policy=budget, tools=[charge])
+        else:
+            messages, _ = asyncio.run(example.arun_calls(calls, policy=budget, tools=[charge]))
+        assert seen == [{"amount": 100}] and ran == []
+        assert "over 10" in messages[0].content
+
     def test_negative_control_ungated_the_rewritten_sql_runs(self, example):
         _, executed = example.run_calls(
             [self.call("run_sql", {"sql": SELECT})],

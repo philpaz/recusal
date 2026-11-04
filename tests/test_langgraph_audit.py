@@ -363,6 +363,47 @@ class TestLangGraphAudit:
         assert [e["action"]["decision"] for e in log.entries] == ["deny"]
         assert log.entries[0]["action"]["tool_use_id"] == "c1"
 
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_suppressed_parameter_is_judged_and_recorded_at_the_executed_value(
+        self, example, gate, log, route
+    ):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel, Field
+
+        from recusal import Finding
+
+        class Args(BaseModel):
+            amount: int = Field(default=100, exclude=True)
+
+        ran, seen = [], []
+
+        @tool("charge", args_schema=Args)
+        def charge(amount: int = 100) -> str:
+            """Record a hypothetical charge; contact no service."""
+            ran.append(amount)
+            return "recorded"
+
+        def budget(name, args):
+            seen.append(dict(args))
+            if args.get("amount", 0) > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        calls = [self.call("charge", {"amount": 5}, "c1")]
+        if route == "sync":
+            node = example.ToolNode(
+                [charge], wrap_tool_call=example.recusal_audited_gate(budget, log)
+            )
+            messages = gate.run_in_graph(node, calls)
+        else:
+            node = example.ToolNode(
+                [charge], awrap_tool_call=example.recusal_audited_agate(budget, log)
+            )
+            messages = asyncio.run(gate.run_in_graph_async(node, calls))
+        assert seen == [{"amount": 100}] and ran == []
+        assert "over 10" in messages[0].content
+        assert [e["action"]["decision"] for e in log.entries] == ["deny"]
+
     def test_a_host_state_validation_failure_is_recorded_without_the_state(
         self, example, gate, log, log_path
     ):
