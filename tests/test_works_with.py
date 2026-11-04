@@ -23,6 +23,9 @@ UNTESTED = ("OpenAI", "CrewAI", "AutoGen", "Google ADK", "Pydantic AI", "LlamaIn
 AS_IS_CLAIM = re.compile(r"drops into|unchanged|the gate is identical", re.IGNORECASE)
 
 
+REPO_BLOB = "https://github.com/philpaz/recusal/blob/main/"
+
+
 def _rows():
     block = README.split("<!-- works-with:start -->", 1)[1].split("<!-- works-with:end -->", 1)[0]
     lines = [ln for ln in block.strip().splitlines() if ln.startswith("|")]
@@ -70,6 +73,10 @@ def test_tested_rows_link_to_proof_that_exists():
         targets = LINK.findall(where)
         assert targets, f"{runtime}: a Tested row must link its proof"
         for target in targets:
+            # README links are absolute (PyPI renders the README without the repository);
+            # the proof must still be a file in this checkout, so the prefix is stripped here
+            if target.startswith(REPO_BLOB):
+                target = target[len(REPO_BLOB) :]
             if target.startswith("#"):
                 assert target[1:] in anchors, f"{runtime}: no README section {target}"
             else:

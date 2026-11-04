@@ -512,7 +512,13 @@ def _works_with_tested_examples() -> set[str]:
     for line in table.splitlines():
         if "| Tested |" not in line:
             continue
-        found.update(re.findall(r"\(examples/([a-z_]+_gate\.py)\)", line))
+        # README links are absolute (PyPI renders the README without the repository)
+        found.update(
+            re.findall(
+                r"\((?:https://github\.com/philpaz/recusal/blob/main/)?examples/([a-z_]+_gate\.py)\)",
+                line,
+            )
+        )
     return found
 
 
