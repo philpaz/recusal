@@ -147,12 +147,16 @@ def decide(
     if control is not None and not isinstance(control, dict):
         raise ValueError("control must be a dict")
     _reset_control_identity(policy)
-    decision, reason, verdict = _adjudicate(
-        tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
-    )
-    input_sha256, decision, reason, verdict = _bind_input(
-        tool_input, decision, reason, verdict, fail_closed=fail_closed
-    )
+    # The record binds the input AS PROPOSED: it is fingerprinted before the policy sees
+    # it, so a policy that mutates its argument cannot write the mutation onto the record
+    # while the caller executes the proposal.
+    input_sha256, refused = _bind_input(tool_input, fail_closed=fail_closed)
+    if refused is not None:
+        decision, reason, verdict = refused
+    else:
+        decision, reason, verdict = _adjudicate(
+            tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
+        )
     return _record(
         audit,
         verdict,
@@ -297,25 +301,25 @@ def _input_fingerprint(tool_input: dict) -> str:
 
 
 def _bind_input(
-    tool_input: dict, decision: str, reason: str, verdict: Verdict, *, fail_closed: bool
-) -> Tuple[Optional[str], str, str, Verdict]:
-    """Fingerprint an adjudicated input for its audit record. An input the record cannot
-    bind is refused when ``fail_closed`` (the record is part of the control); fail-open
-    keeps the decision and records no fingerprint."""
+    tool_input: dict, *, fail_closed: bool
+) -> Tuple[Optional[str], Optional[Tuple[str, str, Verdict]]]:
+    """Fingerprint a proposed input for its audit record, before the policy sees it.
+
+    Returns ``(fingerprint, None)``. An input the record cannot bind is refused when
+    ``fail_closed`` (the record is part of the control) and the policy is never called:
+    ``(None, (decision, reason, verdict))`` carries the denial. Fail-open records no
+    fingerprint and lets the policy decide: ``(None, None)``. Taken first, so the snapshot
+    on the record is the proposal, whatever a policy later does to the dict it was handed."""
     try:
-        return _input_fingerprint(tool_input), decision, reason, verdict
+        return _input_fingerprint(tool_input), None
     except Exception as exc:  # noqa: BLE001 - an input the record cannot bind must not slip through
         if not fail_closed:
-            return None, decision, reason, verdict
-        return (
-            None,
+            return None, None
+        verdict = compute_verdict(
+            [Finding.fail("recusal_unfingerprintable_input", severity="CRITICAL", message=str(exc))]
+        )
+        return None, (
             "deny",
             f"Recusal failed closed: tool_input cannot be fingerprinted ({exc})",
-            compute_verdict(
-                [
-                    Finding.fail(
-                        "recusal_unfingerprintable_input", severity="CRITICAL", message=str(exc)
-                    )
-                ]
-            ),
+            verdict,
         )

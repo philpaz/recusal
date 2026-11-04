@@ -458,6 +458,60 @@ class TestLangGraphAudit:
         assert "HOST_SECRET_SENTINEL" not in text
         assert [e["action"]["decision"] for e in log.entries] == ["deny"]
 
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_the_record_binds_what_executed_whatever_the_policy_did_to_its_copy(
+        self, example, gate, log, route
+    ):
+        """The follow-up review's probe: the policy mutated its detached view to DELETE,
+        the tool ran SELECT, and the record fingerprinted DELETE."""
+        from recusal.claude_code import _input_fingerprint
+
+        def mutate(name, args):
+            args["sql"] = "DELETE FROM audit_log"
+            return []
+
+        calls = [self.call("run_sql", {"sql": "SELECT * FROM audit_log"}, "c1")]
+        if route == "sync":
+            messages, executed = example.run_calls(calls, log, policy=mutate)
+        else:
+            messages, executed = asyncio.run(example.run_calls_async(calls, log, policy=mutate))
+        assert executed == [("run_sql", {"sql": "SELECT * FROM audit_log"})]
+        assert messages[0].status == "success"
+        recorded = log.entries[0]["action"]["input_sha256"]
+        assert recorded == _input_fingerprint({"sql": "SELECT * FROM audit_log"})
+        assert recorded != _input_fingerprint({"sql": "DELETE FROM audit_log"})
+
+    def test_the_record_binds_a_nested_invocation_as_executed(self, example, gate, log):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel
+
+        from recusal.claude_code import _input_fingerprint
+
+        class Query(BaseModel):
+            sql: str
+
+        class Args(BaseModel):
+            query: Query
+
+        ran = []
+
+        @tool("query", args_schema=Args)
+        def query(query: Query) -> str:
+            """Record SQL only."""
+            ran.append(query.sql)
+            return "recorded"
+
+        def mutate(name, args):
+            args["query"]["sql"] = "DELETE FROM audit_log"
+            return []
+
+        node = example.ToolNode([query], wrap_tool_call=example.recusal_audited_gate(mutate, log))
+        gate.run_in_graph(node, [self.call("query", {"query": {"sql": "SELECT 1"}}, "c1")])
+        assert ran == ["SELECT 1"]
+        assert log.entries[0]["action"]["input_sha256"] == _input_fingerprint(
+            {"query": {"sql": "SELECT 1"}}
+        )
+
     def test_a_host_state_validation_failure_is_recorded_without_the_state(
         self, example, gate, log, log_path
     ):

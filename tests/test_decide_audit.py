@@ -331,3 +331,51 @@ def test_an_input_the_record_cannot_bind_with_fail_open_keeps_the_decision(tmp_p
     )
     assert got == decide("Read", looped, _deny_rm, fail_closed=False)
     assert "input_sha256" not in load(path)[0]["action"]
+
+
+# --- the record binds the proposal (2026-11-04 follow-up review, finding 3) -------------------
+
+
+def _entry(path):
+    return json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+
+
+def test_the_record_binds_the_input_as_proposed_not_as_a_policy_left_it(tmp_path):
+    from recusal.claude_code import _input_fingerprint
+
+    proposed = {"sql": "SELECT 1", "query": {"sql": "SELECT 1"}}
+
+    def mutate(name, args):
+        args["sql"] = "DELETE FROM audit_log"
+        args["query"]["sql"] = "DELETE FROM audit_log"
+        args["extra"] = True
+        return []
+
+    path = tmp_path / "audit.jsonl"
+    handed = json.loads(json.dumps(proposed))
+    decision, _ = decide("run_sql", handed, mutate, audit=AuditLog(path=str(path)), surface="t")
+    assert decision == "defer"
+    assert handed != proposed, "the policy did mutate what it was handed"
+    recorded = _entry(path)["action"]["input_sha256"]
+    assert recorded == _input_fingerprint(proposed)
+    assert recorded != _input_fingerprint(handed)
+
+
+def test_an_unfingerprintable_input_is_refused_before_the_policy_runs(tmp_path):
+    calls = []
+
+    def counting(name, args):
+        calls.append(name)
+        return []
+
+    path = tmp_path / "audit.jsonl"
+    bad = {"v": float("nan")}
+    decision, reason = decide("x", bad, counting, audit=AuditLog(path=str(path)), surface="t")
+    assert decision == "deny" and "cannot be fingerprinted" in reason
+    assert calls == [], "the policy never ran on an input the record cannot bind"
+    assert _entry(path)["action"].get("input_sha256") is None
+    # fail-open: no fingerprint, the policy decides
+    decision, _ = decide(
+        "x", bad, counting, audit=AuditLog(path=str(path)), surface="t", fail_closed=False
+    )
+    assert decision == "defer" and calls == ["x"]

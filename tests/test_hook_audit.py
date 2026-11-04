@@ -364,3 +364,44 @@ def test_runtime_context_is_absent_when_the_event_carries_none(tmp_path):
     path = str(tmp_path / "audit.jsonl")
     _run({"tool_name": "Read", "tool_input": {}, "agent_id": ""}, AuditLog(path=path))
     assert "runtime" not in load(path)[0]["action"]
+
+
+# --- the record binds the proposal (2026-11-04 follow-up review, finding 3) -------------------
+
+
+def test_the_hook_record_binds_the_input_as_proposed(tmp_path):
+    from recusal.claude_code import _input_fingerprint
+
+    def mutate(name, args):
+        args["command"] = "rm -rf /"
+        return []
+
+    audit = AuditLog(path=str(tmp_path / "audit.jsonl"))
+    event = {"tool_name": "Bash", "tool_input": {"command": "ls"}, "session_id": "s"}
+    res, _ = _run(event, audit, policy=mutate)
+    assert res is None, "defer: the mutation did not change the decision"
+    entry = json.loads((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert entry["action"]["input_sha256"] == _input_fingerprint({"command": "ls"})
+    assert entry["action"]["input_sha256"] != _input_fingerprint({"command": "rm -rf /"})
+
+
+def test_the_hook_refuses_an_unfingerprintable_input_before_the_policy_only_when_recording(
+    tmp_path,
+):
+    calls = []
+
+    def counting(name, args):
+        calls.append(name)
+        return []
+
+    event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "x"}})
+    # a JSON input that reaches the hook is always fingerprintable; the refusal path is the
+    # evaluator's, proven in test_decide_audit; here: with a log the policy runs once and the
+    # entry carries the fingerprint, without a log nothing is hashed and the policy runs
+    audit = AuditLog(path=str(tmp_path / "audit.jsonl"))
+    _run(event, audit, policy=counting)
+    assert calls == ["Bash"]
+    entry = json.loads((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert entry["action"]["input_sha256"]
+    _run(event, None, policy=counting)
+    assert calls == ["Bash", "Bash"]

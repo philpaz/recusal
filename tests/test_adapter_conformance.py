@@ -33,6 +33,14 @@ shows up as a failure here rather than as a gap in prose. The invariants:
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.
 
+7. **The record binds what executed.** Where a gate writes an audit entry, its input
+   fingerprint is that of the invocation the tool ran with, whatever a policy did to the
+   dict it was handed. The evaluator fingerprints the proposal before the policy sees it
+   (`tests/test_decide_audit.py`, `tests/test_hook_audit.py`); the one adapter with an
+   audited route, the LangGraph audited gate, proves it on the executed invocation
+   (`tests/test_langgraph_audit.py`). Not a row here, because no other adapter example
+   writes a record yet.
+
 Invariants that only some adapters can express stay in those adapters' own tests, and this
 docstring says where: structural batch rejection with zero executions
 (`tests/test_openai_responses_gate.py`), a public rename that preserves the decision for the

@@ -197,7 +197,6 @@ def run_pretooluse_hook(
 
     tool_name: Optional[str] = None
     input_sha256: Optional[str] = None
-    adjudicated: Optional[dict] = None
     event_ids: Dict[str, Any] = {}
     try:
         event = json.load(stdin)
@@ -223,14 +222,23 @@ def run_pretooluse_hook(
             event_ids["runtime"] = runtime
         if actor is None and isinstance(event.get("session_id"), str):
             actor = event["session_id"]
-        decision, reason, verdict = _adjudicate(
-            event["tool_name"],
-            tool_input,
-            policy,
-            allow_on_pass=allow_on_pass,
-            fail_closed=fail_closed,
-        )
-        adjudicated = tool_input
+        refused = None
+        if audit is not None:
+            # fingerprinted only when recorded (without a log the hook never hashes, so
+            # its decision cannot depend on whether the input is fingerprintable), and
+            # BEFORE the policy sees the input, so the record binds the proposal and not
+            # whatever a mutating policy left in the dict
+            input_sha256, refused = _bind_input(tool_input, fail_closed=fail_closed)
+        if refused is not None:
+            decision, reason, verdict = refused
+        else:
+            decision, reason, verdict = _adjudicate(
+                event["tool_name"],
+                tool_input,
+                policy,
+                allow_on_pass=allow_on_pass,
+                fail_closed=fail_closed,
+            )
     except Exception as exc:  # noqa: BLE001 - a malformed event must not silently disable the gate
         if not fail_closed:
             # fail-open: defer to Claude Code's normal flow. Still a decision: if a log
@@ -269,12 +277,6 @@ def run_pretooluse_hook(
         )
 
     if audit is not None:
-        if adjudicated is not None:
-            # fingerprinted only when recorded: without a log the hook never hashes, so
-            # its decision cannot depend on whether the input is fingerprintable
-            input_sha256, decision, reason, verdict = _bind_input(
-                adjudicated, decision, reason, verdict, fail_closed=fail_closed
-            )
         decision, reason = _record(
             audit,
             verdict,

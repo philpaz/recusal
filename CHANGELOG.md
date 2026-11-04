@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `recusal.claude_code.decide` and `run_pretooluse_hook` fingerprint the proposed input
+  for the audit record before the policy sees it. The fingerprint was taken after the
+  policy ran, on the same dict the policy received, so a policy that mutated its argument
+  wrote the mutation onto the record while the caller executed the proposal: the LangGraph
+  audited gate ran `SELECT`, the policy had changed its view to `DELETE`, and the entry's
+  `input_sha256` was the fingerprint of `DELETE` (reproduced sync and async). With a log,
+  an input the record cannot bind is now refused before the policy runs (it was refused
+  after, with the policy's side effects); fail-open behaviour and every valid fingerprint
+  are unchanged. The LangGraph seam keeps handing the policy its detached projection, which
+  the record now binds as proposed. Invariant 7 in `tests/test_adapter_conformance.py`
+  states the rule. The plugin's vendored runtime is resynced. (Found in the 2026-11-04
+  follow-up review.)
 - `examples/langgraph_gate.py`: a validation message is forwarded to the model and the
   audit record only when it is Pydantic's own template for a model-facing field. The
   sanitizer reduced errors under a host-supplied argument to their type but forwarded
