@@ -15,6 +15,7 @@ here verbatim (``tests/test_extractions.py`` holds the behavior to a golden reco
 function's history is in that file's.
 """
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .authorization import fingerprint as _strict_fingerprint
@@ -25,6 +26,34 @@ if TYPE_CHECKING:  # runtime never needs the import; the hook only calls audit.a
 
 # A policy maps a proposed tool call to evidence findings.
 Policy = Callable[[str, dict], List[Any]]
+
+#: Return values that are not a collection of findings and must not be read as "none".
+_NOT_FINDINGS = (bool, int, float, complex, str, bytes, bytearray)
+
+
+def _findings_of(result: Any) -> List[Any]:
+    """Hold a policy's return value to its contract: a list (any iterable) of findings, or
+    ``None`` for no objections.
+
+    ``False``, ``0``, ``""`` and ``{}`` are not "no findings". A policy that returns one of
+    them has a bug (a predicate written as a policy, an error sentinel), and reading the
+    value as a clean screen would switch that check off silently. They raise here, inside
+    the evaluator's policy-error handling, so the gate fails closed and the reason names the
+    value. A mapping is refused for the same reason: one bare finding dict is not a list of
+    findings, and iterating it would judge its keys."""
+    if result is None:
+        return []
+    if isinstance(result, _NOT_FINDINGS) or isinstance(result, Mapping):
+        raise TypeError(
+            f"policy returned {type(result).__name__} {result!r}; a policy returns a list of "
+            "findings (an empty list, or None, for no objections)"
+        )
+    try:
+        return list(result)
+    except TypeError:
+        raise TypeError(
+            f"policy returned {type(result).__name__}, which is not a list of findings"
+        ) from None
 
 
 def _adjudicate(
@@ -40,7 +69,7 @@ def _adjudicate(
     A policy error has no verdict of its own; one is synthesized so the audit entry
     states what actually happened (CRITICAL when it denied, WARNING when ignored)."""
     try:
-        findings = policy(tool_name, tool_input) or []
+        findings = _findings_of(policy(tool_name, tool_input))
         # strict at the enforcement boundary: ambiguous evidence (a dict with no
         # status/passed) fails closed here rather than silently degrading to PASS.
         verdict = compute_verdict(findings, strict=True)

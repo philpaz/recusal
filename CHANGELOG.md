@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `recusal.claude_code.decide` (the evaluator every adapter reuses): a policy's return
+  value is held to its contract before the verdict fold. `policy(...) or []` read every
+  false value, `False`, `0`, `""` and `{}`, as "no findings", so a predicate written as a
+  policy, or an error sentinel, switched its check off silently: the decision was `defer`
+  and the tool ran. Only `None` and an iterable of findings are accepted now; a bool, a
+  number, a string or a bare dict is a policy error, so the gate fails closed and the
+  reason names the value. Pinned at `decide`, on the audit record and through the OpenAI
+  Responses adapter. (Found in the 2026-11-03 architecture review.)
+
 ### Added
 - `.editorconfig` at the repository root, stating the conventions the repository already
   enforces (UTF-8, LF, final newline, spaces; 4 for Python with a 100-column line, 2 for

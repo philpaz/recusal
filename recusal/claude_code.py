@@ -76,6 +76,7 @@ from ._adjudicate import (  # noqa: F401, re-exported: the public path is this m
     _adjudicate,
     _bind_input,
     _control_identity,
+    _findings_of,
     _input_fingerprint,
     _record,
     _reset_control_identity,

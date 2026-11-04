@@ -45,7 +45,10 @@ keep it pure (no I/O surprises) so verdicts stay deterministic.
 
 ## 2. Bundle checks into a reusable policy
 
-A "policy" is just a function that returns a list of findings, compose freely:
+A "policy" is just a function that returns a list of findings (an empty list, or `None`,
+for no objections), compose freely. Anything else, a `bool`, a number, a string or a bare
+dict, is a policy error: the gate fails closed and names the value, because reading
+`False` or `{}` as a clean screen would switch the check off silently:
 
 ```python
 from recusal.claude import gate_tool_use
