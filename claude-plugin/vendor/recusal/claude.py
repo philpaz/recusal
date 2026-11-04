@@ -24,13 +24,37 @@ shapes the SDK already uses, so the governance layer stays zero-dep and the seam
 stays auditable.
 """
 
-from typing import Any, Dict, Iterable, Optional, Tuple
+from collections.abc import Mapping
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .evidence import compute_verdict
 
 # A PASS verdict allows the action; RETRY and FAIL both block it (RETRY means
 # "recoverable, but not as-is", the agent should adjust, same wire signal as FAIL).
 Evidence = Iterable[Any]  # Findings or loose evidence dicts; compute_verdict coerces.
+
+#: Shapes that are not a collection of findings. ``None`` and ``False`` are listed so they
+#: keep refusing (as they always did), now with a reason that names the shape.
+_NOT_EVIDENCE = (type(None), bool, int, float, complex, str, bytes, bytearray)
+
+
+def _evidence_of(findings: Any) -> List[Any]:
+    """Hold the outer evidence container to its contract before the fold sees it.
+
+    The kernel checks each finding (``strict=True``), but an empty invalid container, ``{}``,
+    ``""`` or ``b""``, iterates to nothing and would pass as a clean screen. A mapping, a
+    string, bytes, a number, a bool or ``None`` is refused here by name; a real empty list
+    keeps its meaning (an intentional policy-screen pass), and any other iterable is folded.
+    """
+    if isinstance(findings, _NOT_EVIDENCE) or isinstance(findings, Mapping):
+        raise TypeError(f"evidence was {type(findings).__name__}; pass a list of findings")
+    try:
+        return list(findings)
+    except TypeError:
+        raise TypeError(
+            f"evidence was {type(findings).__name__}, which is not iterable; pass a list of "
+            "findings"
+        ) from None
 
 
 def gate_tool_use(
@@ -65,7 +89,7 @@ def gate_tool_use(
     # strict at the enforcement boundary: ambiguous evidence (a dict with no
     # status/passed) fails closed to a refusal rather than degrading to PASS.
     try:
-        verdict = compute_verdict(findings, strict=True)
+        verdict = compute_verdict(_evidence_of(findings), strict=True)
     except Exception as exc:  # noqa: BLE001
         detail = f"invalid evidence ({exc})"
     else:
@@ -98,7 +122,7 @@ def tool_confirmation(
     """
     try:
         verdict = compute_verdict(
-            findings, strict=True
+            _evidence_of(findings), strict=True
         )  # strict: fail closed on ambiguous evidence
     except Exception as exc:  # noqa: BLE001
         return {

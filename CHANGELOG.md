@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `recusal.claude_code.allowlist_policy`: an explicit predicate's result is held to its
+  `bool` contract. The result was read with truthiness, so `"false"`, `{"allowed": False}`
+  and a failed `Finding` returned by a mistaken predicate all read as True and removed the
+  allowlist's refusal (the decision was `defer`). Only `True` allows and only `False`
+  refuses now; any other result is a CRITICAL `allowlist_predicate_contract` finding that
+  names the type, so the tool is denied and the reason says why. (Found in the
+  2026-11-04 adapters review.)
+- `recusal.claude.gate_tool_use` and `tool_confirmation` refuse a malformed outer evidence
+  container by name. The helpers folded whatever iterable they were given, and `{}`, `""`
+  and `b""` iterate to nothing, so an invalid empty container passed as a clean screen
+  (`allow`). A mapping, a string, bytes, a number, a bool or `None` is now refused as
+  `invalid evidence (evidence was dict; pass a list of findings)`; a real empty list keeps
+  its pass meaning and any other iterable folds as before. The plugin's vendored runtime
+  is resynced. (Found in the 2026-11-04 adapters review.)
 - `examples/composed_policies.py`: every leaf of a composition judges its own deep copy
   of the input. The composer handed one mutable dict to each leaf in turn, so a leaf that
   rewrote it (a normalizer turning `DELETE` into `SELECT`) changed what every later leaf

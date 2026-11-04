@@ -475,7 +475,23 @@ def allowlist_policy(
         # an explicit predicate is the whole decision for its tool, ahead of every
         # built-in default, so a read-only tool can be narrowed (Read of secrets)
         if tool_name in extra:
-            return [] if extra[tool_name](tool_input) else refuse("predicate refused it")
+            # the predicate's contract is a bool: only True allows and only False refuses.
+            # Truthiness read "false", {"allowed": False} and a failed Finding as True and
+            # removed the refusal; anything but a bool is now a named denial.
+            result = extra[tool_name](tool_input)
+            if result is True:
+                return []
+            if result is False:
+                return refuse("predicate refused it")
+            return [
+                Finding.fail(
+                    "allowlist_predicate_contract",
+                    severity="CRITICAL",
+                    message=f"`{tool_name}` predicate returned {type(result).__name__}, not a "
+                    "bool; the allowlist refuses what it cannot read",
+                    tool=tool_name,
+                )
+            ]
         if tool_name in readonly:
             return []
         if tool_name == "Bash":
