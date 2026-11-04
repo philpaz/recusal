@@ -133,11 +133,21 @@ def claude_named(server_name: str, policy: Policy) -> Policy:
     module hand a policy the server's own tool name, so that policy would never see an MCP
     name, run no membership check and raise no objection. The bound policy presents each
     call as ``mcp__{server_name}__{tool}``, carries the server it is bound to (a gate refuses
-    it for any other server), and forwards the manifest digest to the audit record through
-    the policy's own control identity.
+    it for any other server, and so does a composition carrying it), and forwards the
+    manifest digest to the audit record through the policy's own control identity. A policy
+    already bound to this server is returned as it is, so binding twice never prefixes
+    twice; one bound to another server is refused.
     """
     if not isinstance(server_name, str) or not server_name:
         raise ValueError("claude_named needs the name of the server the policy is bound to")
+    already = getattr(policy, "recusal_bound_server", None)
+    if already is not None:
+        if already != server_name:
+            raise ValueError(
+                f"Recusal: this policy is already bound to server {already!r} by claude_named, "
+                f"not to {server_name!r}; bind one policy object per server"
+            )
+        return policy
 
     def bound(tool_name: str, arguments: dict) -> List[Any]:
         return policy(f"mcp__{server_name}__{tool_name}", arguments)
@@ -155,20 +165,20 @@ def claude_named(server_name: str, policy: Policy) -> Policy:
 
 def _name_domain_refusal(policy: Policy, server_name: Any, where: str) -> Optional[str]:
     """Why this policy cannot judge this server's own tool names, or None if it can."""
-    bound_to = getattr(policy, "recusal_bound_server", None)
-    if bound_to is not None:
-        if bound_to != server_name:
-            return (
-                f"Recusal: this policy is bound to server {bound_to!r} by claude_named, not to "
-                f"{server_name!r}; bind one policy object per server"
-            )
-        return None
+    # The naming requirement is checked before the binding: a policy that still judges
+    # Claude Code's names is never installable, bound neighbour or not.
     if getattr(policy, "recusal_name_domain", None) == "claude_code":
         return (
             "Recusal: this policy judges Claude Code's MCP names (`mcp__<server>__<tool>`, the "
             f"shape of recusal.mcp.manifest_policy), but {where} hands a policy the server's "
             "own tool name, so its membership check would see no MCP name and raise no "
             f"objection. Bind it to the connection: claude_named({server_name!r}, policy)."
+        )
+    bound_to = getattr(policy, "recusal_bound_server", None)
+    if bound_to is not None and bound_to != server_name:
+        return (
+            f"Recusal: this policy is bound to server {bound_to!r} by claude_named, not to "
+            f"{server_name!r}; bind one policy object per server"
         )
     return None
 

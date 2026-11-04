@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/composed_policies.py` and `examples/openai_agents_mcp_gate.py`: a composition
+  keeps the server its policy is bound to. `claude_named("db", policy)` was refused on
+  any other server, but `compose_policies(claude_named("db", policy), other_check)`
+  carried neither the binding nor the naming domain, so the composition installed on a
+  server named `other` and the Runner executed `other/run_sql` against the approval for
+  `db/run_sql`. `ComposedPolicy` now exposes `recusal_bound_server`, the one server any
+  leaf is bound to, through nesting and kept subclasses; leaves bound to different
+  servers, or a bound leaf beside an unbound manifest policy, are refused at composition;
+  both MCP gates check the naming requirement before the binding; `claude_named` returns a
+  policy already bound to that server unchanged and refuses one bound elsewhere. (Found in
+  the 2026-11-04 architecture review.)
 - `examples/langgraph_gate.py` (and the audited gate and LangChain middleware built on it)
   judges the final invocation once, inside the tool's own parse step. The previous fix
   validated in the hook, before ToolNode injected the host's state, judged a

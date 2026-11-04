@@ -604,3 +604,175 @@ class TestNameDomainBinding:
     def test_claude_named_needs_a_server_name(self, example):
         with pytest.raises(ValueError, match="name of the server"):
             example.claude_named("", example.sql_scope_policy)
+
+    # --- review 6, P1: composing a bound policy keeps its server ----------------------------
+
+    @staticmethod
+    def noop(_name, _args):
+        return []
+
+    def test_negative_control_a_composition_of_a_bound_policy_is_refused_on_another_server(
+        self, example, tmp_path
+    ):
+        """Before: compose_policies(claude_named("db", manifest), noop) carried no binding,
+        installed on a server named `other`, and the Runner executed other/run_sql against
+        the approval for db/run_sql. The composition is bound to db now."""
+        from examples.composed_policies import compose_policies
+
+        composed = compose_policies(
+            example.claude_named("db", self.manifest_for_db(tmp_path)), self.noop
+        )
+        assert composed.recusal_bound_server == "db"
+        assert composed.recusal_name_domain is None
+        with pytest.raises(ValueError, match="bound to server 'db'"):
+            example.gate_mcp_server(example.InProcessMCPServer(name="other"), composed)
+        example.CALLED.clear()
+        with pytest.raises(ValueError, match="bound to server 'db'"):
+            example.run_calls(
+                [("run_sql", {"sql": SELECT}, "c1")],
+                policy=composed,
+                server=example.InProcessMCPServer(name="other"),
+            )
+        assert example.CALLED == []
+
+    def test_both_wrapper_orders_run_on_the_bound_server_and_refuse_any_other(
+        self, example, tmp_path
+    ):
+        from examples.composed_policies import compose_policies
+
+        shapes = {
+            "compose(claude_named(manifest), noop)": compose_policies(
+                example.claude_named("db", self.manifest_for_db(tmp_path)), self.noop
+            ),
+            "claude_named(compose(manifest, noop))": example.claude_named(
+                "db", compose_policies(self.manifest_for_db(tmp_path), self.noop)
+            ),
+        }
+        calls = [("run_sql", {"sql": SELECT}, "c1"), ("echo", {"text": "hi"}, "c2")]
+        for label, policy in shapes.items():
+            assert policy.recusal_bound_server == "db", label
+            outputs, called = example.run_calls(
+                calls, policy=policy, server=example.InProcessMCPServer(name="db")
+            )
+            assert called == [("db", "run_sql", {"sql": SELECT})], label
+            assert "Recusal refused `echo`" in _text(outputs["c2"]), label
+            # the same raw tool name on another connection is not this policy's to approve
+            with pytest.raises(ValueError, match="bound to server 'db'"):
+                example.run_calls(
+                    calls[:1], policy=policy, server=example.InProcessMCPServer(name="other")
+                )
+
+    def test_two_connections_with_the_same_raw_tool_name_are_judged_by_their_own_policies(
+        self, example, tmp_path
+    ):
+        from examples.composed_policies import compose_policies
+
+        for_db = compose_policies(
+            example.claude_named("db", self.manifest_for_db(tmp_path)), self.noop
+        )
+        for_other = example.claude_named("other", _refuse_deletes)
+        db = example.gate_mcp_server(example.InProcessMCPServer(name="db"), for_db)
+        other = example.gate_mcp_server(example.InProcessMCPServer(name="other"), for_other)
+        with pytest.raises(ValueError, match="bound to server 'db'"):
+            example.gate_mcp_server(example.InProcessMCPServer(name="other"), for_db)
+        assert example.is_gated_mcp_server(db) and example.is_gated_mcp_server(other)
+
+    def test_contradictory_bindings_are_refused_at_composition(self, example):
+        from examples.composed_policies import compose_policies
+
+        with pytest.raises(ValueError, match="different servers \\['db', 'other'\\]"):
+            compose_policies(
+                example.claude_named("db", self.noop), example.claude_named("other", self.noop)
+            )
+
+    def test_nested_compositions_and_kept_subclasses_forward_the_binding(self, example, tmp_path):
+        from examples.composed_policies import ComposedPolicy, compose_policies
+
+        bound = example.claude_named("db", self.manifest_for_db(tmp_path))
+        nested = compose_policies(compose_policies(bound, self.noop), self.noop)
+        assert nested.recusal_bound_server == "db"
+
+        class Kept(ComposedPolicy):
+            pass
+
+        assert compose_policies(Kept(bound), self.noop).recusal_bound_server == "db"
+        with pytest.raises(ValueError, match="different servers"):
+            compose_policies(Kept(bound), example.claude_named("other", self.noop))
+
+    def test_binding_the_same_server_twice_is_the_same_policy_and_never_prefixes_twice(
+        self, example
+    ):
+        seen = []
+
+        def raw(name, _args):
+            seen.append(name)
+            return []
+
+        bound = example.claude_named("db", raw)
+        assert example.claude_named("db", bound) is bound
+        example.claude_named("db", bound)("run_sql", {})
+        assert seen == ["mcp__db__run_sql"]
+        with pytest.raises(ValueError, match="already bound to server 'db'"):
+            example.claude_named("other", bound)
+
+    def test_a_bound_policy_beside_an_unbound_manifest_policy_is_refused_at_composition(
+        self, example, tmp_path
+    ):
+        from examples.composed_policies import compose_policies
+
+        # two manifest policies are already two identity carriers, refused on that rule
+        with pytest.raises(ValueError, match="one manifest_policy per gate"):
+            compose_policies(
+                example.claude_named("db", self.manifest_for_db(tmp_path)),
+                self.manifest_for_db(tmp_path),
+            )
+
+        # an unbound Claude-name policy without an identity of its own beside a bound one
+        def claude_named_check(_name, _args):
+            return []
+
+        claude_named_check.recusal_name_domain = "claude_code"
+        with pytest.raises(ValueError, match="bind that policy with claude_named too"):
+            compose_policies(
+                example.claude_named("db", self.manifest_for_db(tmp_path)), claude_named_check
+            )
+
+    def test_an_unmet_naming_requirement_is_refused_even_on_the_bound_server(self, example):
+        """compose_policies refuses the mixed shape, but a hand-built or subclassed policy can
+        still present both attributes: the gates check the naming requirement first, so a
+        matching binding never makes an unbound Claude-name check installable."""
+
+        def both(_name, _args):
+            return []
+
+        both.recusal_bound_server = "db"
+        both.recusal_name_domain = "claude_code"
+        with pytest.raises(ValueError, match="claude_named"):
+            example.gate_mcp_server(example.InProcessMCPServer(name="db"), both)
+        with pytest.raises(ValueError, match="claude_named"):
+            example.run_hosted([("run_sql", {"sql": SELECT}, "r1")], policy=both)
+
+    def test_the_hosted_gate_honours_a_compositions_binding(self, example, tmp_path):
+        from examples.composed_policies import compose_policies
+
+        for_db = compose_policies(
+            example.claude_named("db", self.manifest_for_db(tmp_path)), self.noop
+        )
+        responses = example.run_hosted(
+            [("run_sql", {"sql": SELECT}, "r1"), ("echo", {"text": "hi"}, "r2")], policy=for_db
+        )
+        assert responses["r1"]["approve"] is True and responses["r2"]["approve"] is False
+        for_other = compose_policies(example.claude_named("other", self.noop), self.noop)
+        with pytest.raises(ValueError, match="bound to server 'other'"):
+            example.run_hosted([("run_sql", {"sql": SELECT}, "r1")], policy=for_other)
+
+    def test_a_bound_composition_keeps_the_digest_and_the_reset(self, example, tmp_path):
+        from examples.composed_policies import compose_policies
+
+        composed = compose_policies(
+            example.claude_named("db", self.manifest_for_db(tmp_path)), self.noop
+        )
+        decide("run_sql", {"sql": SELECT}, composed)
+        assert composed.get_control_identity()["manifest_sha256"].startswith("sha256:")
+        composed.reset_control_identity()
+        assert composed.get_control_identity()["manifest_sha256"] is None

@@ -2,6 +2,8 @@
 
 from itertools import permutations
 
+import pytest
+
 from examples.composed_policies import ComposedPolicy, compose_policies, make_policy
 from recusal import Decision, Finding, Severity, compute_verdict
 from recusal.claude_code import decide
@@ -289,3 +291,46 @@ def test_the_composer_uses_the_evaluators_discovery_contract():
     assert _identity_getter(_noop) is None
     assert _identity_getter(compose_policies(_noop)) is not None  # the getter exists
     assert compose_policies(compose_policies(_noop)).get_control_identity() == {}
+
+
+# --- review 6, finding 2: the server a leaf is bound to travels with the composition ---------
+
+
+def _bound(server):
+    def policy(_name, _input):
+        return []
+
+    policy.recusal_bound_server = server
+    return policy
+
+
+def _claude_named_domain():
+    def policy(_name, _input):
+        return []
+
+    policy.recusal_name_domain = "claude_code"
+    return policy
+
+
+def test_a_plain_composition_is_bound_to_no_server():
+    assert compose_policies(_passed).recusal_bound_server is None
+
+
+def test_a_bound_leaf_binds_the_composition_and_a_no_op_does_not_change_it():
+    assert compose_policies(_bound("db")).recusal_bound_server == "db"
+    assert compose_policies(_bound("db"), _passed).recusal_bound_server == "db"
+    assert compose_policies(_passed, compose_policies(_bound("db"))).recusal_bound_server == "db"
+
+
+def test_leaves_bound_to_different_servers_are_refused():
+    with pytest.raises(ValueError, match="different servers"):
+        compose_policies(_bound("db"), _bound("other"))
+    with pytest.raises(ValueError, match="different servers"):
+        compose_policies(compose_policies(_bound("db")), _bound("other"))
+
+
+def test_a_bound_leaf_beside_an_unbound_claude_named_policy_is_refused():
+    with pytest.raises(ValueError, match="bind that policy with claude_named too"):
+        compose_policies(_bound("db"), _claude_named_domain())
+    # unbound alone is a legitimate Claude Code composition
+    assert compose_policies(_claude_named_domain(), _passed).recusal_name_domain == "claude_code"

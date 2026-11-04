@@ -39,8 +39,15 @@ class ComposedPolicy:
     leaf, so an overridden ``__call__`` keeps running): two manifest policies in one gate would
     have two digests and
     one record, so that composition is refused up front rather than recorded ambiguously.
-    The invariant the tests pin: adding a no-op policy changes neither the verdict nor the
-    control identity.
+    Connection binding: a leaf bound to one MCP server connection by ``claude_named``
+    (examples/openai_agents_mcp_gate.py) carries ``recusal_bound_server``; the composition
+    carries the same, so a gate refuses it for any other server exactly as it refuses the
+    leaf. Two leaves bound to different servers, or a bound leaf beside a policy that still
+    needs binding (one declaring Claude Code's naming domain), are refused up front rather
+    than installed half-adapted.
+
+    The invariant the tests pin: adding a no-op policy changes neither the verdict, nor the
+    control identity, nor the server the composition is bound to.
     """
 
     def __init__(self, *policies):
@@ -74,6 +81,23 @@ class ComposedPolicy:
                 "records one manifest digest, so compose one manifest_policy per gate"
             )
         self._carrier = carriers[0] if carriers else None
+        servers = []
+        for p in self.policies:
+            server = getattr(p, "recusal_bound_server", None)
+            if server is not None and server not in servers:
+                servers.append(server)
+        if len(servers) > 1:
+            raise ValueError(
+                f"compose_policies: policies bound to different servers {servers!r}; one gate "
+                "judges one connection, so compose one server's policies per gate"
+            )
+        self._bound_server = servers[0] if servers else None
+        if self._bound_server is not None and self.recusal_name_domain is not None:
+            raise ValueError(
+                f"compose_policies: a policy bound to server {self._bound_server!r} is composed "
+                "with one that judges Claude Code's MCP names and is not bound; bind that "
+                "policy with claude_named too, or compose the unbound policies and bind the whole"
+            )
 
     def __call__(self, tool_name, tool_input):
         findings = []
@@ -91,6 +115,12 @@ class ComposedPolicy:
             if domain:
                 return domain
         return None
+
+    @property
+    def recusal_bound_server(self):
+        """The MCP server connection a leaf is bound to (``claude_named``), else None: a
+        gate that installs this composition on a server checks it is that one."""
+        return self._bound_server
 
     def get_control_identity(self):
         if self._carrier is None:

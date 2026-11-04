@@ -657,7 +657,9 @@ Claude Code's names, `recusal.mcp.manifest_policy` or a composition carrying one
 `mcp__<server>__<tool>`; hand it to either gate through `claude_named(server.name, policy)`,
 which presents each call under that name and keeps the manifest digest on the audit
 record. Unbound, the gate refuses the pairing at setup, because a membership check that
-never sees an MCP name would raise no objection.
+never sees an MCP name would raise no objection. A composition carrying a bound policy
+is bound to the same server, in either order of wrapping; policies bound to different
+servers, or a bound policy beside an unbound manifest policy, cannot be composed.
 Hosted MCP runs on OpenAI's servers, and the one local point is the approval callback, so
 `gate_hosted_mcp(tool, policy)` returns a copy that requires approval for every call and
 answers a refusal as a rejection with Recusal's reason; a call OpenAI does not ask approval
