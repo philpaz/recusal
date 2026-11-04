@@ -700,7 +700,9 @@ tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`.
 For CrewAI, [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) uses CrewAI's own tool-call
 hooks: `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each
 call and blocks a refusal, and an `after_tool_call` hook that replaces CrewAI's fixed
-"blocked by hook" line with Recusal's reason, so the model reads why. The registry is
+"blocked by hook" line with the reason the before hook blocked on (kept per invocation and
+never judged again; on the sync Crew runner, elsewhere the fixed line stays), so the model
+reads why. The registry is
 process-global: one install covers every agent, task and crew in the process, and the
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
 that runs after the gate can change the argument dict the gate judged; the tests show the

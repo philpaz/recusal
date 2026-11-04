@@ -99,7 +99,7 @@ with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recus
 
 The [CrewAI example](../examples/crewai_gate.py) installs a `before_tool_call` hook that
 judges each call and blocks a refusal, paired with an `after_tool_call` hook that puts
-Recusal's reason in the model's answer; `install_recusal_hooks(policy)` registers both for
+the reason the before hook blocked on in the model's answer (never a second judgment); `install_recusal_hooks(policy)` registers both for
 every crew in the process and returns the uninstall. Install it after your other hooks.
 Python 3.10+, tested with exactly `crewai==1.15.34`; not a Recusal dependency.
 

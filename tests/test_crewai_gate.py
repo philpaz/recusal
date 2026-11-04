@@ -211,3 +211,191 @@ class TestCrewAIGate:
         assert "tools that ran: 2" in result.stdout
         assert REFUSED in result.stdout
         assert "Execution Traces" not in result.stdout
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+class TestDenialReasonLifecycle:
+    """Adapters review: the after hook re-judged a blocked call to explain it, so a stateful
+    policy was invoked twice and the model lost the original reason. The reason is kept per
+    invocation now, correlated by the argument object, per thread, bounded."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("crewai", reason="crewai is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_crewai_reason_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def stateful():
+        calls = {"n": 0}
+
+        def policy(name, args):
+            from recusal import Finding
+
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [Finding.fail("deny", severity="CRITICAL", message="original refusal")]
+            return []
+
+        return policy, calls
+
+    @staticmethod
+    def context(example, name, tool_input, result=None):
+        kwargs = {
+            "tool_name": name,
+            "tool_input": tool_input,
+            "tool": None,
+            "agent": None,
+            "task": None,
+            "crew": None,
+        }
+        if result is not None:
+            kwargs["tool_result"] = result
+        try:
+            return example.ToolCallHookContext(**kwargs)
+        except TypeError:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(**kwargs)
+
+    # --- the integration witness: the reviewer's stateful policy through the real runner --
+
+    def test_the_model_receives_the_reason_the_before_hook_blocked_on(self, example):
+        policy, calls = self.stateful()
+        responses, executed = example.run_calls(
+            [("run_sql", {"sql": "DELETE FROM audit_log"}, "c1")], policy=policy
+        )
+        assert executed == []
+        assert calls["n"] == 1, "the call was judged once"
+        assert "original refusal" in responses["c1"], responses
+
+    # --- hook-dispatch tests: labelled synthetic, they drive the two hooks directly ---------
+
+    def test_same_thread_distinct_equal_dicts_each_get_their_own_reason(self, example):
+        """Kills a content-keyed map and an equality match alike: d1 == d2, d1 is not d2,
+        both denials pending, after hooks in reversed order."""
+        from recusal import Finding
+
+        reasons = iter(["reason A", "reason B"])
+
+        def policy(name, args):
+            return [Finding.fail("deny", severity="CRITICAL", message=next(reasons))]
+
+        denials = example._Denials()
+        before = example.recusal_before_tool_call(policy, denials)
+        after = example.recusal_after_tool_call(policy, denials)
+        d1, d2 = {"sql": "SELECT 1"}, {"sql": "SELECT 1"}
+        assert d1 == d2 and d1 is not d2
+        assert before(self.context(example, "run_sql", d1)) is False
+        assert before(self.context(example, "run_sql", d2)) is False
+        blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
+        assert "reason B" in after(self.context(example, "run_sql", d2, blocked))
+        assert "reason A" in after(self.context(example, "run_sql", d1, blocked))
+
+    def test_an_abandoned_entry_is_never_attached_to_a_later_call_reusing_the_dict(self, example):
+        from recusal import Finding
+
+        decisions = iter([[Finding.fail("deny", severity="CRITICAL", message="stale A")], []])
+        denials = example._Denials()
+        before = example.recusal_before_tool_call(lambda n, a: next(decisions), denials)
+        after = example.recusal_after_tool_call(lambda n, a: [], denials)
+        shared = {"sql": "SELECT 1"}
+        assert before(self.context(example, "run_sql", shared)) is False  # A, after hook skipped
+        assert before(self.context(example, "run_sql", shared)) is None  # B reuses the dict
+        blocked = example.BLOCKED_PREFIX + " Tool: run_sql"  # another hook blocked B
+        assert after(self.context(example, "run_sql", shared, blocked)) is None
+
+    def test_a_call_another_hook_blocked_keeps_crewais_line(self, example):
+        denials = example._Denials()
+        after = example.recusal_after_tool_call(lambda n, a: [], denials)
+        blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
+        assert after(self.context(example, "run_sql", {"sql": "x"}, blocked)) is None
+
+    def test_another_thread_never_sees_this_threads_reason(self, example):
+        import threading
+
+        from recusal import Finding
+
+        denials = example._Denials()
+        before = example.recusal_before_tool_call(
+            lambda n, a: [Finding.fail("deny", severity="CRITICAL", message="mine")], denials
+        )
+        after = example.recusal_after_tool_call(lambda n, a: [], denials)
+        d = {"sql": "x"}
+        assert before(self.context(example, "run_sql", d)) is False
+        seen = []
+        blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
+        t = threading.Thread(
+            target=lambda: seen.append(after(self.context(example, "run_sql", d, blocked)))
+        )
+        t.start()
+        t.join()
+        assert seen == [None]
+        assert "mine" in after(self.context(example, "run_sql", d, blocked))
+
+    def test_retention_is_bounded_under_abandoned_calls(self, example):
+        from recusal import Finding
+
+        denials = example._Denials()
+        before = example.recusal_before_tool_call(
+            lambda n, a: [Finding.fail("deny", severity="CRITICAL", message="r")], denials
+        )
+        held = [{"i": i} for i in range(example.PENDING_LIMIT + 20)]
+        for d in held:
+            assert before(self.context(example, "run_sql", d)) is False
+        assert len(denials._entries()) == example.PENDING_LIMIT
+        after = example.recusal_after_tool_call(lambda n, a: [], denials)
+        blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
+        assert after(self.context(example, "run_sql", held[0], blocked)) is None, "dropped: generic"
+        assert (
+            after(self.context(example, "run_sql", held[-1], blocked))
+            == "Recusal refused `run_sql` [FAIL]: r"
+        )
+
+    def test_a_failure_to_keep_the_reason_cannot_unblock(self, example):
+        from recusal import Finding
+
+        class Broken(example._Denials):
+            def keep(self, tool_input, reason):
+                raise RuntimeError("store broke")
+
+            def forget(self, tool_input):
+                raise RuntimeError("store broke")
+
+        before = example.recusal_before_tool_call(
+            lambda n, a: [Finding.fail("deny", severity="CRITICAL", message="r")], Broken()
+        )
+        assert before(self.context(example, "run_sql", {"sql": "x"})) is False
+
+    def test_each_sync_runner_invocation_gets_a_fresh_argument_object(self, example):
+        """The freshness the correlation relies on, with the objects retained while compared."""
+        kept = []
+
+        def retaining(name, args):
+            kept.append(args)
+            return []
+
+        example.run_calls(
+            [("run_sql", {"sql": "SELECT 1"}, "c1"), ("run_sql", {"sql": "SELECT 1"}, "c2")],
+            policy=retaining,
+        )
+        assert len(kept) == 2 and kept[0] is not kept[1]
+
+    def test_the_after_hook_never_judges(self, example):
+        calls = {"n": 0}
+
+        def counting(name, args):
+            calls["n"] += 1
+            return []
+
+        denials = example._Denials()
+        after = example.recusal_after_tool_call(counting, denials)
+        blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
+        after(self.context(example, "run_sql", {"sql": "x"}, blocked))
+        assert calls["n"] == 0

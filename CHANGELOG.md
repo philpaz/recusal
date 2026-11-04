@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/crewai_gate.py`: a blocked call is explained by the reason the before hook
+  blocked on, never by a second judgment. The after hook re-judged the call to find the
+  reason, so a stateful policy that denied once and allowed next was invoked twice and
+  the model received only CrewAI's generic blocked line. The before hook now keeps its
+  reason beside a strong reference to the invocation's argument object in a small
+  per-thread list (CrewAI hands the same `tool_input` dict to both hooks of one invocation
+  on one thread; the sync Crew runner gives every invocation a fresh dict), dropping any
+  entry for the same object first so an abandoned entry is never attached to a later call
+  that reuses the dict; the after hook returns a reason only for that very object and
+  otherwise keeps CrewAI's line. A failure to keep or find a reason never changes the
+  block. (Found in the 2026-11-04 adapters review.)
 - `examples/openai_responses_gate.py`: `gate_tool_calls` dispatches the tool calls of one
   chosen Chat Completions message. It flattened the `tool_calls` of every entry in
   `completion.choices`, so a completion requested with `n > 1` (alternative assistant
