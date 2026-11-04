@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-11-04
+
+Package changes and example changes, stated apart. In the installed package, two
+fail-closed fixes to the policy contract: `recusal.claude_code.decide` refuses a policy
+return that is not `None` or an iterable of findings (a bool, a number, a string or a bare
+mapping was read as an empty screen and the tool ran), and `recusal.mcp.manifest_policy`
+holds its wrapped policy to that same contract and treats only `None` as no policy.
+Malformed policy output now refuses instead of passing; a valid policy folds exactly as
+in 0.12.7, so this is a PATCH under `STABILITY.md`, named here. Under `examples/`, outside
+the wheel: the LangGraph gate judges the final invocation once, inside the tool's own
+parse step after host injection; the OpenAI Agents gate judges the invocation the SDK
+prepares; the OpenAI MCP gates check a policy's naming domain and keep a composed
+policy's server binding; the composer shares the evaluator's identity discovery and
+return contract; the conformance suite gains invariant 6. Two outside architecture
+reviews of main (2026-11-03 and 2026-11-04) found these; each fix carries the reviewer's
+probe as a test.
+
 ### Fixed
 - `recusal.mcp.manifest_policy` and `examples/composed_policies.py` hold each wrapped
   policy's return to the evaluator's contract before reading it. `decide` refuses a bare
