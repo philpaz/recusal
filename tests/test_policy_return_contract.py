@@ -73,8 +73,10 @@ def test_the_audit_record_of_a_contract_violation_states_the_policy_error(tmp_pa
 
 
 def test_a_real_adapter_runs_nothing_for_a_policy_that_returns_false():
-    """The reviewer's probe: the OpenAI Responses loop needs no SDK and executes nothing."""
+    """The reviewer's probe: the OpenAI Responses loop (no model call) executes nothing."""
     import importlib.util
+
+    pytest.importorskip("openai", reason="the Responses example imports the openai package")
 
     spec = importlib.util.spec_from_file_location(
         "recusal_contract_responses_example", ROOT / "examples" / "openai_responses_gate.py"
