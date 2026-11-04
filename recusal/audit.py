@@ -49,6 +49,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -350,6 +351,10 @@ class AuditLog:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._retain = resume == "full"
         self._fsync = fsync
+        # one process, many threads (an agent runtime runs parallel tool calls on a pool):
+        # the whole append, file transaction and in-memory mirror alike, is serialized
+        # here, so the mirror and the sequence counter advance in chain order
+        self._append_lock = threading.Lock()
         self.entries: List[Dict[str, Any]] = []
         self.last_hash = GENESIS
         self._next_seq = 0
@@ -404,33 +409,39 @@ class AuditLog:
         fail closed - while the local entry remains on record; the in-memory head/mirror
         is then stale until the next append re-derives it from the file, which is why
         under concurrency you verify the FILE, not one process's mirror.
+
+        Within one process, concurrent threads (an agent runtime that runs the calls of
+        one turn on a thread pool) are serialized by a process-level lock around the whole
+        append, file transaction and mirror alike, so ``entries`` holds the chain in
+        sequence order and an in-memory log never hands two threads the same ``seq``.
         """
         ts = timestamp or self._clock().isoformat()
-        if self.path:
-            with _interprocess_lock(self.path + ".lock"):
-                # The file is the shared truth under concurrency; our in-memory head may
-                # be behind another process's appends, so it is re-derived here.
-                next_seq, last_hash = _tail_state(self.path)
-                entry = self._build(verdict, next_seq, last_hash, action, actor, ts)
-                with open(self.path, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
-                    fh.flush()
-                    if self._fsync:
-                        os.fsync(fh.fileno())
-                for sink in self._sinks:
-                    sink.write(entry)
-            self._next_seq = next_seq + 1
+        with self._append_lock:
+            if self.path:
+                with _interprocess_lock(self.path + ".lock"):
+                    # The file is the shared truth under concurrency; our in-memory head
+                    # may be behind another process's appends, so it is re-derived here.
+                    next_seq, last_hash = _tail_state(self.path)
+                    entry = self._build(verdict, next_seq, last_hash, action, actor, ts)
+                    with open(self.path, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
+                        fh.flush()
+                        if self._fsync:
+                            os.fsync(fh.fileno())
+                    for sink in self._sinks:
+                        sink.write(entry)
+                self._next_seq = next_seq + 1
+                self.last_hash = entry["hash"]
+                if self._retain:
+                    self.entries.append(entry)
+                return entry
+            entry = self._build(verdict, self._next_seq, self.last_hash, action, actor, ts)
+            self._next_seq += 1
+            self.entries.append(entry)
             self.last_hash = entry["hash"]
-            if self._retain:
-                self.entries.append(entry)
+            for sink in self._sinks:
+                sink.write(entry)
             return entry
-        entry = self._build(verdict, self._next_seq, self.last_hash, action, actor, ts)
-        self._next_seq += 1
-        self.entries.append(entry)
-        self.last_hash = entry["hash"]
-        for sink in self._sinks:
-            sink.write(entry)
-        return entry
 
 
 def _scan(path: str) -> Iterator[Dict[str, Any]]:

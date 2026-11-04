@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `recusal.audit.AuditLog.append` serializes concurrent threads of one process around the
+  whole append. The file transaction was under the inter-process lock but the in-memory
+  mirror (`entries`, `_next_seq`, `last_hash`) was updated after it was released, so two
+  threads of a LangGraph `ToolNode` (which runs one turn's calls on a thread pool) could
+  append to the file in order and to the mirror out of order; an in-memory log had no
+  lock at all. Seen once on a CI lane as `[1, 0, 2, ...]` in `entries`; the file was
+  intact. The file format, hashes and every single-threaded behaviour are unchanged.
 - `recusal.claude_code.decide` and `run_pretooluse_hook` fingerprint the proposed input
   for the audit record before the policy sees it. The fingerprint was taken after the
   policy ran, on the same dict the policy received, so a policy that mutated its argument

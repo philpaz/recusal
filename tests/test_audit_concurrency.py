@@ -10,6 +10,7 @@ import errno
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -321,3 +322,101 @@ def test_expected_head_with_a_non_object_final_record_is_a_failure_not_a_crash(t
 def test_expected_head_on_an_entirely_non_object_log():
     intact, problems = verify([[]], expected_head=(1, "0" * 64))
     assert not intact and problems
+
+
+# --- threads in one process ------------------------------------------------------------------
+
+
+def _hammer(log, threads=16, per_thread=12):
+    """Many threads appending at once, released together by a barrier."""
+    barrier = threading.Barrier(threads)
+    errors = []
+
+    def worker(index):
+        barrier.wait()
+        for i in range(per_thread):
+            try:
+                log.append(_verdict(f"t{index}-{i}"), action={"t": index, "i": i})
+            except Exception as exc:  # noqa: BLE001, collected and asserted below
+                errors.append(exc)
+
+    pool = [threading.Thread(target=worker, args=(n,)) for n in range(threads)]
+    for t in pool:
+        t.start()
+    for t in pool:
+        t.join()
+    assert errors == []
+    return threads * per_thread
+
+
+def test_threads_in_one_process_keep_the_mirror_in_chain_order(tmp_path):
+    """Seen on a CI lane: a ToolNode's parallel calls appended in file order, but the
+    in-memory mirror received two entries out of sequence because the mirror update sat
+    outside the lock. The whole append is serialized per process now."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path=str(path))
+    total = _hammer(log)
+    assert [e["seq"] for e in log.entries] == list(range(total))
+    assert log.entries == load(str(path))
+    ok, problems = verify(log.entries)
+    assert ok, problems
+    assert log._next_seq == total and log.last_hash == log.entries[-1]["hash"]
+
+
+def test_threads_on_an_in_memory_log_never_share_a_sequence_number():
+    log = AuditLog()
+    total = _hammer(log)
+    assert [e["seq"] for e in log.entries] == list(range(total))
+    ok, problems = verify(log.entries)
+    assert ok, problems
+
+
+class _OutOfOrderTrap(list):
+    """A stand-in for ``AuditLog.entries`` that holds the FIRST entry's append until the
+    second entry has been appended (or a timeout passes). Without a per-process lock, the
+    second thread's append runs during that hold and the mirror reads ``[1, 0]``; with the
+    lock, the second thread cannot start its append until the first has finished, so the
+    hold times out and the mirror reads ``[0, 1]``."""
+
+    def __init__(self):
+        super().__init__()
+        self.second_appended = threading.Event()
+
+    def append(self, entry):
+        if entry["seq"] == 0:
+            self.second_appended.wait(timeout=1.0)
+        super().append(entry)
+        if entry["seq"] == 1:
+            self.second_appended.set()
+
+
+def _two_appends_through_the_trap(log):
+    log.entries = _OutOfOrderTrap()
+    started = threading.Barrier(2)
+
+    def worker(index):
+        started.wait()
+        if index == 1:
+            time.sleep(0.05)  # the second thread arrives while the first holds its append
+        log.append(_verdict(f"t{index}"), action={"t": index})
+
+    pool = [threading.Thread(target=worker, args=(n,)) for n in range(2)]
+    for t in pool:
+        t.start()
+    for t in pool:
+        t.join()
+    return [e["seq"] for e in log.entries]
+
+
+def test_the_mirror_of_a_file_backed_log_cannot_be_appended_out_of_order(tmp_path):
+    """The deterministic form of the race: without the per-process lock the second thread's
+    file transaction and mirror update run while the first thread is between its lock
+    release and its mirror append, and ``entries`` reads ``[1, 0]``."""
+    log = AuditLog(path=str(tmp_path / "audit.jsonl"))
+    assert _two_appends_through_the_trap(log) == [0, 1]
+    assert [e["seq"] for e in load(str(tmp_path / "audit.jsonl"))] == [0, 1]
+
+
+def test_the_mirror_of_an_in_memory_log_cannot_be_appended_out_of_order():
+    log = AuditLog()
+    assert _two_appends_through_the_trap(log) == [0, 1]
