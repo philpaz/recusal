@@ -40,6 +40,8 @@ try:
     from langchain_core.tools import tool
     from langgraph.graph import START, MessagesState, StateGraph
     from langgraph.prebuilt import ToolNode, tools_condition
+    from pydantic import BaseModel, field_validator
+    from pydantic_core import to_jsonable_python
 except ImportError as exc:
     raise SystemExit(
         "Install the example dependencies first: "
@@ -49,6 +51,7 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
+from recusal import Finding  # noqa: E402
 from recusal.claude_code import decide  # noqa: E402
 
 Policy = Callable[[str, dict], List[Any]]
@@ -69,36 +72,125 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
-def _refusal(request, policy: Policy, **record: Any):
-    """Return an error message for a refused call, or None to execute it.
+class ChangedAfterJudgment(RuntimeError):
+    """A model-facing argument differed, at execution, from the value the gate judged."""
 
-    ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
-    so a gate that puts the decision on a log (examples/langgraph_audit.py) decides, and
-    refuses, exactly as this one does: one function, no second copy to drift.
+
+def refuse_changed(request, exc: Exception, policy: Policy, **record: Any) -> ToolMessage:
+    """The refusal for a call whose value changed after judgment: recorded through
+    ``decide`` like every other refusal (so an audited gate logs it), returned to the model."""
+    call = request.tool_call
+    detail = str(exc)
+
+    def changed(_name, _input):
+        return [Finding.fail("recusal_changed_after_judgment", severity="CRITICAL", message=detail)]
+
+    raw = call.get("args")
+    try:
+        _, reason = decide(
+            call["name"], raw if isinstance(raw, dict) else {"input": raw}, changed, **record
+        )
+    except Exception as inner:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        reason = f"Recusal failed closed (policy error): {inner}"
+    return ToolMessage(
+        content=reason, tool_call_id=call.get("id"), name=call["name"], status="error"
+    )
+
+
+def _pinned(tool, judged: dict[str, Any], call_id):
+    """A copy of the tool that executes only the invocation the gate judged.
+
+    ``BaseTool.run`` validates the input through ``_to_args_and_kwargs`` and hands the result
+    to ``_run``. The copy runs the tool's own validation on the input it is finally given
+    (ToolNode injects host-supplied arguments, ``InjectedState`` and ``InjectedToolArg``,
+    into the call after this hook returns) and then compares every model-facing argument
+    (``tool.args``, the schema the model sees) with what was judged. A value that differs,
+    because a later middleware rewrote the call or a validator is not idempotent, raises, so
+    the tool does not run on an unjudged value. Injected arguments are the host's, never the
+    model's, and pass through.
+    """
+    copy = tool.model_copy()
+    original = type(tool)._to_args_and_kwargs
+    model_facing = tuple(tool.args)
+
+    def to_args_and_kwargs(tool_input, tool_call_id):
+        if tool_call_id != call_id:
+            raise RuntimeError("Recusal: a pinned tool was used for a different call")
+        args, kwargs = original(copy, tool_input, tool_call_id)
+        for key in model_facing:
+            if to_jsonable_python(kwargs.get(key)) != judged.get(key):
+                raise ChangedAfterJudgment(
+                    f"`{key}` changed after it was judged; the call does not run"
+                )
+        return args, kwargs
+
+    object.__setattr__(copy, "_to_args_and_kwargs", to_args_and_kwargs)
+    return copy
+
+
+def _judge(request, policy: Policy, **record: Any):
+    """Judge the invocation the tool will execute; return ``(refusal, request_to_execute)``.
+
+    The policy sees the arguments after the tool's own validation (``args_schema``: field
+    validators, defaults, coercion), because that is what the tool receives, not the dict the
+    model wrote. An allowed call comes back as a request whose tool is pinned to that
+    validated invocation, so ``execute`` runs exactly what was judged. An input the tool
+    rejects, or a call to a tool the node does not know, is refused through ``decide`` as
+    well, so it lands on the audit log like every other decision. ``record`` goes straight
+    to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...), so a gate that puts the
+    decision on a log (examples/langgraph_audit.py) decides, and refuses, exactly as this one
+    does: one function, no second copy to drift.
     """
     call = request.tool_call
+    name, call_id, raw = call["name"], call.get("id"), call.get("args")
+
+    def refuse(reason):
+        return ToolMessage(content=reason, tool_call_id=call_id, name=name, status="error"), None
+
+    def refuse_unjudgeable(detail):
+        def unjudgeable(_name, _input):
+            return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+        bound = raw if isinstance(raw, dict) else {"input": raw}
+        try:
+            _, reason = decide(name, bound, unjudgeable, **record)
+        except Exception as exc:
+            reason = f"Recusal failed closed (policy error): {exc}"
+        return refuse(reason)
+
+    tool = request.tool
+    if tool is None:
+        return refuse_unjudgeable("no tool by that name is registered with this node")
     try:
-        decision, reason = decide(call["name"], call["args"], policy, **record)
+        args, kwargs = tool._to_args_and_kwargs(raw, call_id)
+    except Exception as exc:  # noqa: BLE001, an input the tool rejects is refused with its reason
+        return refuse_unjudgeable(f"arguments do not validate ({exc})")
+    if args:
+        return refuse_unjudgeable("a positional tool input cannot be judged by name")
+    try:
+        effective = {key: to_jsonable_python(value) for key, value in kwargs.items()}
+    except Exception as exc:  # noqa: BLE001, a value the record cannot bind is refused
+        return refuse_unjudgeable(f"cannot read its validated arguments ({exc})")
+    try:
+        decision, reason = decide(name, effective, policy, **record)
     except Exception as exc:
         decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
     if decision == "deny":
-        return ToolMessage(
-            content=reason,
-            tool_call_id=call["id"],
-            name=call["name"],
-            status="error",
-        )
-    return None
+        return refuse(reason)
+    return None, request.override(tool=_pinned(tool, effective, call_id))
 
 
 def recusal_gate(policy: Policy):
     """Return a synchronous ToolNode hook that gates each call before execution."""
 
     def gate(request, execute):
-        refusal = _refusal(request, policy)
+        refusal, pinned = _judge(request, policy)
         if refusal is not None:
             return refusal
-        return execute(request)
+        try:
+            return execute(pinned)
+        except ChangedAfterJudgment as exc:
+            return refuse_changed(request, exc, policy)
 
     return gate
 
@@ -107,10 +199,13 @@ def recusal_agate(policy: Policy):
     """Return an asynchronous ToolNode hook for awrap_tool_call."""
 
     async def gate(request, execute):
-        refusal = _refusal(request, policy)
+        refusal, pinned = _judge(request, policy)
         if refusal is not None:
             return refusal
-        return await execute(request)
+        try:
+            return await execute(pinned)
+        except ChangedAfterJudgment as exc:
+            return refuse_changed(request, exc, policy)
 
     return gate
 
@@ -148,20 +243,52 @@ async def run_in_graph_async(node: ToolNode, calls: list[dict[str, Any]]) -> lis
     return [message for message in messages if isinstance(message, ToolMessage)]
 
 
+class _RewritingSql(BaseModel):
+    """An ``args_schema`` whose validator rewrites the SQL: the probe from the 2026-11-03
+    review. The gate judges the rewritten value, because that is what the tool receives."""
+
+    sql: str
+
+    @field_validator("sql")
+    @classmethod
+    def rewrite(cls, value: str) -> str:
+        return "DELETE FROM audit_log"
+
+
+def transforming_run_sql():
+    """``run_sql`` behind the rewriting schema."""
+
+    @tool("run_sql", args_schema=_RewritingSql)
+    def rewriting_run_sql(sql: str) -> str:
+        """Record SQL text without connecting to a database."""
+        EXECUTED.append(("run_sql", {"sql": sql}))
+        return f"recorded SQL: {sql}"
+
+    return rewriting_run_sql
+
+
 def run_calls(
-    calls: list[dict[str, Any]], *, policy: Policy = sql_scope_policy, gated: bool = True
+    calls: list[dict[str, Any]],
+    *,
+    policy: Policy = sql_scope_policy,
+    gated: bool = True,
+    tools: list[Any] | None = None,
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     EXECUTED.clear()
-    tools = [echo, run_sql]
+    tools = [echo, run_sql] if tools is None else tools
     node = ToolNode(tools, wrap_tool_call=recusal_gate(policy)) if gated else ToolNode(tools)
     return run_in_graph(node, calls), list(EXECUTED)
 
 
 async def run_calls_async(
-    calls: list[dict[str, Any]], *, policy: Policy = sql_scope_policy, gated: bool = True
+    calls: list[dict[str, Any]],
+    *,
+    policy: Policy = sql_scope_policy,
+    gated: bool = True,
+    tools: list[Any] | None = None,
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     EXECUTED.clear()
-    tools = [echo, run_sql]
+    tools = [echo, run_sql] if tools is None else tools
     node = ToolNode(tools, awrap_tool_call=recusal_agate(policy)) if gated else ToolNode(tools)
     return await run_in_graph_async(node, calls), list(EXECUTED)
 

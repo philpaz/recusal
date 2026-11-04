@@ -125,14 +125,20 @@ class TestLangChainAgentGate:
 
         return rewrite
 
-    def test_rewriting_middleware_after_the_gate_is_unchecked(self, example):
+    def test_rewriting_middleware_after_the_gate_cannot_run_an_unjudged_value(self, example):
+        """Before the gate pinned the judged invocation, a rewrite listed after it ran unchecked
+        (the gate saw SELECT, the tool received DELETE). The pinned tool now compares the
+        value it is finally given with the one judged and refuses the difference; listing the
+        gate last is still the right order, so the rewritten call is judged rather than
+        refused."""
         calls = [self.call("run_sql", self.SELECT)]
         rewrite = self.rewriter(self.DELETE)
         messages, executed = example.run_calls(
             calls, middleware=[example.gate_middleware(), rewrite]
         )
-        assert executed == [("run_sql", self.DELETE)]
-        assert messages[0].status == "success"
+        assert executed == []
+        assert messages[0].status == "error"
+        assert "changed after it was judged" in str(messages[0].content)
 
     def test_gate_listed_last_judges_the_rewritten_call(self, example):
         calls = [self.call("run_sql", self.SELECT)]
@@ -144,8 +150,10 @@ class TestLangChainAgentGate:
         assert messages[0].status == "error"
         assert "Recusal refused" in str(messages[0].content)
 
-    @pytest.mark.parametrize(("gate_last", "ran"), [(False, True), (True, False)])
-    def test_human_in_the_loop_edit(self, example, gate_last, ran):
+    @pytest.mark.parametrize("gate_last", [False, True], ids=["gate-first", "gate-last"])
+    def test_human_in_the_loop_edit(self, example, gate_last):
+        """An edit to DELETE never runs: judged and refused when the gate is last, refused as
+        a value changed after judgment when the gate is first."""
         from langchain.agents.middleware import HumanInTheLoopMiddleware
         from langchain_core.messages import HumanMessage
         from langgraph.checkpoint.memory import InMemorySaver
@@ -164,13 +172,10 @@ class TestLangChainAgentGate:
         decision = {"type": "edit", "edited_action": {"name": "run_sql", "args": self.DELETE}}
         result = agent.invoke(Command(resume={"decisions": [decision]}), config)
         messages = example.tool_messages(result)
-        if ran:
-            assert example.EXECUTED == [("run_sql", self.DELETE)]
-            assert messages[-1].status == "success"
-        else:
-            assert example.EXECUTED == []
-            assert messages[-1].status == "error"
-            assert "Recusal refused" in str(messages[-1].content)
+        assert example.EXECUTED == []
+        assert messages[-1].status == "error"
+        expected = "Recusal refused" if gate_last else "changed after it was judged"
+        assert expected in str(messages[-1].content)
 
     def test_human_in_the_loop_edit_to_another_tool_is_judged_when_gate_is_last(self, example):
         from langchain.agents.middleware import HumanInTheLoopMiddleware
@@ -240,3 +245,70 @@ class TestLangChainAgentGate:
             ("s", "success"),
         }
         assert executed == [("run_sql", self.SELECT)]
+
+
+SELECT = "SELECT * FROM audit_log"
+DELETE = "DELETE FROM audit_log"
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangChain requires Python 3.10+")
+class TestEffectiveArgumentsThroughCreateAgent:
+    """The middleware reuses the LangGraph gate, so the validated-invocation judgment must
+    hold through ``create_agent`` as well, sync and async."""
+
+    @pytest.fixture
+    def example(self):
+        langchain = pytest.importorskip("langchain")
+        if int(langchain.__version__.split(".", 1)[0]) < 1:
+            pytest.skip("create_agent needs LangChain 1.x")
+        spec = importlib.util.spec_from_file_location(
+            "recusal_langchain_effective_example", EXAMPLE
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def call(name, args, ident="1"):
+        return {"name": name, "args": args, "id": ident, "type": "tool_call"}
+
+    def test_a_rewriting_schema_is_judged_on_the_rewritten_value_sync(self, example):
+        seen = []
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return example.sql_scope_policy(name, args)
+
+        messages, executed = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})],
+            policy=recording,
+            tools=[example.transforming_run_sql()],
+        )
+        assert seen == [("run_sql", {"sql": DELETE})] and executed == []
+        assert "Recusal refused `run_sql`" in messages[0].content
+
+    def test_a_rewriting_schema_is_judged_on_the_rewritten_value_async(self, example):
+        seen = []
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return example.sql_scope_policy(name, args)
+
+        _, executed = asyncio.run(
+            example.arun_calls(
+                [self.call("run_sql", {"sql": SELECT})],
+                policy=recording,
+                tools=[example.transforming_run_sql()],
+            )
+        )
+        assert seen == [("run_sql", {"sql": DELETE})] and executed == []
+
+    def test_negative_control_ungated_the_rewritten_sql_runs(self, example):
+        _, executed = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})],
+            gated=False,
+            tools=[example.transforming_run_sql()],
+        )
+        assert executed == [("run_sql", {"sql": DELETE})]

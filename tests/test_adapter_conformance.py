@@ -16,6 +16,19 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    closed.
 5. **The negative control.** Ungated, the same refused call runs: the adapter's recorder is
    live and the refusal above is the gate's doing.
+6. **A schema that changes an allowed proposal never runs the changed value.** The tool's
+   own validation rewrites ``SELECT`` into ``DELETE`` after the model proposed it. The gate
+   either judges the value the tool would execute (and refuses it) or refuses what it cannot
+   judge; either way nothing runs. Registered for the adapters whose framework validates
+   arguments between the hook and the function: the OpenAI Agents function tools (the
+   parameter model the SDK generates), LangGraph's ``ToolNode`` and the LangChain middleware
+   built on it (``args_schema``). Not registered where the hook already sits after
+   validation or no schema layer exists: Pydantic AI's ``before_tool_execute`` receives the
+   validated arguments by the framework's design, the Responses and Chat Completions loops
+   dispatch the model's JSON themselves, and the MCP ``call_tool`` seam carries the exact
+   arguments the server receives. Google ADK and CrewAI have not been examined for a
+   validation layer between their hook and the function; they are listed here as not yet
+   covered, not as covered.
 
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.
@@ -68,6 +81,10 @@ class Adapter:
     python_min: tuple[int, int]
     routes: dict[str, Callable[[Any, list[Call], Any, bool], tuple[dict[str, Outcome], Executed]]]
     ungated_routes: set[str] = field(default_factory=set)  # routes with a negative control
+    #: route -> run the adapter's rewriting-schema fixture for one allowed SELECT (invariant 6)
+    transforming: dict[str, Callable[[Any, Any], tuple[dict[str, Outcome], Executed]]] = field(
+        default_factory=dict
+    )
 
 
 def _refused(text: str) -> bool:
@@ -103,6 +120,25 @@ def _langgraph_async(m, calls, policy, gated):
     return _from_tool_messages(messages), executed
 
 
+_TRANSFORM_CALL: list[Call] = [("run_sql", {"sql": SELECT}, "c1")]
+
+
+def _langgraph_transforming_sync(m, policy):
+    messages, executed = m.run_calls(
+        _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langgraph_transforming_async(m, policy):
+    messages, executed = asyncio.run(
+        m.run_calls_async(
+            _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
+        )
+    )
+    return _from_tool_messages(messages), executed
+
+
 # langchain ------------------------------------------------------------------------------------
 
 
@@ -117,12 +153,38 @@ def _langchain_async(m, calls, policy, gated):
     return _from_tool_messages(messages), executed
 
 
+def _langchain_transforming_sync(m, policy):
+    messages, executed = m.run_calls(
+        _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langchain_transforming_async(m, policy):
+    messages, executed = asyncio.run(
+        m.arun_calls(
+            _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
+        )
+    )
+    return _from_tool_messages(messages), executed
+
+
 # openai agents sdk, function tools --------------------------------------------------------------
 
 
 def _openai_agents(streamed):
     def route(m, calls, policy, gated):
         outputs, executed = m.run_calls(calls, policy=policy, gated=gated, streamed=streamed)
+        return _from_text_outputs(outputs), executed
+
+    return route
+
+
+def _openai_agents_transforming(streamed):
+    def route(m, policy):
+        outputs, executed = m.run_calls(
+            _TRANSFORM_CALL, policy=policy, streamed=streamed, tools=[m.transforming_sql_tool()]
+        )
         return _from_text_outputs(outputs), executed
 
     return route
@@ -205,6 +267,7 @@ ADAPTERS: dict[str, Adapter] = {
         (3, 10),
         {"sync": _langgraph_sync, "async": _langgraph_async},
         {"sync", "async"},
+        transforming={"sync": _langgraph_transforming_sync, "async": _langgraph_transforming_async},
     ),
     "langchain": Adapter(
         "langchain_agent_gate.py",
@@ -212,6 +275,10 @@ ADAPTERS: dict[str, Adapter] = {
         (3, 10),
         {"sync": _langchain_sync, "async": _langchain_async},
         {"sync", "async"},
+        transforming={
+            "sync": _langchain_transforming_sync,
+            "async": _langchain_transforming_async,
+        },
     ),
     "openai_agents": Adapter(
         "openai_agents_gate.py",
@@ -219,6 +286,10 @@ ADAPTERS: dict[str, Adapter] = {
         (3, 10),
         {"run": _openai_agents(False), "streamed": _openai_agents(True)},
         {"run", "streamed"},
+        transforming={
+            "run": _openai_agents_transforming(False),
+            "streamed": _openai_agents_transforming(True),
+        },
     ),
     "openai_agents_mcp": Adapter(
         "openai_agents_mcp_gate.py",
@@ -366,6 +437,32 @@ def test_5_negative_control_the_same_refused_call_runs_ungated(modules, name, ro
     )
     assert executed == [("run_sql", {"sql": DELETE})]
     assert outcomes["c1"][0] is False, outcomes
+
+
+TRANSFORM_ROWS = [(n, r) for n, a in ADAPTERS.items() for r in a.transforming]
+
+
+@pytest.mark.parametrize("name, route", TRANSFORM_ROWS, ids=[f"{n}-{r}" for n, r in TRANSFORM_ROWS])
+def test_6_a_schema_that_changes_an_allowed_proposal_never_runs_the_changed_value(
+    modules, name, route
+):
+    module = modules[name]
+    if isinstance(module, str):
+        pytest.skip(module)
+    policy = Recording(module.sql_scope_policy)
+    outcomes, executed = ADAPTERS[name].transforming[route](module, policy)
+    assert executed == [], executed
+    refused, text = outcomes["c1"]
+    assert refused and "Recusal refused `run_sql`" in text, text
+    # the gate judged the value the tool would have executed, or judged nothing because it
+    # could not know that value; it never judged the proposal and let the rewrite run
+    assert policy.seen in ([], [("run_sql", {"sql": DELETE})]), policy.seen
+
+
+def test_the_transforming_rows_cover_every_adapter_the_docstring_names():
+    assert {n for n, _ in TRANSFORM_ROWS} == {"langgraph", "langchain", "openai_agents"}
+    for name in ("langgraph", "langchain", "openai_agents"):
+        assert set(ADAPTERS[name].transforming) == set(ADAPTERS[name].routes), name
 
 
 # --- the registry drift locks --------------------------------------------------------------------

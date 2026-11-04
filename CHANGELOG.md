@@ -7,6 +7,26 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- The OpenAI Agents and LangGraph gates (and the LangChain middleware and the audited
+  LangGraph gate built on it) judge the invocation the tool will execute, not the arguments
+  the model wrote. Both frameworks validate arguments after the hook (the SDK's generated
+  parameter model; a tool's `args_schema`), so a validator, a default or a coercion could make
+  the function receive a value the policy never saw: the review's probe passed `SELECT 1`
+  through the gate and the tool received `DELETE FROM audit_log`, and `{"amount": "50"}`
+  slipped past an integer budget check as a string. `examples/openai_agents_gate.py` now
+  judges the invocation the SDK prepares (validated, defaults filled, types coerced) and pins
+  it on the tool context so the SDK executes exactly that; a parameter model the SDK will not
+  prepare (a custom validator, a nested application model) is refused, since the value it
+  would execute cannot be judged, and a hand-built `FunctionTool` is refused at setup.
+  `examples/langgraph_gate.py` judges the arguments after the tool's own validation and
+  executes through a pinned copy that refuses any model-facing value differing at execution
+  (injected arguments pass through); an input the tool rejects, an unknown tool, or a value
+  changed after judgment is refused through `decide`, so the audited gate logs it. A rewrite
+  listed after the LangChain gate is therefore refused rather than run unchecked; a tool swap
+  still needs the gate last. `tests/test_adapter_conformance.py` gains invariant 6, a
+  rewriting schema never runs the rewritten value, registered for these three adapters and
+  stating which others sit after validation by design and which are not yet examined. (Found
+  in the 2026-11-03 architecture review.)
 - `examples/openai_agents_mcp_gate.py`: a policy's naming domain is checked at setup, and
   `claude_named(server_name, policy)` bridges it. `recusal.mcp.manifest_policy` judges Claude
   Code's `mcp__<server>__<tool>` names; the local and hosted MCP gates hand a policy the

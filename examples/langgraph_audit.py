@@ -9,7 +9,7 @@ own tool call id, so a quiet edit, a reordering, or a dropped entry is detectabl
 never the arguments themselves.
 
 The decision logic is the one in langgraph_gate.py: ``recusal_audited_gate(policy, log)``
-and ``recusal_audited_agate(policy, log)`` call the same ``_refusal`` with the recording
+and ``recusal_audited_agate(policy, log)`` call the same ``_judge`` with the recording
 arguments passed through to ``recusal.claude_code.decide``, which writes the entry before
 returning. If the log cannot be written the decision becomes a deny, so nothing runs
 unrecorded.
@@ -57,9 +57,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
+    ChangedAfterJudgment,
     Policy,
-    _refusal,
+    _judge,
     echo,
+    refuse_changed,
     run_in_graph,
     run_in_graph_async,
     run_sql,
@@ -92,10 +94,14 @@ def recusal_audited_gate(
     """Return a synchronous ToolNode hook that records, then gates, each call."""
 
     def gate(request, execute):
-        refusal = _refusal(request, policy, **_recording(request, actor, control, log))
+        recording = _recording(request, actor, control, log)
+        refusal, pinned = _judge(request, policy, **recording)
         if refusal is not None:
             return refusal
-        return execute(request)
+        try:
+            return execute(pinned)
+        except ChangedAfterJudgment as exc:
+            return refuse_changed(request, exc, policy, **recording)
 
     return gate
 
@@ -110,10 +116,14 @@ def recusal_audited_agate(
     """Return an asynchronous ToolNode hook for awrap_tool_call, same logic as the sync one."""
 
     async def gate(request, execute):
-        refusal = _refusal(request, policy, **_recording(request, actor, control, log))
+        recording = _recording(request, actor, control, log)
+        refusal, pinned = _judge(request, policy, **recording)
         if refusal is not None:
             return refusal
-        return await execute(request)
+        try:
+            return await execute(pinned)
+        except ChangedAfterJudgment as exc:
+            return refuse_changed(request, exc, policy, **recording)
 
     return gate
 

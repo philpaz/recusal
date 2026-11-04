@@ -583,7 +583,10 @@ today and what is coming.
 For a concrete LangGraph integration, [`examples/langgraph_gate.py`](examples/langgraph_gate.py)
 puts existing `@tool` functions unchanged into LangGraph's `ToolNode` and attaches
 `recusal_gate(policy)` with `wrap_tool_call`, so `recusal.claude_code.decide` runs immediately
-before each individual tool call. Async graphs use `recusal_agate(policy)` with `awrap_tool_call`
+before each individual tool call. The policy judges the arguments after the tool's own
+`args_schema` validation (field validators, defaults, coercion), the values the tool
+receives, and the call then runs pinned to that judged invocation: a model-facing value
+that differs at execution is refused, never run. Async graphs use `recusal_agate(policy)` with `awrap_tool_call`
 and `ainvoke`. It is offline and deterministic (no model or API key), requires
 **Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
 `langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
@@ -612,13 +615,22 @@ implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.12`,
 `langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins). List the gate **last**
 in `middleware=`, so it judges the call exactly as it will run: the first middleware is the
 outermost, and one listed after the gate (an argument rewriter, a human-in-the-loop edit,
-`LLMToolEmulator`) acts on a call the gate never saw. For `agent.ainvoke`, use
+`LLMToolEmulator`) acts on a call the gate already judged. Such a rewrite does not run:
+the gate pins the judged invocation and refuses a value that differs at execution; listed
+last, the gate judges the edited call instead. A middleware that swaps the tool object for
+another tool still needs the gate after it. For `agent.ainvoke`, use
 `wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
 
 For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py)
 adds `recusal_guardrail(policy)` to each function tool as a tool input guardrail, which the
-SDK runs immediately before the tool executes. A refusal becomes the call's output, so the
-model reads Recusal's reason and the tool never runs. Gate a finished agent with
+SDK runs immediately before the tool executes. The guardrail judges the invocation the SDK
+prepares from the model's arguments, validated against the tool's parameter model with
+defaults filled and types coerced (`{"amount": "50"}` reaches an `int` parameter as
+`50`), and pins that invocation so the SDK executes exactly what was judged. A parameter
+model the SDK will not prepare, one that runs a custom validator or holds a nested
+application model, is refused, because the value it would execute cannot be judged; keep
+parameters data-only and validate inside the tool body. A refusal becomes the call's
+output, so the model reads Recusal's reason and the tool never runs. Gate a finished agent with
 `gated_agent(agent, policy)`: it returns a gated copy, and it refuses, rather than skips,
 anything the guardrail cannot see. That means hosted tools and the SDK's other non-function
 tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an

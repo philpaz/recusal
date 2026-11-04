@@ -44,6 +44,7 @@ from examples.langgraph_gate import (  # noqa: E402
     recusal_gate,
     run_sql,
     sql_scope_policy,
+    transforming_run_sql,  # noqa: F401, re-exported: the conformance suite drives it here
 )
 
 
@@ -70,11 +71,12 @@ def agate_middleware(policy=sql_scope_policy):
     return wrap_tool_call(recusal_agate(policy))
 
 
-def scripted_agent(calls, middleware, **kwargs):
+def scripted_agent(calls, middleware, tools=None, **kwargs):
     model = ScriptedChatModel(
         messages=iter([AIMessage(content="", tool_calls=calls), AIMessage(content="done")])
     )
-    return create_agent(model=model, tools=[echo, run_sql], middleware=middleware, **kwargs)
+    tools = [echo, run_sql] if tools is None else tools
+    return create_agent(model=model, tools=tools, middleware=middleware, **kwargs)
 
 
 def tool_messages(result) -> list[ToolMessage]:
@@ -87,27 +89,33 @@ def run_calls(
     policy=sql_scope_policy,
     gated: bool = True,
     middleware: list[Any] | None = None,
+    tools: list[Any] | None = None,
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     """Run fake model proposals through create_agent, one policy gate per tool call.
 
-    ``middleware`` replaces the default list (the gate alone) when given.
+    ``middleware`` replaces the default list (the gate alone) when given; ``tools`` replaces
+    echo and run_sql.
     """
     EXECUTED.clear()
     if middleware is None:
         middleware = [gate_middleware(policy)] if gated else []
-    agent = scripted_agent(calls, middleware)
+    agent = scripted_agent(calls, middleware, tools)
     result = agent.invoke({"messages": [HumanMessage(content="run the scripted tools")]})
     return tool_messages(result), list(EXECUTED)
 
 
 async def arun_calls(
-    calls: list[dict[str, Any]], *, policy=sql_scope_policy, middleware: list[Any] | None = None
+    calls: list[dict[str, Any]],
+    *,
+    policy=sql_scope_policy,
+    middleware: list[Any] | None = None,
+    tools: list[Any] | None = None,
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     """The same run through ``agent.ainvoke``, gated by the async gate by default."""
     EXECUTED.clear()
     if middleware is None:
         middleware = [agate_middleware(policy)]
-    agent = scripted_agent(calls, middleware)
+    agent = scripted_agent(calls, middleware, tools)
     result = await agent.ainvoke({"messages": [HumanMessage(content="run the scripted tools")]})
     return tool_messages(result), list(EXECUTED)
 

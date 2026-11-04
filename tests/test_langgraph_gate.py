@@ -201,3 +201,150 @@ class TestLangGraphGate:
         )
         assert executed == [("run_sql", {"sql": "DELETE FROM audit_log"})]
         assert messages[0].status == "success"
+
+
+SELECT = "SELECT * FROM audit_log"
+DELETE = "DELETE FROM audit_log"
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
+class TestEffectiveArguments:
+    """Review 5, P1: the gate judged ``tool_call["args"]`` as the model wrote them; the tool
+    then validated them through its ``args_schema``, and a field validator, a default or a
+    coercion could make the function receive something else. The gate now judges the
+    validated invocation and executes exactly that, once."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("langgraph")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "recusal_langgraph_effective_example", EXAMPLE
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    class Recording:
+        def __init__(self, policy):
+            self.policy, self.seen = policy, []
+
+        def __call__(self, name, args):
+            self.seen.append((name, dict(args)))
+            return self.policy(name, args)
+
+    @staticmethod
+    def call(name, args, ident="1"):
+        return {"name": name, "args": args, "id": ident, "type": "tool_call"}
+
+    def test_a_schema_that_rewrites_an_allowed_proposal_is_judged_on_the_rewritten_value(
+        self, example
+    ):
+        policy = self.Recording(example.sql_scope_policy)
+        messages, executed = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})],
+            policy=policy,
+            tools=[example.transforming_run_sql()],
+        )
+        assert policy.seen == [("run_sql", {"sql": DELETE})]  # what the tool would receive
+        assert executed == []
+        assert messages[0].status == "error" and "Recusal refused `run_sql`" in messages[0].content
+
+    def test_negative_control_the_rewriting_tool_runs_the_rewritten_sql_ungated(self, example):
+        _, executed = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})],
+            gated=False,
+            tools=[example.transforming_run_sql()],
+        )
+        assert executed == [("run_sql", {"sql": DELETE})]
+
+    def test_the_async_gate_judges_the_rewritten_value_too(self, example):
+        policy = self.Recording(example.sql_scope_policy)
+        _, executed = asyncio.run(
+            example.run_calls_async(
+                [self.call("run_sql", {"sql": SELECT})],
+                policy=policy,
+                tools=[example.transforming_run_sql()],
+            )
+        )
+        assert policy.seen == [("run_sql", {"sql": DELETE})] and executed == []
+
+    def test_defaults_and_coercion_are_judged_as_the_tool_receives_them(self, example):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel
+
+        from recusal import Finding
+
+        class Args(BaseModel):
+            sql: str
+            limit: int = 10
+
+        ran = []
+
+        @tool("query", args_schema=Args)
+        def query(sql: str, limit: int = 10) -> str:
+            """Record a bounded query."""
+            ran.append({"sql": sql, "limit": limit, "type": type(limit).__name__})
+            return "recorded"
+
+        def cap(name, args):
+            if args.get("limit", 0) > 50:
+                return [Finding.fail("limit", severity="CRITICAL", message="over 50")]
+            return []
+
+        policy = self.Recording(cap)
+        example.run_calls([self.call("query", {"sql": SELECT})], policy=policy, tools=[query])
+        assert policy.seen[-1] == ("query", {"sql": SELECT, "limit": 10})
+        assert ran[-1] == {"sql": SELECT, "limit": 10, "type": "int"}
+        example.run_calls(
+            [self.call("query", {"sql": SELECT, "limit": "7"})], policy=policy, tools=[query]
+        )
+        assert policy.seen[-1] == ("query", {"sql": SELECT, "limit": 7})
+        assert ran[-1]["limit"] == 7 and ran[-1]["type"] == "int"
+        ran.clear()
+        messages, _ = example.run_calls(
+            [self.call("query", {"sql": SELECT, "limit": "99"})], policy=policy, tools=[query]
+        )
+        assert policy.seen[-1] == ("query", {"sql": SELECT, "limit": 99}) and ran == []
+        assert "Recusal refused `query`" in messages[0].content
+
+    def test_arguments_the_tool_rejects_are_refused_with_the_reason(self, example):
+        policy = self.Recording(example.sql_scope_policy)
+        messages, executed = example.run_calls([self.call("run_sql", {"sql": 5})], policy=policy)
+        assert executed == [] and policy.seen == []
+        assert "do not validate" in messages[0].content
+
+    def test_a_tool_the_node_does_not_know_is_refused_not_errored(self, example):
+        messages, executed = example.run_calls([self.call("nope", {"x": 1})])
+        assert executed == [] and "no tool by that name" in messages[0].content
+
+    def test_the_pinned_copy_runs_only_the_judged_invocation(self, example):
+        pinned = example._pinned(example.run_sql, {"sql": SELECT}, "c1")
+        assert pinned._to_args_and_kwargs({"sql": SELECT}, "c1") == ((), {"sql": SELECT})
+        with pytest.raises(example.ChangedAfterJudgment, match="changed after it was judged"):
+            pinned._to_args_and_kwargs({"sql": DELETE}, "c1")
+        with pytest.raises(RuntimeError, match="different call"):
+            pinned._to_args_and_kwargs({"sql": SELECT}, "c2")
+        # the original tool is untouched
+        assert example.run_sql._to_args_and_kwargs({"sql": "x"}, "c9") == ((), {"sql": "x"})
+
+    def test_unjudgeable_inputs_are_refused_through_decide_and_reach_the_audit_log(
+        self, example, tmp_path
+    ):
+        import json
+
+        from recusal.audit import AuditLog
+
+        log = AuditLog(path=str(tmp_path / "audit.jsonl"))
+        request = type("R", (), {})()
+        request.tool_call = {"name": "run_sql", "args": {"sql": 5}, "id": "c1"}
+        request.tool = example.run_sql
+        refusal, pinned = example._judge(request, example.sql_scope_policy, audit=log, surface="t")
+        assert pinned is None and refusal.status == "error"
+        assert refusal.content.startswith("Recusal refused `run_sql`")
+        assert "do not validate" in refusal.content
+        entry = json.loads((tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        assert entry["action"]["decision"] == "deny" and entry["action"]["tool"] == "run_sql"

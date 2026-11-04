@@ -260,3 +260,162 @@ class TestOpenAIAgentsGate:
         assert result.returncode == 0, result.stderr
         assert "run_sql (c2): Recusal refused `run_sql` [FAIL]" in result.stdout
         assert "tools that ran: 2" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestEffectiveArguments:
+    """Review 5, P1: the guardrail judged the model's raw JSON; the SDK then validated it
+    through the tool's parameter model, and a validator, a default or a coercion could make
+    the function receive something else. The gate now judges the invocation the SDK prepared
+    and pins it, so what was judged is what executes; a schema the SDK cannot prepare (user
+    code in the model) is refused."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("agents.testing", reason="openai-agents is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_openai_effective_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    class Recording:
+        def __init__(self, policy):
+            self.policy, self.seen = policy, []
+
+        def __call__(self, name, args):
+            self.seen.append((name, dict(args)))
+            return self.policy(name, args)
+
+    def test_a_schema_that_rewrites_an_allowed_proposal_is_refused_and_nothing_runs(self, example):
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")],
+            policy=policy,
+            tools=[example.transforming_sql_tool()],
+        )
+        assert executed == []
+        assert policy.seen == []  # nothing to judge: the value that would run is unknowable
+        assert "cannot be judged" in outputs["c1"] and "custom validation" in outputs["c1"]
+
+    def test_negative_control_the_same_rewriting_tool_runs_the_rewritten_sql_ungated(self, example):
+        outputs, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")],
+            gated=False,
+            tools=[example.transforming_sql_tool()],
+        )
+        assert executed == [("run_sql", {"sql": DELETE})]  # the recorder is live; the gate is why
+
+    def test_defaults_and_coercion_are_judged_as_the_tool_receives_them(self, example):
+        from recusal import Finding
+
+        ran = []
+
+        @example.function_tool(strict_mode=False)
+        def charge(amount: int = 100) -> str:
+            """Record a charge; contacts nothing."""
+            ran.append((amount, type(amount).__name__))
+            return "recorded"
+
+        def budget(name, args):
+            amount = args.get("amount", 0)
+            if isinstance(amount, int) and amount > 10:
+                return [Finding.fail("amount_limit", severity="CRITICAL", message="over 10")]
+            return []
+
+        for proposed, expect_ran, expect_seen in [
+            ({}, [], {"amount": 100}),  # the default, 100, is what would run: refused
+            ({"amount": "50"}, [], {"amount": 50}),  # the string the raw check missed: refused
+            ({"amount": "5"}, [(5, "int")], {"amount": 5}),  # coerced, allowed, executed as judged
+            ({"amount": 7}, [(7, "int")], {"amount": 7}),
+        ]:
+            ran.clear()
+            policy = self.Recording(budget)
+            outputs, _ = example.run_calls(
+                [("charge", proposed, "c1")], policy=policy, tools=[charge]
+            )
+            assert policy.seen == [("charge", expect_seen)], proposed
+            assert ran == expect_ran, (proposed, outputs)
+            assert (outputs["c1"] == "recorded") is bool(expect_ran), outputs
+
+    def test_a_context_taking_tool_is_judged_by_its_data_parameters(self, example):
+        ran = []
+
+        @example.function_tool
+        def ctx_sql(ctx: example.RunContextWrapper, sql: str) -> str:
+            """Record SQL with a context parameter the SDK fills."""
+            ran.append(sql)
+            return "recorded"
+
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, _ = example.run_calls(
+            [("ctx_sql", {"sql": SELECT}, "c1")], policy=policy, tools=[ctx_sql]
+        )
+        assert policy.seen == [("ctx_sql", {"sql": SELECT})] and ran == [SELECT]
+
+    def test_a_nested_application_model_is_refused_because_the_sdk_will_not_prepare_it(
+        self, example
+    ):
+        """The SDK prepares only data-only parameter models; an application model inside
+        the parameters could run code, so nothing is prepared and the gate refuses. A
+        dict parameter carries the same data and is judged."""
+        from pydantic import BaseModel
+
+        class Query(BaseModel):
+            sql: str
+            limit: int = 10
+
+        ran = []
+
+        @example.function_tool
+        def query(q: Query) -> str:
+            """Run a structured query; records only."""
+            ran.append(q.model_dump())
+            return "recorded"
+
+        @example.function_tool(strict_mode=False)
+        def query_dict(q: dict) -> str:
+            """The same query as plain data."""
+            ran.append(dict(q))
+            return "recorded"
+
+        policy = self.Recording(lambda n, a: [])
+        outputs, _ = example.run_calls(
+            [("query", {"q": {"sql": SELECT}}, "c1")], policy=policy, tools=[query, query_dict]
+        )
+        assert ran == [] and policy.seen == [] and "cannot be judged" in outputs["c1"]
+        outputs, _ = example.run_calls(
+            [("query_dict", {"q": {"sql": SELECT}}, "c2")], policy=policy, tools=[query, query_dict]
+        )
+        assert policy.seen == [("query_dict", {"q": {"sql": SELECT}})]
+        assert ran == [{"sql": SELECT}] and outputs["c2"] == "recorded"
+
+    def test_arguments_that_do_not_validate_are_refused_by_the_gate(self, example):
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, executed = example.run_calls([("run_sql", {"sql": 5}, "c1")], policy=policy)
+        assert executed == [] and policy.seen == []
+        assert "cannot be judged" in outputs["c1"]
+
+    def test_a_hand_built_function_tool_is_refused_at_setup(self, example):
+        async def invoke(ctx, arguments: str) -> str:
+            return "ran"
+
+        hand_built = example.FunctionTool(
+            name="raw",
+            description="a tool built by hand",
+            params_json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            on_invoke_tool=invoke,
+        )
+        with pytest.raises(TypeError, match="function_tool"):
+            example.gate_tools([hand_built], example.sql_scope_policy)
+
+    def test_the_ordinary_path_is_unchanged_and_still_judges_the_exact_sql(self, example):
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, executed = example.run_calls([("run_sql", {"sql": SELECT}, "c1")], policy=policy)
+        assert policy.seen == [("run_sql", {"sql": SELECT})]
+        assert executed == [("run_sql", {"sql": SELECT})]
