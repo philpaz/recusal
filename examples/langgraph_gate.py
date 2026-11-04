@@ -246,17 +246,32 @@ def _faithful(value: Any, _stack: tuple[int, ...] = ()) -> Any:
     raise TypeError(f"a {type(value).__name__} value cannot be judged faithfully")
 
 
+#: Error types whose message is written by user code (a validator's ``raise ValueError``
+#: or ``assert``), so it may echo anything the validator could see, including host state.
+_USER_WRITTEN = frozenset({"value_error", "assertion_error"})
+
+
 def _sanitized(exc: Exception, host_keys: frozenset[str]) -> str:
-    """A validation failure as location and message only: never the input, and for a
-    host-supplied argument (whose value may be graph state) only the error type."""
+    """A validation failure reduced to what is demonstrably safe to show the model and to
+    put on the record.
+
+    Pydantic's ``errors(include_input=False, include_context=False)`` already leaves the
+    input out, but a message is still forwarded only when it is one of Pydantic's own
+    templates for a model-facing field: an error at the model root (a ``model_validator``,
+    location ``()``), an error under a host-supplied argument (whose value may be graph
+    state), and an error of a user-written type (``value_error``, ``assertion_error``, whose
+    text a validator composed and may have built from host context) are reported as
+    location and error type only. A non-Pydantic exception is its class name."""
     if isinstance(exc, ValidationError):
         parts = []
         for error in exc.errors(include_url=False, include_context=False, include_input=False):
             loc = tuple(str(part) for part in error.get("loc", ()))
-            if loc and loc[0] in host_keys:
-                parts.append(f"{'.'.join(loc)}: {error.get('type')}")
+            kind = str(error.get("type"))
+            where = ".".join(loc) or "model"
+            if not loc or loc[0] in host_keys or kind in _USER_WRITTEN:
+                parts.append(f"{where}: {kind}")
             else:
-                parts.append(f"{'.'.join(loc) or 'input'}: {error.get('msg')}")
+                parts.append(f"{where}: {error.get('msg')}")
         return "; ".join(parts)
     return type(exc).__name__
 

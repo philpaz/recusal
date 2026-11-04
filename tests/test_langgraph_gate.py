@@ -968,6 +968,109 @@ class TestFinalInvocation:
         assert "HOST_SECRET_SENTINEL" not in message.content
         assert "state: int_type" in message.content, message.content
 
+    @staticmethod
+    def host_echoing_tools():
+        """Two validators that build their message from injected state: one at the model
+        root, one on a model-facing field."""
+        from typing import Annotated
+
+        from langchain_core.tools import tool
+        from langgraph.prebuilt import InjectedState
+        from pydantic import BaseModel, field_validator, model_validator
+
+        class RootArgs(BaseModel):
+            sql: str
+            state: Annotated[dict, InjectedState]
+
+            @model_validator(mode="after")
+            def check_host_context(self):
+                raise ValueError("invalid host context: " + self.state["messages"][0].content)
+
+        class FieldArgs(BaseModel):
+            state: Annotated[dict, InjectedState]
+            sql: str
+
+            @field_validator("sql")
+            @classmethod
+            def check_sql(cls, value, info):
+                raise ValueError("rejected for " + info.data["state"]["messages"][0].content)
+
+        @tool("root_query", args_schema=RootArgs)
+        def root_query(sql: str, state: Annotated[dict, InjectedState]) -> str:
+            """Record only; the failing validator runs first."""
+            return "recorded"
+
+        @tool("field_query", args_schema=FieldArgs)
+        def field_query(sql: str, state: Annotated[dict, InjectedState]) -> str:
+            """Record only; the failing validator runs first."""
+            return "recorded"
+
+        return root_query, field_query
+
+    @pytest.mark.parametrize("which", ["root_query", "field_query"])
+    def test_a_validator_message_built_from_host_state_never_reaches_the_model(
+        self, example, which
+    ):
+        from langchain_core.messages import HumanMessage
+        from langgraph.prebuilt import ToolNode
+
+        tools = {t.name: t for t in self.host_echoing_tools()}
+        node = ToolNode([tools[which]], wrap_tool_call=example.recusal_gate(lambda n, a: []))
+        graph = example._graph(node, [self.call(which, {"sql": SELECT})])
+        result = graph.invoke({"messages": [HumanMessage(content="HOST_SECRET_SENTINEL")]})
+        message = [m for m in result["messages"] if getattr(m, "tool_call_id", None) == "c1"][0]
+        assert message.status == "error"
+        assert "HOST_SECRET_SENTINEL" not in message.content, message.content
+        expected = "model: value_error" if which == "root_query" else "sql: value_error"
+        assert expected in message.content, message.content
+
+    def test_the_sanitizer_keeps_only_pydantic_template_messages(self, example):
+        from pydantic import BaseModel, ValidationError, field_validator, model_validator
+
+        class Args(BaseModel):
+            sql: str
+            count: int
+
+            @field_validator("sql")
+            @classmethod
+            def no_secret(cls, value):
+                raise ValueError("echo SECRET " + value)
+
+            @model_validator(mode="after")
+            def whole(self):
+                raise ValueError("whole SECRET")
+
+        with pytest.raises(ValidationError) as caught:
+            Args(sql="x", count="SECRET-not-an-int")
+        text = example._sanitized(caught.value, frozenset())
+        assert "SECRET" not in text, text
+        assert "count: Input should be a valid integer" in text, text
+        assert "sql: value_error" in text, text
+
+        class Whole(BaseModel):
+            sql: str
+
+            @model_validator(mode="after")
+            def whole(self):
+                raise ValueError("whole SECRET")
+
+        with pytest.raises(ValidationError) as caught:
+            Whole(sql="x")
+        assert example._sanitized(caught.value, frozenset()) == "model: value_error"
+
+        class Asserting(BaseModel):
+            sql: str
+
+            @field_validator("sql")
+            @classmethod
+            def must(cls, value):
+                assert value == "never", "SECRET in an assertion"
+                return value
+
+        with pytest.raises(ValidationError) as caught:
+            Asserting(sql="x")
+        assert example._sanitized(caught.value, frozenset()) == "sql: assertion_error"
+
     def test_a_validation_error_on_a_model_argument_names_the_location_not_the_input(self, example):
         messages, _ = example.run_calls(
             [self.call("run_sql", {"sql": {"nested": "MODEL_SECRET_SENTINEL"}})]

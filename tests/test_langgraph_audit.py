@@ -404,6 +404,60 @@ class TestLangGraphAudit:
         assert "over 10" in messages[0].content
         assert [e["action"]["decision"] for e in log.entries] == ["deny"]
 
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_root_validator_built_from_host_state_is_recorded_without_the_state(
+        self, example, gate, log, log_path, route
+    ):
+        """The follow-up review's probe: a model_validator composing its ValueError from
+        injected state reached both the ToolMessage and the audit reason."""
+        from typing import Annotated
+
+        from langchain_core.messages import HumanMessage
+        from langchain_core.tools import tool
+        from langgraph.prebuilt import InjectedState
+        from pydantic import BaseModel, model_validator
+
+        class Args(BaseModel):
+            sql: str
+            state: Annotated[dict, InjectedState]
+
+            @model_validator(mode="after")
+            def check_host_state(self):
+                raise ValueError("invalid host context: " + self.state["messages"][0].content)
+
+        ran = []
+
+        @tool("query", args_schema=Args)
+        def query(sql: str, state: Annotated[dict, InjectedState]) -> str:
+            """Record only; the failing validator runs first."""
+            ran.append(sql)
+            return "recorded"
+
+        calls = [self.call("query", {"sql": "SELECT 1"}, "c1")]
+        if route == "sync":
+            node = example.ToolNode(
+                [query], wrap_tool_call=example.recusal_audited_gate(lambda n, a: [], log)
+            )
+            result = gate._graph(node, calls).invoke(
+                {"messages": [HumanMessage(content="HOST_SECRET_SENTINEL")]}
+            )
+        else:
+            node = example.ToolNode(
+                [query], awrap_tool_call=example.recusal_audited_agate(lambda n, a: [], log)
+            )
+            result = asyncio.run(
+                gate._graph(node, calls).ainvoke(
+                    {"messages": [HumanMessage(content="HOST_SECRET_SENTINEL")]}
+                )
+            )
+        message = [m for m in result["messages"] if getattr(m, "tool_call_id", None) == "c1"][0]
+        assert ran == [] and message.status == "error"
+        assert "HOST_SECRET_SENTINEL" not in message.content
+        assert "model: value_error" in message.content
+        text = log_path.read_text(encoding="utf-8")
+        assert "HOST_SECRET_SENTINEL" not in text
+        assert [e["action"]["decision"] for e in log.entries] == ["deny"]
+
     def test_a_host_state_validation_failure_is_recorded_without_the_state(
         self, example, gate, log, log_path
     ):

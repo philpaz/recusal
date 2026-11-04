@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/langgraph_gate.py`: a validation message is forwarded to the model and the
+  audit record only when it is Pydantic's own template for a model-facing field. The
+  sanitizer reduced errors under a host-supplied argument to their type but forwarded
+  every other message verbatim, so a `model_validator` (an error at location `()`) that
+  composed its `ValueError` from injected graph state put that state into the error
+  ToolMessage and the audit reason, on both routes. Root-level errors, errors under a
+  host key, and errors of the user-written types `value_error` and `assertion_error`
+  are now reported as location and error type only; a standard type error on a
+  model-facing field keeps its location and template message. (Found in the 2026-11-04
+  follow-up review.)
 - `examples/langgraph_gate.py`: a schema parameter the framework's parse suppressed is
   completed from the callable's default before judgment and executed as judged.
   LangChain's `_parse_input` selects the kwargs it returns through the argument model's own
