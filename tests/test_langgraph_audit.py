@@ -307,6 +307,89 @@ class TestLangGraphAudit:
 
     # --- the file: fingerprints, no argument text, tamper detection -----------------------
 
+    # --- review 6: the serializer probe on the audited routes, and redaction ----------------
+
+    @staticmethod
+    def serializer_tool(ran):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel, field_serializer
+
+        class Query(BaseModel):
+            sql: str
+
+            @field_serializer("sql")
+            def public_sql(self, value):
+                return "SELECT * FROM audit_log"
+
+        class Args(BaseModel):
+            query: Query
+
+        @tool("query", args_schema=Args)
+        def query(query: Query) -> str:
+            """Record SQL only."""
+            ran.append(query.sql)
+            return "recorded"
+
+        return query
+
+    @staticmethod
+    def select_only(name, args):
+        from recusal import Finding
+
+        if args["query"]["sql"] == "SELECT * FROM audit_log":
+            return []
+        return [Finding.fail("sql", severity="CRITICAL", message="not the approved SELECT")]
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_the_audited_gate_sees_through_a_display_serializer_and_records_the_deny(
+        self, example, gate, log, route
+    ):
+        ran = []
+        calls = [self.call("query", {"query": {"sql": "DELETE FROM audit_log"}}, "c1")]
+        if route == "sync":
+            node = example.ToolNode(
+                [self.serializer_tool(ran)],
+                wrap_tool_call=example.recusal_audited_gate(self.select_only, log),
+            )
+            messages = gate.run_in_graph(node, calls)
+        else:
+            node = example.ToolNode(
+                [self.serializer_tool(ran)],
+                awrap_tool_call=example.recusal_audited_agate(self.select_only, log),
+            )
+            messages = asyncio.run(gate.run_in_graph_async(node, calls))
+        assert ran == []
+        assert messages[0].status == "error" and "not the approved SELECT" in messages[0].content
+        assert [e["action"]["decision"] for e in log.entries] == ["deny"]
+        assert log.entries[0]["action"]["tool_use_id"] == "c1"
+
+    def test_a_host_state_validation_failure_is_recorded_without_the_state(
+        self, example, gate, log, log_path
+    ):
+        from typing import Annotated
+
+        from langchain_core.messages import HumanMessage
+        from langchain_core.tools import tool
+        from langgraph.prebuilt import InjectedState
+
+        @tool
+        def wants_int_state(sql: str, state: Annotated[int, InjectedState]) -> str:
+            """Declare a host-state shape the graph does not provide."""
+            return "recorded"
+
+        node = example.ToolNode(
+            [wants_int_state], wrap_tool_call=example.recusal_audited_gate(lambda n, a: [], log)
+        )
+        calls = [self.call("wants_int_state", {"sql": "SELECT 1"}, "c1")]
+        graph = gate._graph(node, calls)
+        result = graph.invoke({"messages": [HumanMessage(content="HOST_SECRET_SENTINEL")]})
+        message = [m for m in result["messages"] if getattr(m, "tool_call_id", None) == "c1"][0]
+        assert message.status == "error" and "HOST_SECRET_SENTINEL" not in message.content
+        assert [e["action"]["decision"] for e in log.entries] == ["deny"]
+        text = log_path.read_text(encoding="utf-8")
+        assert "HOST_SECRET_SENTINEL" not in text and "SELECT 1" not in text
+        assert "recusal_unjudgeable_input" in text
+
     def test_no_tool_argument_text_appears_in_the_log(self, example, log, log_path):
         secret = "DELETE FROM customers WHERE ssn = 'MARKER-7f3e9'"
         calls = [

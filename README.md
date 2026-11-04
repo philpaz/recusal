@@ -583,10 +583,14 @@ today and what is coming.
 For a concrete LangGraph integration, [`examples/langgraph_gate.py`](examples/langgraph_gate.py)
 puts existing `@tool` functions unchanged into LangGraph's `ToolNode` and attaches
 `recusal_gate(policy)` with `wrap_tool_call`, so `recusal.claude_code.decide` runs immediately
-before each individual tool call. The policy judges the arguments after the tool's own
-`args_schema` validation (field validators, defaults, coercion), the values the tool
-receives, and the call then runs pinned to that judged invocation: a model-facing value
-that differs at execution is refused, never run. Async graphs use `recusal_agate(policy)` with `awrap_tool_call`
+before each individual tool call. The policy judges the invocation the tool executes:
+execution gets a per-call copy of the tool whose parse step validates the input once,
+after ToolNode has injected the host's state, store and runtime, projects every
+model-controlled argument field by field (no serializer runs, so a model's display value
+cannot stand in for the field it holds), decides, and passes those same parsed objects to
+the function. Host arguments are never judged and never the model's to supply; a value the
+projection does not support, and a tool whose class or instance overrides the standard
+`invoke`/`run` lifecycle, are refused. Async graphs use `recusal_agate(policy)` with `awrap_tool_call`
 and `ainvoke`. It is offline and deterministic (no model or API key), requires
 **Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
 `langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
@@ -614,11 +618,11 @@ reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a se
 implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.12`,
 `langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins). List the gate **last**
 in `middleware=`, so it judges the call exactly as it will run: the first middleware is the
-outermost, and one listed after the gate (an argument rewriter, a human-in-the-loop edit,
-`LLMToolEmulator`) acts on a call the gate already judged. Such a rewrite does not run:
-the gate pins the judged invocation and refuses a value that differs at execution; listed
-last, the gate judges the edited call instead. A middleware that swaps the tool object for
-another tool still needs the gate after it. For `agent.ainvoke`, use
+outermost, and one listed after the gate acts between the gate and the tool. An argument
+rewriter or a human-in-the-loop edit listed there still reaches the gate's judging copy,
+so the rewritten call is judged as rewritten; but a middleware that swaps the tool object
+for another, or answers in the tool's place (`LLMToolEmulator`), removes that copy and
+the call is never judged. Listed last, the gate judges whatever the others produced. For `agent.ainvoke`, use
 `wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
 
 For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](examples/openai_agents_gate.py)

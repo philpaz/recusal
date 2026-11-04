@@ -10,6 +10,15 @@ the gate separately immediately before execution. Denials become error ToolMessa
 Recusal's reason; allow/defer execute normally. Async graphs attach recusal_agate(policy)
 through awrap_tool_call and run with ainvoke, using the same decision logic.
 
+The policy judges the invocation the tool executes, not the dict the model wrote: the hook
+hands execution a per-call copy of the tool whose parse step (``_to_args_and_kwargs``, run by
+``BaseTool.run``/``arun`` after ToolNode has injected the host's state, store and runtime)
+validates the input once, projects every model-controlled argument without running any
+serializer, decides, and on allow passes those same parsed objects to the function. Host
+arguments are excluded from judgment and can never be supplied by the model; a tool whose
+class or instance overrides the standard lifecycle is refused rather than judged in the wrong
+place.
+
 No LLM, API key or database is used. run_sql only records SQL text.
 
 Run after installing:
@@ -19,8 +28,14 @@ Run after installing:
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
+import decimal
+import enum
+import math
 import os
 import sys
+import uuid
 from typing import Any, Callable, List
 
 LANGGRAPH_VERSION = "1.2.12"
@@ -37,11 +52,11 @@ if sys.version_info < (3, 10):
 
 try:
     from langchain_core.messages import AIMessage, ToolMessage
-    from langchain_core.tools import tool
+    from langchain_core.tools import BaseTool, StructuredTool, Tool, ToolException, tool
     from langgraph.graph import START, MessagesState, StateGraph
     from langgraph.prebuilt import ToolNode, tools_condition
-    from pydantic import BaseModel, field_validator
-    from pydantic_core import to_jsonable_python
+    from langgraph.prebuilt.tool_node import _get_all_injected_args
+    from pydantic import BaseModel, ValidationError, field_validator
 except ImportError as exc:
     raise SystemExit(
         "Install the example dependencies first: "
@@ -72,125 +87,242 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
-class ChangedAfterJudgment(RuntimeError):
-    """A model-facing argument differed, at execution, from the value the gate judged."""
+class RecusalRefusal(ToolException):
+    """Raised inside a judging copy's parse step: the call is refused and the message is the
+    reason. ``BaseTool.run``/``arun`` turn it into an error ToolMessage through the copy's
+    ``handle_tool_error``, which handles only this type and leaves every other
+    ``ToolException`` to the original tool's own setting."""
 
 
-def refuse_changed(request, exc: Exception, policy: Policy, **record: Any) -> ToolMessage:
-    """The refusal for a call whose value changed after judgment: recorded through
-    ``decide`` like every other refusal (so an audited gate logs it), returned to the model."""
-    call = request.tool_call
-    detail = str(exc)
+# The execution lifecycle this gate relies on: ``invoke``/``ainvoke`` call ``run``/``arun``,
+# which parse the input through ``_to_args_and_kwargs`` and then call ``_run``/``_arun``.
+# The judging copy replaces that parse step, so a tool that overrides any of these on its
+# class (other than the three standard implementations) or on the instance may execute
+# without ever reaching the seam; such a tool is refused rather than judged in the wrong place.
+_LIFECYCLE = ("invoke", "ainvoke", "run", "arun", "_to_args_and_kwargs")
+_STANDARD = {
+    name: {vars(cls)[name] for cls in (BaseTool, StructuredTool, Tool) if name in vars(cls)}
+    for name in _LIFECYCLE
+}
 
-    def changed(_name, _input):
-        return [Finding.fail("recusal_changed_after_judgment", severity="CRITICAL", message=detail)]
 
-    raw = call.get("args")
-    try:
-        _, reason = decide(
-            call["name"], raw if isinstance(raw, dict) else {"input": raw}, changed, **record
-        )
-    except Exception as inner:  # noqa: BLE001, the refusal stands even if the record cannot be written
-        reason = f"Recusal failed closed (policy error): {inner}"
-    return ToolMessage(
-        content=reason, tool_call_id=call.get("id"), name=call["name"], status="error"
+def _lifecycle_refusal(tool) -> str | None:
+    """Why this tool's execution path cannot be judged at the parse seam, or None."""
+    for name in _LIFECYCLE:
+        if name in vars(tool):
+            return f"`{name}` is overridden on the tool instance"
+        if getattr(type(tool), name, None) not in _STANDARD[name]:
+            return f"{type(tool).__name__} overrides `{name}`"
+    return None
+
+
+def _host_keys(tool) -> frozenset[str]:
+    """The argument names the host supplies, never the model.
+
+    ToolNode strips every ``InjectedToolArg``-annotated key from the model's arguments and
+    adds back only the state, store and runtime it owns (``_inject_tool_args``), and
+    ``_parse_input`` sets an ``InjectedToolCallId`` from the call id; a value under one of
+    these keys at the parse seam is therefore the host's. Everything else the parse step
+    produces, including a field an ``extra="allow"`` schema accepted, is model-controlled and
+    is judged.
+    """
+    injected = _get_all_injected_args(tool)
+    return frozenset(injected.all_injected_keys) | frozenset(
+        getattr(tool, "_injected_args_keys", ())
     )
 
 
-def _pinned(tool, judged: dict[str, Any], call_id):
-    """A copy of the tool that executes only the invocation the gate judged.
+def _faithful(value: Any, _stack: tuple[int, ...] = ()) -> Any:
+    """A detached, serializer-free data projection of one parsed argument, for judgment.
 
-    ``BaseTool.run`` validates the input through ``_to_args_and_kwargs`` and hands the result
-    to ``_run``. The copy runs the tool's own validation on the input it is finally given
-    (ToolNode injects host-supplied arguments, ``InjectedState`` and ``InjectedToolArg``,
-    into the call after this hook returns) and then compares every model-facing argument
-    (``tool.args``, the schema the model sees) with what was judged. A value that differs,
-    because a later middleware rewrote the call or a validator is not idempotent, raises, so
-    the tool does not run on an unjudged value. Injected arguments are the host's, never the
-    model's, and pass through.
+    The policy receives this projection; the tool receives the original parsed objects. The
+    projection reads a Pydantic model field by field (``getattr`` over ``model_fields`` plus
+    ``model_extra``), so no ``field_serializer`` or custom ``model_dump`` runs: a serializer
+    that displays ``SELECT`` for a field holding ``DELETE`` is exactly what this bypasses.
+    Supported, each with a fixed meaning: ``None``, ``bool``, ``int``, ``str``; a finite
+    ``float``; ``Enum`` by its value (projected in turn); ``datetime``/``date``/``time`` by
+    ``isoformat()``; a finite ``Decimal`` and a ``UUID`` by ``str()``; ``list`` and ``tuple``
+    as a new list; ``dict`` with ``str`` keys as a new dict; Pydantic v2 models and
+    dataclasses as a new dict of their fields. Anything else (a Pydantic v1 model, a set, an
+    arbitrary object, a non-finite number, a cyclic value) raises ``TypeError`` and the call is
+    refused: a value that cannot be represented faithfully cannot be judged. Containers are
+    new objects, so a policy that mutates what it was given cannot change the invocation.
     """
-    copy = tool.model_copy()
-    original = type(tool)._to_args_and_kwargs
-    model_facing = tuple(tool.args)
+    if isinstance(value, enum.Enum):
+        return _faithful(value.value, _stack)
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError("a non-finite float cannot be judged")
+        return value
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        if not value.is_finite():
+            raise TypeError("a non-finite Decimal cannot be judged")
+        return str(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if id(value) in _stack:
+        raise TypeError("a cyclic value cannot be judged")
+    stack = _stack + (id(value),)
+    if isinstance(value, (list, tuple)):
+        return [_faithful(item, stack) for item in value]
+    if isinstance(value, dict):
+        projected = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"a mapping keyed by {type(key).__name__} cannot be judged")
+            projected[key] = _faithful(item, stack)
+        return projected
+    if isinstance(value, BaseModel):
+        projected = {
+            name: _faithful(getattr(value, name), stack) for name in type(value).model_fields
+        }
+        for key, item in (value.model_extra or {}).items():
+            projected[key] = _faithful(item, stack)
+        return projected
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _faithful(getattr(value, field.name), stack)
+            for field in dataclasses.fields(value)
+        }
+    raise TypeError(f"a {type(value).__name__} value cannot be judged faithfully")
 
-    def to_args_and_kwargs(tool_input, tool_call_id):
+
+def _sanitized(exc: Exception, host_keys: frozenset[str]) -> str:
+    """A validation failure as location and message only: never the input, and for a
+    host-supplied argument (whose value may be graph state) only the error type."""
+    if isinstance(exc, ValidationError):
+        parts = []
+        for error in exc.errors(include_url=False, include_context=False, include_input=False):
+            loc = tuple(str(part) for part in error.get("loc", ()))
+            if loc and loc[0] in host_keys:
+                parts.append(f"{'.'.join(loc)}: {error.get('type')}")
+            else:
+                parts.append(f"{'.'.join(loc) or 'input'}: {error.get('msg')}")
+        return "; ".join(parts)
+    return type(exc).__name__
+
+
+def _unjudgeable(name: str, detail: str, bound: dict, policy: Policy, record: dict) -> str:
+    """The reason for a call that cannot be judged, recorded through ``decide`` like every
+    other refusal (so an audited gate logs it)."""
+
+    def unjudgeable(_name, _input):
+        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+    try:
+        _, reason = decide(name, bound, unjudgeable, **record)
+    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        reason = f"Recusal failed closed (policy error): {exc}"
+    return reason
+
+
+def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any]):
+    """A per-call copy of ``tool`` that judges, then runs, exactly the invocation it parsed.
+
+    ``BaseTool.run``/``arun`` parse the input through ``_to_args_and_kwargs`` and hand the
+    result to ``_run``/``_arun``; ToolNode injects the host's state, store and runtime into
+    the input before that (``_inject_tool_args``), whatever hook or middleware ran earlier.
+    The copy's parse step therefore sees the final input: it runs the tool's own parser once,
+    projects every model-controlled argument with :func:`_faithful`, calls ``decide`` once,
+    and on allow returns the very objects it parsed, so the tool executes what was judged
+    with no second validation and nothing to compare. A deny, an input the parser rejects,
+    a positional input, or a value that cannot be projected raises :class:`RecusalRefusal`,
+    which the copy's ``handle_tool_error`` turns into the error ToolMessage the model reads;
+    any other ``ToolException`` keeps the original tool's handling. The copy serves one call
+    id; every execution attempt of that call (a retry, a resume) is judged again.
+    """
+    name, call_id, fallback = call["name"], call.get("id"), call.get("args")
+    copy = tool.model_copy()
+    parse = type(tool)._to_args_and_kwargs
+    host_keys = _host_keys(tool)
+    original_handler = tool.handle_tool_error
+
+    def proposal(tool_input) -> dict:
+        """The model-facing input, for the record of a refusal that judged nothing."""
+        if isinstance(tool_input, dict):
+            try:
+                return _faithful({k: v for k, v in tool_input.items() if k not in host_keys})
+            except TypeError:
+                pass
+        return fallback if isinstance(fallback, dict) else {"input": fallback}
+
+    def seam(tool_input, tool_call_id):
         if tool_call_id != call_id:
-            raise RuntimeError("Recusal: a pinned tool was used for a different call")
-        args, kwargs = original(copy, tool_input, tool_call_id)
-        for key in model_facing:
-            if to_jsonable_python(kwargs.get(key)) != judged.get(key):
-                raise ChangedAfterJudgment(
-                    f"`{key}` changed after it was judged; the call does not run"
-                )
+            raise RuntimeError("Recusal: a judging copy of a tool was used for a different call")
+        try:
+            args, kwargs = parse(copy, tool_input, tool_call_id)
+        except Exception as exc:  # noqa: BLE001, an input the tool rejects is refused with its reason
+            detail = f"arguments do not validate ({_sanitized(exc, host_keys)})"
+            raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
+        if args:
+            detail = "a positional tool input cannot be judged by name"
+            raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
+        try:
+            judged = {k: _faithful(v) for k, v in kwargs.items() if k not in host_keys}
+        except TypeError as exc:
+            raise RecusalRefusal(_unjudgeable(name, str(exc), proposal(tool_input), policy, record))
+        try:
+            decision, reason = decide(name, judged, policy, **record)
+        except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
+            decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
+        if decision == "deny":
+            raise RecusalRefusal(reason)
         return args, kwargs
 
-    object.__setattr__(copy, "_to_args_and_kwargs", to_args_and_kwargs)
+    def handle(exc):
+        if isinstance(exc, RecusalRefusal):
+            return str(exc)
+        if not original_handler:
+            raise exc
+        if original_handler is True:
+            return str(exc)
+        if isinstance(original_handler, str):
+            return original_handler
+        return original_handler(exc)
+
+    object.__setattr__(copy, "_to_args_and_kwargs", seam)
+    object.__setattr__(copy, "handle_tool_error", handle)
     return copy
 
 
 def _judge(request, policy: Policy, **record: Any):
-    """Judge the invocation the tool will execute; return ``(refusal, request_to_execute)``.
+    """Return ``(refusal, request_to_execute)``: a refusal ToolMessage for a call that can
+    never reach the seam, else the request with its tool replaced by the judging copy.
 
-    The policy sees the arguments after the tool's own validation (``args_schema``: field
-    validators, defaults, coercion), because that is what the tool receives, not the dict the
-    model wrote. An allowed call comes back as a request whose tool is pinned to that
-    validated invocation, so ``execute`` runs exactly what was judged. An input the tool
-    rejects, or a call to a tool the node does not know, is refused through ``decide`` as
-    well, so it lands on the audit log like every other decision. ``record`` goes straight
-    to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...), so a gate that puts the
-    decision on a log (examples/langgraph_audit.py) decides, and refuses, exactly as this one
-    does: one function, no second copy to drift.
+    ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
+    so a gate that puts the decision on a log (examples/langgraph_audit.py) decides, and
+    refuses, exactly as this one does: one function, no second copy to drift.
     """
     call = request.tool_call
     name, call_id, raw = call["name"], call.get("id"), call.get("args")
 
-    def refuse(reason):
-        return ToolMessage(content=reason, tool_call_id=call_id, name=name, status="error"), None
-
-    def refuse_unjudgeable(detail):
-        def unjudgeable(_name, _input):
-            return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
-
+    def refuse(detail):
         bound = raw if isinstance(raw, dict) else {"input": raw}
-        try:
-            _, reason = decide(name, bound, unjudgeable, **record)
-        except Exception as exc:
-            reason = f"Recusal failed closed (policy error): {exc}"
-        return refuse(reason)
+        reason = _unjudgeable(name, detail, bound, policy, record)
+        return ToolMessage(content=reason, tool_call_id=call_id, name=name, status="error"), None
 
     tool = request.tool
     if tool is None:
-        return refuse_unjudgeable("no tool by that name is registered with this node")
-    try:
-        args, kwargs = tool._to_args_and_kwargs(raw, call_id)
-    except Exception as exc:  # noqa: BLE001, an input the tool rejects is refused with its reason
-        return refuse_unjudgeable(f"arguments do not validate ({exc})")
-    if args:
-        return refuse_unjudgeable("a positional tool input cannot be judged by name")
-    try:
-        effective = {key: to_jsonable_python(value) for key, value in kwargs.items()}
-    except Exception as exc:  # noqa: BLE001, a value the record cannot bind is refused
-        return refuse_unjudgeable(f"cannot read its validated arguments ({exc})")
-    try:
-        decision, reason = decide(name, effective, policy, **record)
-    except Exception as exc:
-        decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
-    if decision == "deny":
-        return refuse(reason)
-    return None, request.override(tool=_pinned(tool, effective, call_id))
+        return refuse("no tool by that name is registered with this node")
+    why = _lifecycle_refusal(tool)
+    if why is not None:
+        return refuse(
+            f"the tool's execution path cannot be judged ({why}); the gate judges inside the "
+            "standard BaseTool lifecycle, so build the tool with @tool or StructuredTool"
+        )
+    return None, request.override(tool=_judging(tool, call, policy, record))
 
 
 def recusal_gate(policy: Policy):
     """Return a synchronous ToolNode hook that gates each call before execution."""
 
     def gate(request, execute):
-        refusal, pinned = _judge(request, policy)
-        if refusal is not None:
-            return refusal
-        try:
-            return execute(pinned)
-        except ChangedAfterJudgment as exc:
-            return refuse_changed(request, exc, policy)
+        refusal, judged = _judge(request, policy)
+        return refusal if refusal is not None else execute(judged)
 
     return gate
 
@@ -199,13 +331,8 @@ def recusal_agate(policy: Policy):
     """Return an asynchronous ToolNode hook for awrap_tool_call."""
 
     async def gate(request, execute):
-        refusal, pinned = _judge(request, policy)
-        if refusal is not None:
-            return refusal
-        try:
-            return await execute(pinned)
-        except ChangedAfterJudgment as exc:
-            return refuse_changed(request, exc, policy)
+        refusal, judged = _judge(request, policy)
+        return refusal if refusal is not None else await execute(judged)
 
     return gate
 

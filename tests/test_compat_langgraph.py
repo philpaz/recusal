@@ -178,9 +178,10 @@ def test_a_hook_that_raises_stops_the_call(lg):
 
 
 def test_injected_arguments_reach_the_gate_but_not_the_tool(lg):
-    """A model can put extra keys in a call. The gate sees them; LangGraph replaces an
-    injected argument before the tool runs. A policy must judge only the arguments the
-    tool's schema declares, and this pins that LangGraph still strips the rest."""
+    """A model can put extra keys in a call. LangGraph strips every injected argument and
+    adds back only the host's values before the tool runs; the gate judges at that point, so
+    the policy sees the model's arguments without the forgeries, and this pins that
+    LangGraph still strips them."""
     from typing import Annotated
 
     from langchain_core.tools import InjectedToolArg, tool
@@ -207,7 +208,7 @@ def test_injected_arguments_reach_the_gate_but_not_the_tool(lg):
         _call("with_override", {"sql": SELECT, "override": DELETE}, "o1"),
     ]
     _graph(node, calls).invoke({"messages": []})
-    assert ("read_state", {"sql": SELECT, "state": {"forged": True}}) in seen.calls
-    assert ("with_override", {"sql": SELECT, "override": DELETE}) in seen.calls
+    assert ("read_state", {"sql": SELECT}) in seen.calls
+    assert ("with_override", {"sql": SELECT}) in seen.calls
     assert ("state", ["messages"]) in received, "the forged state reached the tool"
     assert ("override", "") in received, "the model-supplied override reached the tool"

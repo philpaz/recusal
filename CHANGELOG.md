@@ -7,6 +7,34 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/langgraph_gate.py` (and the audited gate and LangChain middleware built on it)
+  judges the final invocation once, inside the tool's own parse step. The previous fix
+  validated in the hook, before ToolNode injected the host's state, judged a
+  `to_jsonable_python` projection, then validated again in a pinned copy and compared
+  projections: a nested model's `field_serializer` showed the policy `SELECT` while the
+  field the tool read held `DELETE` (reproduced on the LangGraph, LangChain and audited
+  routes, sync and async); a validator returning `1` then `True` passed the comparison
+  because `1 == True`; and a tool with a required `InjectedState` was refused as missing
+  its state before the policy ran. Execution now gets a per-call copy whose
+  `_to_args_and_kwargs` (run by `BaseTool.run`/`arun` after `ToolNode` has injected state,
+  store and runtime) parses once, projects every model-controlled argument through an
+  explicit serializer-free projection (`_faithful`: scalars, finite numbers, Enum values,
+  ISO dates, Decimal and UUID strings, lists, string-keyed dicts, Pydantic v2 models and
+  dataclasses field by field; anything else refused), decides, and hands the very objects
+  it parsed to the function, so there is no second validation and nothing to compare.
+  Host-injected arguments are excluded from judgment and cannot be supplied by the model;
+  a field an `extra="allow"` schema accepts is judged. A tool whose class or instance
+  overrides `invoke`, `ainvoke`, `run`, `arun` or `_to_args_and_kwargs` is refused, since
+  it may execute without reaching the seam. A refusal is a `RecusalRefusal` (a
+  `ToolException`) that only the copy's handler turns into the error message; every other
+  `ToolException` keeps the tool's own `handle_tool_error` setting, and a node-level
+  error handler cannot replace the reason. A validation failure is reported as location
+  and message only, and for a host-supplied argument as the error type only, so graph
+  state never reaches the model or the audit record. A LangChain middleware listed after
+  the gate that rewrites arguments is judged on the rewritten value; one that replaces
+  the tool or answers in its place (`LLMToolEmulator`) bypasses the copy, so the gate
+  still goes last. `_pinned`, `ChangedAfterJudgment` and `refuse_changed` are removed.
+  (Found in the 2026-11-04 architecture review.)
 - The OpenAI Agents and LangGraph gates (and the LangChain middleware and the audited
   LangGraph gate built on it) judge the invocation the tool will execute, not the arguments
   the model wrote. Both frameworks validate arguments after the hook (the SDK's generated
@@ -18,12 +46,9 @@ All notable changes to this project are documented here. The format follows
   it on the tool context so the SDK executes exactly that; a parameter model the SDK will not
   prepare (a custom validator, a nested application model) is refused, since the value it
   would execute cannot be judged, and a hand-built `FunctionTool` is refused at setup.
-  `examples/langgraph_gate.py` judges the arguments after the tool's own validation and
-  executes through a pinned copy that refuses any model-facing value differing at execution
-  (injected arguments pass through); an input the tool rejects, an unknown tool, or a value
-  changed after judgment is refused through `decide`, so the audited gate logs it. A rewrite
-  listed after the LangChain gate is therefore refused rather than run unchecked; a tool swap
-  still needs the gate last. `tests/test_adapter_conformance.py` gains invariant 6, a
+  `examples/langgraph_gate.py` judges the invocation the tool executes (see the next entry
+  for the final shape); an input the tool rejects or an unknown tool is refused through
+  `decide`, so the audited gate logs it. `tests/test_adapter_conformance.py` gains invariant 6, a
   rewriting schema never runs the rewritten value, registered for these three adapters and
   stating which others sit after validation by design and which are not yet examined. (Found
   in the 2026-11-03 architecture review.)

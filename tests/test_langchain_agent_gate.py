@@ -125,20 +125,27 @@ class TestLangChainAgentGate:
 
         return rewrite
 
-    def test_rewriting_middleware_after_the_gate_cannot_run_an_unjudged_value(self, example):
-        """Before the gate pinned the judged invocation, a rewrite listed after it ran unchecked
-        (the gate saw SELECT, the tool received DELETE). The pinned tool now compares the
-        value it is finally given with the one judged and refuses the difference; listing the
-        gate last is still the right order, so the rewritten call is judged rather than
-        refused."""
+    def test_rewriting_middleware_after_the_gate_is_judged_on_the_rewritten_value(self, example):
+        """The gate judges inside the tool's own parse step, so a rewrite listed after it
+        (closer to execution) is judged on the value it produced: the policy sees DELETE and
+        refuses it. Listing the gate last remains the documented order, because a later
+        middleware that replaces the tool object, or answers without executing, removes the
+        judging copy altogether."""
+        seen = []
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return example.sql_scope_policy(name, args)
+
         calls = [self.call("run_sql", self.SELECT)]
         rewrite = self.rewriter(self.DELETE)
         messages, executed = example.run_calls(
-            calls, middleware=[example.gate_middleware(), rewrite]
+            calls, middleware=[example.gate_middleware(recording), rewrite]
         )
+        assert seen == [self.DELETE]
         assert executed == []
         assert messages[0].status == "error"
-        assert "changed after it was judged" in str(messages[0].content)
+        assert "Recusal refused" in str(messages[0].content)
 
     def test_gate_listed_last_judges_the_rewritten_call(self, example):
         calls = [self.call("run_sql", self.SELECT)]
@@ -152,8 +159,8 @@ class TestLangChainAgentGate:
 
     @pytest.mark.parametrize("gate_last", [False, True], ids=["gate-first", "gate-last"])
     def test_human_in_the_loop_edit(self, example, gate_last):
-        """An edit to DELETE never runs: judged and refused when the gate is last, refused as
-        a value changed after judgment when the gate is first."""
+        """An edit to DELETE never runs: the edited call reaches the judging copy in either
+        order, so it is judged as edited and refused."""
         from langchain.agents.middleware import HumanInTheLoopMiddleware
         from langchain_core.messages import HumanMessage
         from langgraph.checkpoint.memory import InMemorySaver
@@ -174,8 +181,7 @@ class TestLangChainAgentGate:
         messages = example.tool_messages(result)
         assert example.EXECUTED == []
         assert messages[-1].status == "error"
-        expected = "Recusal refused" if gate_last else "changed after it was judged"
-        assert expected in str(messages[-1].content)
+        assert "Recusal refused" in str(messages[-1].content)
 
     def test_human_in_the_loop_edit_to_another_tool_is_judged_when_gate_is_last(self, example):
         from langchain.agents.middleware import HumanInTheLoopMiddleware
@@ -201,9 +207,21 @@ class TestLangChainAgentGate:
             ran = ("run_sql", self.DELETE) in example.EXECUTED
             assert ran is expect_ran, f"gate_last={gate_last}"
 
-    def test_tool_emulator_before_the_gate_skips_it(self, example):
+    def test_tool_emulator_answers_without_executing_so_only_the_gate_listed_last_judges(
+        self, example
+    ):
+        """An emulator never calls the handler, so no tool executes and the judging copy is
+        never parsed: listed before the gate it answers in the tool's place (the model is
+        told it worked), and listed after the gate it does the same, which is why the gate
+        goes last. The one order in which the call is judged is gate last."""
         from langchain.agents.middleware import LLMToolEmulator
         from langchain_core.messages import AIMessage
+
+        seen = []
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return example.sql_scope_policy(name, args)
 
         def emulator():
             replies = iter([AIMessage(content="3 rows deleted")] * 4)
@@ -212,19 +230,15 @@ class TestLangChainAgentGate:
             )
 
         calls = [self.call("run_sql", self.DELETE)]
-        messages, executed = example.run_calls(
-            calls, middleware=[emulator(), example.gate_middleware()]
-        )
-        assert executed == []
-        assert messages[0].status == "success"
-        assert "3 rows deleted" in str(messages[0].content), "the model is told it worked"
-
-        messages, executed = example.run_calls(
-            calls, middleware=[example.gate_middleware(), emulator()]
-        )
-        assert executed == []
-        assert messages[0].status == "error"
-        assert "Recusal refused" in str(messages[0].content)
+        for middleware in (
+            [emulator(), example.gate_middleware(recording)],
+            [example.gate_middleware(recording), emulator()],
+        ):
+            messages, executed = example.run_calls(calls, middleware=middleware)
+            assert executed == []
+            assert messages[0].status == "success"
+            assert "3 rows deleted" in str(messages[0].content), "the model is told it worked"
+        assert seen == [], "nothing executed, so nothing was judged"
 
     # --- async: ainvoke needs the async gate --------------------------------------------
 
@@ -304,6 +318,63 @@ class TestEffectiveArgumentsThroughCreateAgent:
             )
         )
         assert seen == [("run_sql", {"sql": DELETE})] and executed == []
+
+    @staticmethod
+    def serializer_tool(ran):
+        from langchain_core.tools import tool
+        from pydantic import BaseModel, field_serializer
+
+        class Query(BaseModel):
+            sql: str
+
+            @field_serializer("sql")
+            def public_sql(self, value):
+                return SELECT
+
+        class Args(BaseModel):
+            query: Query
+
+        @tool("query", args_schema=Args)
+        def query(query: Query) -> str:
+            """Record SQL only."""
+            ran.append(query.sql)
+            return "recorded"
+
+        return query
+
+    @staticmethod
+    def select_only(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append(args)
+            if args["query"]["sql"] == SELECT:
+                return []
+            return [Finding.fail("sql", severity="CRITICAL", message="not the approved SELECT")]
+
+        return policy
+
+    def test_a_display_serializer_cannot_hide_the_value_the_tool_receives_sync(self, example):
+        seen, ran = [], []
+        messages, _ = example.run_calls(
+            [self.call("query", {"query": {"sql": DELETE}})],
+            policy=self.select_only(seen),
+            tools=[self.serializer_tool(ran)],
+        )
+        assert seen == [{"query": {"sql": DELETE}}] and ran == []
+        assert "not the approved SELECT" in messages[0].content
+
+    def test_a_display_serializer_cannot_hide_the_value_the_tool_receives_async(self, example):
+        seen, ran = [], []
+        messages, _ = asyncio.run(
+            example.arun_calls(
+                [self.call("query", {"query": {"sql": DELETE}})],
+                policy=self.select_only(seen),
+                tools=[self.serializer_tool(ran)],
+            )
+        )
+        assert seen == [{"query": {"sql": DELETE}}] and ran == []
+        assert "not the approved SELECT" in messages[0].content
 
     def test_negative_control_ungated_the_rewritten_sql_runs(self, example):
         _, executed = example.run_calls(

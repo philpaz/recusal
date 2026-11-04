@@ -57,11 +57,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
-    ChangedAfterJudgment,
     Policy,
     _judge,
     echo,
-    refuse_changed,
     run_in_graph,
     run_in_graph_async,
     run_sql,
@@ -94,14 +92,8 @@ def recusal_audited_gate(
     """Return a synchronous ToolNode hook that records, then gates, each call."""
 
     def gate(request, execute):
-        recording = _recording(request, actor, control, log)
-        refusal, pinned = _judge(request, policy, **recording)
-        if refusal is not None:
-            return refusal
-        try:
-            return execute(pinned)
-        except ChangedAfterJudgment as exc:
-            return refuse_changed(request, exc, policy, **recording)
+        refusal, judged = _judge(request, policy, **_recording(request, actor, control, log))
+        return refusal if refusal is not None else execute(judged)
 
     return gate
 
@@ -116,14 +108,8 @@ def recusal_audited_agate(
     """Return an asynchronous ToolNode hook for awrap_tool_call, same logic as the sync one."""
 
     async def gate(request, execute):
-        recording = _recording(request, actor, control, log)
-        refusal, pinned = _judge(request, policy, **recording)
-        if refusal is not None:
-            return refusal
-        try:
-            return await execute(pinned)
-        except ChangedAfterJudgment as exc:
-            return refuse_changed(request, exc, policy, **recording)
+        refusal, judged = _judge(request, policy, **_recording(request, actor, control, log))
+        return refusal if refusal is not None else await execute(judged)
 
     return gate
 
