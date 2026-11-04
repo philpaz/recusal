@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/openai_responses_gate.py`: `gate_tool_calls` dispatches the tool calls of one
+  chosen Chat Completions message. It flattened the `tool_calls` of every entry in
+  `completion.choices`, so a completion requested with `n > 1` (alternative assistant
+  messages, each with its own call ids) had every alternative's calls judged and run: two
+  choices charging 5 and 7 both executed. A completion with one choice dispatches as
+  before; with several, the call must pass `choice=<list position>` and only that message
+  is dispatched; no choices, a non-int or bool `choice`, or an out-of-range one is refused
+  before any call is judged. (Found in the 2026-11-04 adapters review.)
 - `recusal.claude_code.allowlist_policy`: an explicit predicate's result is held to its
   `bool` contract. The result was read with truthiness, so `"false"`, `{"allowed": False}`
   and a failed `Finding` returned by a mistaken predicate all read as True and removed the

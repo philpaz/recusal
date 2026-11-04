@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Optional
 
 OPENAI_VERSION = "3.34.0"
 
@@ -173,25 +173,61 @@ def gate_function_calls(response: Response, tools: Tools, policy: Policy) -> lis
     return outputs
 
 
-def gate_tool_calls(
-    completion: ChatCompletion, tools: Tools, policy: Policy
-) -> list[dict[str, Any]]:
-    """Chat Completions: judge every ``tool_calls`` entry; return ``role: "tool"`` messages.
+def _chosen(completion: ChatCompletion, choice: Any):
+    """The one assistant message this turn dispatches: ``completion.choices[choice]``.
 
-    Raises TypeError for a tool call type this adapter does not handle (``custom``), and
-    ValueError for a call without an id. Append the returned messages after the assistant
-    message in the next request.
+    A completion requested with ``n > 1`` carries alternative messages, not one batch, so
+    one must be chosen explicitly; dispatching every alternative would run tool calls the
+    application never selected. ``choice`` is the list position. With one choice it may be
+    omitted. Every refusal here is raised before any call is judged or run.
     """
+    choices = list(completion.choices or [])
+    if not choices:
+        raise ValueError("Recusal refused the completion: it has no choices")
+    if choice is None:
+        if len(choices) != 1:
+            raise ValueError(
+                f"Recusal refused the completion: it has {len(choices)} choices; pass "
+                "choice=<list position> to dispatch one assistant message"
+            )
+        return choices[0]
+    if isinstance(choice, bool) or not isinstance(choice, int):
+        raise TypeError(
+            f"Recusal refused the completion: choice must be an int list position, not "
+            f"{type(choice).__name__}"
+        )
+    if choice < 0 or choice >= len(choices):
+        raise ValueError(
+            f"Recusal refused the completion: choice {choice} is out of range for "
+            f"{len(choices)} choice(s)"
+        )
+    return choices[choice]
+
+
+def gate_tool_calls(
+    completion: ChatCompletion, tools: Tools, policy: Policy, *, choice: Optional[int] = None
+) -> list[dict[str, Any]]:
+    """Chat Completions: judge every ``tool_calls`` entry of ONE chosen assistant message;
+    return ``role: "tool"`` messages.
+
+    ``choice`` is the list position in ``completion.choices``; it may be omitted only when
+    the completion has exactly one choice. A completion with several choices (``n > 1``)
+    and no ``choice`` is refused before anything is judged: the choices are alternative
+    messages, and only the one the application selects is dispatched. Raises TypeError for
+    a tool call type this adapter does not handle (``custom``) or a non-int ``choice``, and
+    ValueError for a call without an id, no choices, or an out-of-range ``choice``. Append
+    the returned messages after the chosen assistant message in the next request.
+    """
+    chosen = _chosen(completion, choice)
     calls: list[tuple[str, str, Any]] = []
-    for choice in completion.choices:
-        for call in choice.message.tool_calls or []:
-            if call.type != "function":
-                raise TypeError(
-                    f"Recusal refused tool call of type {call.type!r}: "
-                    "this adapter handles function tool calls only"
-                )
-            call_id = _require_id(call.id, f"tool call {call.function.name!r}")
-            calls.append((call_id, call.function.name, call.function.arguments))
+    for call in chosen.message.tool_calls or []:
+        if call.type != "function":
+            raise TypeError(
+                f"Recusal refused tool call of type {call.type!r}: "
+                "this adapter handles function tool calls only"
+            )
+        call_id = _require_id(call.id, f"tool call {call.function.name!r}")
+        calls.append((call_id, call.function.name, call.function.arguments))
     call_ids = [call_id for call_id, _, _ in calls]
     _check_ids(call_ids)
     outputs = [
@@ -253,8 +289,11 @@ def function_call(name: str, arguments: Any, call_id: str) -> dict[str, Any]:
     }
 
 
-def completion_with(tool_calls: list[dict[str, Any]]) -> ChatCompletion:
-    """A ChatCompletion the SDK itself validated, proposing the given tool calls."""
+def completion_with(
+    tool_calls: list[dict[str, Any]], *alternatives: list[dict[str, Any]]
+) -> ChatCompletion:
+    """A ChatCompletion the SDK itself validated, proposing the given tool calls; each
+    further list is one more alternative choice (what ``n > 1`` returns)."""
     return ChatCompletion.model_validate(
         {
             "id": "chatcmpl_offline",
@@ -263,10 +302,11 @@ def completion_with(tool_calls: list[dict[str, Any]]) -> ChatCompletion:
             "model": "offline",
             "choices": [
                 {
-                    "index": 0,
+                    "index": index,
                     "finish_reason": "tool_calls",
-                    "message": {"role": "assistant", "content": None, "tool_calls": tool_calls},
+                    "message": {"role": "assistant", "content": None, "tool_calls": calls},
                 }
+                for index, calls in enumerate([tool_calls, *alternatives])
             ],
         }
     )

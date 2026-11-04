@@ -676,7 +676,9 @@ No framework at all, the OpenAI API called directly: [`examples/openai_responses
 gates the loop your application already owns. `gate_function_calls(response, tools, policy)`
 judges every `function_call` item in a Responses API result and returns one
 `function_call_output` per call under its own `call_id`; `gate_tool_calls(completion, tools,
-policy)` does the same for Chat Completions `tool_calls`, returning `role: "tool"` messages.
+policy)` does the same for the `tool_calls` of one Chat Completions choice, returning
+`role: "tool"` messages: a completion with several choices (`n > 1`) carries alternative
+messages, so it is refused until the application passes `choice=` for the one it selected.
 Invalid JSON, non-object arguments, an unknown tool and a raising policy are refused, never
 run; an output item or tool call of a type the adapter does not handle raises, naming it,
 and a call without an id is refused because the SDK's answer types do not require one.

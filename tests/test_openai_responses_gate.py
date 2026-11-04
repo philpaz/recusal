@@ -248,6 +248,86 @@ class TestOpenAIResponsesGate:
         completion = ex.completion_with([])
         assert ex.gate_tool_calls(completion, ex.TOOLS, ex.sql_scope_policy) == []
 
+    # --- alternative choices: one chosen message per dispatch (adapters review) ------------
+
+    @staticmethod
+    def charge_tools(ran):
+        def charge(amount: int) -> str:
+            ran.append(amount)
+            return "recorded"
+
+        return {"charge": charge}
+
+    @staticmethod
+    def two_choices(ex):
+        return ex.completion_with(
+            [ex.tool_call("charge", {"amount": 5}, "c1")],
+            [ex.tool_call("charge", {"amount": 7}, "c2")],
+        )
+
+    def test_several_choices_without_a_selection_are_refused_before_anything_runs(self, ex):
+        ran, seen = [], []
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return []
+
+        with pytest.raises(ValueError, match="2 choices; pass choice="):
+            ex.gate_tool_calls(self.two_choices(ex), self.charge_tools(ran), recording)
+        assert ran == [] and seen == []
+
+    @pytest.mark.parametrize("choice, amount, call_id", [(0, 5, "c1"), (1, 7, "c2")])
+    def test_only_the_chosen_message_is_judged_and_run(self, ex, choice, amount, call_id):
+        ran, seen = [], []
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return []
+
+        outs = ex.gate_tool_calls(
+            self.two_choices(ex), self.charge_tools(ran), recording, choice=choice
+        )
+        assert seen == [{"amount": amount}], "the unselected alternative invokes no policy"
+        assert ran == [amount], "the unselected alternative runs no tool"
+        assert [o["tool_call_id"] for o in outs] == [call_id]
+
+    @pytest.mark.parametrize(
+        "choice, error",
+        [(-1, ValueError), (2, ValueError), (True, TypeError), ("0", TypeError), (1.0, TypeError)],
+        ids=repr,
+    )
+    def test_an_invalid_choice_is_refused_before_anything_runs(self, ex, choice, error):
+        ran = []
+        with pytest.raises(error, match="Recusal refused the completion"):
+            ex.gate_tool_calls(
+                self.two_choices(ex), self.charge_tools(ran), lambda n, a: [], choice=choice
+            )
+        assert ran == []
+
+    def test_a_completion_with_no_choices_is_refused(self, ex):
+        completion = ex.completion_with([])
+        completion.choices = []
+        with pytest.raises(ValueError, match="no choices"):
+            ex.gate_tool_calls(completion, ex.TOOLS, ex.sql_scope_policy)
+
+    def test_one_choice_dispatches_with_or_without_a_selection(self, ex):
+        ran = []
+        single = ex.completion_with([ex.tool_call("charge", {"amount": 5}, "c1")])
+        ex.gate_tool_calls(single, self.charge_tools(ran), lambda n, a: [])
+        ex.gate_tool_calls(single, self.charge_tools(ran), lambda n, a: [], choice=0)
+        assert ran == [5, 5]
+
+    def test_negative_control_the_naive_flattening_would_run_both(self, ex):
+        """What the dispatcher did before: every choice's calls, both charges."""
+        ran = []
+        tools = self.charge_tools(ran)
+        for choice in self.two_choices(ex).choices:
+            for call in choice.message.tool_calls:
+                ex.judge_and_run(
+                    call.function.name, call.function.arguments, tools, lambda n, a: []
+                )
+        assert ran == [5, 7]
+
     # --- call ids: the SDK does not require them, the adapter does ------------------------
 
     def test_sdk_answer_types_do_not_require_call_id_so_the_adapter_must(self, ex):
