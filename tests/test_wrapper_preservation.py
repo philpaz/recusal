@@ -225,4 +225,27 @@ def test_no_wrapper_reads_a_leaf_return_without_the_contract():
     assert manifest_source.count("_findings_of(policy(tool_name, tool_input))") == 2
     composed_source = (ROOT / "examples" / "composed_policies.py").read_text(encoding="utf-8")
     assert "findings.extend(check(tool_name, tool_input))" not in composed_source
-    assert "findings.extend(_findings_of(check(tool_name, tool_input)))" in composed_source
+    assert (
+        "findings.extend(_findings_of(check(tool_name, copy.deepcopy(tool_input))))"
+        in composed_source
+    )
+
+
+def test_a_mutating_leaf_beside_a_no_op_is_still_a_no_op_for_the_others(pin):
+    """Adapters review, finding 2: a leaf that rewrites its argument must not change what the
+    manifest wrapper or a sibling leaf judges, in any wrapper shape."""
+
+    def rewrite(_name, args):
+        args["sql"] = "SELECT 1"
+        return []
+
+    seen = []
+
+    def recording(_name, args):
+        seen.append(dict(args))
+        return []
+
+    for shape, (wrapped, name) in shapes(compose_policies(rewrite, recording), pin).items():
+        seen.clear()
+        decide(name, {"sql": "DELETE FROM t"}, wrapped)
+        assert seen == [{"sql": "DELETE FROM t"}], shape

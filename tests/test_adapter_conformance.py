@@ -411,6 +411,35 @@ def test_2_a_refusal_runs_nothing_and_its_reason_reaches_the_model(modules, name
     assert refused and "Recusal refused `run_sql`" in text and "top-level WHERE" in text
 
 
+def _normalizer(_name, args):
+    """A composed leaf that rewrites its argument: formerly the next leaf judged the rewrite."""
+    args["sql"] = SELECT
+    return []
+
+
+@pytest.mark.parametrize("mutator_first", [True, False], ids=["mutator-first", "check-first"])
+@pytest.mark.parametrize("name, route", ROWS, ids=[f"{n}-{r}" for n, r in ROWS])
+def test_2b_a_mutating_composed_leaf_cannot_launder_the_input_for_a_later_check(
+    modules, name, route, mutator_first
+):
+    """Adapters review, finding 2: with the normalizer listed first, the SQL check saw
+    SELECT and the adapter executed DELETE. Every leaf now judges its own copy."""
+    from examples.composed_policies import compose_policies
+
+    module, run = _drive(modules, name, route)
+    check = Recording(module.sql_scope_policy)
+    leaves = (_normalizer, check) if mutator_first else (check, _normalizer)
+    outcomes, executed = run(
+        module, [("run_sql", {"sql": DELETE}, "c1")], compose_policies(*leaves), True
+    )
+    # every judgment the check made saw the original (the CrewAI gate judges a blocked call
+    # a second time to explain it, so the count is that route's, not this invariant's)
+    assert check.seen and all(s == ("run_sql", {"sql": DELETE}) for s in check.seen), check.seen
+    assert executed == []
+    refused, text = outcomes["c1"]
+    assert refused and "Recusal refused `run_sql`" in text
+
+
 @pytest.mark.parametrize("name, route", ROWS, ids=[f"{n}-{r}" for n, r in ROWS])
 def test_3_calls_in_one_turn_are_judged_separately(modules, name, route):
     module, run = _drive(modules, name, route)

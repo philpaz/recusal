@@ -1,5 +1,6 @@
 """Recipe 10: composition is deterministic, conservative and fail-closed."""
 
+import copy
 from itertools import permutations
 
 import pytest
@@ -334,3 +335,80 @@ def test_a_bound_leaf_beside_an_unbound_claude_named_policy_is_refused():
         compose_policies(_bound("db"), _claude_named_domain())
     # unbound alone is a legitimate Claude Code composition
     assert compose_policies(_claude_named_domain(), _passed).recusal_name_domain == "claude_code"
+
+
+# --- adapters review, finding 2: every leaf sees its own copy of the input -------------------
+
+SELECT = "SELECT * FROM audit_log"
+DELETE = "DELETE FROM audit_log"
+
+
+def _normalizer(_name, args):
+    """A leaf that rewrites what it was handed: formerly the next leaf saw the rewrite."""
+    args["sql"] = SELECT
+    if "query" in args:
+        args["query"]["sql"] = SELECT
+    args["extra"] = True
+    return []
+
+
+def _sql_check(_name, args):
+    from examples.sql_scope_policy import policy
+
+    return policy(_name, args)
+
+
+def _recording(seen):
+    def leaf(_name, args):
+        seen.append(copy.deepcopy(args))
+        return []
+
+    return leaf
+
+
+def test_a_mutating_leaf_cannot_change_what_a_later_leaf_judges():
+    seen = []
+    composed = compose_policies(_normalizer, _recording(seen), _sql_check)
+    decision, reason = decide("run_sql", {"sql": DELETE}, composed)
+    assert seen == [{"sql": DELETE}]
+    assert decision == "deny" and "destructive SQL" in reason
+
+
+def test_nested_mutation_is_isolated_too():
+    seen = []
+    composed = compose_policies(_normalizer, _recording(seen))
+    decide("query", {"sql": DELETE, "query": {"sql": DELETE}}, composed)
+    assert seen == [{"sql": DELETE, "query": {"sql": DELETE}}]
+
+
+def test_the_callers_input_is_untouched_by_any_leaf():
+    proposed = {"sql": DELETE, "query": {"sql": DELETE}}
+    decide("query", proposed, compose_policies(_normalizer, _normalizer))
+    assert proposed == {"sql": DELETE, "query": {"sql": DELETE}}
+
+
+def test_reordering_observational_leaves_with_a_mutator_anywhere_keeps_the_verdict():
+    leaves = [_normalizer, _sql_check, _noop]
+    for order in permutations(leaves):
+        decision, _ = decide("run_sql", {"sql": DELETE}, compose_policies(*order))
+        assert decision == "deny", [getattr(p, "__name__", "?") for p in order]
+        decision, _ = decide("run_sql", {"sql": SELECT}, compose_policies(*order))
+        assert decision == "defer"
+
+
+def test_a_value_that_cannot_be_copied_fails_closed():
+    class Uncopyable:
+        def __deepcopy__(self, memo):
+            raise TypeError("not copyable")
+
+    decision, reason = decide("x", {"v": Uncopyable()}, compose_policies(_noop))
+    assert decision == "deny" and "not copyable" in reason
+
+
+def test_isolation_keeps_identity_binding_and_reset(tmp_path):
+    with_identity = compose_policies(_normalizer, _manifest_and_log(tmp_path))
+    decision, control = _record(tmp_path, with_identity, "isolated")
+    assert decision == "defer" and control["manifest_sha256"].startswith("sha256:")
+    with_identity.reset_control_identity()
+    assert with_identity.get_control_identity()["manifest_sha256"] is None
+    assert compose_policies(_normalizer, _bound("db")).recusal_bound_server == "db"

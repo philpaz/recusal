@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/composed_policies.py`: every leaf of a composition judges its own deep copy
+  of the input. The composer handed one mutable dict to each leaf in turn, so a leaf that
+  rewrote it (a normalizer turning `DELETE` into `SELECT`) changed what every later leaf
+  judged while the adapter executed the original: with the normalizer listed first, the
+  SQL check approved `SELECT` and LangGraph, the audited gate and the OpenAI Agents gate
+  executed `DELETE`; reversed, the check refused. The fold assumes one fixed input per
+  verdict, and the composition now honours it: a mutating leaf affects only itself,
+  the caller's dict is never changed, a value that cannot be copied fails closed, and
+  reordering observational leaves cannot change the verdict. Transformation leaves are
+  not supported. Identity, binding and reset forwarding are unchanged. (Found in the
+  2026-11-04 adapters review.)
 - `examples/openai_agents_gate.py` and `examples/openai_agents_mcp_gate.py`: each
   guardrail is bound to the tool it protects, and an agent whose function tools share a
   name is refused. The guardrail looked its tool up by name from the agent's tool list and

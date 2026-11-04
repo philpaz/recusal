@@ -7,6 +7,7 @@ It does not sandbox commands, prevent all network access, or grant permission.
 An empty finding list defers to the tool host's normal permission handling.
 """
 
+import copy
 import os
 import sys
 import tempfile
@@ -49,8 +50,17 @@ class ComposedPolicy:
     needs binding (one declaring Claude Code's naming domain), are refused up front rather
     than installed half-adapted.
 
+    Input isolation: each leaf receives a deep copy of ``tool_input``, so the composition is
+    a set of observations of one invocation and a leaf that mutates its argument affects
+    nothing but itself; transformation leaves (a normalizer meant to change what later
+    leaves see) are not supported. The supported input is the data adapters hand a policy:
+    JSON values and the projections the gates build from them. A value whose
+    ``__deepcopy__`` returns itself is outside that boundary; a value that cannot be copied
+    raises, and the evaluator fails closed.
+
     The invariant the tests pin: adding a no-op policy changes neither the verdict, nor the
-    control identity, nor the server the composition is bound to.
+    control identity, nor the server the composition is bound to; and reordering
+    observational leaves changes nothing either.
     """
 
     def __init__(self, *policies):
@@ -105,9 +115,13 @@ class ComposedPolicy:
     def __call__(self, tool_name, tool_input):
         findings = []
         for check in self.policies:
-            # each leaf's return is held to the evaluator's contract before it is read:
-            # extending with a bare {} or "" would turn a buggy leaf into an empty screen
-            findings.extend(_findings_of(check(tool_name, tool_input)))
+            # Every leaf judges its own copy of the input: the fold assumes one fixed input
+            # for every finding, and a leaf that rewrote a shared dict (a normalizer that
+            # turned DELETE into SELECT) changed what every later leaf judged while the
+            # caller executed the original. A copy failure raises and so fails closed.
+            # Each leaf's return is then held to the evaluator's contract before it is
+            # read: extending with a bare {} or "" would turn a buggy leaf into a screen.
+            findings.extend(_findings_of(check(tool_name, copy.deepcopy(tool_input))))
         return findings
 
     @property
