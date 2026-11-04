@@ -143,8 +143,12 @@ def test_the_manifest_policy_module_imports_mcp_only_at_call_time():
         for name, value in vars(inner).items()
         if not name.startswith("__") and not inspect.ismodule(value)
     }
+    # the evaluator's return-contract helper is the one module-load dependency beyond the
+    # kernel: recusal._adjudicate imports only recusal.evidence and recusal.authorization,
+    # never recusal.mcp, so the deferred validator import above stays the only cycle risk
     assert {o for o in origins if o and o.startswith("recusal.")} <= {
         "recusal._manifest_policy",
+        "recusal._adjudicate",
         "recusal.evidence",
     }
 

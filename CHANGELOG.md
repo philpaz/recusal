@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `recusal.mcp.manifest_policy` and `examples/composed_policies.py` hold each wrapped
+  policy's return to the evaluator's contract before reading it. `decide` refuses a bare
+  `{}`, `""` or `b""` as a policy error, but the composition extended its findings with
+  the raw return and the manifest wrapper called `list()` on it, so an empty invalid
+  container became an empty screen (`defer`, and the OpenAI Runner executed the call)
+  while the accepted `None` became an iteration error. Both now pass every leaf return
+  through the same `_findings_of` the evaluator uses, on the MCP and non-MCP manifest
+  paths, so direct, composed, manifest-wrapped and nested evaluations decide and reason
+  identically; the manifest wrapper treats only `None` as an absent wrapped policy, so a
+  callable whose `__bool__` is false is still called. `compute_verdict` is unchanged. The
+  plugin's vendored runtime is resynced. (Found in the 2026-11-04 architecture review.)
 - `examples/composed_policies.py` and `examples/openai_agents_mcp_gate.py`: a composition
   keeps the server its policy is bound to. `claude_named("db", policy)` was refused on
   any other server, but `compose_policies(claude_named("db", policy), other_check)`

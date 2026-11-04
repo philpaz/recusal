@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.destructive_shell_policy import make_policy as make_destructive_policy  # noqa: E402
 from examples.egress_allowlist import make_egress_allowlist  # noqa: E402
 from examples.workspace_policy import make_workspace_policy  # noqa: E402
-from recusal.claude_code import _identity_getter, decide  # noqa: E402
+from recusal.claude_code import _findings_of, _identity_getter, decide  # noqa: E402
 
 
 class ComposedPolicy:
@@ -25,8 +25,11 @@ class ComposedPolicy:
     carries it.
 
     Findings: concatenated, so the existing Recusal decision fold picks the worst severity.
-    A policy error is not swallowed: the real adapter's default ``fail_closed=True`` turns
-    it into a denial instead of silently dropping a security check.
+    Each leaf's return is held to the evaluator's contract first (``None`` or an iterable
+    of findings; anything else is a policy error), so a leaf returning ``{}`` or ``""``
+    fails closed through the composition exactly as it does alone. A policy error is not
+    swallowed: the real adapter's default ``fail_closed=True`` turns it into a denial
+    instead of silently dropping a security check.
 
     Control identity: ``recusal.claude_code.decide`` reads a policy's
     ``get_control_identity()`` for the audit record (``recusal.mcp.manifest_policy`` reports
@@ -102,7 +105,9 @@ class ComposedPolicy:
     def __call__(self, tool_name, tool_input):
         findings = []
         for check in self.policies:
-            findings.extend(check(tool_name, tool_input))
+            # each leaf's return is held to the evaluator's contract before it is read:
+            # extending with a bare {} or "" would turn a buggy leaf into an empty screen
+            findings.extend(_findings_of(check(tool_name, tool_input)))
         return findings
 
     @property

@@ -19,6 +19,7 @@ import json
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ._adjudicate import _findings_of
 from .evidence import Finding
 
 
@@ -36,7 +37,11 @@ def manifest_policy(
       or corrupt): membership is established first, so an unapproved capability never
       triggers downstream policy work or its side effects;
     - a pinned call is then handed to the wrapped ``policy``, so argument-level rules
-      (repo scope, path confinement, cookbook recipe 12) compose on top of the pin;
+      (repo scope, path confinement, cookbook recipe 12) compose on top of the pin; the
+      wrapped policy's return is held to the evaluator's contract (``None`` or an iterable
+      of findings; a bool, a number, a string or a bare mapping is a policy error) before
+      it is read, exactly as ``decide`` holds an unwrapped policy, and only ``None`` means
+      no wrapped policy (a callable whose ``__bool__`` is false is still called);
     - a missing or malformed manifest fails CLOSED for MCP calls: no pin, no MCP;
     - the manifest bytes are read on every MCP call and reparsed only when their SHA-256
       changes: a re-pin (or a REVOCATION) is picked up on the very next call, even one
@@ -121,7 +126,7 @@ def manifest_policy(
         _digest_var.set(None)
         if not str(tool_name).startswith("mcp__"):
             # not an MCP call -> the wrapped policy's business
-            return list(policy(tool_name, tool_input)) if policy else []
+            return _findings_of(policy(tool_name, tool_input)) if policy is not None else []
         # Least-authority ORDER: manifest availability and runtime-name membership are
         # established BEFORE the wrapped business policy runs. Adopter policies are
         # not required to be side-effect-free (subject lookups, file reads, network
@@ -150,7 +155,7 @@ def manifest_policy(
                     tool=tool_name,
                 )
             ]
-        return list(policy(tool_name, tool_input)) if policy else []
+        return _findings_of(policy(tool_name, tool_input)) if policy is not None else []
 
     def _get_control_identity() -> Dict[str, Any]:
         """Invocation-local audit provenance, read by the audit layer AFTER the policy

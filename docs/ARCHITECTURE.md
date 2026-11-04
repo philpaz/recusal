@@ -67,7 +67,11 @@ The second extraction is done (0.12.7): the call-time manifest policy, the file-
 locked, cached half with its invocation-local digest, lives in the private
 `recusal._manifest_policy`, and `recusal.mcp` keeps `manifest_policy` as a wrapper with the same
 signature, docstring and module. The policy module imports the artifact half's validator only at call time, so
-either module can be imported first (a deferred dependency, not a removed one). What
+either module can be imported first (a deferred dependency, not a removed one). It also
+imports the evaluator's return-contract helper (`recusal._adjudicate._findings_of`) at
+module load, so a wrapped policy's return is held to the same contract `decide` applies;
+`recusal._adjudicate` imports only the kernel and `recusal.authorization`, never
+`recusal.mcp`. What
 remains in `recusal.mcp` is the artifact half: building, comparing and validating
 manifests and observations, plus `load_manifest`, which reads a manifest file, so that
 module is not free of filesystem access; the kernel in `recusal.evidence` is.
