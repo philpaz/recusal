@@ -168,4 +168,9 @@ def manifest_policy(
 
     _policy.get_control_identity = _get_control_identity  # type: ignore[attr-defined]
     _policy.reset_control_identity = _reset_control_identity  # type: ignore[attr-defined]
+    # The naming domain this policy judges: Claude Code's ``mcp__<server>__<tool>``. A gate
+    # that hands policies a server's own tool name (an agent SDK's MCP connection) reads
+    # this to refuse the pairing at setup instead of running a membership check that never
+    # sees an MCP name and so never objects.
+    _policy.recusal_name_domain = "claude_code"  # type: ignore[attr-defined]
     return _policy

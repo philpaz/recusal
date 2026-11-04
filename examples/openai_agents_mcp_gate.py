@@ -87,7 +87,7 @@ from examples.openai_agents_gate import (  # noqa: E402
 from examples.openai_agents_gate import (  # noqa: E402
     is_gated as function_tools_gated,
 )
-from recusal.claude_code import decide  # noqa: E402
+from recusal.claude_code import _identity_getter, decide  # noqa: E402
 
 try:
     from agents import HostedMCPTool, MCPToolApprovalRequest
@@ -125,6 +125,54 @@ def _refusal_for_call(tool_name: str, arguments: Any, policy: Policy) -> Optiona
     return reason if decision == "deny" else None
 
 
+def claude_named(server_name: str, policy: Policy) -> Policy:
+    """Bind a policy written for Claude Code's MCP tool names to one server connection.
+
+    :func:`recusal.mcp.manifest_policy` (and any composition carrying one) judges
+    ``mcp__<server>__<tool>``, the name Claude Code gives an MCP tool. The gates in this
+    module hand a policy the server's own tool name, so that policy would never see an MCP
+    name, run no membership check and raise no objection. The bound policy presents each
+    call as ``mcp__{server_name}__{tool}``, carries the server it is bound to (a gate refuses
+    it for any other server), and forwards the manifest digest to the audit record through
+    the policy's own control identity.
+    """
+    if not isinstance(server_name, str) or not server_name:
+        raise ValueError("claude_named needs the name of the server the policy is bound to")
+
+    def bound(tool_name: str, arguments: dict) -> List[Any]:
+        return policy(f"mcp__{server_name}__{tool_name}", arguments)
+
+    bound.recusal_bound_server = server_name  # type: ignore[attr-defined]
+    bound.recusal_bound_policy = policy  # type: ignore[attr-defined]
+    getter = _identity_getter(policy)
+    if getter is not None:
+        bound.get_control_identity = getter  # type: ignore[attr-defined]
+    reset = getattr(policy, "reset_control_identity", None)
+    if callable(reset):
+        bound.reset_control_identity = reset  # type: ignore[attr-defined]
+    return bound
+
+
+def _name_domain_refusal(policy: Policy, server_name: Any, where: str) -> Optional[str]:
+    """Why this policy cannot judge this server's own tool names, or None if it can."""
+    bound_to = getattr(policy, "recusal_bound_server", None)
+    if bound_to is not None:
+        if bound_to != server_name:
+            return (
+                f"Recusal: this policy is bound to server {bound_to!r} by claude_named, not to "
+                f"{server_name!r}; bind one policy object per server"
+            )
+        return None
+    if getattr(policy, "recusal_name_domain", None) == "claude_code":
+        return (
+            "Recusal: this policy judges Claude Code's MCP names (`mcp__<server>__<tool>`, the "
+            f"shape of recusal.mcp.manifest_policy), but {where} hands a policy the server's "
+            "own tool name, so its membership check would see no MCP name and raise no "
+            f"objection. Bind it to the connection: claude_named({server_name!r}, policy)."
+        )
+    return None
+
+
 def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
     """Wrap the server's ``call_tool`` so every call is judged by the server's own tool
     name and the exact arguments it would run, in place; returns the same server.
@@ -136,6 +184,9 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
     """
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
+    mismatch = _name_domain_refusal(policy, server.name, "gate_mcp_server")
+    if mismatch is not None:
+        raise ValueError(mismatch)
     if is_gated_mcp_server(server):
         # A server object is a connection, shared by every agent that lists it, and it
         # carries ONE policy. Installing the same policy again is a no-op; asking for a
@@ -202,6 +253,9 @@ def gate_hosted_mcp(tool: HostedMCPTool, policy: Policy) -> HostedMCPTool:
     each approval request with Recusal; the original is unchanged."""
     if not isinstance(tool, HostedMCPTool):
         raise TypeError(f"Recusal cannot gate {type(tool).__name__}: not a HostedMCPTool")
+    mismatch = _name_domain_refusal(policy, tool.tool_config.get("server_label"), "gate_hosted_mcp")
+    if mismatch is not None:
+        raise ValueError(mismatch)
     config = {**tool.tool_config, "require_approval": "always"}
     return dataclasses.replace(
         tool,

@@ -81,6 +81,17 @@ class ComposedPolicy:
             findings.extend(check(tool_name, tool_input))
         return findings
 
+    @property
+    def recusal_name_domain(self):
+        """The naming domain of the composition: that of any leaf declaring one (a
+        manifest policy judges Claude Code's ``mcp__<server>__<tool>`` names), else None, so
+        a gate that hands policies a server's own tool name can refuse the pairing."""
+        for check in self.policies:
+            domain = getattr(check, "recusal_name_domain", None)
+            if domain:
+                return domain
+        return None
+
     def get_control_identity(self):
         if self._carrier is None:
             return {}

@@ -636,7 +636,12 @@ presentation of the capability. `gate_mcp_server(server, policy)` instead wraps 
 server's own `call_tool`, in place, the one point where the SDK hands over the server's
 tool name and the exact arguments it will run, after any approval; a refusal is returned
 as an MCP error result carrying the reason, so the model reads it and the server is never
-called. A policy keyed by tool name names the server's own tools.
+called. A policy keyed by tool name names the server's own tools. A policy written for
+Claude Code's names, `recusal.mcp.manifest_policy` or a composition carrying one, judges
+`mcp__<server>__<tool>`; hand it to either gate through `claude_named(server.name, policy)`,
+which presents each call under that name and keeps the manifest digest on the audit
+record. Unbound, the gate refuses the pairing at setup, because a membership check that
+never sees an MCP name would raise no objection.
 Hosted MCP runs on OpenAI's servers, and the one local point is the approval callback, so
 `gate_hosted_mcp(tool, policy)` returns a copy that requires approval for every call and
 answers a refusal as a rejection with Recusal's reason; a call OpenAI does not ask approval

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from recusal.claude_code import decide
+
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "openai_agents_mcp_gate.py"
 
@@ -484,3 +486,121 @@ class TestOpenAIAgentsMcpGate:
             and "hosted MCP, approval requests:" in result.stdout
         )
         assert result.stdout.count("approved") == 2 and "rejected:" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestNameDomainBinding:
+    """Review 5, configuration gap: ``manifest_policy`` judges Claude Code's
+    ``mcp__<server>__<tool>`` names; this gate hands policies the server's own tool name.
+    Plugged together directly, a missing manifest let a call run. The pairing is refused at
+    setup now, and ``claude_named`` binds the policy to the connection."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("agents.testing", reason="openai-agents is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_openai_mcp_domain_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def manifest_for_db(tmp_path, tools=("run_sql",)):
+        from recusal.mcp import build_manifest, manifest_policy, manifest_to_text
+
+        path = tmp_path / "mcp-manifest.json"
+        path.write_text(
+            manifest_to_text(build_manifest({"db": [{"name": t} for t in tools]})),
+            encoding="utf-8",
+        )
+        return manifest_policy(str(path))
+
+    def test_negative_control_the_reviewers_pairing_is_refused_at_setup(self, example, tmp_path):
+        """Before: manifest_policy(missing) on the local gate judged `run_sql`, saw no MCP name,
+        raised no objection, and the server ran the call. Now the pairing never installs."""
+        from recusal.mcp import manifest_policy
+
+        missing = manifest_policy(str(tmp_path / "deliberately-missing.json"))
+        with pytest.raises(ValueError, match="claude_named"):
+            example.gate_mcp_server(example.InProcessMCPServer(), missing)
+        with pytest.raises(ValueError, match="claude_named"):
+            example.run_calls([("run_sql", {"sql": DELETE}, "c1")], policy=missing)
+        assert example.CALLED == []
+        # bound, the same missing manifest fails closed through the gate, and nothing runs
+        outputs, called = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")], policy=example.claude_named("db", missing)
+        )
+        assert called == []
+        assert "no usable MCP manifest" in _text(outputs["c1"])
+
+    def test_a_bound_manifest_policy_pins_the_servers_tools(self, example, tmp_path):
+        bound = example.claude_named("db", self.manifest_for_db(tmp_path, ("run_sql",)))
+        outputs, called = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1"), ("echo", {"text": "hi"}, "c2")], policy=bound
+        )
+        assert called == [("db", "run_sql", {"sql": SELECT})]
+        assert "Recusal refused `echo`" in _text(outputs["c2"])
+        # the manifest digest reaches the audit record through the bound policy's identity
+        from recusal.claude_code import decide
+
+        decide("run_sql", {"sql": SELECT}, bound)
+        decide(
+            "run_sql", {"sql": SELECT}, bound
+        )  # a ContextVar set inside the run loop stays there
+        assert bound.get_control_identity()["manifest_sha256"].startswith("sha256:")
+        bound.reset_control_identity()
+        assert bound.get_control_identity()["manifest_sha256"] is None
+
+    def test_the_hosted_gate_holds_the_same_rule(self, example, tmp_path):
+        from recusal.mcp import manifest_policy
+
+        with pytest.raises(ValueError, match="gate_hosted_mcp"):
+            example.run_hosted(
+                [("run_sql", {"sql": SELECT}, "r1")],
+                policy=manifest_policy(str(tmp_path / "missing.json")),
+            )
+        bound = example.claude_named("db", self.manifest_for_db(tmp_path, ("run_sql",)))
+        responses = example.run_hosted(
+            [("run_sql", {"sql": SELECT}, "r1"), ("echo", {"text": "hi"}, "r2")], policy=bound
+        )
+        assert responses["r1"]["approve"] is True
+        assert responses["r2"]["approve"] is False and "echo" in responses["r2"]["reason"]
+
+    def test_a_policy_bound_to_another_server_is_refused(self, example):
+        other = example.claude_named("other", example.sql_scope_policy)
+        with pytest.raises(ValueError, match="bound to server 'other'"):
+            example.gate_mcp_server(example.InProcessMCPServer(name="db"), other)
+        assert example.gate_mcp_server(example.InProcessMCPServer(name="other"), other) is not None
+
+    def test_a_composition_carrying_a_manifest_policy_is_in_its_domain(self, example, tmp_path):
+        from examples.composed_policies import compose_policies
+
+        composed = compose_policies(example.sql_scope_policy, self.manifest_for_db(tmp_path))
+        assert composed.recusal_name_domain == "claude_code"
+        with pytest.raises(ValueError, match="claude_named"):
+            example.gate_mcp_server(example.InProcessMCPServer(), composed)
+        bound = example.claude_named("db", composed)
+        outputs, called = example.run_calls([("run_sql", {"sql": SELECT}, "c1")], policy=bound)
+        assert called == [("db", "run_sql", {"sql": SELECT})]
+        decide(
+            "run_sql", {"sql": SELECT}, bound
+        )  # a ContextVar set inside the run loop stays there
+        assert bound.get_control_identity()["manifest_sha256"].startswith("sha256:")
+
+    def test_raw_name_policies_and_plain_compositions_are_unaffected(self, example):
+        from examples.composed_policies import compose_policies
+
+        assert compose_policies(example.sql_scope_policy).recusal_name_domain is None
+        outputs, called = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")], policy=compose_policies(example.sql_scope_policy)
+        )
+        assert called == [("db", "run_sql", {"sql": SELECT})]
+
+    def test_claude_named_needs_a_server_name(self, example):
+        with pytest.raises(ValueError, match="name of the server"):
+            example.claude_named("", example.sql_scope_policy)

@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/openai_agents_mcp_gate.py`: a policy's naming domain is checked at setup, and
+  `claude_named(server_name, policy)` bridges it. `recusal.mcp.manifest_policy` judges Claude
+  Code's `mcp__<server>__<tool>` names; the local and hosted MCP gates hand a policy the
+  server's own tool name, so a manifest policy plugged in directly saw no MCP name, ran no
+  membership check and raised no objection (a missing manifest let a call run). The manifest
+  policy now declares its domain (`recusal_name_domain = "claude_code"`, forwarded by
+  `compose_policies`), `gate_mcp_server` and `gate_hosted_mcp` refuse an unbound policy of
+  that domain with a `ValueError` naming the fix, and `claude_named` presents each call as
+  `mcp__{server}__{tool}`, is refused for any other server, and carries the manifest digest
+  to the audit record. Raw-name policies are unchanged. (Found in the 2026-11-03
+  architecture review.)
 - `examples/composed_policies.py` and the evaluator share one identity-discovery contract.
   The evaluator honors two shapes of control identity, a `get_control_identity()` method
   and the legacy `last_manifest_digest` attribute; the composer detected only the method on
