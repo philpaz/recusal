@@ -230,3 +230,30 @@ def test_decide_writes_the_record_captured_before_the_extraction(tmp_path, path)
         "seq",
         "timestamp",
     ]
+
+
+# --- identity discovery is one contract -------------------------------------------------------
+
+
+def test_identity_getter_prefers_the_method_then_the_legacy_attribute_then_none():
+    from recusal.claude_code import _control_identity, _identity_getter
+
+    class Both:
+        last_manifest_digest = "sha256:" + "1" * 64
+
+        def get_control_identity(self):
+            return {"manifest_sha256": "sha256:" + "2" * 64}
+
+    class Attr:
+        last_manifest_digest = "sha256:" + "3" * 64
+
+    class Nothing:
+        pass
+
+    assert _identity_getter(Both())() == {"manifest_sha256": "sha256:" + "2" * 64}
+    assert _identity_getter(Attr())() == {"manifest_sha256": "sha256:" + "3" * 64}
+    assert _identity_getter(Nothing()) is None
+    # and the evaluator's record reads through the same contract
+    assert _control_identity(Both(), None)["manifest_sha256"] == "sha256:" + "2" * 64
+    assert _control_identity(Attr(), None)["manifest_sha256"] == "sha256:" + "3" * 64
+    assert "manifest_sha256" not in _control_identity(Nothing(), None)

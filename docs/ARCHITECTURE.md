@@ -63,12 +63,14 @@ is done (0.6.0): declaration and server-instruction screening lives in the priva
 manifest serialization, runtime authorization caching, process collection, or hook
 protocol handling. `recusal.mcp` still exposes it.
 
-The second extraction is done (unreleased): the call-time manifest policy, the file-backed,
+The second extraction is done (0.12.7): the call-time manifest policy, the file-backed,
 locked, cached half with its invocation-local digest, lives in the private
 `recusal._manifest_policy`, and `recusal.mcp` keeps `manifest_policy` as a wrapper with the same
 signature, docstring and module. The policy module imports the artifact half's validator only at call time, so
-either module can be imported first. What remains in `recusal.mcp` is the pure artifact
-half: building, comparing and validating manifests and observations.
+either module can be imported first (a deferred dependency, not a removed one). What
+remains in `recusal.mcp` is the artifact half: building, comparing and validating
+manifests and observations, plus `load_manifest`, which reads a manifest file, so that
+module is not free of filesystem access; the kernel in `recusal.evidence` is.
 
 The same pattern was applied to `recusal.claude_code` in the same change: the neutral
 evaluator that every adapter reuses (`decide`, the one audit-record path and the control

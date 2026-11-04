@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/composed_policies.py` and the evaluator share one identity-discovery contract.
+  The evaluator honors two shapes of control identity, a `get_control_identity()` method
+  and the legacy `last_manifest_digest` attribute; the composer detected only the method on
+  plain leaves, so a legacy carrier, or a `ComposedPolicy` subclass overriding the getter
+  with no manifest leaf inside, kept its verdict through `compose_policies` and lost its
+  `manifest_sha256` on the audit record. `recusal.claude_code._identity_getter` (private)
+  is now the one function both read through; the composer counts a carrier of any shape
+  toward the one-per-gate rule and forwards its identity. `docs/ARCHITECTURE.md` now dates
+  the second extraction to 0.12.7 and no longer calls `recusal.mcp` pure (`load_manifest`
+  reads a file). (Found in the 2026-11-03 architecture review.)
 - `recusal.claude_code.decide` (the evaluator every adapter reuses): a policy's return
   value is held to its contract before the verdict fold. `policy(...) or []` read every
   false value, `False`, `0`, `""` and `{}`, as "no findings", so a predicate written as a

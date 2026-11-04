@@ -232,3 +232,60 @@ def test_two_plain_subclasses_are_not_mistaken_for_two_manifests():
     composed = compose_policies(_Stricter(_noop), _Stricter(_passed))
     assert composed.get_control_identity() == {}
     assert decide("Read", {}, composed)[0] == "deny"
+
+
+# --- every identity shape the evaluator supports survives composition ------------------------
+
+
+class _LegacyCarrier:
+    """A custom policy object carrying the legacy ``last_manifest_digest`` attribute."""
+
+    last_manifest_digest = "sha256:" + "a" * 64
+
+    def __call__(self, _name, _input):
+        return []
+
+
+class _OwnIdentity(ComposedPolicy):
+    """A subclass that reports an identity of its own, with no manifest leaf inside."""
+
+    def get_control_identity(self):
+        return {"manifest_sha256": "sha256:" + "b" * 64}
+
+
+def test_the_legacy_digest_attribute_survives_composition(tmp_path):
+    legacy = _LegacyCarrier()
+    direct = _record(tmp_path, legacy, "direct")
+    assert direct[1]["manifest_sha256"] == legacy.last_manifest_digest
+    assert _record(tmp_path, compose_policies(_noop, legacy), "composed") == direct
+    assert compose_policies(legacy).get_control_identity() == {
+        "manifest_sha256": legacy.last_manifest_digest
+    }
+
+
+def test_a_subclass_with_its_own_identity_getter_survives_composition(tmp_path):
+    own = _OwnIdentity(_noop)
+    direct = _record(tmp_path, own, "direct")
+    assert direct[1]["manifest_sha256"] == "sha256:" + "b" * 64
+    assert _record(tmp_path, compose_policies(own, _noop), "composed") == direct
+
+
+def test_carriers_of_different_shapes_are_still_one_per_gate(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="one manifest_policy per gate"):
+        compose_policies(_LegacyCarrier(), _manifest_and_log(tmp_path))
+    with pytest.raises(ValueError, match="one manifest_policy per gate"):
+        compose_policies(_OwnIdentity(_noop), _LegacyCarrier())
+
+
+def test_the_composer_uses_the_evaluators_discovery_contract():
+    """One contract, not two copies: whatever the evaluator would read for a leaf, the
+    composition reads through the same function."""
+    from recusal.claude_code import _identity_getter
+
+    legacy = _LegacyCarrier()
+    assert _identity_getter(legacy)() == {"manifest_sha256": legacy.last_manifest_digest}
+    assert _identity_getter(_noop) is None
+    assert _identity_getter(compose_policies(_noop)) is not None  # the getter exists
+    assert compose_policies(compose_policies(_noop)).get_control_identity() == {}

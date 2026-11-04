@@ -233,6 +233,25 @@ def _record(
 _AUTHORITATIVE_CONTROL_KEYS = frozenset({"recusal_version", "manifest_sha256"})
 
 
+def _identity_getter(policy: Any) -> Optional[Callable[[], Dict[str, Any]]]:
+    """The one identity-discovery contract: the callable that yields a policy's control
+    identity, or None when the policy carries none.
+
+    The evaluator reads a manifest digest through this, and so must anything that composes
+    policies (``examples/composed_policies.py``), or a composition would record provenance
+    the direct policy records and lose it for a shape the evaluator supports. Two shapes:
+    ``get_control_identity()`` when the policy has one (:func:`recusal.mcp.manifest_policy`,
+    or a custom policy's override), else a ``last_manifest_digest`` attribute, the legacy
+    shape for custom policy objects, read at call time (shared mutable state, so safe for
+    sequential use only)."""
+    getter = getattr(policy, "get_control_identity", None)
+    if callable(getter):
+        return getter
+    if hasattr(policy, "last_manifest_digest"):
+        return lambda: {"manifest_sha256": getattr(policy, "last_manifest_digest", None)}
+    return None
+
+
 def _control_identity(policy: Policy, control: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """The control identity recorded on EVERY audit path, built in one place.
 
@@ -252,14 +271,13 @@ def _control_identity(policy: Policy, control: Optional[Dict[str, Any]]) -> Dict
 
     identity = {k: v for k, v in (control or {}).items() if k not in _AUTHORITATIVE_CONTROL_KEYS}
     identity["recusal_version"] = _recusal_version
-    getter = getattr(policy, "get_control_identity", None)
-    if callable(getter):
+    getter = _identity_getter(policy)
+    manifest_digest = None
+    if getter is not None:
         try:
             manifest_digest = dict(getter()).get("manifest_sha256")
         except Exception:  # noqa: BLE001, a broken getter must not take down the audit path
             manifest_digest = None
-    else:
-        manifest_digest = getattr(policy, "last_manifest_digest", None)
     if isinstance(manifest_digest, str):
         identity["manifest_sha256"] = manifest_digest
     return identity

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.destructive_shell_policy import make_policy as make_destructive_policy  # noqa: E402
 from examples.egress_allowlist import make_egress_allowlist  # noqa: E402
 from examples.workspace_policy import make_workspace_policy  # noqa: E402
-from recusal.claude_code import decide  # noqa: E402
+from recusal.claude_code import _identity_getter, decide  # noqa: E402
 
 
 class ComposedPolicy:
@@ -55,14 +55,18 @@ class ComposedPolicy:
         for check in policies:
             leaves.extend(check.policies if type(check) is ComposedPolicy else (check,))
         self.policies = tuple(leaves)
-        # A kept subclass counts as a carrier only when it carries a manifest policy itself:
-        # its ``get_control_identity`` always exists, but reports {} for a plain group.
+        # Carrier discovery is the evaluator's own contract (``_identity_getter``: a
+        # ``get_control_identity()`` method, else a ``last_manifest_digest`` attribute), so
+        # whatever ``decide`` would record for a leaf on its own, the composition records too.
+        # A kept subclass is the one shape judged here instead: every ComposedPolicy has the
+        # getter, so it counts only when it carries a manifest policy itself or overrides the
+        # getter to report an identity of its own.
         carriers = []
         for p in self.policies:
             if isinstance(p, ComposedPolicy):
-                if p._carrier is not None:
+                if p._carrier is not None or _overrides_identity(type(p)):
                     carriers.append(p)
-            elif callable(getattr(p, "get_control_identity", None)):
+            elif _identity_getter(p) is not None:
                 carriers.append(p)
         if len(carriers) > 1:
             raise ValueError(
@@ -78,13 +82,21 @@ class ComposedPolicy:
         return findings
 
     def get_control_identity(self):
-        return dict(self._carrier.get_control_identity()) if self._carrier is not None else {}
+        if self._carrier is None:
+            return {}
+        getter = _identity_getter(self._carrier)
+        return dict(getter()) if getter is not None else {}
 
     def reset_control_identity(self):
         for check in self.policies:
             reset = getattr(check, "reset_control_identity", None)
             if callable(reset):
                 reset()
+
+
+def _overrides_identity(cls) -> bool:
+    """True when a ComposedPolicy subclass reports an identity of its own."""
+    return cls.get_control_identity is not ComposedPolicy.get_control_identity
 
 
 def compose_policies(*policies):
