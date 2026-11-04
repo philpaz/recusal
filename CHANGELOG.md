@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.9] - 2026-11-04
+
+Package changes and example changes, stated apart. In the installed package, two
+audit-record fixes: `recusal.claude_code.decide` and `run_pretooluse_hook` fingerprint
+the proposed input before the policy sees it, so a policy that mutates its argument
+cannot write the mutation onto the record, and `recusal.audit.AuditLog.append` serializes
+concurrent threads of one process around the whole append, so the in-memory mirror
+stays in chain order. Every valid fingerprint, the file format and every
+single-threaded behaviour are unchanged: a PATCH under `STABILITY.md`, named here. Under
+`examples/`, outside the wheel: the LangGraph gate completes a schema parameter the
+framework's parse suppressed from the callable's default before judgment, and forwards a
+validation message only when it is Pydantic's own template. The 2026-11-04 follow-up
+review found the three defects; each fix carries the reviewer's probe as a test.
+
 ### Fixed
 - `recusal.audit.AuditLog.append` serializes concurrent threads of one process around the
   whole append. The file transaction was under the inter-process lock but the in-memory
