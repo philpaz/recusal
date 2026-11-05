@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-05
+
+Two integrity fixes from the company-adoption review: audit appends preserve readable
+record boundaries, and adapters separate policy observations from execution arguments.
+This is a MINOR release under `STABILITY.md` because `AuditFramingError` is a new named
+public exception exported from the package root. The verdict kernel, manifest v8 and
+valid fingerprint bytes are unchanged. The broader model-safe error formatter is
+separate work; existing general policy-error messages retain their documented plaintext
+boundary.
+
 ### Fixed
 
 - Two adapter paths handed the policy the live argument dict the tool would then run
