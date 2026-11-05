@@ -20,9 +20,16 @@ Two ways to attach it:
   ``AgentTool`` the same way. Last, because callbacks run in order and a callback listed
   after the gate could change the arguments the gate judged; a callback listed before it
   that answers the call itself means the tool did not run.
-- ``RecusalPlugin(policy)`` is the same gate as a runner plugin: plugin callbacks run before
-  any agent's callbacks, for every agent the runner drives, so one plugin covers an app whose
-  agents you do not build yourself. List it last among the plugins for the same reason.
+- ``RecusalPlugin(policy)`` is the same gate as a runner plugin, for every agent the runner
+  drives, so one plugin covers an app whose agents you do not build yourself. Plugin
+  callbacks run before any agent's callbacks, so the plugin cannot be placed after an
+  agent's own ``before_tool_callback``, which could change the arguments the plugin judged.
+  Its contract is therefore explicit: it judges a call only when nothing it cannot see runs
+  after it, that is, when the executing agent carries no before-tool callback other than a
+  Recusal gate and no plugin listed after it overrides ``before_tool_callback``; otherwise it
+  refuses the call, naming the callback or plugin, and the fix (``gated_agent`` for the
+  agent, which appends the gate last among its callbacks; listing the plugin last). A call
+  whose invocation context does not expose the executing agent is refused too.
 
 What the callback cannot see, so ``gated_agent`` refuses rather than skips it:
 
@@ -274,8 +281,13 @@ def recusal_before_tool(policy: Policy):
 
 
 class RecusalPlugin(BasePlugin):
-    """The same gate as a runner plugin: every agent the runner drives, before any agent
-    callback. ``InMemoryRunner(agent, plugins=[..., RecusalPlugin(policy)])``."""
+    """The same gate as a runner plugin: every agent the runner drives.
+    ``InMemoryRunner(agent, plugins=[..., RecusalPlugin(policy)])``.
+
+    Plugin callbacks run before any agent's before-tool callbacks, and plugins run in list
+    order, so the plugin judges a call only when nothing that could change the arguments
+    runs after it (``_ordering_reason``); otherwise it refuses the call before judgment.
+    """
 
     def __init__(self, policy: Policy, name: str = "recusal"):
         super().__init__(name=name)
@@ -284,8 +296,49 @@ class RecusalPlugin(BasePlugin):
     async def before_tool_callback(
         self, *, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
     ) -> Optional[dict[str, Any]]:
+        reason = _ordering_reason(self, tool_context)
+        if reason is not None:
+            return {"error": f"Recusal refused `{tool.name}`: {reason}"}
         reason = _refusal(tool, tool_args, self._policy)
         return {"error": reason} if reason is not None else None
+
+
+def _ordering_reason(plugin: RecusalPlugin, tool_context: Any) -> Optional[str]:
+    """Why the plugin is not the last before-tool seam for this call, or None if it is.
+
+    The executing agent is read from the invocation context behind ``tool_context``; its
+    before-tool callbacks run after every plugin, so any callback that is not a Recusal gate
+    could change the arguments the plugin judged. A plugin listed after this one whose class
+    overrides ``before_tool_callback`` runs after it too. Either is refused with the fix
+    named; so is a context that does not expose the agent.
+    """
+    invocation = getattr(tool_context, "_invocation_context", None)
+    agent = getattr(invocation, "agent", None)
+    if agent is None:
+        return "the invocation context does not expose the executing agent"
+    if not isinstance(agent, LlmAgent):
+        return (
+            f"the executing agent {agent.name!r} is a {type(agent).__name__}, "
+            "whose before-tool callbacks this plugin cannot read"
+        )
+    for callback in _callbacks(agent):
+        if not getattr(callback, "recusal_gate", False):
+            name = getattr(callback, "__name__", type(callback).__name__)
+            return (
+                f"agent {agent.name!r} runs a before_tool_callback ({name}) after this "
+                "plugin; gate it with gated_agent(agent, policy)"
+            )
+    plugins = list(getattr(getattr(invocation, "plugin_manager", None), "plugins", []))
+    position = next((i for i, p in enumerate(plugins) if p is plugin), None)
+    for later in plugins[position + 1 :] if position is not None else []:
+        if isinstance(later, RecusalPlugin):
+            continue
+        if type(later).before_tool_callback is not BasePlugin.before_tool_callback:
+            return (
+                f"plugin {later.name!r} runs a before_tool_callback after this plugin; "
+                "list RecusalPlugin last"
+            )
+    return None
 
 
 def _callbacks(agent: LlmAgent) -> list:

@@ -707,7 +707,12 @@ copy with the gate as the last callback (a callback listed after it could change
 arguments it judged) and gates `sub_agents` and the agent behind every `AgentTool` the same
 way; it refuses an agent with a `code_executor` or an `LlmAgent` subclass, which can run
 things the callback never sees. `RecusalPlugin(policy)` is the same gate as a runner plugin,
-covering every agent the runner drives. Offline (a scripted model, no key), Python 3.11+,
+covering every agent the runner drives, with an explicit ordering contract: plugin
+callbacks run before any agent's callbacks, so the plugin judges a call only when nothing
+it cannot see runs after it, and refuses the call, naming the fix, when the executing agent
+carries a `before_tool_callback` that is not a Recusal gate (use `gated_agent` for that
+agent) or a plugin listed after it overrides `before_tool_callback` (list `RecusalPlugin`
+last). Offline (a scripted model, no key), Python 3.11+,
 tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`.
 
 For CrewAI, [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) uses CrewAI's own tool-call

@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/google_adk_gate.py`: `RecusalPlugin` has an explicit ordering contract. ADK
+  plugin callbacks run before any agent's before-tool callbacks, so an agent callback that
+  rewrote the arguments ran after the plugin had approved them, while the README called
+  the plugin the same gate covering every agent. The plugin now judges a call only when
+  nothing it cannot see runs after it: it refuses the call before judgment, naming the fix,
+  when the executing agent (read from the invocation context) carries a
+  `before_tool_callback` that is not a Recusal gate (`gated_agent`, which appends the gate
+  last among the agent's callbacks), when a plugin listed after it overrides
+  `before_tool_callback` (list `RecusalPlugin` last), or when the context does not expose
+  an `LlmAgent`. `tests/test_adapter_conformance.py` gains invariant 10, a transform the
+  framework runs after the gate's seam cannot change what runs, registered for both ADK
+  routes. (Found in the 2026-11-04 adapters review.)
 - `examples/crewai_gate.py` judges the invocation the tool receives. The before hook judged
   the dict the model proposed; CrewAI then validated it against the tool's `args_schema` at
   execution, filling omitted defaults and coercing values, so `charge(amount: int = 100)`

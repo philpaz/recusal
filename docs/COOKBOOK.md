@@ -94,7 +94,10 @@ The [Google ADK example](../examples/google_adk_gate.py) judges each tool call i
 ADK's `before_tool_callback` and answers a refusal as the tool's response;
 `gated_agent(agent, policy)` gates an agent, its `sub_agents` and its `AgentTool`s with the
 gate as the last callback, and refuses a `code_executor` or an `LlmAgent` subclass;
-`RecusalPlugin(policy)` does the same for every agent a runner drives. Python 3.11+, tested
+`RecusalPlugin(policy)` does the same for every agent a runner drives, and refuses a call
+when an agent callback or a later plugin that is not a Recusal gate would run after it
+(plugin callbacks run before agent callbacks; gate such an agent with `gated_agent`, list
+the plugin last). Python 3.11+, tested
 with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recusal dependency.
 
 The [CrewAI example](../examples/crewai_gate.py) installs a `before_tool_call` hook that
