@@ -24,6 +24,11 @@ What this does and does not guarantee (read before relying on it):
   (e.g. hooks for parallel tool calls) extend one chain instead of forking it. The
   in-memory ``entries`` mirror is still per-process: under concurrency, verify the
   FILE (``verify_file``), not one process's mirror.
+- One entry per line is the framing, and every append checks it under the same lock:
+  a complete final record that lost its newline is terminated before the next entry is
+  written, so both stay readable; a file that ends in an incomplete record refuses the
+  append (``AuditFramingError``) rather than fuse the new entry onto the damaged bytes,
+  and a hook fails closed to a deny. Recovery is the operator's, and explicit.
 - Resuming an existing file does **not** re-verify it by default. Pass
   ``verify_on_open=True`` to refuse (``AuditIntegrityError``) to extend a file that fails
   strict verification, and ``expected_head=(count, last_hash)`` to also anchor the resume
@@ -94,6 +99,34 @@ class AuditIntegrityError(Exception):
         super().__init__(f"audit log {path!r} failed verification on open: " + "; ".join(problems))
         self.path = path
         self.problems = problems
+
+
+class AuditFramingError(AuditIntegrityError):
+    """Raised by ``append`` when the file ends in an incomplete record it cannot extend.
+
+    One entry per line is the framing of the record. A file that ends in bytes with no
+    line terminator that are not a complete JSON value (a writer killed mid-write, a
+    truncated copy) has no line boundary to append after: writing the next entry at EOF
+    would join the two into one unreadable line, and the decision it records would be
+    lost while the append reports success. So the append refuses, before any byte is
+    written, and the damaged bytes are preserved for the operator. Recovery is explicit:
+    keep a copy of the file, remove the incomplete trailing bytes (truncate the file to
+    ``offset``), run ``recusal audit verify``, then resume. A complete final record that
+    merely lost its terminator is not this error: ``append`` terminates it and continues.
+    """
+
+    def __init__(self, path: str, offset: int, length: int) -> None:
+        message = (
+            f"audit log {path!r} ends in an incomplete record ({length} byte(s) after "
+            f"offset {offset} with no line terminator, not valid JSON); refusing to append "
+            "onto it. Keep a copy of the file, truncate it to that offset, verify with "
+            "`recusal audit verify`, then resume."
+        )
+        Exception.__init__(self, message)
+        self.path = path
+        self.problems = [message]
+        self.offset = offset
+        self.length = length
 
 
 class AuditSink(Protocol):
@@ -236,6 +269,31 @@ def _tail_state(path: str) -> Tuple[int, str]:
                 break
             window *= 4
     return _full_scan()
+
+
+def _tail_fragment(path: str) -> Tuple[int, bytes]:
+    """Return ``(offset, bytes)`` of whatever follows the final line terminator.
+
+    ``(size, b"")`` for an empty file or one that ends in a newline: the next entry has
+    its line boundary. Anything else is an unterminated final line; ``append`` decides
+    whether it is a complete record that lost its newline or an incomplete one.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return 0, b""
+    window = 64 * 1024
+    with open(path, "rb") as fh:
+        while True:
+            start = max(0, size - window)
+            fh.seek(start)
+            chunk = fh.read(size - start)
+            cut = chunk.rfind(b"\n")
+            if cut >= 0:
+                return start + cut + 1, chunk[cut + 1 :]
+            if start == 0:
+                return 0, chunk
+            window *= 4
 
 
 def _canonical(entry: Dict[str, Any]) -> str:
@@ -422,8 +480,25 @@ class AuditLog:
                     # The file is the shared truth under concurrency; our in-memory head
                     # may be behind another process's appends, so it is re-derived here.
                     next_seq, last_hash = _tail_state(self.path)
+                    # The new entry needs a line boundary to follow. A file ending in an
+                    # unterminated final line is either a complete record that lost its
+                    # newline (terminated here, so both records stay readable) or an
+                    # incomplete one, which refuses: appending onto it would fuse the two
+                    # into one unreadable line while reporting success.
+                    offset, fragment = _tail_fragment(self.path)
+                    terminate_first = False
+                    if fragment.strip():
+                        try:
+                            json.loads(fragment.decode("utf-8"))
+                        except (ValueError, UnicodeDecodeError):
+                            raise AuditFramingError(self.path, offset, len(fragment)) from None
+                        terminate_first = True
+                    elif fragment:
+                        terminate_first = True  # whitespace with no newline: same boundary
                     entry = self._build(verdict, next_seq, last_hash, action, actor, ts)
                     with open(self.path, "a", encoding="utf-8") as fh:
+                        if terminate_first:
+                            fh.write("\n")
                         fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
                         fh.flush()
                         if self._fsync:

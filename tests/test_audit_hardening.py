@@ -3,8 +3,10 @@ external anchor) and the robustness fixes (corrupt-resume, non-serializable acti
 
 from datetime import datetime, timezone
 
+import pytest
+
 from recusal import compute_verdict
-from recusal.audit import AuditLog, _digest, load, verify
+from recusal.audit import AuditFramingError, AuditLog, _digest, load, verify
 
 FIXED = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -68,17 +70,30 @@ def test_full_rewrite_needs_an_anchor_to_detect():
     assert any("head mismatch" in p for p in problems)
 
 
-def test_corrupt_trailing_line_does_not_brick_resume(tmp_path):
+def test_incomplete_trailing_record_resumes_but_refuses_the_append_until_removed(tmp_path):
     p = str(tmp_path / "audit.jsonl")
     log = _log(path=p)
     log.append(_fail())
     log.append(_fail())
     with open(p, "a", encoding="utf-8") as fh:  # process killed mid-append
         fh.write('{"seq": 2, "partial"')
+    with open(p, "rb") as fh:
+        damaged = fh.read()
 
     assert len(load(p)) == 2  # corrupt line skipped, not raised
     log2 = _log(path=p)  # resume succeeds rather than crashing
+    # ...but the append refuses: written at EOF, it would fuse with the incomplete
+    # record into one unreadable line. The damaged bytes are preserved for the operator.
+    with pytest.raises(AuditFramingError, match="incomplete record") as info:
+        log2.append(_fail())
+    with open(p, "rb") as fh:
+        assert fh.read() == damaged
+    assert info.value.offset == len(damaged) - len('{"seq": 2, "partial"')
+    # The documented recovery: truncate the incomplete bytes, then the chain continues.
+    with open(p, "r+b") as fh:
+        fh.truncate(info.value.offset)
     assert log2.append(_fail())["seq"] == 2
+    assert verify(load(p))[0]
 
 
 def test_non_serializable_action_is_recorded_not_dropped():

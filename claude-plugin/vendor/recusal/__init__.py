@@ -32,7 +32,7 @@ authority. (See CONSTITUTION.md.)
 Zero runtime dependencies, standard library only.
 """
 
-from .audit import AuditIntegrityError, AuditLog, AuditSink, verify
+from .audit import AuditFramingError, AuditIntegrityError, AuditLog, AuditSink, verify
 from .authorization import (
     ActionRequest,
     AuthorizationContext,
@@ -82,6 +82,7 @@ __all__ = [
     "ReleaseEvidence",
     "AuditLog",
     "AuditSink",
+    "AuditFramingError",
     "AuditIntegrityError",
     "verify",
     "classify_failure",

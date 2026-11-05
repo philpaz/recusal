@@ -408,7 +408,9 @@ itself make arbitrary policy execution replayable. `resume="tail"` recovers the 
 head from the final record without
 loading or scanning the full log, and file-backed appends are serialized with an
 inter-process lock, so hooks for parallel tool calls extend one chain instead of forking
-it.
+it. Every append also checks the line framing under that lock: a final record that lost
+its newline is terminated first, and a file ending in an incomplete record refuses the
+append (`AuditFramingError`, a deny in the hook) rather than fuse the new entry onto it.
 
 Any other runtime gets the same record from `decide`: `decide(tool_name, tool_input,
 policy, audit=log, surface="my_runtime.tool_gate", tool_use_id=call_id)` writes the same

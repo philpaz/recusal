@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A file-backed `AuditLog.append` wrote the new entry at EOF whatever the file ended
+  in. A complete final record that had lost its newline, or an incomplete record left
+  by a killed writer, fused with the new entry into one line no reader could parse,
+  while the append reported success and the hook let the call proceed: the decision
+  was on disk and unreadable. The append now checks the line framing under the same
+  inter-process lock as the write. A complete final record that lost its terminator
+  is terminated first, so both records stay readable and chained; a file ending in an
+  incomplete record refuses the append with `AuditFramingError` (an
+  `AuditIntegrityError`, so a hook fails closed to a deny) before any byte is written,
+  preserving the damaged bytes, and the error names the recovery: keep a copy,
+  truncate to the offset it reports, `recusal audit verify`, resume. A corrupt line
+  that has its terminator still does not brick the append, as before. Reported in the
+  2026-11-05 company-adoption review.
+
 ### Changed
 
 - The package docstring, the CLI description, the demo banner line, the plugin
