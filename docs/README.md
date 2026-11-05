@@ -1,6 +1,6 @@
 # Recusal documentation
 
-Deterministic governance for Claude agents, an independent verifier that can refuse to
+Deterministic governance for AI agents, an independent verifier that can refuse to
 certify a tool call *before* it runs. Start with whichever door fits you:
 
 ## Start here

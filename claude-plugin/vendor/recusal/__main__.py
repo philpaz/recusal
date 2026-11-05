@@ -1811,7 +1811,7 @@ def _add_mcp_source_args(p: argparse.ArgumentParser) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m recusal",
-        description="Recusal: deterministic governance for Claude agents.",
+        description="Recusal: deterministic governance for AI agents.",
     )
     parser.add_argument("--version", action="version", version=f"recusal {__version__}")
     sub = parser.add_subparsers(dest="command")

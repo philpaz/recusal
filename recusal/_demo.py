@@ -306,7 +306,7 @@ def run_demo(write: Writer, scenario: str = "all") -> int:
     if not selected:  # pragma: no cover - argparse constrains the choices
         raise ValueError(f"unknown demo scenario: {scenario}")
 
-    write("RECUSAL, deterministic governance for Claude and MCP tool calls")
+    write("RECUSAL, deterministic governance for agent tool calls")
     write("Offline: no API key, no network, no model in the decision path.")
     write("")
     for index, (_, _, run) in enumerate(selected):

@@ -1,5 +1,5 @@
 """
-Recusal, separation-of-powers governance for Claude agents.
+Recusal, separation-of-powers governance for AI agents.
 
 A judge recuses themselves from a case they can't impartially decide. The same
 principle governs autonomous agents: the thing that *generates* the work must

@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The package docstring, the CLI description, the demo banner line, the plugin
+  marketplace description and the docs index say governance for AI agents, not for
+  Claude agents: the gate is framework-neutral, so the old wording was no longer true.
+  The brand banners said the same and were redrawn in #216.
+
 ## [0.12.10] - 2026-11-04
 
 Package changes and example changes, stated apart. In the installed package, two
