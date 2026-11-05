@@ -117,6 +117,230 @@ class TestPydanticAiGate:
         )
         assert example._refusal("run_sql", "DELETE", example.sql_scope_policy) is not None
 
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    def test_a_policy_that_writes_to_what_it_judged_does_not_change_what_runs(
+        self, example, via_hooks
+    ):
+        """Containment of a buggy trusted policy: it judges a detached copy, the tool runs
+        the validated dict itself. Before this guard, the write reached the tool."""
+        import copy
+
+        seen = []
+
+        def mutating(tool_name, args):
+            seen.append(copy.deepcopy(args))
+            findings = example.sql_scope_policy(tool_name, args)
+            args["sql"] = DELETE  # an accidental write after the evidence was gathered
+            return findings
+
+        responses, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")], policy=mutating, via_hooks=via_hooks
+        )
+        assert seen == [{"sql": SELECT}]
+        assert executed == [("run_sql", {"sql": SELECT})]
+        assert responses == {"c1": ("success", f"recorded SQL: {SELECT}")}
+
+    def test_the_policy_observes_nested_containers_detached_from_the_invocation(self, example):
+        invocation = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
+        before = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
+        observed = []
+
+        def mutating(tool_name, args):
+            observed.append(args)
+            args["meta"]["tags"].append("write")
+            args["meta"]["limits"][0] = 999
+            args["sql"] = DELETE
+            return []
+
+        assert example._refusal("run_sql", invocation, mutating) is None
+        assert invocation == before, "the invocation is what the tool runs; it is untouched"
+        assert observed[0] is not invocation and observed[0]["meta"] is not invocation["meta"]
+        assert observed[0]["sql"] == DELETE  # the policy changed its own copy only
+
+    def test_unsupported_objects_are_refused_without_calling_their_copy_method(self, example):
+        called = []
+
+        class Undetachable:
+            def __deepcopy__(self, memo):
+                called.append("copy")
+                raise TypeError("PRIVATE_CREDENTIAL_SENTINEL")
+
+        reason = example._refusal("run_sql", {"sql": SELECT, "h": Undetachable()}, lambda *_: [])
+        assert reason == (
+            "Recusal refused `run_sql`: arguments cannot be detached for judging (TypeError); "
+            "declare data-only parameters and validate inside the tool body"
+        )
+        assert called == [] and "PRIVATE_CREDENTIAL_SENTINEL" not in reason
+
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    @pytest.mark.parametrize("mutating", [False, True], ids=["observational", "mutating"])
+    def test_a_mutable_valued_enum_is_refused_before_policy_or_execution(
+        self, example, via_hooks, mutating
+    ):
+        from enum import Enum
+
+        class Action(Enum):
+            READ = {"sql": SELECT}
+
+        seen, executed = [], []
+
+        def record(action: Action) -> str:
+            """Record the enum's SQL without executing it."""
+            executed.append(action.value["sql"])
+            return action.value["sql"]
+
+        def policy(name, args):
+            seen.append(args["action"].value["sql"])
+            if mutating:
+                args["action"].value["sql"] = DELETE
+            return []
+
+        capabilities = (
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))]
+            if via_hooks
+            else [example.RecusalGate(policy)]
+        )
+        agent = example.scripted_agent(
+            [("record", {"action": {"sql": SELECT}}, "c1")],
+            tools=[record],
+            capabilities=capabilities,
+        )
+        result = agent.run_sync("go")
+        outcome, reason = example.responses_of(result)["c1"]
+        assert outcome == "failed" and "arguments cannot be detached" in reason
+        assert seen == executed == []
+        assert Action.READ.value == {"sql": SELECT}
+
+        # A live recorder and a valid schema: the same proposal runs without the gate.
+        example.scripted_agent(
+            [("record", {"action": {"sql": SELECT}}, "c1")], tools=[record]
+        ).run_sync("go")
+        assert executed == [SELECT]
+
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    def test_an_immutable_scalar_valued_enum_is_judged_and_run_as_the_same_member(
+        self, example, via_hooks
+    ):
+        from enum import Enum
+
+        class Action(Enum):
+            READ = "read"
+
+        seen, executed = [], []
+
+        def record(action: Action) -> str:
+            """Record the selected action."""
+            executed.append(action)
+            return action.value
+
+        def policy(name, args):
+            seen.append(args["action"])
+            args["action"] = "write"  # assignment changes only the detached dict
+            return []
+
+        capabilities = (
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))]
+            if via_hooks
+            else [example.RecusalGate(policy)]
+        )
+        result = example.scripted_agent(
+            [("record", {"action": "read"}, "c1")], tools=[record], capabilities=capabilities
+        ).run_sync("go")
+        assert seen == executed == [Action.READ]
+        assert example.responses_of(result)["c1"] == ("success", "read")
+
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    @pytest.mark.parametrize("kind", ["model", "dataclass"])
+    def test_rich_models_and_dataclasses_are_refused_without_projection(
+        self, example, via_hooks, kind
+    ):
+        from dataclasses import dataclass
+
+        from pydantic import BaseModel, model_serializer
+
+        invoked, executed, judged = [], [], []
+
+        class Model(BaseModel):
+            sql: str
+
+            def __deepcopy__(self, memo=None):
+                invoked.append("copy")
+                return self
+
+            @model_serializer
+            def serialize(self):
+                invoked.append("serialize")
+                return {"sql": SELECT}
+
+        @dataclass
+        class Data:
+            sql: str
+
+            def __deepcopy__(self, memo=None):
+                invoked.append("copy")
+                return self
+
+        def record(action) -> str:
+            """Record SQL without executing it."""
+            executed.append(action.sql)
+            return action.sql
+
+        record.__annotations__["action"] = Model if kind == "model" else Data
+
+        def policy(name, args):
+            judged.append(args)
+            return []
+
+        capabilities = (
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))]
+            if via_hooks
+            else [example.RecusalGate(policy)]
+        )
+        result = example.scripted_agent(
+            [("record", {"action": {"sql": DELETE}}, "c1")],
+            tools=[record],
+            capabilities=capabilities,
+        ).run_sync("go")
+        outcome, reason = example.responses_of(result)["c1"]
+        assert outcome == "failed" and "declare data-only parameters" in reason
+        assert judged == executed == invoked == []
+
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    def test_detachment_errors_name_the_class_without_disclosing_exception_text(
+        self, example, monkeypatch, via_hooks
+    ):
+        def fail_detachment(*args):
+            raise RuntimeError("PRIVATE_CREDENTIAL_SENTINEL")
+
+        monkeypatch.setattr(example, "_detached", fail_detachment)
+        responses, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")], via_hooks=via_hooks
+        )
+        assert executed == [] and responses["c1"][0] == "failed"
+        assert "(RuntimeError)" in responses["c1"][1]
+        assert "PRIVATE_CREDENTIAL_SENTINEL" not in responses["c1"][1]
+
+    @pytest.mark.parametrize("bad", [(1, 2), {1, 2}, b"bytes", {1: "value"}, float("nan")])
+    def test_non_json_values_refuse_before_the_policy_runs(self, example, bad):
+        judged = []
+        reason = example._refusal("record", {"value": bad}, lambda *a: judged.append(a))
+        assert reason is not None and "(TypeError)" in reason
+        assert judged == []
+
+    def test_cyclic_arguments_refuse_and_shared_json_containers_are_detached(self, example):
+        cyclic = []
+        cyclic.append(cyclic)
+        assert "(TypeError)" in example._refusal("record", {"value": cyclic}, lambda *_: [])
+        shared = {"tags": ["read"]}
+        invocation = {"left": shared, "right": shared}
+
+        def mutate(name, observed):
+            observed["left"]["tags"].append("write")
+            return []
+
+        assert example._refusal("record", invocation, mutate) is None
+        assert shared == {"tags": ["read"]}
+
     def test_negative_control_runs_delete_without_the_gate(self, example):
         responses, executed = example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False)
         assert executed == [("run_sql", {"sql": DELETE})]

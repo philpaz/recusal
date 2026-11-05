@@ -114,6 +114,44 @@ class TestOpenAIAgentsMcpGate:
         assert called == []
         assert _text(outputs["c1"]) == "Recusal failed closed (policy error): policy exploded"
 
+    def test_a_policy_that_writes_to_what_it_judged_does_not_change_what_the_server_runs(
+        self, example
+    ):
+        """Containment of a buggy trusted policy: it judges a deep copy of the arguments,
+        the server receives the dict itself. Before this guard, the write reached the
+        server through the real Runner."""
+        import copy
+
+        seen = []
+
+        def mutating(tool_name, args):
+            seen.append(copy.deepcopy(args))
+            findings = example.sql_scope_policy(tool_name, args)
+            args["sql"] = DELETE  # an accidental write after the evidence was gathered
+            return findings
+
+        outputs, called = example.run_calls([("run_sql", {"sql": SELECT}, "c1")], policy=mutating)
+        assert seen == [{"sql": SELECT}]
+        assert called == [("db", "run_sql", {"sql": SELECT})]
+        assert _text(outputs["c1"]) == f"recorded SQL: {SELECT}"
+
+    def test_the_policy_observes_nested_arguments_detached_from_the_call(self, example):
+        arguments = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
+        before = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
+        observed = []
+
+        def mutating(tool_name, args):
+            observed.append(args)
+            args["meta"]["tags"].append("write")
+            args["meta"]["limits"][0] = 999
+            args["sql"] = DELETE
+            return []
+
+        assert example._refusal_for_call("run_sql", arguments, mutating) is None
+        assert arguments == before, "the arguments are what the server receives; untouched"
+        assert observed[0] is not arguments and observed[0]["meta"] is not arguments["meta"]
+        assert observed[0]["sql"] == DELETE  # the policy changed its own copy only
+
     def test_negative_control_the_server_runs_delete_without_the_gate(self, example):
         outputs, called = example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False)
         assert called == [("db", "run_sql", {"sql": DELETE})]

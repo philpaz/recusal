@@ -657,7 +657,9 @@ covers the two paths that example names as out of its sight. A local MCP server
 sanitized, hashed on collision or shortened, so a gate keyed on the public name judges a
 presentation of the capability. `gate_mcp_server(server, policy)` instead wraps the
 server's own `call_tool`, in place, the one point where the SDK hands over the server's
-tool name and the exact arguments it will run, after any approval; a refusal is returned
+tool name and the exact arguments it will run, after any approval; the policy judges a
+deep copy of those arguments and the server receives them as they were, so a policy's
+write to what it judged changes its copy, not the call. A refusal is returned
 as an MCP error result carrying the reason, so the model reads it and the server is never
 called. A policy keyed by tool name names the server's own tools. A policy written for
 Claude Code's names, `recusal.mcp.manifest_policy` or a composition carrying one, judges
@@ -746,7 +748,9 @@ exactly `crewai==1.15.34`.
 For Pydantic AI, [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) uses the
 framework's own `before_tool_execute` hook, which runs with the validated argument dict
 immediately before a tool runs. `RecusalGate(policy)` is a capability that judges each call
-there and raises `ToolFailed(reason)` on a refusal, so the model reads the reason as a failed
+there (the policy sees detached data; the tool runs with the validated dict itself,
+so a policy's write to its containers changes its observation, not the call) and raises
+`ToolFailed(reason)` on a refusal, so the model reads the reason as a failed
 tool result, the tool never runs, and no retry budget is spent; attach it with
 `Agent(..., capabilities=[RecusalGate(policy)])` or per run. It declares itself `innermost`,
 so Pydantic AI sorts it after every ordinary capability (a hook that ran after the gate could
@@ -756,6 +760,14 @@ is the same gate as a plain hook function with no ordering of its own. An agent 
 inside a tool function runs under its own capabilities and needs its own gate; the tests show
 the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
 with exactly `pydantic-ai-slim==2.64.0`.
+
+Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts, plus
+Enum members whose values are immutable JSON scalars (the member identity is preserved).
+Containers are detached by construction, without application copy methods or serializers.
+Models, dataclasses, mutable-valued Enums and other objects refuse before policy evaluation;
+declare data-only parameters and validate inside the tool body. A detachment failure names
+only the exception class, never its text. General policy-error handling retains the
+plaintext boundary documented in `recusal.audit`.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

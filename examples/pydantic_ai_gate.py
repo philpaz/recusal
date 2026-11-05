@@ -17,6 +17,12 @@ judged separately. Every toolset the agent runs, ``tools=``, ``toolsets=`` or a 
 own tools, executes through the same ``ToolManager``, so the hook sees each call by name and
 validated arguments; output tools (structured output) are not tool calls and skip it.
 
+Supported arguments are data-only: JSON scalars, lists and string-keyed dicts, plus Enum
+members whose values are immutable JSON scalars. Containers are detached by construction;
+scalar-valued Enum members retain their identity. Models, dataclasses, mutable-valued
+Enums and other objects are refused before policy evaluation. Declare data-only parameters
+and validate inside the tool body. No application copy method or serializer is called.
+
 Two ways to attach it:
 
 - ``Agent(..., capabilities=[RecusalGate(policy)])`` for every run of the agent, or
@@ -48,9 +54,11 @@ Run after installing:
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, List, Optional
 
 PYDANTIC_AI_VERSION = "2.64.0"
@@ -106,17 +114,60 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
+def _detached(value: Any, ancestors: tuple[int, ...] = ()) -> Any:
+    """Detach the supported data domain without invoking application copying/serialization.
+
+    Exact container/scalar types avoid subclasses with custom iteration or copy behavior.
+    Scalar-valued Enum members are treated as constants, with the same member at policy
+    and execution; a mutable value would retain an alias and is therefore refused.
+    """
+    if type(value) in (str, int, bool, type(None)):
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise TypeError("non-finite numbers are not JSON data")
+        return value
+    if isinstance(value, Enum):
+        scalar = value.value
+        if type(scalar) in (str, int, bool, type(None)) or (
+            type(scalar) is float and math.isfinite(scalar)
+        ):
+            return value
+        raise TypeError("an Enum value must be an immutable JSON scalar")
+    if type(value) not in (dict, list):
+        raise TypeError("arguments must be data-only")
+    if id(value) in ancestors:
+        raise TypeError("cyclic arguments are not JSON data")
+    ancestors = (*ancestors, id(value))
+    if type(value) is list:
+        return [_detached(item, ancestors) for item in value]
+    if any(type(key) is not str for key in value):
+        raise TypeError("argument keys must be strings")
+    return {key: _detached(item, ancestors) for key, item in value.items()}
+
+
 def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
     Pydantic AI hands the hook the validated argument dict the tool will be called with, so
     the policy judges exactly what would run. A non-dict is refused: the tool would not
     accept it either, and the policy cannot read it.
+
+    The policy judges detached data, built by ``_detached``, and the tool runs with the
+    validated dict itself. Unsupported values refuse before the policy is called. No
+    model projection, application copy method or serializer participates in the decision.
     """
     if not isinstance(args, dict):
         return f"Recusal refused `{tool_name}`: arguments are not a mapping"
     try:
-        decision, reason = decide(tool_name, args, policy)
+        observed = _detached(args)
+    except Exception as exc:  # noqa: BLE001, an unsupported observation must not run
+        return (
+            f"Recusal refused `{tool_name}`: arguments cannot be detached for judging "
+            f"({type(exc).__name__}); declare data-only parameters and validate inside the tool body"
+        )
+    try:
+        decision, reason = decide(tool_name, observed, policy)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): {exc}"
     return reason if decision == "deny" else None
