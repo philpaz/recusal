@@ -54,6 +54,7 @@ Run after installing:
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import json
 import os
@@ -115,12 +116,16 @@ def _refusal_for_call(tool_name: str, arguments: Any, policy: Policy) -> Optiona
     ``arguments`` is the dict the SDK hands ``call_tool`` (``None`` for a call without
     any), so the policy judges exactly what the server will receive. A non-mapping is
     refused: the server would not accept it either, and the policy cannot read it.
+
+    The policy judges a deep copy of that dict (JSON data, so the copy is exact) and the
+    server receives the dict itself, so a policy that writes to what it was handed, after
+    gathering its evidence, changes its copy and not the call.
     """
     args = {} if arguments is None else arguments
     if not isinstance(args, dict):
         return f"Recusal refused `{tool_name}`: arguments are not a mapping"
     try:
-        decision, reason = decide(tool_name, args, policy)
+        decision, reason = decide(tool_name, copy.deepcopy(args), policy)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): {exc}"
     return reason if decision == "deny" else None

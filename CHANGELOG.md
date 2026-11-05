@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Two adapter paths handed the policy the live argument dict the tool would then run
+  with: the Pydantic AI gate (`examples/pydantic_ai_gate.py`, both the capability and
+  the `Hooks` route) and the local MCP server gate
+  (`examples/openai_agents_mcp_gate.py`). A policy that gathered passing evidence for
+  `SELECT` and then, by a bug, wrote `DELETE` into that dict had the tool run `DELETE`,
+  through the real Runner on the MCP route. The policy now judges a detached deep copy
+  and the tool runs with the dict itself, as the Responses, Chat, LangGraph, LangChain,
+  Google ADK and CrewAI gates already did; on Pydantic AI a value whose copy raises is
+  refused rather than judged. Containment of a buggy trusted policy, not a model-input
+  bypass: a correct policy still refuses what it should. The conformance suite gains
+  invariant 11, a mutating policy against every route of every adapter with its
+  negative control, and the adapter tests add nested-container cases. The public
+  `decide` is unchanged and its docstring now states the ownership contract: the
+  policy receives the caller's object, the record fingerprints the proposal first, and
+  a caller that executes what it adjudicated passes the policy a copy. Reported in the
+  2026-11-05 company-adoption review.
+
 - A file-backed `AuditLog.append` wrote the new entry at EOF whatever the file ended
   in. A complete final record that had lost its newline, or an incomplete record left
   by a killed writer, fused with the new entry into one line no reader could parse,

@@ -63,6 +63,16 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    no way to see a later hook from inside the gate (CrewAI's process-global hook list,
    LangGraph's and the OpenAI SDK's middleware chains): there the README says to install
    the gate last and the adapter tests show the bypass and the fix.
+11. **A policy's write to what it judged cannot change what runs.** The policy receives a
+   detached observation of the invocation and the tool runs with the invocation itself. A
+   policy that gathers passing evidence for ``SELECT`` and then, by a bug, writes ``DELETE``
+   into the dict it was handed has changed its copy: the tool still runs ``SELECT``, and
+   the policy's own record of what it saw is ``SELECT``. Registered for every route of
+   every adapter. Containment of a buggy trusted policy, not a model-input bypass: the
+   same proposal under a correct policy is still judged and still refused when it should
+   be (invariant 2). Where the framework re-prepares arguments (invariant 9) the detached
+   copy is of the prepared invocation, so the observation and the execution agree in type
+   and value as well as in text.
 
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.
@@ -92,6 +102,7 @@ skipped, never silently passed.
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.util
 import re
 import sys
@@ -723,6 +734,46 @@ def test_10_a_transform_the_framework_runs_after_the_gates_seam_cannot_change_wh
 def test_the_later_transform_rows_cover_every_route_the_docstring_names():
     assert {n for n, _ in LATER_ROWS} == {"google_adk"}
     assert set(ADAPTERS["google_adk"].later_transform) == set(ADAPTERS["google_adk"].routes)
+
+
+class Mutating:
+    """A policy that judges correctly, records what it saw, then writes to what it was handed.
+
+    The write is the bug under test: an accidental assignment after the evidence was
+    gathered. ``seen`` holds a deep copy taken BEFORE the write, so it states what the
+    policy observed, not what it left behind.
+    """
+
+    def __init__(self, policy):
+        self.policy = policy
+        self.seen: list[tuple[str, Any]] = []
+
+    def __call__(self, name, args):
+        self.seen.append((name, copy.deepcopy(args)))
+        findings = self.policy(name, args)
+        if isinstance(args, dict):
+            args["sql"] = DELETE
+        return findings
+
+
+@pytest.mark.parametrize("name, route", ROWS, ids=[f"{n}-{r}" for n, r in ROWS])
+def test_11_a_policys_write_to_what_it_judged_cannot_change_what_runs(modules, name, route):
+    module, run = _drive(modules, name, route)
+    policy = Mutating(module.sql_scope_policy)
+    outcomes, executed = run(module, [("run_sql", {"sql": SELECT}, "c1")], policy, True)
+    assert policy.seen == [("run_sql", {"sql": SELECT})], policy.seen
+    assert executed == [("run_sql", {"sql": SELECT})], executed
+    assert outcomes["c1"][0] is False, outcomes
+
+
+@pytest.mark.parametrize("name, route", ROWS, ids=[f"{n}-{r}" for n, r in ROWS])
+def test_11_control_the_same_policy_still_refuses_a_proposal_it_should(modules, name, route):
+    # the detached copy changes what a policy's write reaches, never what the policy decides
+    module, run = _drive(modules, name, route)
+    policy = Mutating(module.sql_scope_policy)
+    outcomes, executed = run(module, [("run_sql", {"sql": DELETE}, "c1")], policy, True)
+    assert executed == [], executed
+    assert outcomes["c1"][0] is True and "Recusal refused `run_sql`" in outcomes["c1"][1]
 
 
 # --- the registry drift locks --------------------------------------------------------------------

@@ -117,6 +117,56 @@ class TestPydanticAiGate:
         )
         assert example._refusal("run_sql", "DELETE", example.sql_scope_policy) is not None
 
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    def test_a_policy_that_writes_to_what_it_judged_does_not_change_what_runs(
+        self, example, via_hooks
+    ):
+        """Containment of a buggy trusted policy: it judges a detached copy, the tool runs
+        the validated dict itself. Before this guard, the write reached the tool."""
+        import copy
+
+        seen = []
+
+        def mutating(tool_name, args):
+            seen.append(copy.deepcopy(args))
+            findings = example.sql_scope_policy(tool_name, args)
+            args["sql"] = DELETE  # an accidental write after the evidence was gathered
+            return findings
+
+        responses, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")], policy=mutating, via_hooks=via_hooks
+        )
+        assert seen == [{"sql": SELECT}]
+        assert executed == [("run_sql", {"sql": SELECT})]
+        assert responses == {"c1": ("success", f"recorded SQL: {SELECT}")}
+
+    def test_the_policy_observes_nested_containers_detached_from_the_invocation(self, example):
+        invocation = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
+        before = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
+        observed = []
+
+        def mutating(tool_name, args):
+            observed.append(args)
+            args["meta"]["tags"].append("write")
+            args["meta"]["limits"][0] = 999
+            args["sql"] = DELETE
+            return []
+
+        assert example._refusal("run_sql", invocation, mutating) is None
+        assert invocation == before, "the invocation is what the tool runs; it is untouched"
+        assert observed[0] is not invocation and observed[0]["meta"] is not invocation["meta"]
+        assert observed[0]["sql"] == DELETE  # the policy changed its own copy only
+
+    def test_an_argument_that_cannot_be_detached_is_refused(self, example):
+        class Undetachable:
+            def __deepcopy__(self, memo):
+                raise TypeError("holds a live handle")
+
+        reason = example._refusal("run_sql", {"sql": SELECT, "h": Undetachable()}, lambda *_: [])
+        assert reason == (
+            "Recusal refused `run_sql`: arguments cannot be detached for judging (holds a live handle)"
+        )
+
     def test_negative_control_runs_delete_without_the_gate(self, example):
         responses, executed = example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False)
         assert executed == [("run_sql", {"sql": DELETE})]

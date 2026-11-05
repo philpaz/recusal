@@ -130,6 +130,15 @@ def decide(
 
     The recording arguments are refused (``ValueError``) without ``audit``, so a caller
     who believes it is recording is never silently not recording.
+
+    Ownership of ``tool_input``: the policy is called with the object the caller passed,
+    not a copy, and this function executes nothing. The record (with ``audit=``)
+    fingerprints the proposal BEFORE the policy sees it, so a policy's write to the dict
+    cannot reach the record; it can reach whatever the caller executes from that same
+    object afterwards. A caller that executes the call it adjudicated therefore hands the
+    policy a detached copy and executes what it fingerprinted, or keeps its own prepared
+    invocation apart from what it passes here. The framework adapters under ``examples/``
+    do this at their execution seam; the conformance suite's invariant 11 holds them to it.
     """
     if audit is None:
         if any(v is not None for v in (surface, tool_use_id, actor, control)):

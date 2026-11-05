@@ -48,6 +48,7 @@ Run after installing:
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from dataclasses import dataclass, field
@@ -112,11 +113,23 @@ def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:
     Pydantic AI hands the hook the validated argument dict the tool will be called with, so
     the policy judges exactly what would run. A non-dict is refused: the tool would not
     accept it either, and the policy cannot read it.
+
+    The policy judges a detached deep copy of that dict and the tool runs with the dict
+    itself, so a policy that writes to what it was handed, after gathering its evidence,
+    changes its copy and not the invocation. A value the copy cannot detach (one whose
+    copying raises) is refused: the gate cannot hand the policy an observation it knows
+    to be independent of what will run. A value whose own ``__deepcopy__`` misrepresents
+    it is the tool author's type in the tool author's schema; the gate does not inspect
+    for that.
     """
     if not isinstance(args, dict):
         return f"Recusal refused `{tool_name}`: arguments are not a mapping"
     try:
-        decision, reason = decide(tool_name, args, policy)
+        observed = copy.deepcopy(args)
+    except Exception as exc:  # noqa: BLE001, whatever the copy raised, the call is not judged
+        return f"Recusal refused `{tool_name}`: arguments cannot be detached for judging ({exc})"
+    try:
+        decision, reason = decide(tool_name, observed, policy)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): {exc}"
     return reason if decision == "deny" else None
