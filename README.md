@@ -715,7 +715,21 @@ hooks: `install_recusal_hooks(policy)` registers a `before_tool_call` hook that 
 call and blocks a refusal, and an `after_tool_call` hook that replaces CrewAI's fixed
 "blocked by hook" line with the reason the before hook blocked on (kept per invocation and
 never judged again; on the sync Crew runner, elsewhere the fixed line stays), so the model
-reads why. The registry is
+reads why. The policy judges the invocation the tool receives, not the proposal: the hook
+completes omitted fields from the schema's defaults, runs the tool's own `args_schema`
+validation once, writes the validated values back into the dict CrewAI executes and judges
+a copy, so `charge(amount: int = 100)` proposed with `{}` is judged as `{"amount": 100}`.
+It supports a stock tool and schema only: a `CrewStructuredTool` and `BaseTool` that keep
+CrewAI's run and validation methods, and a schema that is a direct `BaseModel` with no
+members of its own, configuration limited to `extra` and `title`, and bare field
+declarations (a supported annotation among `str`, `int`, `float`, `bool`, optionals, lists
+and string-keyed dicts of those, an optional JSON default, description and title),
+which is what CrewAI generates for `@tool` functions and `BaseTool` subclasses. A
+customised schema (a validator, an overridden `model_validate`, an intermediate base, a
+field with `exclude`, `exclude_if`, `default_factory`, an alias or a constraint), an
+unsupported annotation, an unknown parameter, a missing required one and a validation
+failure (named by field, never with Pydantic's text) are refused before judgment. The
+registry is
 process-global: one install covers every agent, task and crew in the process, and the
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
 that runs after the gate can change the argument dict the gate judged; the tests show the

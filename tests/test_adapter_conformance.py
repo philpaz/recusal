@@ -26,9 +26,11 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    validation or no schema layer exists: Pydantic AI's ``before_tool_execute`` receives the
    validated arguments by the framework's design, the Responses and Chat Completions loops
    dispatch the model's JSON themselves, and the MCP ``call_tool`` seam carries the exact
-   arguments the server receives. Google ADK and CrewAI have not been examined for a
-   validation layer between their hook and the function; they are listed here as not yet
-   covered, not as covered.
+   arguments the server receives. CrewAI validates against the tool's ``args_schema`` at
+   execution, so it is registered: its gate refuses a schema that is not a stock model (a
+   validator is a customisation), so a rewriting schema never runs. Google ADK's one
+   preparation layer is covered by invariant 9, not by a rewriting schema (the ADK has no
+   schema object to rewrite with).
 7. **The record binds what executed.** See the paragraph below the list.
 8. **A default the proposal omitted is judged at the value the callable uses.** A tool
    ``charge(amount: int = 100)`` proposed with ``{}`` reaches the policy as
@@ -36,17 +38,19 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    proposed with ``{"amount": 5}`` it runs with 5. Registered for the direct Responses and
    Chat loops (``bind`` plus ``apply_defaults``), Google ADK's callback and plugin (defaults
    completed into the raw arguments before the tool's own preparation), LangGraph and the
-   LangChain middleware (``_completed`` in the judging copy) and the OpenAI Agents function
-   tools (the SDK's prepared invocation). Pydantic AI judges the validated arguments by the
-   framework's design (the reviewer's control showed it); CrewAI is not registered until its
-   schema contract lands. MCP has no Python callable.
+   LangChain middleware (``_completed`` in the judging copy), the OpenAI Agents function
+   tools (the SDK's prepared invocation) and CrewAI (defaults completed from the schema
+   before its single validation). Pydantic AI judges the validated arguments by the
+   framework's design (the reviewer's control showed it). MCP has no Python callable.
 9. **Re-preparation cannot change a judged value.** Where a framework prepares arguments
-   again at execution (ADK's ``_preprocess_args_with_validation``), the gate supports only
-   parameter shapes whose preparation is a pure function of value and annotation and
-   refuses the rest; the adapter tests (`tests/test_google_adk_gate.py`,
-   `tests/test_openai_responses_gate.py`) prove exact type-and-value agreement between the
-   judged and received values on the supported set and refusal before execution for a
-   model-typed, ``Annotated``, ``Enum``, variadic or unannotated parameter.
+   again at execution (ADK's ``_preprocess_args_with_validation``, CrewAI's
+   ``args_schema.model_validate``), the gate supports only parameter shapes whose
+   preparation is a pure function of value and annotation and refuses the rest; the adapter
+   tests (`tests/test_google_adk_gate.py`, `tests/test_openai_responses_gate.py`,
+   `tests/test_crewai_gate.py`) prove exact type-and-value agreement between the judged and
+   received values on the supported set and refusal before execution for a model-typed,
+   ``Annotated``, ``Enum``, variadic or unannotated parameter, and on CrewAI for a
+   customised model class or a field setting beyond a default, description and title.
 
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.
@@ -324,6 +328,13 @@ def _crewai(m, calls, policy, gated):
     return _from_text_outputs(responses), executed
 
 
+def _crewai_transforming(m, policy):
+    responses, executed = m.run_calls(
+        _TRANSFORM_CALL, policy=policy, tools=[m.transforming_run_sql()]
+    )
+    return _from_text_outputs(responses), executed
+
+
 # pydantic ai --------------------------------------------------------------------------------------
 
 
@@ -403,7 +414,15 @@ ADAPTERS: dict[str, Adapter] = {
             "plugin": _standard_charge(_google_adk(True)),
         },
     ),
-    "crewai": Adapter("crewai_gate.py", "crewai", (3, 10), {"hooks": _crewai}, {"hooks"}),
+    "crewai": Adapter(
+        "crewai_gate.py",
+        "crewai",
+        (3, 10),
+        {"hooks": _crewai},
+        {"hooks"},
+        transforming={"hooks": _crewai_transforming},
+        omitted_default={"hooks": _standard_charge(_crewai)},
+    ),
     "pydantic_ai": Adapter(
         "pydantic_ai_gate.py",
         "pydantic_ai",
@@ -620,14 +639,15 @@ def test_the_omitted_default_rows_cover_every_adapter_the_docstring_names():
         "openai_agents",
         "openai_responses",
         "google_adk",
+        "crewai",
     }
     for name in {n for n, _ in DEFAULT_ROWS}:
         assert set(ADAPTERS[name].omitted_default) == set(ADAPTERS[name].routes), name
 
 
 def test_the_transforming_rows_cover_every_adapter_the_docstring_names():
-    assert {n for n, _ in TRANSFORM_ROWS} == {"langgraph", "langchain", "openai_agents"}
-    for name in ("langgraph", "langchain", "openai_agents"):
+    assert {n for n, _ in TRANSFORM_ROWS} == {"langgraph", "langchain", "openai_agents", "crewai"}
+    for name in ("langgraph", "langchain", "openai_agents", "crewai"):
         assert set(ADAPTERS[name].transforming) == set(ADAPTERS[name].routes), name
 
 

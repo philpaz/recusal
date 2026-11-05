@@ -7,6 +7,25 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/crewai_gate.py` judges the invocation the tool receives. The before hook judged
+  the dict the model proposed; CrewAI then validated it against the tool's `args_schema` at
+  execution, filling omitted defaults and coercing values, so `charge(amount: int = 100)`
+  proposed with `{}` reached a budget policy as `{}` and ran 100. The hook now completes
+  omitted fields from the schema's defaults into the raw input, runs the schema's
+  `model_validate` once, writes the validated values back into the dict CrewAI executes and
+  judges a copy. So that this one preparation is the one CrewAI repeats, the gate supports
+  only a stock tool and schema: a `CrewStructuredTool` and `BaseTool` keeping CrewAI's own
+  run and validation methods, and a schema that is a direct `BaseModel` subclass with no
+  members of its own, configuration limited to `extra` and `title`, and every field equal
+  to the canonical `FieldInfo` of a bare declaration (a supported annotation, an optional
+  JSON default, description and title). CrewAI's generated schemas are exactly that; a
+  validator, an overridden `model_validate`, an intermediate base, `model_post_init`, a
+  core-schema override, `exclude`, `exclude_if`, `default_factory`, an alias, a constraint,
+  an unsupported annotation, an unknown parameter, a missing required one and a validation
+  failure (reported by field name only, without Pydantic's text, which carries input
+  values) are refused before judgment. `tests/test_adapter_conformance.py` registers
+  CrewAI for invariant 6 (a rewriting schema is refused, the rewrite never runs) and
+  invariant 8, and states invariant 9 for it. (Found in the 2026-11-04 adapters review.)
 - `examples/openai_responses_gate.py` and `examples/google_adk_gate.py` judge one prepared
   invocation with defaults completed first. The direct loops judged the decoded JSON and
   let Python fill omitted defaults after judgment; the ADK callback and plugin judged the

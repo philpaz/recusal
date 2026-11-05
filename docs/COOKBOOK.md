@@ -100,7 +100,10 @@ with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recus
 The [CrewAI example](../examples/crewai_gate.py) installs a `before_tool_call` hook that
 judges each call and blocks a refusal, paired with an `after_tool_call` hook that puts
 the reason the before hook blocked on in the model's answer (never a second judgment); `install_recusal_hooks(policy)` registers both for
-every crew in the process and returns the uninstall. Install it after your other hooks.
+every crew in the process and returns the uninstall. The hook judges the invocation the
+tool receives (defaults completed, the tool's own schema validation run once, the values
+written back) and supports CrewAI's stock tools and generated schemas; a customised schema
+or an unsupported annotation is refused. Install it after your other hooks.
 Python 3.10+, tested with exactly `crewai==1.15.34`; not a Recusal dependency.
 
 The [Pydantic AI example](../examples/pydantic_ai_gate.py) judges each tool call in the

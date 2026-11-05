@@ -112,7 +112,8 @@ class TestCrewAIGate:
         assert responses["c1"] == "Recusal failed closed (policy error): decide crashed"
 
     def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
-        assert example._refusal("run_sql", ["x"], example.sql_scope_policy) == (
+        tool = example.run_sql.to_structured_tool()
+        assert example._refusal(tool, "run_sql", ["x"], example.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
 
@@ -247,10 +248,12 @@ class TestDenialReasonLifecycle:
 
     @staticmethod
     def context(example, name, tool_input, result=None):
+        # the real structured tool for the name: the gate judges the invocation the tool
+        # receives, and refuses a call that carries no tool object
         kwargs = {
             "tool_name": name,
             "tool_input": tool_input,
-            "tool": None,
+            "tool": getattr(example, name).to_structured_tool(),
             "agent": None,
             "task": None,
             "crew": None,
@@ -346,7 +349,7 @@ class TestDenialReasonLifecycle:
         before = example.recusal_before_tool_call(
             lambda n, a: [Finding.fail("deny", severity="CRITICAL", message="r")], denials
         )
-        held = [{"i": i} for i in range(example.PENDING_LIMIT + 20)]
+        held = [{"sql": f"q{i}"} for i in range(example.PENDING_LIMIT + 20)]
         for d in held:
             assert before(self.context(example, "run_sql", d)) is False
         assert len(denials._entries()) == example.PENDING_LIMIT
@@ -399,3 +402,553 @@ class TestDenialReasonLifecycle:
         blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
         after(self.context(example, "run_sql", {"sql": "x"}, blocked))
         assert calls["n"] == 0
+
+
+def _same(a, b) -> bool:
+    """Exact agreement: the same type at every node, then equal."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def test_the_exact_comparator_refuses_look_alikes():
+    assert not _same(True, 1) and not _same(1, 1.0) and not _same({"a": 1}, {"a": "1"})
+    assert not _same(0, False) and _same({"a": [1, 2.0]}, {"a": [1, 2.0]})
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+class TestPreparedInvocation:
+    """Adapters review, finding 3 (CrewAI): the before hook judged the dict the model
+    proposed; CrewAI then validated it against the tool's ``args_schema`` at execution,
+    filling omitted defaults and coercing values, so ``charge(amount: int = 100)`` proposed
+    with ``{}`` reached the policy as ``{}`` and ran 100. The hook now completes defaults
+    into the raw input, validates once, writes the validated values back in place and judges
+    a copy; it supports only a stock tool and a stock schema, with every field compared
+    against the canonical ``FieldInfo`` its declaration produces (the v4 contract)."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("crewai", reason="crewai is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_crewai_prepared_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        from crewai.hooks import clear_after_tool_call_hooks, clear_before_tool_call_hooks
+
+        clear_before_tool_call_hooks()
+        clear_after_tool_call_hooks()
+        yield module
+        clear_before_tool_call_hooks()
+        clear_after_tool_call_hooks()
+
+    # --- helpers ---------------------------------------------------------------------------
+
+    @staticmethod
+    def recording(inner=None):
+        import copy
+
+        class Recording:
+            def __init__(self):
+                self.seen = []
+
+            def __call__(self, name, args):
+                self.seen.append((name, copy.deepcopy(args)))
+                return inner(name, args) if inner is not None else []
+
+        return Recording()
+
+    @staticmethod
+    def budget(name, args):
+        from recusal import Finding
+
+        if args.get("amount", 0) > 10:
+            return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+        return []
+
+    @staticmethod
+    def tool_with(example, schema, name="t"):
+        """A BaseTool with the given argument schema whose ``_run`` records what it got."""
+
+        class Recorder(example.BaseTool):
+            name: str = "t"
+            description: str = "records its arguments"
+            args_schema: type[example.BaseModel] = schema
+
+            def _run(self, **kwargs):
+                example.EXECUTED.append((self.name, kwargs))
+                return "ok"
+
+        return Recorder(name=name)
+
+    @staticmethod
+    def context(example, tool, name, tool_input):
+        return example.ToolCallHookContext(
+            tool_name=name, tool_input=tool_input, tool=tool, agent=None, task=None, crew=None
+        )
+
+    def reason(self, example, tool, tool_input, name="t"):
+        """The gate's refusal for this call at the hook, asserting the policy never ran."""
+        policy = self.recording()
+        before = example.recusal_before_tool_call(policy)
+        assert before(self.context(example, tool, name, tool_input)) is False
+        assert policy.seen == []
+        reason = example._refusal(tool, name, dict(tool_input), policy)
+        assert reason is not None and reason.startswith(f"Recusal refused `{name}`"), reason
+        return reason
+
+    # --- through the real Crew runner: judged equals received, exactly ---------------------
+
+    def test_an_omitted_default_is_judged_at_the_value_the_function_uses(self, example):
+        policy = self.recording(self.budget)
+        responses, executed = example.run_calls([("charge", {}, "c1")], policy=policy)
+        assert policy.seen == [("charge", {"amount": 100})]
+        assert type(policy.seen[0][1]["amount"]) is int
+        assert executed == []
+        assert responses["c1"] == "Recusal refused `charge` [FAIL]: over 10"
+        policy = self.recording(self.budget)
+        responses, executed = example.run_calls([("charge", {"amount": 5}, "c2")], policy=policy)
+        assert policy.seen == [("charge", {"amount": 5})]
+        assert executed == [("charge", {"amount": 5})]
+        assert responses["c2"] == "recorded"
+
+    def test_a_non_canonical_default_is_prepared_before_judgment(self, example):
+        @example.tool("loose")
+        def loose(amount: int = "100", ratio: float = 1, flag: bool = "true") -> str:  # type: ignore[assignment]
+            """Defaults in the JSON domain but not the annotation's canonical value."""
+            example.EXECUTED.append(("loose", {"amount": amount, "ratio": ratio, "flag": flag}))
+            return "ok"
+
+        policy = self.recording()
+        _, executed = example.run_calls([("loose", {}, "c1")], policy=policy, tools=[loose])
+        assert executed == [("loose", {"amount": 100, "ratio": 1.0, "flag": True})]
+        assert _same(policy.seen[0][1], executed[0][1]), (policy.seen, executed)
+        assert type(executed[0][1]["amount"]) is int and type(executed[0][1]["ratio"]) is float
+        # the naive hook would have judged the raw defaults
+        assert not _same({"amount": "100", "ratio": 1, "flag": "true"}, executed[0][1])
+
+    def test_an_explicit_string_is_prepared_once_and_judged_as_received(self, example):
+        policy = self.recording(self.budget)
+        _, executed = example.run_calls([("charge", {"amount": "7"}, "c1")], policy=policy)
+        assert executed == [("charge", {"amount": 7})]
+        assert _same(policy.seen[0][1], {"amount": 7})
+        policy = self.recording(self.budget)
+        _, executed = example.run_calls([("charge", {"amount": "70"}, "c2")], policy=policy)
+        assert executed == [] and _same(policy.seen[0][1], {"amount": 70})
+
+    def test_a_nested_container_default_is_judged_and_received_exactly(self, example):
+        @example.tool("nested")
+        def nested(tags: list[int] = [1, "2"], meta: dict[str, float] = {"k": 1}) -> str:  # type: ignore[list-item]  # noqa: B006
+            """Container defaults the schema coerces at validation."""
+            example.EXECUTED.append(("nested", {"tags": tags, "meta": meta}))
+            return "ok"
+
+        policy = self.recording()
+        _, executed = example.run_calls([("nested", {}, "c1")], policy=policy, tools=[nested])
+        assert executed == [("nested", {"tags": [1, 2], "meta": {"k": 1.0}})]
+        assert _same(policy.seen[0][1], executed[0][1])
+        assert type(executed[0][1]["meta"]["k"]) is float
+
+    def test_a_described_default_on_a_user_schema_is_supported_and_judged_exactly(self, example):
+        class Args(example.BaseModel):
+            amount: int = example.Field(default=100, description="the amount", title="Amount")
+
+        tool = self.tool_with(example, Args, name="charge")
+        policy = self.recording(self.budget)
+        responses, executed = example.run_calls([("charge", {}, "c1")], policy=policy, tools=[tool])
+        assert policy.seen == [("charge", {"amount": 100})] and executed == []
+        assert responses["c1"] == "Recusal refused `charge` [FAIL]: over 10"
+        policy = self.recording(self.budget)
+        _, executed = example.run_calls(
+            [("charge", {"amount": "5"}, "c2")], policy=policy, tools=[tool]
+        )
+        assert executed == [("charge", {"amount": 5})] and _same(policy.seen[0][1], {"amount": 5})
+
+    def test_a_mutating_policy_cannot_change_the_prepared_invocation(self, example):
+        def mutating(name, args):
+            args["amount"] = 1
+            args["extra"] = "x"
+            return []
+
+        _, executed = example.run_calls([("charge", {}, "c1")], policy=mutating)
+        assert executed == [("charge", {"amount": 100})]
+        _, executed = example.run_calls([("charge", {"amount": 50}, "c2")], policy=mutating)
+        assert executed == [("charge", {"amount": 50})]
+
+    def test_negative_control_the_ungated_runner_runs_the_omitted_default(self, example):
+        policy = self.recording(self.budget)
+        responses, executed = example.run_calls([("charge", {}, "c1")], policy=policy, gated=False)
+        assert executed == [("charge", {"amount": 100})] and policy.seen == []
+        assert responses["c1"] == "recorded"
+
+    def test_a_field_with_a_stateful_exclude_if_is_refused_before_execution(self, example):
+        state = {"n": 0}
+
+        def flip(value):
+            state["n"] += 1
+            return state["n"] % 2 == 0
+
+        class Args(example.BaseModel):
+            amount: int = example.Field(default=100, exclude_if=flip)
+
+        policy = self.recording()
+        responses, executed = example.run_calls(
+            [("charge", {}, "c1")], policy=policy, tools=[self.tool_with(example, Args, "charge")]
+        )
+        assert executed == [] and policy.seen == []
+        assert responses["c1"].startswith(
+            "Recusal refused `charge`: its arguments cannot be judged"
+        )
+        assert "field `amount` carries a setting" in responses["c1"]
+
+    def test_the_rewriting_schema_fixture_is_refused_and_the_rewrite_never_runs(self, example):
+        policy = self.recording(example.sql_scope_policy)
+        responses, executed = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")],
+            policy=policy,
+            tools=[example.transforming_run_sql()],
+        )
+        assert executed == [] and policy.seen == []
+        assert "Recusal refused `run_sql`" in responses["c1"] and "_rewrite" in responses["c1"]
+
+    # --- the write-back and the single preparation ------------------------------------------
+
+    def test_the_hook_replaces_the_dicts_contents_in_place_with_the_prepared_invocation(
+        self, example
+    ):
+        tool = example.charge.to_structured_tool()
+        proposed = {"amount": "7"}
+        policy = self.recording()
+        before = example.recusal_before_tool_call(policy)
+        context = self.context(example, tool, "charge", proposed)
+        assert before(context) is None
+        assert context.tool_input is proposed, "CrewAI executes this very object"
+        assert _same(proposed, {"amount": 7}) and _same(policy.seen[0][1], {"amount": 7})
+
+    def test_re_preparation_at_execution_cannot_change_the_judged_value(self, example):
+        """CrewAI validates again when it runs the tool (``_parse_args`` on the structured
+        tool, ``_validate_kwargs`` on the original): on the supported set both are identity
+        on the prepared invocation."""
+        from typing import Optional
+
+        @example.tool("wide")
+        def wide(
+            amount: int = "100",  # type: ignore[assignment]
+            ratio: float = 1,
+            flag: bool = "true",  # type: ignore[assignment]
+            tags: list[int] = [],  # noqa: B006
+            meta: dict[str, float] = {},  # noqa: B006
+            note: Optional[str] = None,
+        ) -> str:
+            """Every supported shape."""
+            return "ok"
+
+        tool = wide.to_structured_tool()
+        for proposed in ({}, {"amount": "7", "ratio": 2, "flag": "false", "tags": ["3"]}):
+            judged, why = example._prepared(tool, dict(proposed))
+            assert why is None, why
+            assert _same(tool._parse_args(dict(judged)), judged)
+            assert _same(tool._original_tool._validate_kwargs(dict(judged)), judged)
+
+    # --- refused before judgment: schema, field, tool, input ---------------------------------
+
+    def test_crewais_own_generated_schemas_are_stock(self, example):
+        assert example._unsupported_schema(example.charge.args_schema) is None
+        assert example._unsupported_schema(example.run_sql.args_schema) is None
+
+        class Plain(example.BaseTool):
+            name: str = "plain"
+            description: str = "no args_schema of its own"
+
+            def _run(self, amount: int = 100, note: str = "x") -> str:
+                return "ok"
+
+        assert example._unsupported_tool(Plain().to_structured_tool()) is None
+
+    def test_field_settings_beyond_the_contract_are_refused(self, example):
+        from pydantic import Field, create_model
+
+        rows = {
+            "exclude": Field(default=100, exclude=True),
+            "exclude_if": Field(default=100, exclude_if=lambda v: v > 5),
+            "default_factory": Field(default_factory=lambda: 100),
+            "alias": Field(default=100, alias="amt"),
+            "gt": Field(default=100, gt=0),
+            "validate_default": Field(default=100, validate_default=True),
+            "frozen": Field(default=100, frozen=True),
+            "json_schema_extra": Field(default=100, json_schema_extra={"x": 1}),
+            "deprecated": Field(default=100, deprecated=True),
+        }
+        for label, field in rows.items():
+            schema = create_model("S", amount=(int, field))
+            why = example._unsupported_schema(schema)
+            # deprecated=True also puts a descriptor named `amount` on the class, which the
+            # class check refuses first; every other row fails the canonical comparison
+            assert why is not None and "`amount`" in why, (label, why)
+            if label != "deprecated":
+                assert "field `amount` carries a setting" in why, (label, why)
+            tool = self.tool_with(example, schema, name="charge").to_structured_tool()
+            assert "cannot be judged" in self.reason(example, tool, {}, name="charge"), label
+
+    def test_fields_within_the_contract_are_supported_and_completed(self, example):
+        from typing import Optional
+
+        from pydantic import ConfigDict, Field, create_model
+
+        schema = create_model(
+            "S",
+            __config__=ConfigDict(extra="forbid", title="Charge"),
+            amount=(int, Field(default=100, description="the amount")),
+            note=(str, Field(default="x", title="Note")),
+            tags=(list[str], []),
+            meta=(dict[str, int], {}),
+            maybe=(Optional[int], None),
+            required=(str, ...),
+        )
+        assert example._unsupported_schema(schema) is None
+        tool = self.tool_with(example, schema).to_structured_tool()
+        policy = self.recording()
+        before = example.recusal_before_tool_call(policy)
+        assert before(self.context(example, tool, "t", {"required": "r"})) is None
+        expected = {
+            "amount": 100,
+            "note": "x",
+            "tags": [],
+            "meta": {},
+            "maybe": None,
+            "required": "r",
+        }
+        assert _same(policy.seen[0][1], expected), policy.seen
+
+    def test_unsupported_annotations_are_refused(self, example):
+        import enum
+        from typing import Annotated, Any
+
+        from pydantic import BaseModel, Field, create_model
+
+        class Color(enum.Enum):
+            RED = "red"
+
+        class Inner(BaseModel):
+            x: int = 1
+
+        rows = {
+            "Annotated": (Annotated[int, Field(gt=0)], 100),
+            "Enum": (Color, Color.RED),
+            "Any": (Any, 100),
+            "model": (Inner, Inner()),
+            "bare list": (list, []),
+            "list of Any": (list[Any], []),
+            "dict with int keys": (dict[int, int], {}),
+        }
+        for label, declaration in rows.items():
+            why = example._unsupported_schema(create_model("S", amount=declaration))
+            assert why is not None, label
+            assert "field `amount`" in why, (label, why)
+
+        @example.tool("unannotated")
+        def unannotated(amount=100) -> str:
+            """CrewAI gives an unannotated parameter the Any annotation."""
+            return "ok"
+
+        why = self.reason(example, unannotated.to_structured_tool(), {}, name="unannotated")
+        assert "field `amount` is not annotated with a supported data type" in why
+
+    def test_a_default_outside_the_json_domain_is_refused(self, example):
+        import decimal
+
+        from pydantic import create_model
+
+        why = example._unsupported_schema(create_model("S", amount=(int, decimal.Decimal(1))))
+        assert why == "field `amount` has a default outside the JSON domain"
+
+    def test_customised_model_classes_are_refused(self, example):
+        from pydantic import BaseModel, ConfigDict, create_model, field_validator
+
+        class OverridesValidate(BaseModel):
+            amount: int = 100
+
+            @classmethod
+            def model_validate(cls, *args, **kwargs):
+                return super().model_validate(*args, **kwargs)
+
+        class Base(BaseModel):
+            @field_validator("*")
+            @classmethod
+            def _touch(cls, value):
+                return value
+
+        class IntermediateBase(Base):
+            amount: int = 100
+
+        class PostInit(BaseModel):
+            amount: int = 100
+
+            def model_post_init(self, context):
+                self.amount = 1
+
+        class CoreSchema(BaseModel):
+            amount: int = 100
+
+            @classmethod
+            def __get_pydantic_core_schema__(cls, source, handler):
+                return handler(source)
+
+        class Decorated(BaseModel):
+            amount: int = 100
+
+            @field_validator("amount")
+            @classmethod
+            def _rewrite(cls, value):
+                return 1
+
+        class Configured(BaseModel):
+            model_config = ConfigDict(str_strip_whitespace=True)
+            amount: int = 100
+
+        class WithProperty(BaseModel):
+            amount: int = 100
+
+            @property
+            def doubled(self):
+                return self.amount * 2
+
+        class WithAttribute(BaseModel):
+            amount: int = 100
+            limit: int = 5  # a plain annotated attribute is a field; this is not
+            __slots__ = ()
+
+        rows = {
+            "model_validate": (OverridesValidate, "defines `model_validate`"),
+            "intermediate base": (IntermediateBase, "base class of its own"),
+            "model_post_init": (PostInit, "defines `model_post_init`"),
+            "core schema": (CoreSchema, "defines `__get_pydantic_core_schema__`"),
+            "field_validator": (Decorated, "defines `_rewrite`"),
+            "configuration": (Configured, "sets configuration `str_strip_whitespace`"),
+            "property": (WithProperty, "defines `doubled`"),
+            "slots": (WithAttribute, "defines `__slots__`"),
+            "create_model validators": (
+                create_model(
+                    "S",
+                    amount=(int, 100),
+                    __validators__={"v": field_validator("amount")(classmethod(lambda c, v: 1))},
+                ),
+                "defines `v`",
+            ),
+        }
+        for label, (schema, expected) in rows.items():
+            why = example._unsupported_schema(schema)
+            assert why is not None and expected in why, (label, why)
+            tool = self.tool_with(example, schema, name="charge").to_structured_tool()
+            assert expected in self.reason(example, tool, {}, name="charge"), label
+        assert example._unsupported_schema(dict) == "its argument schema is not a Pydantic model"
+
+    def test_tool_classes_that_change_validation_or_running_are_refused(self, example):
+        class Args(example.BaseModel):
+            amount: int = 100
+
+        class LooseStructured(example.CrewStructuredTool):
+            def _parse_args(self, raw_args):
+                return raw_args if isinstance(raw_args, dict) else {}
+
+        loose = LooseStructured(
+            name="charge", description="d", args_schema=Args, func=lambda amount=100: "ok"
+        )
+        assert "overrides `_parse_args`" in self.reason(example, loose, {}, name="charge")
+
+        class OwnRun(example.BaseTool):
+            name: str = "charge"
+            description: str = "d"
+            args_schema: type[example.BaseModel] = Args
+
+            def run(self, *args, **kwargs):
+                return self._run(**kwargs)
+
+            def _run(self, **kwargs):
+                return "ok"
+
+        assert "overrides `run`" in self.reason(
+            example, OwnRun().to_structured_tool(), {}, name="charge"
+        )
+
+        class OwnValidation(example.BaseTool):
+            name: str = "charge"
+            description: str = "d"
+            args_schema: type[example.BaseModel] = Args
+
+            def _validate_kwargs(self, kwargs):
+                return kwargs
+
+            def _run(self, **kwargs):
+                return "ok"
+
+        assert "overrides `_validate_kwargs`" in self.reason(
+            example, OwnValidation().to_structured_tool(), {}, name="charge"
+        )
+        assert "no CrewAI tool object" in self.reason(example, None, {}, name="charge")
+
+    def test_unknown_missing_and_invalid_arguments_are_refused_before_judgment(self, example):
+        tool = example.charge.to_structured_tool()
+        assert self.reason(example, tool, {"amount": 5, "zzz": 1}, "charge") == (
+            "Recusal refused `charge`: `zzz` is not a parameter of the tool"
+        )
+        required = self.tool_with(
+            example, example.run_sql.args_schema, "run_sql"
+        ).to_structured_tool()
+        assert self.reason(example, required, {}, "run_sql") == (
+            "Recusal refused `run_sql`: required parameter `sql` is missing"
+        )
+        why = self.reason(example, tool, {"amount": "secret-value"}, "charge")
+        assert why == "Recusal refused `charge`: validation failed for `amount`"
+        assert "secret-value" not in why
+
+    def test_a_crash_inside_preparation_blocks_the_call(self, example, monkeypatch):
+        def boom(tool, tool_input):
+            raise RuntimeError("bookkeeping bug")
+
+        monkeypatch.setattr(example, "_prepared", boom)
+        policy = self.recording()
+        before = example.recusal_before_tool_call(policy)
+        tool = example.charge.to_structured_tool()
+        assert before(self.context(example, tool, "charge", {})) is False
+        assert policy.seen == []
+
+    # --- the pins that keep the whitelist a whitelist ----------------------------------------
+
+    def test_the_generated_names_of_a_stock_model_stay_within_the_allowed_set(self, example):
+        from pydantic import BaseModel, create_model
+
+        class Statement(BaseModel):
+            amount: int = 100
+
+        allowed = lambda n: n in example._GENERATED_NAMES or example._PYDANTIC_FAMILY.match(n)  # noqa: E731
+        for schema in (create_model("S", amount=(int, 100)), Statement, example.charge.args_schema):
+            own = sorted(n for n in vars(schema) if not allowed(n))
+            assert own == [], (schema, own)
+
+    def test_the_canonical_form_of_a_bare_declaration_sets_only_annotation_and_default(
+        self, example
+    ):
+        from pydantic import Field, create_model
+
+        fields = create_model(
+            "S", a=(int, 100), b=(int, ...), c=(int, Field(default=1, description="d"))
+        ).model_fields
+        assert set(example._canonical_field(fields["a"])._attributes_set) == {
+            "annotation",
+            "default",
+        }
+        assert set(example._canonical_field(fields["b"])._attributes_set) == {"annotation"}
+        assert set(example._canonical_field(fields["c"])._attributes_set) == {
+            "annotation",
+            "default",
+            "description",
+        }
+        for name in fields:
+            assert example._unsupported_field(name, fields[name]) is None, name
