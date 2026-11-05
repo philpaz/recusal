@@ -39,6 +39,7 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
+    charge_tool,  # noqa: F401, re-exported: the conformance suite drives it here
     echo,
     recusal_agate,
     recusal_gate,

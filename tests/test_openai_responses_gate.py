@@ -452,3 +452,175 @@ class TestOpenAIResponsesGate:
         assert "UNGATED executed: ['SELECT * FROM audit_log', 'DELETE FROM audit_log']" in out
         assert "custom_tool_call: Recusal refused output item of type 'custom_tool_call'" in out
         assert json.dumps({"sql": DELETE}) not in out
+
+
+def _same(a, b) -> bool:
+    """Exact agreement: the same type at every node, then equal."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def test_the_exact_comparator_refuses_look_alikes():
+    assert _same({"a": [1, 2.0, "x", True]}, {"a": [1, 2.0, "x", True]})
+    assert not _same(True, 1) and not _same(1, 1.0) and not _same(0, False)
+    assert not _same({"a": 1}, {"a": "1"}) and not _same([1], (1,))
+
+
+class TestBoundInvocation:
+    """Adapters review, finding 3 (direct loops): the loop judged the decoded JSON and let
+    Python fill omitted defaults after judgment; ``charge(amount=100)`` proposed with ``{}``
+    reached a budget policy as ``{}`` and ran 100. The call is bound to the signature with
+    defaults applied before judgment, and the bound invocation is what runs."""
+
+    @pytest.fixture
+    def ex(self):
+        pytest.importorskip("openai", reason="the openai package is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_responses_bound_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def budget(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append(args)
+            if args.get("amount", 0) > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        return policy
+
+    def test_an_omitted_default_is_judged_at_the_value_the_function_uses(self, ex):
+        seen = []
+        ex.EXECUTED.clear()
+        out = ex.judge_and_run("charge", "{}", ex.TOOLS, self.budget(seen))
+        assert seen == [{"amount": 100}] and type(seen[0]["amount"]) is int
+        assert ex.EXECUTED == [] and "over 10" in out
+
+    def test_an_explicit_value_is_judged_and_runs_exactly_as_bound(self, ex):
+        seen = []
+        ex.EXECUTED.clear()
+        ex.judge_and_run("charge", json.dumps({"amount": 5}), ex.TOOLS, self.budget(seen))
+        assert _same(seen[0], {"amount": 5}) and _same(ex.EXECUTED[0][1], {"amount": 5})
+
+    def test_a_non_canonical_default_is_judged_as_the_function_receives_it(self, ex):
+        """No coercion exists on this path: the policy sees the default exactly as Python
+        hands it to the function, a str here, and so does the function."""
+        received, seen = [], []
+
+        def charge(amount: int = "100") -> str:  # type: ignore[assignment]
+            received.append(amount)
+            return "recorded"
+
+        ex.judge_and_run("charge", "{}", {"charge": charge}, lambda n, a: seen.append(a) or [])
+        assert _same(seen[0]["amount"], "100") and _same(received[0], "100")
+
+    def test_a_mutating_policy_cannot_change_the_bound_invocation(self, ex):
+        received = []
+
+        def charge(amount: int = 100, tags: list[str] = None) -> str:  # type: ignore[assignment]
+            received.append((amount, tags))
+            return "recorded"
+
+        def mutate(name, args):
+            args["amount"] = 999
+            if args["tags"] is not None:
+                args["tags"].append("x")
+            return []
+
+        ex.judge_and_run(
+            "charge", json.dumps({"amount": 5, "tags": ["a"]}), {"charge": charge}, mutate
+        )
+        assert received == [(5, ["a"])]
+
+    @pytest.mark.parametrize(
+        "arguments, fragment",
+        [
+            ('{"sql": "x", "nope": 1}', "unexpected keyword argument 'nope'"),
+            ("{}", "missing a required argument: 'sql'"),
+        ],
+    )
+    def test_a_call_that_does_not_bind_is_refused_naming_the_parameter_only(
+        self, ex, arguments, fragment
+    ):
+        ex.EXECUTED.clear()
+        out = ex.judge_and_run("run_sql", arguments, ex.TOOLS, lambda n, a: [])
+        assert (
+            out.startswith("Recusal refused `run_sql`: arguments do not bind") and fragment in out
+        )
+        assert ex.EXECUTED == []
+
+    def test_a_signature_that_cannot_be_judged_by_name_is_refused(self, ex):
+        import enum
+        from typing import Any
+
+        class Color(enum.Enum):
+            RED = "red"
+
+        def variadic(sql: str, **options) -> str:
+            return "x"
+
+        def unannotated(sql) -> str:
+            return "x"
+
+        def anything(value: Any) -> str:
+            return "x"
+
+        def enumerated(color: Color) -> str:
+            return "x"
+
+        def positional(sql: str, /) -> str:
+            return "x"
+
+        def odd_default(when: str = object()) -> str:  # type: ignore[assignment]
+            return "x"
+
+        seen = []
+        for func, fragment in (
+            (variadic, "variadic"),
+            (unannotated, "not annotated"),
+            (anything, "not annotated"),
+            (enumerated, "not annotated"),
+            (positional, "positional-only"),
+            (odd_default, "outside the JSON domain"),
+        ):
+            out = ex.judge_and_run(
+                "t", json.dumps({"sql": "x"}), {"t": func}, lambda n, a: seen.append(a) or []
+            )
+            assert (
+                out.startswith("Recusal refused `t`: its signature cannot be judged")
+                and fragment in out
+            ), out
+        assert seen == []
+
+    def test_supported_shapes_bind_and_run(self, ex):
+        from typing import Optional
+
+        received = []
+
+        def shapes(
+            a: int, b: Optional[str] = None, c: list[int] = None, d: dict[str, float] = None
+        ) -> str:  # type: ignore[assignment]
+            received.append((a, b, c, d))
+            return "ok"
+
+        out = ex.judge_and_run(
+            "s", json.dumps({"a": 1, "c": [1, 2], "d": {"x": 1.5}}), {"s": shapes}, lambda n, a: []
+        )
+        assert out == "ok" and received == [(1, None, [1, 2], {"x": 1.5})]
+
+    def test_negative_control_the_naive_loop_runs_the_omitted_default(self, ex):
+        ex.EXECUTED.clear()
+        ex.dispatch_ungated(ex.response_with([ex.function_call("charge", {}, "c1")]), ex.TOOLS)
+        assert ex.EXECUTED == [("charge", {"amount": 100})]

@@ -43,8 +43,11 @@ Run after installing:
 from __future__ import annotations
 
 import asyncio
+import copy
+import inspect
 import os
 import sys
+import typing
 from typing import Any, AsyncGenerator, Callable, List, Optional
 
 GOOGLE_ADK_VERSION = "2.13.0"
@@ -100,17 +103,154 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
-def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:
+def charge(amount: int = 100) -> str:
+    """Record a hypothetical charge with a default the model may omit; contacts nothing."""
+    EXECUTED.append(("charge", {"amount": amount}))
+    return "recorded"
+
+
+# --- the supported invocation: an explicit type set, defaults completed before judgment -------
+
+_SCALARS = (str, int, float, bool)
+_UNION_TYPE = type(int | None)  # the PEP 604 union, without shadowing google.genai.types
+
+
+def _supported_annotation(annotation: Any) -> bool:
+    """True for an annotation whose preparation is a pure function of the value: ``str``,
+    ``int``, ``float``, ``bool``, ``Optional`` of one, ``list[T]`` and ``dict[str, T]`` with
+    ``T`` supported in turn. Everything else (no annotation, ``Any``, a model, an ``Enum``, an
+    ``Annotated``, a dataclass, a bare ``list``/``dict``) is unsupported."""
+    if annotation in _SCALARS:
+        return True
+    origin, args = typing.get_origin(annotation), typing.get_args(annotation)
+    if origin is typing.Union or origin is _UNION_TYPE:
+        rest = [a for a in args if a is not type(None)]
+        return len(rest) == 1 and _supported_annotation(rest[0])
+    if origin is list:
+        return len(args) == 1 and _supported_annotation(args[0])
+    if origin is dict:
+        return len(args) == 2 and args[0] is str and _supported_annotation(args[1])
+    return False
+
+
+def _json_data(value: Any) -> bool:
+    """True for a value in the JSON domain (what a default may be)."""
+    if value is None or isinstance(value, _SCALARS):
+        return True
+    if isinstance(value, list):
+        return all(_json_data(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _json_data(v) for k, v in value.items())
+    return False
+
+
+def _unsupported_signature(func: Callable[..., Any], skip: tuple[str, ...] = ()) -> Optional[str]:
+    """Why this callable's parameters cannot all be judged, or None if they can."""
+    try:
+        parameters = inspect.signature(func).parameters
+        # resolves string annotations (PEP 563) and keeps Annotated so it can be refused
+        hints = typing.get_type_hints(func, include_extras=True)
+    except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
+        return "its signature cannot be inspected"
+    for name, parameter in parameters.items():
+        if name in skip:
+            continue
+        annotation = hints.get(name, parameter.empty)
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            return f"`{name}` is variadic; every argument the tool receives must be judged by name"
+        if parameter.kind is parameter.POSITIONAL_ONLY:
+            return f"`{name}` is positional-only and cannot be judged by name"
+        if not _supported_annotation(annotation):
+            return f"`{name}` is not annotated with a supported data type"
+        if parameter.default is not parameter.empty and not _json_data(parameter.default):
+            return f"`{name}` has a default outside the JSON domain"
+    return None
+
+
+#: The FunctionTool methods that prepare and run an invocation. A tool class is supported
+#: only while every one of them is FunctionTool's own (the ADK's built-in subclasses such as
+#: transfer_to_agent inherit them; a user subclass that overrides preprocessing is refused).
+_STOCK_LIFECYCLE = (
+    "_preprocess_args",
+    "_preprocess_args_with_validation",
+    "_validate_args",
+    "run_async",
+)
+
+
+def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Prepare the invocation the tool will execute, in place, and return a detached copy
+    for judgment; or ``(None, reason)`` when it cannot be prepared faithfully.
+
+    Supported: a ``google.adk.tools.FunctionTool`` whose class keeps FunctionTool's own
+    preparation and run methods (``_STOCK_LIFECYCLE``; the ADK's built-in subclasses do, a
+    user subclass that overrides preprocessing does not) and whose parameters, outside the
+    ones the ADK injects (``_ignore_params``),
+    all carry a supported data annotation and JSON defaults. Omitted parameters are completed
+    from the signature's defaults INTO the raw arguments first, then the tool's own
+    ``_preprocess_args_with_validation`` runs once, so a default such as ``int = "100"`` is
+    prepared exactly as explicit input would be; the converted values are written back into
+    ``args`` (the ADK calls the tool with this dict) and the policy judges a deep copy. On
+    the supported set the ADK's execution-time preparation returns equal values, with the
+    validation feature on (coercion) or off (none), so judged equals received. A validation
+    failure is refused as such, without the SDK's text, which carries input values.
+    """
+    if not isinstance(tool, FunctionTool):
+        return (
+            None,
+            f"only a google.adk.tools.FunctionTool can be judged, not {type(tool).__name__}",
+        )
+    for method in _STOCK_LIFECYCLE:
+        if getattr(type(tool), method) is not getattr(FunctionTool, method):
+            return (
+                None,
+                f"{type(tool).__name__} overrides FunctionTool.{method}, so its preparation "
+                "is not the stock one",
+            )
+    func = tool.func
+    skip = tuple(getattr(tool, "_ignore_params", ()) or ())
+    why = _unsupported_signature(func, skip)
+    if why is not None:
+        return None, f"its signature cannot be judged ({why})"
+    parameters = inspect.signature(func).parameters
+    raw: dict[str, Any] = {}
+    for name, parameter in parameters.items():
+        if name in skip or name in args:
+            continue
+        if parameter.default is parameter.empty:
+            return None, f"required parameter `{name}` was not supplied"
+        raw[name] = copy.deepcopy(parameter.default)
+    unknown = sorted(k for k in args if k not in parameters)
+    if unknown:
+        return None, f"unknown parameter(s) {unknown!r}"
+    raw.update(args)
+    converted, errors = tool._preprocess_args_with_validation(raw)
+    if errors:
+        return None, f"{len(errors)} argument(s) do not validate against the tool's parameters"
+    args.clear()
+    args.update(converted)
+    return copy.deepcopy(converted), None
+
+
+def _refusal(tool: Any, args: Any, policy: Policy) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
-    The ADK hands the callback the same ``args`` dict the tool will be called with, so the
-    policy judges exactly what would run. A non-dict is refused: the tool would not accept
-    it either, and the policy cannot read it.
+    The ADK hands the callback the same ``args`` dict the tool will be called with; the
+    invocation is prepared in place (:func:`_prepared`) and the policy judges a detached
+    copy of exactly what will run. A non-dict is refused: the tool would not accept it
+    either, and the policy cannot read it.
     """
+    tool_name = getattr(tool, "name", "?")
     if not isinstance(args, dict):
         return f"Recusal refused `{tool_name}`: arguments are not a mapping"
     try:
-        decision, reason = decide(tool_name, args, policy)
+        invocation, why = _prepared(tool, args)
+    except Exception as exc:  # noqa: BLE001, a preparation the gate cannot complete is refused
+        return f"Recusal refused `{tool_name}`: the invocation cannot be prepared ({type(exc).__name__})"
+    if invocation is None:
+        return f"Recusal refused `{tool_name}`: {why}"
+    try:
+        decision, reason = decide(tool_name, invocation, policy)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): {exc}"
     return reason if decision == "deny" else None
@@ -124,7 +264,7 @@ def recusal_before_tool(policy: Policy):
     """
 
     def gate(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext):
-        reason = _refusal(tool.name, args, policy)
+        reason = _refusal(tool, args, policy)
         if reason is not None:
             return {"error": reason}
         return None
@@ -144,7 +284,7 @@ class RecusalPlugin(BasePlugin):
     async def before_tool_callback(
         self, *, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
     ) -> Optional[dict[str, Any]]:
-        reason = _refusal(tool.name, tool_args, self._policy)
+        reason = _refusal(tool, tool_args, self._policy)
         return {"error": reason} if reason is not None else None
 
 
@@ -245,7 +385,9 @@ def scripted_agent(calls: list[tuple[str, Any, str]], tools: Optional[list] = No
     return LlmAgent(
         name="assistant",
         model=ScriptedLlm(model="scripted", calls=list(calls)),
-        tools=[FunctionTool(echo), FunctionTool(run_sql)] if tools is None else tools,
+        tools=[FunctionTool(echo), FunctionTool(run_sql), FunctionTool(charge)]
+        if tools is None
+        else tools,
     )
 
 
@@ -270,10 +412,12 @@ def run_calls(
     policy: Policy = sql_scope_policy,
     gated: bool = True,
     via_plugin: bool = False,
+    tools: Optional[list] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
-    """Propose the calls to an agent with echo and run_sql; return responses and what ran."""
+    """Propose the calls to an agent with echo, run_sql and charge; return responses and
+    what ran."""
     EXECUTED.clear()
-    agent: BaseAgent = scripted_agent(calls)
+    agent: BaseAgent = scripted_agent(calls, tools=tools)
     plugins = None
     if gated and via_plugin:
         plugins = [RecusalPlugin(policy)]

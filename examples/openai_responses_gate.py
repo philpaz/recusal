@@ -39,9 +39,12 @@ Run after installing:
 
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import os
 import sys
+import typing
 from typing import Any, Callable, List, Optional
 
 OPENAI_VERSION = "3.34.0"
@@ -87,14 +90,84 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
-TOOLS: Tools = {"echo": echo, "run_sql": run_sql}
+def charge(amount: int = 100) -> str:
+    """Record a hypothetical charge with a default the model may omit; contacts nothing."""
+    EXECUTED.append(("charge", {"amount": amount}))
+    return "recorded"
+
+
+TOOLS: Tools = {"echo": echo, "run_sql": run_sql, "charge": charge}
+
+# --- the supported invocation: an explicit type set, defaults completed before judgment -------
+
+_SCALARS = (str, int, float, bool)
+_UNION_TYPE = type(int | None)  # the PEP 604 union, without shadowing any `types` module
+
+
+def _supported_annotation(annotation: Any) -> bool:
+    """True for an annotation whose preparation is a pure function of the value: ``str``,
+    ``int``, ``float``, ``bool``, ``Optional`` of one, ``list[T]`` and ``dict[str, T]`` with
+    ``T`` supported in turn. Everything else (no annotation, ``Any``, a model, an ``Enum``, an
+    ``Annotated``, a dataclass, a bare ``list``/``dict``) is unsupported."""
+    if annotation in _SCALARS:
+        return True
+    origin, args = typing.get_origin(annotation), typing.get_args(annotation)
+    if origin is typing.Union or origin is _UNION_TYPE:
+        rest = [a for a in args if a is not type(None)]
+        return len(rest) == 1 and _supported_annotation(rest[0])
+    if origin is list:
+        return len(args) == 1 and _supported_annotation(args[0])
+    if origin is dict:
+        return len(args) == 2 and args[0] is str and _supported_annotation(args[1])
+    return False
+
+
+def _json_data(value: Any) -> bool:
+    """True for a value in the JSON domain (what a default may be)."""
+    if value is None or isinstance(value, _SCALARS):
+        return True
+    if isinstance(value, list):
+        return all(_json_data(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _json_data(v) for k, v in value.items())
+    return False
+
+
+def _unsupported_signature(func: Callable[..., Any], skip: tuple[str, ...] = ()) -> Optional[str]:
+    """Why this callable's parameters cannot all be judged, or None if they can."""
+    try:
+        parameters = inspect.signature(func).parameters
+        # resolves string annotations (PEP 563) and keeps Annotated so it can be refused
+        hints = typing.get_type_hints(func, include_extras=True)
+    except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
+        return "its signature cannot be inspected"
+    for name, parameter in parameters.items():
+        if name in skip:
+            continue
+        annotation = hints.get(name, parameter.empty)
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            return f"`{name}` is variadic; every argument the tool receives must be judged by name"
+        if parameter.kind is parameter.POSITIONAL_ONLY:
+            return f"`{name}` is positional-only and cannot be judged by name"
+        if not _supported_annotation(annotation):
+            return f"`{name}` is not annotated with a supported data type"
+        if parameter.default is not parameter.empty and not _json_data(parameter.default):
+            return f"`{name}` has a default outside the JSON domain"
+    return None
 
 
 def judge_and_run(name: str, arguments: str | None, tools: Tools, policy: Policy) -> str:
     """Decide one proposed call and run it if allowed; return the text the model gets back.
 
-    The ONE decision path for both API shapes. The arguments are decoded exactly as the tool
-    would receive them, so the policy judges what would run, not a look-alike.
+    The ONE decision path for both API shapes. The decoded arguments are bound to the
+    tool's signature with its defaults applied (``inspect.signature(...).bind`` then
+    ``apply_defaults``: argument binding, not type validation; no coercion happens on this
+    path), the policy judges a detached copy of that bound invocation, and the tool is
+    called with exactly those bound arguments, so a default the model omitted is judged at
+    the value the function would use. A tool whose signature cannot be judged by name
+    (variadic or positional-only parameters, an unsupported annotation, a default outside
+    the JSON domain) is refused, as is a call that does not bind (an unknown or missing
+    parameter; the refusal names the parameter, never a value).
     """
     try:
         args = json.loads(arguments or "{}")
@@ -104,13 +177,23 @@ def judge_and_run(name: str, arguments: str | None, tools: Tools, policy: Policy
         return f"Recusal refused `{name}`: arguments are not a JSON object"
     if name not in tools:
         return f"Recusal refused: unknown tool {name!r}"
+    func = tools[name]
+    why = _unsupported_signature(func)
+    if why is not None:
+        return f"Recusal refused `{name}`: its signature cannot be judged ({why})"
     try:
-        decision, reason = decide(name, args, policy)
+        bound = inspect.signature(func).bind(**args)
+    except TypeError as exc:  # the message names parameters only, never values
+        return f"Recusal refused `{name}`: arguments do not bind to the tool ({exc})"
+    bound.apply_defaults()
+    invocation = dict(bound.arguments)
+    try:
+        decision, reason = decide(name, copy.deepcopy(invocation), policy)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): {exc}"
     if decision == "deny":
         return reason
-    return str(tools[name](**args))
+    return str(func(**invocation))
 
 
 def _require_id(call_id: Any, what: str) -> str:
@@ -248,6 +331,7 @@ def dispatch_ungated(response: Response, tools: Tools) -> list[dict[str, Any]]:
     for item in response.output:
         if getattr(item, "type", None) == "function_call":
             args = json.loads(item.arguments or "{}")
+            # the naive loop: Python fills omitted defaults after the call is dispatched
             outputs.append(
                 {
                     "type": "function_call_output",

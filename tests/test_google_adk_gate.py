@@ -120,17 +120,18 @@ class TestGoogleAdkGate:
             return []
 
         responses, executed = example.run_calls([("echo", None, "c1")], policy=recording)
-        # the ADK normalizes a missing args field to {}, judges it, then the tool itself
-        # refuses the missing parameter; nothing ran
-        assert seen == [("echo", {})]
+        # the ADK normalizes a missing args field to {}; the gate completes defaults before
+        # judgment and `text` has none, so the call is refused before the policy runs
+        assert seen == []
         assert executed == []
-        assert "error" in responses["c1"]
+        assert "required parameter `text` was not supplied" in responses["c1"]["error"]
 
     def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
-        assert example._refusal("run_sql", ["DELETE"], example.sql_scope_policy) == (
+        tool = example.FunctionTool(example.run_sql)
+        assert example._refusal(tool, ["DELETE"], example.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
-        assert example._refusal("run_sql", "DELETE", example.sql_scope_policy) is not None
+        assert example._refusal(tool, "DELETE", example.sql_scope_policy) is not None
 
     def test_negative_control_runs_delete_without_the_gate(self, example):
         responses, executed = example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False)
@@ -314,3 +315,219 @@ class TestGoogleAdkGate:
         assert result.stdout.count("tools that ran: 2") == 2
         assert result.stdout.count("Recusal refused `run_sql` [FAIL]") == 2
         assert "before_tool_callback:" in result.stdout and "RecusalPlugin:" in result.stdout
+
+
+def _same(a, b) -> bool:
+    """Exact agreement: the same type at every node, then equal."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def test_the_exact_comparator_refuses_look_alikes():
+    assert not _same(True, 1) and not _same(1, 1.0) and not _same({"a": 1}, {"a": "1"})
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="the ADK requires Python 3.11+")
+class TestPreparedInvocation:
+    """Adapters review, finding 3 (ADK): the callback judged the raw args dict; the ADK then
+    prepared (coerced) the arguments and Python filled omitted defaults, so the policy saw
+    ``{}`` and the function ran 100, and ``amount: int = "100"`` was judged as a str and
+    received as an int. Defaults are completed into the raw arguments before the tool's own
+    preparation runs once; the converted values are written back and judged; only shapes
+    whose preparation is pure are supported."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("google.adk", reason="google-adk is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_adk_prepared_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture(params=[True, False], ids=["validation-on", "validation-off"])
+    def validation(self, request):
+        from google.adk.features import FeatureName, override_feature_enabled
+
+        override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, request.param)
+        yield request.param
+        override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True)
+
+    @staticmethod
+    def budget(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append(args)
+            if isinstance(args.get("amount"), int) and args["amount"] > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        return policy
+
+    @pytest.mark.parametrize("via_plugin", [False, True], ids=["callback", "plugin"])
+    def test_an_omitted_default_is_judged_at_the_value_the_function_uses(self, example, via_plugin):
+        seen = []
+        responses, executed = example.run_calls(
+            [("charge", {}, "c1")], policy=self.budget(seen), via_plugin=via_plugin
+        )
+        assert seen == [{"amount": 100}] and type(seen[0]["amount"]) is int
+        assert executed == [] and "over 10" in responses["c1"]["error"]
+
+    def test_a_non_canonical_default_is_prepared_before_judgment(self, example, validation):
+        received, seen = [], []
+
+        def charge(amount: int = "100") -> str:  # type: ignore[assignment]
+            received.append(amount)
+            return "recorded"
+
+        example.run_calls(
+            [("charge", {}, "c1")],
+            policy=lambda n, a: seen.append(a) or [],
+            tools=[example.FunctionTool(charge)],
+        )
+        assert _same(seen[0]["amount"], received[0]), (seen, received)
+        assert type(received[0]) is (int if validation else str)
+
+    def test_an_explicit_string_is_prepared_once_and_judged_as_received(self, example, validation):
+        received, seen = [], []
+
+        def charge(amount: int = 100) -> str:
+            received.append(amount)
+            return "recorded"
+
+        example.run_calls(
+            [("charge", {"amount": "7"}, "c1")],
+            policy=lambda n, a: seen.append(a) or [],
+            tools=[example.FunctionTool(charge)],
+        )
+        assert _same(seen[0]["amount"], received[0])
+        assert type(received[0]) is (int if validation else str)
+
+    def test_a_nested_container_default_is_judged_and_received_exactly(self, example):
+        received, seen = [], []
+
+        def tag(labels: list[str] = ["a", "b"], weights: dict[str, float] = {"x": 1.5}) -> str:  # noqa: B006
+            received.append((labels, weights))
+            return "recorded"
+
+        example.run_calls(
+            [("tag", {}, "c1")],
+            policy=lambda n, a: seen.append(a) or [],
+            tools=[example.FunctionTool(tag)],
+        )
+        assert _same(seen[0], {"labels": ["a", "b"], "weights": {"x": 1.5}})
+        assert _same(list(received[0]), [["a", "b"], {"x": 1.5}])
+
+    def test_a_mutating_policy_cannot_change_the_prepared_invocation(self, example):
+        received = []
+
+        def tag(labels: list[str] = ["a"]) -> str:  # noqa: B006
+            received.append(list(labels))
+            return "recorded"
+
+        def mutate(name, args):
+            args["labels"].append("x")
+            return []
+
+        example.run_calls([("tag", {}, "c1")], policy=mutate, tools=[example.FunctionTool(tag)])
+        assert received == [["a"]]
+
+    def test_shapes_whose_preparation_is_not_pure_are_refused_before_execution(self, example):
+        import enum
+        from typing import Annotated, Any
+
+        from pydantic import AfterValidator, BaseModel
+
+        class Query(BaseModel):
+            sql: str
+
+        class Color(enum.Enum):
+            RED = "red"
+
+        def modelled(query: Query) -> str:
+            return "x"
+
+        def annotated(amount: Annotated[int, AfterValidator(lambda v: v)]) -> str:
+            return "x"
+
+        def enumerated(color: Color) -> str:
+            return "x"
+
+        def anything(value: Any) -> str:
+            return "x"
+
+        def variadic(sql: str, **rest) -> str:
+            return "x"
+
+        seen = []
+        for func, args in (
+            (modelled, {"query": {"sql": "x"}}),
+            (annotated, {"amount": 1}),
+            (enumerated, {"color": "red"}),
+            (anything, {"value": 1}),
+            (variadic, {"sql": "x"}),
+        ):
+            example.EXECUTED.clear()
+            responses, _ = example.run_calls(
+                [(func.__name__, args, "c1")],
+                policy=lambda n, a: seen.append(a) or [],
+                tools=[example.FunctionTool(func)],
+            )
+            assert "cannot be judged" in responses["c1"]["error"], (func.__name__, responses)
+        assert seen == []
+
+    def test_a_subclass_overriding_preparation_is_refused_and_the_builtin_transfer_is_not(
+        self, example
+    ):
+        class Custom(example.FunctionTool):
+            def _preprocess_args(self, args):
+                return {k: 100 for k in args}
+
+        received = []
+
+        def charge(amount: int = 1) -> str:
+            received.append(amount)
+            return "recorded"
+
+        responses, _ = example.run_calls(
+            [("charge", {"amount": 5}, "c1")], policy=lambda n, a: [], tools=[Custom(charge)]
+        )
+        assert "overrides FunctionTool._preprocess_args" in responses["c1"]["error"]
+        assert received == []
+        from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+        assert example._prepared.__doc__  # the stock-lifecycle rule is documented
+        for method in example._STOCK_LIFECYCLE:
+            assert getattr(TransferToAgentTool, method) is getattr(example.FunctionTool, method)
+
+    def test_a_validation_failure_is_refused_without_the_sdk_text(self, example):
+        received = []
+
+        def charge(amount: int = 100) -> str:
+            received.append(amount)
+            return "recorded"
+
+        responses, _ = example.run_calls(
+            [("charge", {"amount": {"secret": "MODEL_SECRET_SENTINEL"}}, "c1")],
+            policy=lambda n, a: [],
+            tools=[example.FunctionTool(charge)],
+        )
+        assert received == []
+        assert "do not validate" in responses["c1"]["error"]
+        assert "MODEL_SECRET_SENTINEL" not in responses["c1"]["error"]
+
+    def test_an_unknown_parameter_is_refused_before_judgment(self, example):
+        seen = []
+        responses, executed = example.run_calls(
+            [("charge", {"amount": 5, "nope": 1}, "c1")], policy=lambda n, a: seen.append(a) or []
+        )
+        assert executed == [] and seen == [] and "unknown parameter" in responses["c1"]["error"]

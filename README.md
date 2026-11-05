@@ -679,6 +679,11 @@ judges every `function_call` item in a Responses API result and returns one
 policy)` does the same for the `tool_calls` of one Chat Completions choice, returning
 `role: "tool"` messages: a completion with several choices (`n > 1`) carries alternative
 messages, so it is refused until the application passes `choice=` for the one it selected.
+Each call is bound to the tool's signature with its defaults applied before judgment
+(argument binding, no type coercion on this path), so a default the model omitted is
+judged at the value the function would use, and the bound invocation is what runs; a
+tool with variadic, positional-only or unannotated parameters, or a default outside the
+JSON domain, is refused, as is a call that does not bind.
 Invalid JSON, non-object arguments, an unknown tool and a raising policy are refused, never
 run; an output item or tool call of a type the adapter does not handle raises, naming it,
 and a call without an id is refused because the SDK's answer types do not require one.
@@ -689,7 +694,15 @@ Python 3.10+, tested with exactly `openai==3.34.0`.
 For Google's Agent Development Kit, [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py)
 uses the ADK's own `before_tool_callback`: `recusal_before_tool(policy)` judges each tool call
 immediately before the `LlmAgent` runs it and answers a refusal as the tool's response, so the
-model reads the reason and the tool never runs. `gated_agent(agent, policy)` returns a gated
+model reads the reason and the tool never runs. The callback prepares the invocation the
+tool will execute: omitted parameters are completed from the function's defaults into the
+arguments, the tool's own preparation (coercion, when the ADK's argument validation is on)
+runs once on them, the converted values are written back and a copy is judged, so the
+policy sees exactly what the function receives. Only a `FunctionTool` keeping the stock
+preparation methods, with parameters annotated `str`, `int`, `float`, `bool`, optionals
+and lists or string-keyed dicts of those, is supported; a model-typed, `Annotated`,
+`Enum`, variadic or unannotated parameter is refused, and a validation failure is
+refused without the SDK's message. `gated_agent(agent, policy)` returns a gated
 copy with the gate as the last callback (a callback listed after it could change the
 arguments it judged) and gates `sub_agents` and the agent behind every `AgentTool` the same
 way; it refuses an agent with a `code_executor` or an `LlmAgent` subclass, which can run

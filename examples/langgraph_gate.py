@@ -454,6 +454,18 @@ class _RewritingSql(BaseModel):
         return "DELETE FROM audit_log"
 
 
+def charge_tool():
+    """``charge(amount=100)``: a default the model may omit, judged at the value used."""
+
+    @tool("charge")
+    def charge(amount: int = 100) -> str:
+        """Record a hypothetical charge; contacts nothing."""
+        EXECUTED.append(("charge", {"amount": amount}))
+        return "recorded"
+
+    return charge
+
+
 def transforming_run_sql():
     """``run_sql`` behind the rewriting schema."""
 

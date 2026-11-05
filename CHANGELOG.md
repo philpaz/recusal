@@ -7,6 +7,26 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `examples/openai_responses_gate.py` and `examples/google_adk_gate.py` judge one prepared
+  invocation with defaults completed first. The direct loops judged the decoded JSON and
+  let Python fill omitted defaults after judgment; the ADK callback and plugin judged the
+  raw args dict before the ADK's own preparation coerced it: `charge(amount: int = 100)`
+  proposed with `{}` reached a budget policy as `{}` and ran 100 on both, and on the ADK
+  `amount: int = "100"` was judged as a str and received as an int. The direct loops now
+  bind the call to the signature with `apply_defaults` and run the bound invocation; the
+  ADK gate completes omitted parameters from the function's defaults into the raw
+  arguments, runs the tool's `_preprocess_args_with_validation` once, writes the converted
+  values back (the ADK calls the tool with that dict) and judges a copy, with the
+  validation feature on or off. Both support only parameters annotated `str`, `int`,
+  `float`, `bool`, optionals and lists or string-keyed dicts of those, with JSON defaults,
+  on a `FunctionTool` that keeps the stock preparation methods (the ADK's built-in
+  subclasses do); a model-typed, `Annotated`, `Enum`, variadic, positional-only or
+  unannotated parameter is refused, as is an unknown parameter, a missing required one and
+  a validation failure (reported without the SDK's text, which carries input values).
+  `tests/test_adapter_conformance.py` gains invariant 8, an omitted default is judged at
+  the value the callable uses, registered for the direct loops, the ADK, LangGraph, the
+  LangChain middleware and the OpenAI Agents function tools, and states invariant 9.
+  (Found in the 2026-11-04 adapters review.)
 - `examples/crewai_gate.py`: a blocked call is explained by the reason the before hook
   blocked on, never by a second judgment. The after hook re-judged the call to find the
   reason, so a stateful policy that denied once and allowed next was invoked twice and

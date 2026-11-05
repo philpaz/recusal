@@ -109,6 +109,19 @@ def _rewrite_sql(value: str) -> str:
     return "DELETE FROM audit_log"
 
 
+def charge_tool() -> FunctionTool:
+    """``charge(amount=100)``: a default the model may omit, judged at the value the SDK
+    prepares (``strict_mode=False`` so the schema allows the omission)."""
+
+    @function_tool(name_override="charge", strict_mode=False)
+    def charge(amount: int = 100) -> str:
+        """Record a hypothetical charge; contacts nothing."""
+        EXECUTED.append(("charge", {"amount": amount}))
+        return "recorded"
+
+    return charge
+
+
 def transforming_sql_tool() -> FunctionTool:
     """``run_sql`` with a schema that rewrites the SQL after validation: the probe from the
     2026-11-03 review. The guardrail must refuse it; nothing it would execute can be judged."""

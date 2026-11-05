@@ -29,6 +29,24 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    arguments the server receives. Google ADK and CrewAI have not been examined for a
    validation layer between their hook and the function; they are listed here as not yet
    covered, not as covered.
+7. **The record binds what executed.** See the paragraph below the list.
+8. **A default the proposal omitted is judged at the value the callable uses.** A tool
+   ``charge(amount: int = 100)`` proposed with ``{}`` reaches the policy as
+   ``{"amount": 100}`` (an ``int``, exactly), and a budget policy capping at 10 refuses it;
+   proposed with ``{"amount": 5}`` it runs with 5. Registered for the direct Responses and
+   Chat loops (``bind`` plus ``apply_defaults``), Google ADK's callback and plugin (defaults
+   completed into the raw arguments before the tool's own preparation), LangGraph and the
+   LangChain middleware (``_completed`` in the judging copy) and the OpenAI Agents function
+   tools (the SDK's prepared invocation). Pydantic AI judges the validated arguments by the
+   framework's design (the reviewer's control showed it); CrewAI is not registered until its
+   schema contract lands. MCP has no Python callable.
+9. **Re-preparation cannot change a judged value.** Where a framework prepares arguments
+   again at execution (ADK's ``_preprocess_args_with_validation``), the gate supports only
+   parameter shapes whose preparation is a pure function of value and annotation and
+   refuses the rest; the adapter tests (`tests/test_google_adk_gate.py`,
+   `tests/test_openai_responses_gate.py`) prove exact type-and-value agreement between the
+   judged and received values on the supported set and refusal before execution for a
+   model-typed, ``Annotated``, ``Enum``, variadic or unannotated parameter.
 
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.
@@ -93,6 +111,10 @@ class Adapter:
     transforming: dict[str, Callable[[Any, Any], tuple[dict[str, Outcome], Executed]]] = field(
         default_factory=dict
     )
+    #: route -> run the adapter's ``charge`` fixture for the given calls (invariant 8)
+    omitted_default: dict[
+        str, Callable[[Any, list[Call], Any], tuple[dict[str, Outcome], Executed]]
+    ] = field(default_factory=dict)
 
 
 def _refused(text: str) -> bool:
@@ -131,6 +153,20 @@ def _langgraph_async(m, calls, policy, gated):
 _TRANSFORM_CALL: list[Call] = [("run_sql", {"sql": SELECT}, "c1")]
 
 
+def _langgraph_charge_sync(m, calls, policy):
+    messages, executed = m.run_calls(
+        _tool_call_dicts(calls), policy=policy, tools=[m.charge_tool()]
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langgraph_charge_async(m, calls, policy):
+    messages, executed = asyncio.run(
+        m.run_calls_async(_tool_call_dicts(calls), policy=policy, tools=[m.charge_tool()])
+    )
+    return _from_tool_messages(messages), executed
+
+
 def _langgraph_transforming_sync(m, policy):
     messages, executed = m.run_calls(
         _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
@@ -161,6 +197,20 @@ def _langchain_async(m, calls, policy, gated):
     return _from_tool_messages(messages), executed
 
 
+def _langchain_charge_sync(m, calls, policy):
+    messages, executed = m.run_calls(
+        _tool_call_dicts(calls), policy=policy, tools=[m.charge_tool()]
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langchain_charge_async(m, calls, policy):
+    messages, executed = asyncio.run(
+        m.arun_calls(_tool_call_dicts(calls), policy=policy, tools=[m.charge_tool()])
+    )
+    return _from_tool_messages(messages), executed
+
+
 def _langchain_transforming_sync(m, policy):
     messages, executed = m.run_calls(
         _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
@@ -183,6 +233,16 @@ def _langchain_transforming_async(m, policy):
 def _openai_agents(streamed):
     def route(m, calls, policy, gated):
         outputs, executed = m.run_calls(calls, policy=policy, gated=gated, streamed=streamed)
+        return _from_text_outputs(outputs), executed
+
+    return route
+
+
+def _openai_agents_charge(streamed):
+    def route(m, calls, policy):
+        outputs, executed = m.run_calls(
+            calls, policy=policy, streamed=streamed, tools=[m.charge_tool()]
+        )
         return _from_text_outputs(outputs), executed
 
     return route
@@ -218,6 +278,15 @@ def _openai_responses(m, calls, policy, gated):
         else m.dispatch_ungated(response, m.TOOLS)
     )
     return _from_text_outputs({o["call_id"]: o["output"] for o in outputs}), list(m.EXECUTED)
+
+
+def _standard_charge(route):
+    """The adapter's own default tools already include ``charge``: drive the standard route."""
+
+    def run(m, calls, policy):
+        return route(m, calls, policy, True)
+
+    return run
 
 
 def _openai_chat(m, calls, policy, gated):
@@ -276,6 +345,7 @@ ADAPTERS: dict[str, Adapter] = {
         {"sync": _langgraph_sync, "async": _langgraph_async},
         {"sync", "async"},
         transforming={"sync": _langgraph_transforming_sync, "async": _langgraph_transforming_async},
+        omitted_default={"sync": _langgraph_charge_sync, "async": _langgraph_charge_async},
     ),
     "langchain": Adapter(
         "langchain_agent_gate.py",
@@ -287,6 +357,7 @@ ADAPTERS: dict[str, Adapter] = {
             "sync": _langchain_transforming_sync,
             "async": _langchain_transforming_async,
         },
+        omitted_default={"sync": _langchain_charge_sync, "async": _langchain_charge_async},
     ),
     "openai_agents": Adapter(
         "openai_agents_gate.py",
@@ -297,6 +368,10 @@ ADAPTERS: dict[str, Adapter] = {
         transforming={
             "run": _openai_agents_transforming(False),
             "streamed": _openai_agents_transforming(True),
+        },
+        omitted_default={
+            "run": _openai_agents_charge(False),
+            "streamed": _openai_agents_charge(True),
         },
     ),
     "openai_agents_mcp": Adapter(
@@ -312,6 +387,10 @@ ADAPTERS: dict[str, Adapter] = {
         (3, 10),
         {"responses": _openai_responses, "chat": _openai_chat},
         {"responses"},
+        omitted_default={
+            "responses": _standard_charge(_openai_responses),
+            "chat": _standard_charge(_openai_chat),
+        },
     ),
     "google_adk": Adapter(
         "google_adk_gate.py",
@@ -319,6 +398,10 @@ ADAPTERS: dict[str, Adapter] = {
         (3, 11),
         {"callback": _google_adk(False), "plugin": _google_adk(True)},
         {"callback", "plugin"},
+        omitted_default={
+            "callback": _standard_charge(_google_adk(False)),
+            "plugin": _standard_charge(_google_adk(True)),
+        },
     ),
     "crewai": Adapter("crewai_gate.py", "crewai", (3, 10), {"hooks": _crewai}, {"hooks"}),
     "pydantic_ai": Adapter(
@@ -494,6 +577,52 @@ def test_6_a_schema_that_changes_an_allowed_proposal_never_runs_the_changed_valu
     # the gate judged the value the tool would have executed, or judged nothing because it
     # could not know that value; it never judged the proposal and let the rewrite run
     assert policy.seen in ([], [("run_sql", {"sql": DELETE})]), policy.seen
+
+
+DEFAULT_ROWS = [(n, r) for n, a in ADAPTERS.items() for r in a.omitted_default]
+
+
+def _budget(name, args):
+    from recusal import Finding
+
+    if args.get("amount", 0) > 10:
+        return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+    return []
+
+
+@pytest.mark.parametrize("name, route", DEFAULT_ROWS, ids=[f"{n}-{r}" for n, r in DEFAULT_ROWS])
+def test_8_a_default_the_proposal_omitted_is_judged_at_the_value_the_callable_uses(
+    modules, name, route
+):
+    module = modules[name]
+    if isinstance(module, str):
+        pytest.skip(module)
+    run = ADAPTERS[name].omitted_default[route]
+    policy = Recording(_budget)
+    outcomes, executed = run(module, [("charge", {}, "c1")], policy)
+    assert policy.seen == [("charge", {"amount": 100})], policy.seen
+    assert type(policy.seen[0][1]["amount"]) is int, "judged as the int the callable uses"
+    assert executed == [], executed
+    refused, text = outcomes["c1"]
+    assert refused and "Recusal refused `charge`" in text and "over 10" in text, text
+    # the positive control: an explicit value under the cap is judged and runs as given
+    policy = Recording(_budget)
+    outcomes, executed = run(module, [("charge", {"amount": 5}, "c2")], policy)
+    assert policy.seen == [("charge", {"amount": 5})]
+    assert executed == [("charge", {"amount": 5})], executed
+    assert outcomes["c2"][0] is False
+
+
+def test_the_omitted_default_rows_cover_every_adapter_the_docstring_names():
+    assert {n for n, _ in DEFAULT_ROWS} == {
+        "langgraph",
+        "langchain",
+        "openai_agents",
+        "openai_responses",
+        "google_adk",
+    }
+    for name in {n for n, _ in DEFAULT_ROWS}:
+        assert set(ADAPTERS[name].omitted_default) == set(ADAPTERS[name].routes), name
 
 
 def test_the_transforming_rows_cover_every_adapter_the_docstring_names():
