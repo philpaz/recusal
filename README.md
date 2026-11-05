@@ -748,8 +748,8 @@ exactly `crewai==1.15.34`.
 For Pydantic AI, [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) uses the
 framework's own `before_tool_execute` hook, which runs with the validated argument dict
 immediately before a tool runs. `RecusalGate(policy)` is a capability that judges each call
-there (the policy sees a detached deep copy of that dict; the tool runs with the dict itself,
-so a policy's write to what it judged changes its copy, not the call) and raises
+there (the policy sees detached data; the tool runs with the validated dict itself,
+so a policy's write to its containers changes its observation, not the call) and raises
 `ToolFailed(reason)` on a refusal, so the model reads the reason as a failed
 tool result, the tool never runs, and no retry budget is spent; attach it with
 `Agent(..., capabilities=[RecusalGate(policy)])` or per run. It declares itself `innermost`,
@@ -760,6 +760,14 @@ is the same gate as a plain hook function with no ordering of its own. An agent 
 inside a tool function runs under its own capabilities and needs its own gate; the tests show
 the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
 with exactly `pydantic-ai-slim==2.64.0`.
+
+Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts, plus
+Enum members whose values are immutable JSON scalars (the member identity is preserved).
+Containers are detached by construction, without application copy methods or serializers.
+Models, dataclasses, mutable-valued Enums and other objects refuse before policy evaluation;
+declare data-only parameters and validate inside the tool body. A detachment failure names
+only the exception class, never its text. General policy-error handling retains the
+plaintext boundary documented in `recusal.audit`.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

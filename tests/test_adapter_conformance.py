@@ -72,7 +72,10 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    same proposal under a correct policy is still judged and still refused when it should
    be (invariant 2). Where the framework re-prepares arguments (invariant 9) the detached
    copy is of the prepared invocation, so the observation and the execution agree in type
-   and value as well as in text.
+   and value as well as in text. Pydantic AI supports data-only values, detaching JSON
+   containers by construction and retaining only immutable-scalar-valued Enum members;
+   its adapter tests refuse rich objects and mutable Enum values on both routes before
+   policy evaluation, and retain an observational/ungated control.
 
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.

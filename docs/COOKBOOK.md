@@ -114,6 +114,10 @@ framework's `before_tool_execute` hook and raises `ToolFailed` with Recusal's re
 refusal, a failed tool result the model reads with no retry budget spent;
 `RecusalGate(policy)` is the capability form, sorted `innermost` so it judges the arguments
 as they reach the tool, and `recusal_before_tool_execute(policy)` the plain hook for `Hooks`.
+Arguments must be JSON data (containers detached by construction) or Enum members with
+immutable JSON scalar values (member identity preserved). A model, dataclass, mutable-valued
+Enum or other object is refused before policy evaluation; declare data-only parameters and
+validate inside the tool body. No application copy method or serializer is invoked.
 An agent called from inside a tool needs its own gate. Python 3.11+, tested with exactly
 `pydantic-ai-slim==2.64.0`; not a Recusal dependency.
 

@@ -13,10 +13,16 @@ All notable changes to this project are documented here. The format follows
   the `Hooks` route) and the local MCP server gate
   (`examples/openai_agents_mcp_gate.py`). A policy that gathered passing evidence for
   `SELECT` and then, by a bug, wrote `DELETE` into that dict had the tool run `DELETE`,
-  through the real Runner on the MCP route. The policy now judges a detached deep copy
+  through the real Runner on the MCP route. The policy now judges detached arguments
   and the tool runs with the dict itself, as the Responses, Chat, LangGraph, LangChain,
-  Google ADK and CrewAI gates already did; on Pydantic AI a value whose copy raises is
-  refused rather than judged. Containment of a buggy trusted policy, not a model-input
+  Google ADK and CrewAI gates already did. The MCP gate deep-copies JSON arguments;
+  Pydantic AI detaches JSON containers by construction and accepts Enum members only
+  when their values are immutable JSON scalars, preserving member identity. Models,
+  dataclasses, mutable-valued Enums and other objects refuse before policy evaluation:
+  declare data-only parameters and validate inside the tool body. No application copy
+  method or serializer runs. A detachment failure names only its exception class, never
+  its text; the general policy-error plaintext boundary is unchanged. Containment of a
+  buggy trusted policy, not a model-input
   bypass: a correct policy still refuses what it should. The conformance suite gains
   invariant 11, a mutating policy against every route of every adapter with its
   negative control, and the adapter tests add nested-container cases. The public
