@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.10] - 2026-11-04
+
+Package changes and example changes, stated apart. In the installed package, two
+control-result contracts: `recusal.claude_code.allowlist_policy` accepts only a real
+`True` or `False` from an explicit predicate and refuses anything else with a finding
+that names the type, and `recusal.claude.gate_tool_use` and `tool_confirmation` refuse
+a malformed outer evidence value instead of folding it to no objections. Every valid
+verdict, every fingerprint and the file format are unchanged: a PATCH under
+`STABILITY.md`, named here. Under `examples/`, outside the wheel: the OpenAI Agents
+gates bind each guardrail to its own tool by identity; composed policies hand every
+leaf its own copy; the direct Responses and Chat loops, the Google ADK gate and the
+CrewAI gate judge one prepared invocation with defaults completed first, each with an
+explicit supported-shape contract; the Chat loop takes an explicit choice; the ADK
+plugin refuses a call it cannot be last for; and CrewAI's blocked call is explained by
+the reason that blocked it. The 2026-11-04 adapters review found the eight defects;
+each fix carries the reviewer's probe as a test and its mutation evidence in the PR.
+The README's banner, demo GIF and links now render on PyPI (absolute URLs).
+
 ### Fixed
 - `examples/google_adk_gate.py`: `RecusalPlugin` has an explicit ordering contract. ADK
   plugin callbacks run before any agent's before-tool callbacks, so an agent callback that
