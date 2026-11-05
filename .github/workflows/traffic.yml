@@ -1,0 +1,33 @@
+name: Traffic record
+
+# GitHub keeps clone and view traffic for 14 days and then discards it. This job reads
+# the window daily and merges it, one row per day, into CSV files on the `traffic`
+# branch, so the record accumulates. It writes through the contents API only: the job
+# holds no git credentials, and its commits land on the data branch, never on main.
+# The record begins at the first capture; nothing is estimated or back-filled.
+
+on:
+  schedule:
+    - cron: "15 6 * * *" # daily; a 14-day window tolerates a week of missed runs
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  capture:
+    name: Capture the 14-day traffic window
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the traffic endpoints need push access; the writes go to the data branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no job here pushes; the default keeps a live token in .git
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Merge the window into the traffic branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: python tools/traffic_record.py --repo "$REPO" --branch traffic
