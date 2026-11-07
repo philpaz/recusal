@@ -404,6 +404,89 @@ class TestLangGraphAudit:
         assert "over 10" in messages[0].content
         assert [e["action"]["decision"] for e in log.entries] == ["deny"]
 
+    @staticmethod
+    def budget(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append(dict(args))
+            if args.get("amount", 0) > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        return policy
+
+    def audited(self, example, gate, log, route, tool, calls, policy):
+        gate.EXECUTED.clear()
+        if route == "sync":
+            node = example.ToolNode(
+                [tool], wrap_tool_call=example.recusal_audited_gate(policy, log)
+            )
+            return gate.run_in_graph(node, calls)
+        node = example.ToolNode([tool], awrap_tool_call=example.recusal_audited_agate(policy, log))
+        return asyncio.run(gate.run_in_graph_async(node, calls))
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_callable_parameter_the_schema_omits_is_refused_and_recorded_as_one_deny(
+        self, example, gate, log, route
+    ):
+        """The 2026-11-06 review's audited reproduction: the record bound the fingerprint of
+        ``{"label": "review"}`` while ``amount=100`` executed. The call is now refused before
+        the policy, nothing runs, and the log holds one deny for it."""
+        seen = []
+        messages = self.audited(
+            example,
+            gate,
+            log,
+            route,
+            gate.narrow_charge_tool(),
+            [self.call("charge", {"label": "review"}, "c1")],
+            self.budget(seen),
+        )
+        assert seen == [] and gate.EXECUTED == []
+        text = messages[0].content
+        assert "the callable's parameter `amount` is absent from the argument schema" in text
+        assert "100" not in text
+        actions = [(e["action"]["decision"], e["action"]["tool_use_id"]) for e in log.entries]
+        assert actions == [("deny", "c1")]
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_permitted_complete_invocation_is_recorded_at_the_fingerprint_of_what_ran(
+        self, example, gate, log, route
+    ):
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        from recusal.authorization import fingerprint
+
+        class Args(BaseModel):
+            label: str
+            amount: int = 100
+
+        ran = []
+
+        def charge(label: str, amount: int = 100) -> str:
+            """Record a hypothetical charge; contact no service."""
+            ran.append({"label": label, "amount": amount})
+            return "recorded"
+
+        tool = StructuredTool.from_function(charge, name="charge", args_schema=Args)
+        seen = []
+        messages = self.audited(
+            example,
+            gate,
+            log,
+            route,
+            tool,
+            [self.call("charge", {"label": "review", "amount": 5}, "c1")],
+            self.budget(seen),
+        )
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [{"label": "review", "amount": 5}] and ran == seen
+        [entry] = log.entries
+        assert entry["action"]["decision"] != "deny"
+        assert entry["action"]["input_sha256"] == fingerprint(ran[0])
+
     @pytest.mark.parametrize("route", ["sync", "async"])
     def test_a_root_validator_built_from_host_state_is_recorded_without_the_state(
         self, example, gate, log, log_path, route

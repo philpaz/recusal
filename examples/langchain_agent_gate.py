@@ -41,6 +41,7 @@ from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
     charge_tool,  # noqa: F401, re-exported: the conformance suite drives it here
     echo,
+    narrow_charge_tool,  # noqa: F401, re-exported: the conformance suite drives it here
     recusal_agate,
     recusal_gate,
     run_sql,

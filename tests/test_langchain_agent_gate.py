@@ -429,3 +429,40 @@ class TestEffectiveArgumentsThroughCreateAgent:
             tools=[example.transforming_run_sql()],
         )
         assert executed == [("run_sql", {"sql": DELETE})]
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_callable_parameter_the_schema_omits_refuses_through_the_middleware(
+        self, example, route
+    ):
+        """The 2026-11-06 review's P1 on the middleware routes: ``charge(label, amount=100)``
+        behind a schema declaring only ``label`` was judged without ``amount`` and ran with
+        100."""
+        from recusal import Finding
+
+        seen = []
+
+        def budget(name, args):
+            seen.append(dict(args))
+            if args.get("amount", 0) > 10:
+                return [Finding.fail("budget", severity="CRITICAL", message="over 10")]
+            return []
+
+        calls = [self.call("charge", {"label": "review"})]
+        tools = [example.narrow_charge_tool()]
+        if route == "sync":
+            messages, executed = example.run_calls(calls, policy=budget, tools=tools)
+        else:
+            messages, executed = asyncio.run(example.arun_calls(calls, policy=budget, tools=tools))
+        assert executed == [] and seen == []
+        assert messages[0].status == "error"
+        text = messages[0].content
+        assert "the callable's parameter `amount` is absent from the argument schema" in text
+        assert "100" not in text, "the default is never disclosed"
+
+    def test_negative_control_ungated_the_schema_absent_default_runs(self, example):
+        _, executed = example.run_calls(
+            [self.call("charge", {"label": "review"})],
+            gated=False,
+            tools=[example.narrow_charge_tool()],
+        )
+        assert executed == [("charge", {"label": "review", "amount": 100})]

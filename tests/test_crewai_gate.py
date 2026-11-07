@@ -518,6 +518,82 @@ class TestPreparedInvocation:
         assert executed == [("charge", {"amount": 5})]
         assert responses["c2"] == "recorded"
 
+    def test_a_callable_parameter_the_schema_omits_refuses_before_the_policy(self, example):
+        """The 2026-11-06 review's P1 through the real Crew runner: ``_run(label, amount=100)``
+        behind an ``args_schema`` declaring only ``label`` was judged as ``{"label": ...}``
+        and ran with ``amount=100``."""
+        policy = self.recording(self.budget)
+        responses, executed = example.run_calls(
+            [("charge", {"label": "review"}, "c1")],
+            policy=policy,
+            tools=[example.narrow_charge_tool()],
+        )
+        assert executed == [] and policy.seen == []
+        assert responses["c1"] == (
+            "Recusal refused `charge`: its arguments cannot be judged "
+            "(its callable's parameter `amount` is absent from the argument schema)"
+        )
+
+    def test_negative_control_ungated_the_schema_absent_default_runs(self, example):
+        _, executed = example.run_calls(
+            [("charge", {"label": "review"}, "c1")],
+            gated=False,
+            tools=[example.narrow_charge_tool()],
+        )
+        assert executed == [("charge", {"label": "review", "amount": 100})]
+
+    def test_a_stock_tool_wrapper_is_inspected_at_the_function_it_wraps(self, example):
+        """``Tool._run(*args, **kwargs)`` forwards to ``func``: the wrapper's signature says
+        nothing, the function's is the one Python completes."""
+        from pydantic import BaseModel
+
+        class LabelOnly(BaseModel):
+            label: str
+
+        class Full(BaseModel):
+            label: str
+            amount: int = 100
+
+        def charge(label: str, amount: int = 100) -> str:
+            return "recorded"
+
+        narrow = example.Tool(
+            name="charge", description="d", func=charge, args_schema=LabelOnly
+        ).to_structured_tool()
+        assert example._unsupported_tool(narrow) == (
+            "its callable's parameter `amount` is absent from the argument schema"
+        )
+        assert "cannot be judged" in self.reason(
+            example, narrow, {"label": "review"}, name="charge"
+        )
+        complete = example.Tool(
+            name="charge", description="d", func=charge, args_schema=Full
+        ).to_structured_tool()
+        assert example._execution_callable(complete) is charge
+        assert example._unsupported_tool(complete) is None
+
+    def test_a_structured_tool_whose_callable_is_not_the_originals_run_is_refused(self, example):
+        tool = example.charge.to_structured_tool()
+        assert example._unsupported_tool(tool) is None
+        tool.func = lambda **kwargs: "elsewhere"
+        assert example._unsupported_tool(tool) == "its callable is not the original tool's `_run`"
+
+    def test_a_positional_only_callable_parameter_is_refused(self, example):
+        from pydantic import BaseModel
+
+        class LabelOnly(BaseModel):
+            label: str
+
+        def charge(label: str, /) -> str:
+            return "recorded"
+
+        tool = example.Tool(
+            name="charge", description="d", func=charge, args_schema=LabelOnly
+        ).to_structured_tool()
+        assert (
+            example._unsupported_tool(tool) == "its callable's parameter `label` is positional-only"
+        )
+
     def test_a_non_canonical_default_is_prepared_before_judgment(self, example):
         @example.tool("loose")
         def loose(amount: int = "100", ratio: float = 1, flag: bool = "true") -> str:  # type: ignore[assignment]

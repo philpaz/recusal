@@ -76,6 +76,19 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    containers by construction and retaining only immutable-scalar-valued Enum members;
    its adapter tests refuse rich objects and mutable Enum values on both routes before
    policy evaluation, and retain an observational/ungated control.
+12. **A callable parameter the schema omits refuses before judgment.** A tool
+   ``charge(label, amount=100)`` behind an argument schema that declares only ``label``,
+   proposed with ``{"label": "review"}``: Python would fill ``amount`` from the callable's
+   default after the policy judged ``{"label": "review"}``, so the gate holds the callable
+   the route executes to the schema and refuses the call before the policy runs, naming
+   the parameter and never its default; ungated, the same proposal runs with the default
+   the policy never saw. The 2026-11-06 architecture review reproduced the unjudged
+   execution on every route registered here: LangGraph and the LangChain middleware (the
+   callable the route runs: ``func`` or ``coroutine``, the class's ``_run`` or ``_arun``;
+   the names the SDK reserves and fills at call time are not the schema's to declare) and
+   CrewAI (the original tool's ``_run``, or the function a stock ``Tool`` wraps). The suite
+   registers what an adapter's own tests have established; an adapter is added here when
+   its tests show it accepts a schema declared apart from the callable it completes from.
 
 Every route an adapter offers (sync and async, callback and plugin, run and streamed) is a
 separate row, because each is a separate code path through the framework.
@@ -150,6 +163,11 @@ class Adapter:
     later_transform: dict[str, Callable[[Any, Any], tuple[dict[str, Outcome], Executed]]] = field(
         default_factory=dict
     )
+    #: route -> run the adapter's ``narrow_charge_tool`` fixture (a callable parameter the
+    #: schema omits) for the given calls, gated or not (invariant 12)
+    omitted_parameter: dict[
+        str, Callable[[Any, list[Call], Any, bool], tuple[dict[str, Outcome], Executed]]
+    ] = field(default_factory=dict)
 
 
 def _refused(text: str) -> bool:
@@ -202,6 +220,22 @@ def _langgraph_charge_async(m, calls, policy):
     return _from_tool_messages(messages), executed
 
 
+def _langgraph_narrow_sync(m, calls, policy, gated):
+    messages, executed = m.run_calls(
+        _tool_call_dicts(calls), policy=policy, gated=gated, tools=[m.narrow_charge_tool()]
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langgraph_narrow_async(m, calls, policy, gated):
+    messages, executed = asyncio.run(
+        m.run_calls_async(
+            _tool_call_dicts(calls), policy=policy, gated=gated, tools=[m.narrow_charge_tool()]
+        )
+    )
+    return _from_tool_messages(messages), executed
+
+
 def _langgraph_transforming_sync(m, policy):
     messages, executed = m.run_calls(
         _tool_call_dicts(_TRANSFORM_CALL), policy=policy, tools=[m.transforming_run_sql()]
@@ -242,6 +276,23 @@ def _langchain_charge_sync(m, calls, policy):
 def _langchain_charge_async(m, calls, policy):
     messages, executed = asyncio.run(
         m.arun_calls(_tool_call_dicts(calls), policy=policy, tools=[m.charge_tool()])
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langchain_narrow_sync(m, calls, policy, gated):
+    messages, executed = m.run_calls(
+        _tool_call_dicts(calls), policy=policy, gated=gated, tools=[m.narrow_charge_tool()]
+    )
+    return _from_tool_messages(messages), executed
+
+
+def _langchain_narrow_async(m, calls, policy, gated):
+    kwargs = {} if gated else {"middleware": []}
+    messages, executed = asyncio.run(
+        m.arun_calls(
+            _tool_call_dicts(calls), policy=policy, tools=[m.narrow_charge_tool()], **kwargs
+        )
     )
     return _from_tool_messages(messages), executed
 
@@ -394,6 +445,13 @@ def _crewai_transforming(m, policy):
     return _from_text_outputs(responses), executed
 
 
+def _crewai_narrow(m, calls, policy, gated):
+    responses, executed = m.run_calls(
+        calls, policy=policy, gated=gated, tools=[m.narrow_charge_tool()]
+    )
+    return _from_text_outputs(responses), executed
+
+
 # pydantic ai --------------------------------------------------------------------------------------
 
 
@@ -416,6 +474,7 @@ ADAPTERS: dict[str, Adapter] = {
         {"sync", "async"},
         transforming={"sync": _langgraph_transforming_sync, "async": _langgraph_transforming_async},
         omitted_default={"sync": _langgraph_charge_sync, "async": _langgraph_charge_async},
+        omitted_parameter={"sync": _langgraph_narrow_sync, "async": _langgraph_narrow_async},
     ),
     "langchain": Adapter(
         "langchain_agent_gate.py",
@@ -428,6 +487,7 @@ ADAPTERS: dict[str, Adapter] = {
             "async": _langchain_transforming_async,
         },
         omitted_default={"sync": _langchain_charge_sync, "async": _langchain_charge_async},
+        omitted_parameter={"sync": _langchain_narrow_sync, "async": _langchain_narrow_async},
     ),
     "openai_agents": Adapter(
         "openai_agents_gate.py",
@@ -485,6 +545,7 @@ ADAPTERS: dict[str, Adapter] = {
         {"hooks"},
         transforming={"hooks": _crewai_transforming},
         omitted_default={"hooks": _standard_charge(_crewai)},
+        omitted_parameter={"hooks": _crewai_narrow},
     ),
     "pydantic_ai": Adapter(
         "pydantic_ai_gate.py",
@@ -712,6 +773,38 @@ def test_the_transforming_rows_cover_every_adapter_the_docstring_names():
     assert {n for n, _ in TRANSFORM_ROWS} == {"langgraph", "langchain", "openai_agents", "crewai"}
     for name in ("langgraph", "langchain", "openai_agents", "crewai"):
         assert set(ADAPTERS[name].transforming) == set(ADAPTERS[name].routes), name
+
+
+NARROW_ROWS = [(n, r) for n, a in ADAPTERS.items() for r in a.omitted_parameter]
+_NARROW_CALL: list[Call] = [("charge", {"label": "review"}, "c1")]
+
+
+@pytest.mark.parametrize("name, route", NARROW_ROWS, ids=[f"{n}-{r}" for n, r in NARROW_ROWS])
+def test_12_a_callable_parameter_the_schema_omits_refuses_before_judgment(modules, name, route):
+    module = modules[name]
+    if isinstance(module, str):
+        pytest.skip(module)
+    run = ADAPTERS[name].omitted_parameter[route]
+    policy = Recording(_budget)
+    outcomes, executed = run(module, _NARROW_CALL, policy, True)
+    assert policy.seen == [], "refused before the policy ran"
+    assert executed == [], executed
+    refused, text = outcomes["c1"]
+    assert refused and "Recusal refused `charge`" in text, text
+    assert "parameter `amount` is absent from the argument schema" in text, text
+    assert "100" not in text, "the default is never disclosed"
+    # the negative control: ungated, the same proposal runs with the default no policy saw
+    policy = Recording(_budget)
+    outcomes, executed = run(module, _NARROW_CALL, policy, False)
+    assert policy.seen == []
+    assert executed == [("charge", {"label": "review", "amount": 100})], executed
+    assert outcomes["c1"][0] is False, outcomes
+
+
+def test_the_omitted_parameter_rows_cover_every_adapter_the_docstring_names():
+    assert {n for n, _ in NARROW_ROWS} == {"langgraph", "langchain", "crewai"}
+    for name in ("langgraph", "langchain", "crewai"):
+        assert set(ADAPTERS[name].omitted_parameter) == set(ADAPTERS[name].routes), name
 
 
 LATER_ROWS = [(n, r) for n, a in ADAPTERS.items() for r in a.later_transform]

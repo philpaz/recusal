@@ -587,9 +587,12 @@ puts existing `@tool` functions unchanged into LangGraph's `ToolNode` and attach
 `recusal_gate(policy)` with `wrap_tool_call`, so `recusal.claude_code.decide` runs immediately
 before each individual tool call. The policy judges the invocation the tool executes:
 execution gets a per-call copy of the tool whose parse step validates the input once,
-after ToolNode has injected the host's state, store and runtime, completes any schema
+after ToolNode has injected the host's state, store and runtime, holds the callable the
+route executes to the schema (a parameter the callable declares that the schema omits, and
+that neither the host nor the framework fills, refuses the call: Python would fill it after
+judgment and the policy would never see the value that runs), completes any schema
 parameter the framework's parse dropped (an `exclude=True` field, a root serializer)
-from the callable's default, projects every model-controlled argument field by field
+from that callable's default, projects every model-controlled argument field by field
 through a projection that runs no serializer of its own, decides, and passes those same
 completed objects to the function. Host arguments are never judged and never the model's
 to supply; a suppressed parameter with no default, a value the

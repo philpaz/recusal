@@ -324,7 +324,7 @@ class TestEffectiveArguments:
 
     def test_the_judging_copy_runs_only_what_it_judged(self, example):
         call = {"name": "run_sql", "args": {"sql": SELECT}, "id": "c1", "type": "tool_call"}
-        copy = example._judging(example.run_sql, call, example.sql_scope_policy, {})
+        copy = example._judging(example.run_sql, call, example.sql_scope_policy, {}, False)
         assert copy._to_args_and_kwargs({"sql": SELECT}, "c1") == ((), {"sql": SELECT})
         with pytest.raises(example.RecusalRefusal, match="Recusal refused `run_sql`"):
             copy._to_args_and_kwargs({"sql": DELETE}, "c1")
@@ -344,7 +344,7 @@ class TestEffectiveArguments:
         log = AuditLog(path=str(tmp_path / "audit.jsonl"))
         call = {"name": "run_sql", "args": {"sql": 5}, "id": "c1", "type": "tool_call"}
         copy = example._judging(
-            example.run_sql, call, example.sql_scope_policy, {"audit": log, "surface": "t"}
+            example.run_sql, call, example.sql_scope_policy, {"audit": log, "surface": "t"}, False
         )
         with pytest.raises(example.RecusalRefusal) as refused:
             copy._to_args_and_kwargs({"sql": 5}, "c1")
@@ -1218,6 +1218,226 @@ class TestFinalInvocation:
         assert messages[0].status == "success", messages[0].content
         assert seen == [{"sql": SELECT}]
         assert ran == [(SELECT, "dict", False)], "config came from the framework, not the gate"
+
+    # --- the callable is held to the schema: a parameter it declares beyond it refuses -------
+
+    @staticmethod
+    def narrow_tool(ran, declared=False, default=100, required=False):
+        """``charge(label, amount)`` behind a schema that declares ``label`` and, only when
+        ``declared``, ``amount``."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        if declared:
+
+            class Args(BaseModel):
+                label: str
+                amount: int = default
+
+        else:
+
+            class Args(BaseModel):
+                label: str
+
+        if required:
+
+            def charge(label: str, amount: int) -> str:
+                """Record a hypothetical charge; contact no service."""
+                ran.append((label, amount))
+                return "recorded"
+
+        else:
+
+            def charge(label: str, amount: int = default) -> str:
+                """Record a hypothetical charge; contact no service."""
+                ran.append((label, amount))
+                return "recorded"
+
+        return StructuredTool.from_function(charge, name="charge", args_schema=Args)
+
+    @staticmethod
+    def on_route(example, route, calls, policy, tools, gated=True):
+        if route == "sync":
+            return example.run_calls(calls, policy=policy, tools=tools, gated=gated)
+        return asyncio.run(example.run_calls_async(calls, policy=policy, tools=tools, gated=gated))
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_callable_parameter_the_schema_omits_refuses_before_the_policy(self, example, route):
+        """The 2026-11-06 review's P1: ``charge(label, amount=100)`` behind a schema declaring
+        only ``label`` was judged as ``{"label": "review"}`` and ran with ``amount=100``."""
+        ran, seen = [], []
+        messages, executed = self.on_route(
+            example,
+            route,
+            [self.call("charge", {"label": "review"})],
+            self.budget(seen),
+            [self.narrow_tool(ran)],
+        )
+        assert ran == [] and executed == [] and seen == []
+        assert messages[0].status == "error"
+        text = messages[0].content
+        assert "the callable's parameter `amount` is absent from the argument schema" in text
+        assert "100" not in text, "the default is never disclosed"
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_negative_control_ungated_the_schema_absent_default_runs(self, example, route):
+        ran = []
+        self.on_route(
+            example,
+            route,
+            [self.call("charge", {"label": "review"})],
+            self.budget([]),
+            [self.narrow_tool(ran)],
+            gated=False,
+        )
+        assert ran == [("review", 100)]
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_declaring_the_parameter_judges_it_at_the_value_that_runs(self, example, route):
+        ran, seen = [], []
+        messages, _ = self.on_route(
+            example,
+            route,
+            [self.call("charge", {"label": "review"})],
+            self.budget(seen),
+            [self.narrow_tool(ran, declared=True)],
+        )
+        assert seen == [{"label": "review", "amount": 100}] and ran == []
+        assert "over 10" in messages[0].content
+        ran, seen = [], []
+        messages, _ = self.on_route(
+            example,
+            route,
+            [self.call("charge", {"label": "review", "amount": 5})],
+            self.budget(seen),
+            [self.narrow_tool(ran, declared=True)],
+        )
+        assert seen == [{"label": "review", "amount": 5}] and ran == [("review", 5)]
+        assert messages[0].status == "success"
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_required_callable_parameter_the_schema_omits_refuses_too(self, example, route):
+        ran, seen = [], []
+        messages, _ = self.on_route(
+            example,
+            route,
+            [self.call("charge", {"label": "review"})],
+            self.budget(seen),
+            [self.narrow_tool(ran, required=True)],
+        )
+        assert ran == [] and seen == []
+        assert "the callable's parameter `amount` is absent from the argument schema" in (
+            messages[0].content
+        )
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_suppressed_default_is_completed_from_the_callable_the_route_runs(
+        self, example, route
+    ):
+        """``func`` and ``coroutine`` with different defaults: the async route completes from
+        the coroutine's, never the sync function's."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+
+        class Args(BaseModel):
+            amount: int = Field(default=100, exclude=True)
+
+        ran, seen = [], []
+
+        def charge(amount: int = 5) -> str:
+            """Record a charge; the sync default is under the cap."""
+            ran.append(("sync", amount))
+            return "recorded"
+
+        async def acharge(amount: int = 100) -> str:
+            ran.append(("async", amount))
+            return "recorded"
+
+        tool = StructuredTool.from_function(
+            charge, coroutine=acharge, name="charge", args_schema=Args
+        )
+        messages, _ = self.on_route(
+            example, route, [self.call("charge", {"amount": 7})], self.budget(seen), [tool]
+        )
+        if route == "sync":
+            assert seen == [{"amount": 5}] and ran == [("sync", 5)]
+            assert messages[0].status == "success", messages[0].content
+        else:
+            assert seen == [{"amount": 100}] and ran == []
+            assert "over 10" in messages[0].content
+
+    def test_a_basetool_subclass_is_inspected_on_the_route_it_runs(self, example):
+        """``_run`` and ``_arun`` are inspected as bound methods (``self`` is no parameter),
+        ``run_manager`` is the SDK's to fill, and the async route selects ``_arun`` only when
+        the class overrides it."""
+        from langchain_core.callbacks import (
+            AsyncCallbackManagerForToolRun,
+            CallbackManagerForToolRun,
+        )
+        from langchain_core.tools import BaseTool
+        from pydantic import BaseModel
+
+        class Args(BaseModel):
+            sql: str
+
+        ran = []
+
+        class Direct(BaseTool):
+            name: str = "run_sql"
+            description: str = "records SQL"
+            args_schema: type[BaseModel] = Args
+
+            def _run(self, sql: str, run_manager: CallbackManagerForToolRun | None = None) -> str:
+                ran.append(("sync", sql, run_manager is not None))
+                return "recorded"
+
+            async def _arun(
+                self, sql: str, run_manager: AsyncCallbackManagerForToolRun | None = None
+            ) -> str:
+                ran.append(("async", sql, run_manager is not None))
+                return "recorded"
+
+        for route in ("sync", "async"):
+            seen = []
+            messages, _ = self.on_route(
+                example,
+                route,
+                [self.call("run_sql", {"sql": SELECT})],
+                self.recording(seen, example.sql_scope_policy),
+                [Direct()],
+            )
+            assert messages[0].status == "success", messages[0].content
+            assert seen == [{"sql": SELECT}]
+        assert ran == [("sync", SELECT, True), ("async", SELECT, True)]
+        tool = Direct()
+        assert example._execution_callable(tool, False).__func__ is Direct._run
+        assert example._execution_callable(tool, True).__func__ is Direct._arun
+
+    def test_the_reserved_names_are_the_sdks_own(self, example):
+        from langchain_core.tools.base import FILTERED_ARGS
+
+        assert example._RESERVED == frozenset(FILTERED_ARGS) == {"run_manager", "callbacks"}
+
+    def test_a_positional_only_callable_parameter_is_refused(self, example):
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        class Args(BaseModel):
+            label: str
+
+        ran, seen = [], []
+
+        def charge(label: str, /) -> str:
+            """A parameter the gate cannot pass by name."""
+            ran.append(label)
+            return "recorded"
+
+        tool = StructuredTool.from_function(charge, name="charge", args_schema=Args)
+        messages, _ = example.run_calls(
+            [self.call("charge", {"label": "review"})], policy=self.budget(seen), tools=[tool]
+        )
+        assert ran == [] and seen == []
+        assert "parameter `label` is positional-only" in messages[0].content
 
     # --- the old comparison machinery is gone -------------------------------------------------
 

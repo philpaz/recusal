@@ -108,7 +108,9 @@ def recusal_audited_agate(
     """Return an asynchronous ToolNode hook for awrap_tool_call, same logic as the sync one."""
 
     async def gate(request, execute):
-        refusal, judged = _judge(request, policy, **_recording(request, actor, control, log))
+        refusal, judged = _judge(
+            request, policy, is_async=True, **_recording(request, actor, control, log)
+        )
         return refusal if refusal is not None else await execute(judged)
 
     return gate

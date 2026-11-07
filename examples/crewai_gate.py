@@ -46,6 +46,13 @@ an overridden ``model_validate``, an intermediate base, a field with ``exclude``
 and a validation failure are refused before judgment; a validation failure is reported by
 field name only, never with Pydantic's text, which carries the input values.
 
+The validated dict reaches the tool's callable as keyword arguments (``func`` on the
+structured tool: the original ``BaseTool``'s ``_run``, or the application function a stock
+``Tool`` wraps), and Python fills any parameter that callable declares beyond the schema from
+the callable's own default, after judgment. The gate therefore holds the callable to the
+schema: every named parameter it declares must be a schema field, or the call is refused
+before judgment, naming the parameter and never its default. Declare it in the schema.
+
 CrewAI's hook registry is process-global: one install covers every agent, task and crew in
 the process, including the coworker an agent delegates to, and every tool kind CrewAI runs
 through its hooks (its own tools, ``@tool`` functions, MCP tools). Two consequences the tests
@@ -70,6 +77,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import inspect
 import json
 import os
 import re
@@ -147,6 +155,26 @@ def charge(amount: int = 100) -> str:
     """Record a hypothetical charge with a default the model may omit; contacts nothing."""
     EXECUTED.append(("charge", {"amount": amount}))
     return "recorded"
+
+
+def narrow_charge_tool() -> BaseTool:
+    """``charge(label, amount=100)`` behind an ``args_schema`` that declares only ``label``:
+    the callable's ``amount`` is a value no proposal can carry, so the gate refuses the call
+    before judgment; the conformance suite's invariant 12 row drives it."""
+
+    class LabelOnly(BaseModel):
+        label: str
+
+    class NarrowCharge(BaseTool):
+        name: str = "charge"
+        description: str = "Record a hypothetical charge; contacts nothing."
+        args_schema: type[BaseModel] = LabelOnly
+
+        def _run(self, label: str, amount: int = 100) -> str:
+            EXECUTED.append(("charge", {"label": label, "amount": amount}))
+            return "recorded"
+
+    return NarrowCharge()
 
 
 def transforming_run_sql() -> BaseTool:
@@ -316,7 +344,55 @@ def _unsupported_tool(tool: Any) -> Optional[str]:
         for name in _STOCK_ORIGINAL:
             if getattr(type(original), name, None) not in stock:
                 return f"its tool class overrides `{name}`"
-    return _unsupported_schema(tool.args_schema)
+    why = _unsupported_schema(tool.args_schema)
+    if why is not None:
+        return why
+    return _incomplete_callable(tool)
+
+
+def _execution_callable(tool: Any) -> Any:
+    """The application callable CrewAI finally runs for this structured tool.
+
+    ``CrewStructuredTool.invoke`` calls ``func`` with the validated dict as keyword arguments.
+    ``BaseTool.to_structured_tool`` sets ``func`` to the original tool's bound ``_run`` and
+    keeps the original as ``_original_tool``; a stock ``Tool`` (what ``@tool`` builds)
+    forwards ``_run(*args, **kwargs)`` to the application function it wraps, whose signature
+    is the one Python completes. Raises ``TypeError`` when ``func`` is not the original's
+    ``_run``: the gate cannot say what would run.
+    """
+    func = tool.func
+    original = getattr(tool, "_original_tool", None)
+    if original is None:
+        return func
+    if func != original._run:
+        raise TypeError("its callable is not the original tool's `_run`")
+    if type(original)._run is Tool._run:
+        return original.func
+    return func
+
+
+def _incomplete_callable(tool: Any) -> Optional[str]:
+    """Why the callable declares a parameter the schema does not, or None if it declares
+    none. Python would fill such a parameter from the callable's default after judgment, so
+    the policy would never see the value that runs; the refusal names the parameter and
+    never its default."""
+    try:
+        func = _execution_callable(tool)
+    except TypeError as exc:
+        return str(exc)
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return "its callable cannot be inspected for its parameters"
+    fields = tool.args_schema.model_fields
+    for name, parameter in parameters.items():
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            continue
+        if parameter.kind is parameter.POSITIONAL_ONLY:
+            return f"its callable's parameter `{name}` is positional-only"
+        if name not in fields:
+            return f"its callable's parameter `{name}` is absent from the argument schema"
+    return None
 
 
 def _prepared(

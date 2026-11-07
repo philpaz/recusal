@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The LangGraph, LangChain and CrewAI gates executed a callable parameter the argument
+  schema omitted without judging it: `charge(label, amount=100)` behind a schema that
+  declares only `label`, proposed as `{"label": "review"}`, reached the policy as
+  `{"label": "review"}` and ran with `amount=100`, on every route (LangGraph sync and
+  async, the LangChain middleware on both, the CrewAI Crew runner), and the audited
+  LangGraph route bound the fingerprint of that incomplete observation. Python fills a
+  parameter the parsed arguments leave out from the callable's own default, after the
+  policy has judged, so the callable, not the schema, is the authority on what executes.
+  The gates now hold the callable the route executes to the schema: every named parameter
+  it declares must be a schema field, a key the host injects, or a name the SDK reserves
+  and fills at call time (LangGraph: `callbacks`, `run_manager` and the `RunnableConfig`
+  parameter, found as the SDK finds them; CrewAI fills none); any other parameter, and a
+  positional-only one, refuses the call before the policy runs, naming the parameter and
+  never its default. Declare the parameter in the schema and the same call is judged at the
+  value that runs. The LangGraph gate also selects the callable the route runs (the
+  `coroutine` on the async route when the tool has one, the class's `_arun` when it
+  overrides the default) instead of always `func`, so a default that differs between the
+  sync and async implementations is completed from the one that executes. CrewAI inspects
+  the application function a stock `Tool` wraps, not the wrapper's `*args, **kwargs`. The
+  conformance suite gains invariant 12 (a callable parameter the schema omits refuses
+  before judgment) across the three adapters' five routes, with the ungated control. From
+  the 2026-11-06 architecture review (P1); the adapters remain examples outside the
+  compatibility perimeter of `STABILITY.md`.
+
 ## [0.13.0] - 2026-11-05
 
 Two integrity fixes from the company-adoption review: audit appends preserve readable
