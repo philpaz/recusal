@@ -427,6 +427,51 @@ class TestLangGraphAudit:
         return asyncio.run(gate.run_in_graph_async(node, calls))
 
     @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_the_audited_route_completes_from_the_callable_the_route_runs(
+        self, example, gate, log, route
+    ):
+        """``func`` and ``coroutine`` with different defaults behind an excluding schema: the
+        audited async gate must name its route, or the sync default would be judged and
+        recorded while the coroutine's ran."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+
+        class Args(BaseModel):
+            amount: int = Field(default=100, exclude=True)
+
+        ran = []
+
+        def charge(amount: int = 5) -> str:
+            """Record a charge; the sync default is under the cap."""
+            ran.append(("sync", amount))
+            return "recorded"
+
+        async def acharge(amount: int = 100) -> str:
+            ran.append(("async", amount))
+            return "recorded"
+
+        tool = StructuredTool.from_function(
+            charge, coroutine=acharge, name="charge", args_schema=Args
+        )
+        seen = []
+        messages = self.audited(
+            example,
+            gate,
+            log,
+            route,
+            tool,
+            [self.call("charge", {"amount": 7}, "c1")],
+            self.budget(seen),
+        )
+        decisions = [e["action"]["decision"] for e in log.entries]
+        if route == "sync":
+            assert seen == [{"amount": 5}] and ran == [("sync", 5)]
+            assert messages[0].status == "success" and decisions != ["deny"]
+        else:
+            assert seen == [{"amount": 100}] and ran == []
+            assert "over 10" in messages[0].content and decisions == ["deny"]
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
     def test_a_callable_parameter_the_schema_omits_is_refused_and_recorded_as_one_deny(
         self, example, gate, log, route
     ):

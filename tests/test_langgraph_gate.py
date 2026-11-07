@@ -1439,6 +1439,55 @@ class TestFinalInvocation:
         assert ran == [] and seen == []
         assert "parameter `label` is positional-only" in messages[0].content
 
+    def test_every_schema_subset_of_the_callable_refuses_unless_complete(self, example):
+        """Exhaustive over ``charge(a=1, b=2, c=3)``: for every subset of parameters the
+        schema declares, every proposal over the declared ones, on both routes, the gate
+        refuses before the policy when any parameter is undeclared (naming the first), and
+        otherwise judges exactly the invocation the function receives."""
+        from itertools import combinations
+
+        from langchain_core.tools import StructuredTool
+        from pydantic import create_model
+
+        names, defaults = ("a", "b", "c"), {"a": 1, "b": 2, "c": 3}
+        cases = 0
+        for size in range(len(names) + 1):
+            for declared in combinations(names, size):
+                schema = create_model("Args", **{n: (int, defaults[n]) for n in declared})
+                for proposal_size in range(len(declared) + 1):
+                    for proposed in combinations(declared, proposal_size):
+                        proposal = {n: 10 + defaults[n] for n in proposed}
+                        for route in ("sync", "async"):
+                            ran, seen = [], []
+
+                            def charge(a: int = 1, b: int = 2, c: int = 3) -> str:
+                                """Record the invocation."""
+                                ran.append({"a": a, "b": b, "c": c})
+                                return "recorded"
+
+                            tool = StructuredTool.from_function(
+                                charge, name="charge", args_schema=schema
+                            )
+                            messages, _ = self.on_route(
+                                example,
+                                route,
+                                [self.call("charge", proposal)],
+                                self.recording(seen, lambda n, a: []),
+                                [tool],
+                            )
+                            cases += 1
+                            where = (declared, proposal, route)
+                            if len(declared) < len(names):
+                                assert seen == [] and ran == [], where
+                                assert messages[0].status == "error", where
+                                missing = sorted(set(names) - set(declared))[0]
+                                assert f"parameter `{missing}` is absent" in messages[0].content
+                            else:
+                                expected = {**defaults, **proposal}
+                                assert seen == [expected] and ran == [expected], where
+                                assert messages[0].status == "success", where
+        assert cases == 2 * 27  # every (declared subset, proposal subset) pair, both routes
+
     # --- the old comparison machinery is gone -------------------------------------------------
 
     def test_no_second_validation_and_no_comparison_remain(self):

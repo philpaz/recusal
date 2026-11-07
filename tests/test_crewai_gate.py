@@ -594,6 +594,45 @@ class TestPreparedInvocation:
             example._unsupported_tool(tool) == "its callable's parameter `label` is positional-only"
         )
 
+    def test_every_schema_subset_of_the_callable_refuses_unless_complete(self, example):
+        """Exhaustive over ``_run(a=1, b=2, c=3)``: for every subset of parameters the
+        ``args_schema`` declares, the tool is refused before the policy when any parameter
+        is undeclared (naming the first), and with every parameter declared every proposal
+        over them is prepared to exactly the invocation that runs."""
+        from itertools import combinations
+
+        from pydantic import create_model
+
+        names, defaults = ("a", "b", "c"), {"a": 1, "b": 2, "c": 3}
+        for size in range(len(names) + 1):
+            for declared in combinations(names, size):
+                schema = create_model("Args", **{n: (int, defaults[n]) for n in declared})
+
+                class Charge(example.BaseTool):
+                    name: str = "charge"
+                    description: str = "records the invocation"
+                    args_schema: type[example.BaseModel] = schema
+
+                    def _run(self, a: int = 1, b: int = 2, c: int = 3) -> str:
+                        example.EXECUTED.append(("charge", {"a": a, "b": b, "c": c}))
+                        return "recorded"
+
+                tool = Charge().to_structured_tool()
+                why = example._unsupported_tool(tool)
+                if len(declared) < len(names):
+                    missing = sorted(set(names) - set(declared))[0]
+                    assert why == (
+                        f"its callable's parameter `{missing}` is absent from the argument schema"
+                    ), (declared, why)
+                    assert "cannot be judged" in self.reason(example, tool, {}, name="charge")
+                    continue
+                assert why is None
+                for proposal_size in range(len(names) + 1):
+                    for proposed in combinations(names, proposal_size):
+                        proposal = {n: 10 + defaults[n] for n in proposed}
+                        judged, why = example._prepared(tool, dict(proposal))
+                        assert why is None and judged == {**defaults, **proposal}, proposal
+
     def test_a_non_canonical_default_is_prepared_before_judgment(self, example):
         @example.tool("loose")
         def loose(amount: int = "100", ratio: float = 1, flag: bool = "true") -> str:  # type: ignore[assignment]
