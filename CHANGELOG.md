@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-09
+
+One integrity fix from the 2026-11-06 architecture review: the LangGraph, LangChain and
+CrewAI gates refuse a call whose callable declares a parameter the argument schema
+omits, before the policy runs. This is a PATCH release under `STABILITY.md`: the change
+is in the adapter examples, outside the compatibility perimeter, and `recusal/` changes
+only its version. The verdict kernel, manifest v8 and valid fingerprint bytes are
+unchanged. The review's two other findings (Enum members on the Pydantic AI gate and the
+model-safe error formatter) are separate work.
+
 ### Fixed
 
 - The LangGraph, LangChain and CrewAI gates executed a callable parameter the argument

@@ -4,7 +4,7 @@
     "name": "Philip Paz"
   },
   "description": "Deterministic governance for AI agents: an independent verifier that refuses a tool call before it runs.",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "plugins": [
     {
       "name": "recusal-gate",
