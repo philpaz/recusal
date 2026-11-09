@@ -104,6 +104,6 @@ if __name__ == "__main__":
     # `python examples/allowlist_gate.py`         -> the demo (default)
     # `python examples/allowlist_gate.py --hook`  -> act as a real Claude Code PreToolUse hook
     if "--hook" in sys.argv:
-        run_pretooluse_hook(policy)
+        run_pretooluse_hook(policy, safe_errors=True)
     else:
         main()

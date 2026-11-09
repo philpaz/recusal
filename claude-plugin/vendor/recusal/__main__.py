@@ -311,7 +311,9 @@ from recusal.deny_list import deny_list_policy
 policy = deny_list_policy()
 
 if __name__ == "__main__":
-    run_pretooluse_hook(policy)
+    # safe_errors: an unexpected exception reaches Claude and the audit record as a
+    # stable code and its class, never its text (which can carry a secret)
+    run_pretooluse_hook(policy, safe_errors=True)
 """
 )
 
@@ -327,7 +329,9 @@ from recusal.claude_code import allowlist_policy, run_pretooluse_hook
 policy = allowlist_policy(writable_root={writable_root!r})
 
 if __name__ == "__main__":
-    run_pretooluse_hook(policy)
+    # safe_errors: an unexpected exception reaches Claude and the audit record as a
+    # stable code and its class, never its text (which can carry a secret)
+    run_pretooluse_hook(policy, safe_errors=True)
 """
 )
 

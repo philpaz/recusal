@@ -92,4 +92,7 @@ if __name__ == "__main__":
             # the plugin/package version; a custom policy should declare its own
             "policy_version": EXPECTED_RECUSAL_VERSION,
         },
+        # an unexpected exception reaches Claude and the audit record as a stable
+        # code and its class, never its text (which can carry a secret)
+        safe_errors=True,
     )

@@ -62,4 +62,4 @@ def policy(tool_name: str, tool_input: dict) -> list:
 
 
 if __name__ == "__main__":
-    run_pretooluse_hook(policy)
+    run_pretooluse_hook(policy, safe_errors=True)

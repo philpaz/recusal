@@ -778,8 +778,9 @@ the audit record stores the same; the exception's own text, which can carry a co
 string or a credential, reaches neither. The option is off by default on `decide`,
 `run_pretooluse_hook`, `gate_tool_use` and `tool_confirmation`, where the reason keeps the
 exception text as it always has (the plaintext boundary documented in `recusal.audit`);
-pass `safe_errors=True` to select it. The messages of findings a policy returns are never
-rewritten in either mode.
+pass `safe_errors=True` to select it. The Claude Code plugin and the gate script
+`recusal init` writes select it for you. The messages of findings a policy returns are
+never rewritten in either mode.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

@@ -36,6 +36,17 @@ All notable changes to this project are documented here. The format follows
   validated arguments" refusal names the exception class instead of its text. Conformance
   invariant 4 now requires the code and the absence of the exception text on every route.
   The adapters remain examples outside the compatibility perimeter of `STABILITY.md`.
+- The deployed hooks select `safe_errors=True` as well: the Claude Code plugin
+  (`claude-plugin/scripts/recusal_gate.py`), the gate script `recusal init` writes (both
+  postures) and the two example hooks (`examples/claude_code_gate.py`,
+  `examples/allowlist_gate.py`). For a plugin user this changes one thing: when the policy
+  or the audit write raises, or the event cannot be read, the deny reason Claude reads and
+  the audit record name a code and the exception's class instead of quoting the
+  exception. Every other reason is unchanged. A gate script already on disk is not
+  touched and keeps the previous text until `recusal init` is run again or
+  `safe_errors=True` is added to its `run_pretooluse_hook` call; a gate written by this
+  version needs this version of the package, since earlier ones do not accept the keyword
+  (the launcher refuses every call rather than run a gate that fails to start).
 - The Pydantic AI gate (`examples/pydantic_ai_gate.py`) refuses every Enum member before
   the policy runs, on both the capability and the `Hooks` route. Since 0.13.0 it had
   accepted a member whose value was an immutable JSON scalar and handed the same member

@@ -389,3 +389,48 @@ def test_no_exception_text_site_in_the_decision_boundary_bypasses_the_formatter(
         )
     hook = inspect.getsource(claude_code.run_pretooluse_hook)
     assert "{exc}" not in hook and "str(exc)" not in hook
+
+
+# --- the deployment entry points select it -----------------------------------------------------
+
+
+@pytest.mark.parametrize("posture", ["deny-list", "allowlist"])
+def test_a_gate_written_by_recusal_init_selects_safe_errors(tmp_path, posture):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from recusal.__main__ import gate_source
+
+    source = gate_source(posture)
+    assert "run_pretooluse_hook(policy, safe_errors=True)" in source
+    gate = tmp_path / "gate.py"
+    gate.write_text(source, encoding="utf-8")
+    root = str(Path(__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": root}
+    result = subprocess.run(
+        [sys.executable, str(gate)],
+        input="not json",
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecisionReason"] == (
+        "Recusal failed closed: malformed PreToolUse event "
+        "(RECUSAL_MALFORMED_EVENT (JSONDecodeError))"
+    )
+
+
+def test_the_plugin_and_the_example_hooks_select_safe_errors():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    plugin = (root / "claude-plugin" / "scripts" / "recusal_gate.py").read_text(encoding="utf-8")
+    assert "safe_errors=True," in plugin
+    for name in ("claude_code_gate.py", "allowlist_gate.py"):
+        source = (root / "examples" / name).read_text(encoding="utf-8")
+        assert "run_pretooluse_hook(policy, safe_errors=True)" in source, name
