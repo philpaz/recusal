@@ -73,9 +73,8 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    be (invariant 2). Where the framework re-prepares arguments (invariant 9) the detached
    copy is of the prepared invocation, so the observation and the execution agree in type
    and value as well as in text. Pydantic AI supports data-only values, detaching JSON
-   containers by construction and retaining only immutable-scalar-valued Enum members;
-   its adapter tests refuse rich objects and mutable Enum values on both routes before
-   policy evaluation, and retain an observational/ungated control.
+   containers by construction; its adapter tests refuse rich objects and every Enum
+   member on both routes before policy evaluation, and retain an ungated control.
 12. **A callable parameter the schema omits refuses before judgment.** A tool
    ``charge(label, amount=100)`` behind an argument schema that declares only ``label``,
    proposed with ``{"label": "review"}``: Python would fill ``amount`` from the callable's

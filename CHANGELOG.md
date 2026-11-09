@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The Pydantic AI gate (`examples/pydantic_ai_gate.py`) refuses every Enum member before
+  the policy runs, on both the capability and the `Hooks` route. Since 0.13.0 it had
+  accepted a member whose value was an immutable JSON scalar and handed the same member
+  to the policy and to the tool. A member is one shared object, so state its class sets
+  on it (an `__init__` that stores `self.payload = {...}`) was shared too, and a buggy
+  policy's mutation of that state executed. Passing only `.value` would hide that state
+  from the policy while the tool still used it, so the gate refuses instead: `Enum`,
+  `IntEnum` and `StrEnum` members, at the top level or nested in a list or dict. This
+  narrows what the example accepted. To migrate, declare the parameter as `str` or `int`
+  and resolve the Enum inside the tool body. From the 2026-11-06 architecture review
+  (P2); the adapter remains an example outside the compatibility perimeter of
+  `STABILITY.md`.
+
 ## [0.13.1] - 2026-11-09
 
 One integrity fix from the 2026-11-06 architecture review: the LangGraph, LangChain and

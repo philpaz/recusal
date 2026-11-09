@@ -764,11 +764,11 @@ inside a tool function runs under its own capabilities and needs its own gate; t
 the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
 with exactly `pydantic-ai-slim==2.64.0`.
 
-Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts, plus
-Enum members whose values are immutable JSON scalars (the member identity is preserved).
+Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts.
 Containers are detached by construction, without application copy methods or serializers.
-Models, dataclasses, mutable-valued Enums and other objects refuse before policy evaluation;
-declare data-only parameters and validate inside the tool body. A detachment failure names
+Models, dataclasses, Enum members and other objects refuse before policy evaluation;
+declare data-only parameters (a `str` or `int` in place of an Enum) and resolve
+application types inside the tool body. A detachment failure names
 only the exception class, never its text. General policy-error handling retains the
 plaintext boundary documented in `recusal.audit`.
 

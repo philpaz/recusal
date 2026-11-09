@@ -218,24 +218,72 @@ class TestPydanticAiGate:
         assert executed == [SELECT]
 
     @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
-    def test_an_immutable_scalar_valued_enum_is_judged_and_run_as_the_same_member(
-        self, example, via_hooks
+    @pytest.mark.parametrize("kind", ["enum", "int_enum", "str_enum"])
+    def test_a_scalar_valued_enum_is_refused_before_policy_or_execution(
+        self, example, via_hooks, kind
     ):
+        import enum
+
+        base = {"enum": enum.Enum, "int_enum": enum.IntEnum, "str_enum": enum.StrEnum}[kind]
+        proposed = 1 if kind == "int_enum" else "read"
+        Action = base("Action", {"READ": proposed})
+
+        seen, executed = [], []
+
+        def record(action) -> str:
+            """Record the selected action."""
+            executed.append(action)
+            return str(action.value)
+
+        record.__annotations__["action"] = Action
+
+        def policy(name, args):
+            seen.append(args["action"])
+            return []
+
+        capabilities = (
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))]
+            if via_hooks
+            else [example.RecusalGate(policy)]
+        )
+        result = example.scripted_agent(
+            [("record", {"action": proposed}, "c1")], tools=[record], capabilities=capabilities
+        ).run_sync("go")
+        outcome, reason = example.responses_of(result)["c1"]
+        assert outcome == "failed"
+        assert reason == (
+            "Recusal refused `record`: arguments cannot be detached for judging (TypeError); "
+            "declare data-only parameters and validate inside the tool body"
+        )
+        assert seen == executed == []
+
+        # A live recorder and a valid schema: the same proposal runs without the gate.
+        example.scripted_agent([("record", {"action": proposed}, "c1")], tools=[record]).run_sync(
+            "go"
+        )
+        assert executed == [Action.READ]
+
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    def test_a_scalar_enum_with_mutable_associated_state_is_refused(self, example, via_hooks):
+        """The review's case: the value is a scalar, the member carries a shared dict."""
         from enum import Enum
 
         class Action(Enum):
             READ = "read"
 
+            def __init__(self, _value):
+                self.payload = {"sql": SELECT}
+
         seen, executed = [], []
 
         def record(action: Action) -> str:
-            """Record the selected action."""
-            executed.append(action)
-            return action.value
+            """Record the SQL the member carries without executing it."""
+            executed.append(action.payload["sql"])
+            return action.payload["sql"]
 
         def policy(name, args):
-            seen.append(args["action"])
-            args["action"] = "write"  # assignment changes only the detached dict
+            seen.append(args["action"].payload["sql"])
+            args["action"].payload["sql"] = DELETE  # the alias the refusal exists to deny
             return []
 
         capabilities = (
@@ -246,8 +294,71 @@ class TestPydanticAiGate:
         result = example.scripted_agent(
             [("record", {"action": "read"}, "c1")], tools=[record], capabilities=capabilities
         ).run_sync("go")
-        assert seen == executed == [Action.READ]
-        assert example.responses_of(result)["c1"] == ("success", "read")
+        outcome, reason = example.responses_of(result)["c1"]
+        assert outcome == "failed" and "arguments cannot be detached" in reason
+        assert seen == executed == []
+        assert Action.READ.payload == {"sql": SELECT}
+
+        # The associated state is live: ungated, the tool runs on the member's payload.
+        example.scripted_agent([("record", {"action": "read"}, "c1")], tools=[record]).run_sync(
+            "go"
+        )
+        assert executed == [SELECT]
+
+    @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
+    @pytest.mark.parametrize("shape", ["list", "dict"])
+    def test_an_enum_nested_in_a_container_is_refused(self, example, via_hooks, shape):
+        from enum import Enum
+
+        class Action(Enum):
+            READ = "read"
+
+        seen, executed = [], []
+
+        def record(actions) -> str:
+            """Record the selected actions."""
+            executed.append(actions)
+            return "recorded"
+
+        record.__annotations__["actions"] = list[Action] if shape == "list" else dict[str, Action]
+        proposed = ["read"] if shape == "list" else {"first": "read"}
+
+        def policy(name, args):
+            seen.append(args)
+            return []
+
+        capabilities = (
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))]
+            if via_hooks
+            else [example.RecusalGate(policy)]
+        )
+        result = example.scripted_agent(
+            [("record", {"actions": proposed}, "c1")], tools=[record], capabilities=capabilities
+        ).run_sync("go")
+        outcome, reason = example.responses_of(result)["c1"]
+        assert outcome == "failed" and "arguments cannot be detached" in reason
+        assert seen == executed == []
+
+        example.scripted_agent([("record", {"actions": proposed}, "c1")], tools=[record]).run_sync(
+            "go"
+        )
+        assert executed == [[Action.READ] if shape == "list" else {"first": Action.READ}]
+
+    def test_no_enum_member_is_ever_returned_by_the_detachment(self, example):
+        from enum import Enum, IntEnum
+
+        class Plain(Enum):
+            A = "a"
+
+        class Number(IntEnum):
+            ONE = 1
+
+        for value in (Plain.A, Number.ONE, [Plain.A], {"k": Number.ONE}, {"k": [Plain.A]}):
+            with pytest.raises(TypeError, match="Enum arguments are unsupported"):
+                example._detached(value)
+        assert example._detached({"k": [1, "a", None, True, 1.5]}) == {
+            "k": [1, "a", None, True, 1.5]
+        }
 
     @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
     @pytest.mark.parametrize("kind", ["model", "dataclass"])

@@ -17,11 +17,11 @@ judged separately. Every toolset the agent runs, ``tools=``, ``toolsets=`` or a 
 own tools, executes through the same ``ToolManager``, so the hook sees each call by name and
 validated arguments; output tools (structured output) are not tool calls and skip it.
 
-Supported arguments are data-only: JSON scalars, lists and string-keyed dicts, plus Enum
-members whose values are immutable JSON scalars. Containers are detached by construction;
-scalar-valued Enum members retain their identity. Models, dataclasses, mutable-valued
-Enums and other objects are refused before policy evaluation. Declare data-only parameters
-and validate inside the tool body. No application copy method or serializer is called.
+Supported arguments are data-only: JSON scalars, lists and string-keyed dicts. Containers
+are detached by construction. Models, dataclasses, Enum members and other objects are
+refused before policy evaluation. Declare data-only parameters (a ``str`` or ``int`` in
+place of an Enum) and resolve application types inside the tool body. No application copy
+method or serializer is called.
 
 Two ways to attach it:
 
@@ -118,8 +118,10 @@ def _detached(value: Any, ancestors: tuple[int, ...] = ()) -> Any:
     """Detach the supported data domain without invoking application copying/serialization.
 
     Exact container/scalar types avoid subclasses with custom iteration or copy behavior.
-    Scalar-valued Enum members are treated as constants, with the same member at policy
-    and execution; a mutable value would retain an alias and is therefore refused.
+    Every Enum member is refused, whatever its value: a member is one shared object, and
+    attributes its class sets on it (an ``__init__`` that stores a dict, say) would be the
+    same object at policy and at execution. Passing only ``.value`` would hide that state
+    from the policy while the tool still used it, so that is no repair either.
     """
     if type(value) in (str, int, bool, type(None)):
         return value
@@ -128,12 +130,10 @@ def _detached(value: Any, ancestors: tuple[int, ...] = ()) -> Any:
             raise TypeError("non-finite numbers are not JSON data")
         return value
     if isinstance(value, Enum):
-        scalar = value.value
-        if type(scalar) in (str, int, bool, type(None)) or (
-            type(scalar) is float and math.isfinite(scalar)
-        ):
-            return value
-        raise TypeError("an Enum value must be an immutable JSON scalar")
+        raise TypeError(
+            "Enum arguments are unsupported; declare data-only parameters "
+            "and resolve application types inside the tool body"
+        )
     if type(value) not in (dict, list):
         raise TypeError("arguments must be data-only")
     if id(value) in ancestors:
