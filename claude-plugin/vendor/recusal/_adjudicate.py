@@ -56,6 +56,27 @@ def _findings_of(result: Any) -> List[Any]:
         ) from None
 
 
+#: The stable codes ``safe_errors=True`` puts where an unexpected exception's text would
+#: go. One per place an exception can reach a reason or a finding: the policy call, the
+#: fingerprint that binds the input to its record, the audit write, the hook's envelope,
+#: and the evidence handed to :func:`recusal.claude.gate_tool_use`.
+_POLICY_ERROR = "RECUSAL_POLICY_ERROR"
+_INPUT_BINDING_ERROR = "RECUSAL_INPUT_BINDING_ERROR"
+_AUDIT_UNAVAILABLE = "RECUSAL_AUDIT_UNAVAILABLE"
+_MALFORMED_EVENT = "RECUSAL_MALFORMED_EVENT"
+_INVALID_EVIDENCE = "RECUSAL_INVALID_EVIDENCE"
+
+
+def _error_detail(exc: BaseException, *, code: str, safe_errors: bool) -> str:
+    """What an unexpected exception contributes to a reason and to a finding message.
+
+    By default, its text, as before. With ``safe_errors`` a stable code and the exception's
+    class name, never its text: an exception raised inside a policy, a fingerprint or an
+    audit sink can carry whatever its raiser put in it (a connection string, a credential,
+    a row), and the reason is read by the model and stored on the record."""
+    return f"{code} ({type(exc).__name__})" if safe_errors else str(exc)
+
+
 def _adjudicate(
     tool_name: str,
     tool_input: dict,
@@ -63,6 +84,7 @@ def _adjudicate(
     *,
     allow_on_pass: bool,
     fail_closed: bool,
+    safe_errors: bool = False,
 ) -> Tuple[str, str, Verdict]:
     """``decide`` plus the Verdict that drove it, so a caller can put it on the record.
 
@@ -74,21 +96,22 @@ def _adjudicate(
         # status/passed) fails closed here rather than silently degrading to PASS.
         verdict = compute_verdict(findings, strict=True)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
+        detail = _error_detail(exc, code=_POLICY_ERROR, safe_errors=safe_errors)
         if fail_closed:
             verdict = compute_verdict(
-                [Finding.fail("recusal_policy_error", severity="CRITICAL", message=str(exc))]
+                [Finding.fail("recusal_policy_error", severity="CRITICAL", message=detail)]
             )
-            return "deny", f"Recusal failed closed (policy error): {exc}", verdict
+            return "deny", f"Recusal failed closed (policy error): {detail}", verdict
         verdict = compute_verdict(
             [
                 Finding.fail(
                     "recusal_policy_error",
                     severity="WARNING",
-                    message=f"ignored (fail_closed=False): {exc}",
+                    message=f"ignored (fail_closed=False): {detail}",
                 )
             ]
         )
-        return ("allow" if allow_on_pass else "defer"), f"policy error ignored: {exc}", verdict
+        return ("allow" if allow_on_pass else "defer"), f"policy error ignored: {detail}", verdict
     if verdict.passed:
         return ("allow" if allow_on_pass else "defer"), verdict.message, verdict
     return (
@@ -110,6 +133,7 @@ def decide(
     tool_use_id: Optional[str] = None,
     actor: Optional[str] = None,
     control: Optional[Dict[str, Any]] = None,
+    safe_errors: bool = False,
 ) -> Tuple[str, str]:
     """Run the policy, fold to a verdict, return ``(decision, reason)``.
 
@@ -131,6 +155,16 @@ def decide(
     The recording arguments are refused (``ValueError``) without ``audit``, so a caller
     who believes it is recording is never silently not recording.
 
+    ``safe_errors`` chooses what an unexpected exception contributes to the reason and to
+    the record. By default its text is included, as it always was: an exception raised by
+    the policy, by the fingerprint or by the audit write appears in the returned reason
+    and in the recorded finding. Pass ``safe_errors=True`` where the reason is read by a
+    model or the record by people who must not see what an exception carries: the text is
+    replaced by a stable code and the exception's class name (``RECUSAL_POLICY_ERROR``,
+    ``RECUSAL_INPUT_BINDING_ERROR``, ``RECUSAL_AUDIT_UNAVAILABLE``). The decision, the
+    severity and the fail-open behavior are the same in both modes, and the messages of
+    findings a policy returns are never touched: only exception text is.
+
     Ownership of ``tool_input``: the policy is called with the object the caller passed,
     not a copy, and this function executes nothing. The record (with ``audit=``)
     fingerprints the proposal BEFORE the policy sees it, so a policy's write to the dict
@@ -144,7 +178,12 @@ def decide(
         if any(v is not None for v in (surface, tool_use_id, actor, control)):
             raise ValueError("surface, tool_use_id, actor and control require audit=")
         decision, reason, _ = _adjudicate(
-            tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
+            tool_name,
+            tool_input,
+            policy,
+            allow_on_pass=allow_on_pass,
+            fail_closed=fail_closed,
+            safe_errors=safe_errors,
         )
         return decision, reason
     if not isinstance(surface, str) or not surface or surface != surface.strip():
@@ -159,12 +198,19 @@ def decide(
     # The record binds the input AS PROPOSED: it is fingerprinted before the policy sees
     # it, so a policy that mutates its argument cannot write the mutation onto the record
     # while the caller executes the proposal.
-    input_sha256, refused = _bind_input(tool_input, fail_closed=fail_closed)
+    input_sha256, refused = _bind_input(
+        tool_input, fail_closed=fail_closed, safe_errors=safe_errors
+    )
     if refused is not None:
         decision, reason, verdict = refused
     else:
         decision, reason, verdict = _adjudicate(
-            tool_name, tool_input, policy, allow_on_pass=allow_on_pass, fail_closed=fail_closed
+            tool_name,
+            tool_input,
+            policy,
+            allow_on_pass=allow_on_pass,
+            fail_closed=fail_closed,
+            safe_errors=safe_errors,
         )
     return _record(
         audit,
@@ -179,6 +225,7 @@ def decide(
         control=control,
         actor=actor,
         fail_closed=fail_closed,
+        safe_errors=safe_errors,
     )
 
 
@@ -212,6 +259,7 @@ def _record(
     control: Optional[Dict[str, Any]],
     actor: Optional[str],
     fail_closed: bool,
+    safe_errors: bool = False,
 ) -> Tuple[str, str]:
     """Append one adjudication to ``audit``: the ONE recording path for every surface.
 
@@ -232,9 +280,10 @@ def _record(
         audit.append(verdict, action=action, actor=actor)
     except Exception as exc:  # noqa: BLE001 - an unwritable log must not go unnoticed
         if fail_closed:
+            detail = _error_detail(exc, code=_AUDIT_UNAVAILABLE, safe_errors=safe_errors)
             return (
                 "deny",
-                f"Recusal failed closed: audit log unavailable ({exc}); "
+                f"Recusal failed closed: audit log unavailable ({detail}); "
                 "the record is part of the control",
             )
     return decision, reason
@@ -310,7 +359,7 @@ def _input_fingerprint(tool_input: dict) -> str:
 
 
 def _bind_input(
-    tool_input: dict, *, fail_closed: bool
+    tool_input: dict, *, fail_closed: bool, safe_errors: bool = False
 ) -> Tuple[Optional[str], Optional[Tuple[str, str, Verdict]]]:
     """Fingerprint a proposed input for its audit record, before the policy sees it.
 
@@ -324,11 +373,12 @@ def _bind_input(
     except Exception as exc:  # noqa: BLE001 - an input the record cannot bind must not slip through
         if not fail_closed:
             return None, None
+        detail = _error_detail(exc, code=_INPUT_BINDING_ERROR, safe_errors=safe_errors)
         verdict = compute_verdict(
-            [Finding.fail("recusal_unfingerprintable_input", severity="CRITICAL", message=str(exc))]
+            [Finding.fail("recusal_unfingerprintable_input", severity="CRITICAL", message=detail)]
         )
         return None, (
             "deny",
-            f"Recusal failed closed: tool_input cannot be fingerprinted ({exc})",
+            f"Recusal failed closed: tool_input cannot be fingerprinted ({detail})",
             verdict,
         )

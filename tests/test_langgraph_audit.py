@@ -253,7 +253,7 @@ class TestLangGraphAudit:
     # --- the record is part of the control ---------------------------------------------
 
     def test_policy_that_raises_is_denied_nothing_runs_and_the_denial_is_recorded(
-        self, example, gate, log
+        self, example, gate, log, log_path
     ):
         def broken(tool_name, tool_input):
             raise RuntimeError("policy exploded")
@@ -268,7 +268,9 @@ class TestLangGraphAudit:
         entry = self.by_id(log)["c1"]
         assert entry["action"]["decision"] == "deny"
         assert entry["decision"] == "FAIL"
-        assert any("policy exploded" in f["message"] for f in entry["failures"])
+        assert [f["message"] for f in entry["failures"]] == ["RECUSAL_POLICY_ERROR (RuntimeError)"]
+        assert "policy exploded" not in str(messages[0].content)
+        assert "policy exploded" not in log_path.read_text(encoding="utf-8")
 
     def test_unwritable_log_refuses_every_call_and_no_tool_runs(self, example, log, log_path):
         example.run_calls([self.call("echo", {"text": "warm-up"}, "w")], log)
@@ -303,7 +305,8 @@ class TestLangGraphAudit:
         messages, executed = asyncio.run(example.run_calls_async(self.THREE, log))
         assert executed == []
         assert all(m.status == "error" for m in messages)
-        assert all("anchor store unreachable" in str(m.content) for m in messages)
+        assert all("RECUSAL_AUDIT_UNAVAILABLE" in str(m.content) for m in messages)
+        assert not any("anchor store unreachable" in str(m.content) for m in messages)
 
     # --- the file: fingerprints, no argument text, tamper detection -----------------------
 

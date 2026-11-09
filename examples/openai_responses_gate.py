@@ -188,9 +188,9 @@ def judge_and_run(name: str, arguments: str | None, tools: Tools, policy: Policy
     bound.apply_defaults()
     invocation = dict(bound.arguments)
     try:
-        decision, reason = decide(name, copy.deepcopy(invocation), policy)
+        decision, reason = decide(name, copy.deepcopy(invocation), policy, safe_errors=True)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): {exc}"
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     if decision == "deny":
         return reason
     return str(func(**invocation))

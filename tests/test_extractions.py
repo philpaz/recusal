@@ -87,6 +87,9 @@ def test_the_public_signatures_did_not_move():
         ("tool_use_id", "KEYWORD_ONLY", None),
         ("actor", "KEYWORD_ONLY", None),
         ("control", "KEYWORD_ONLY", None),
+        # 0.14.0, additive: keyword-only, last, and off by default, so every existing
+        # call means what it meant
+        ("safe_errors", "KEYWORD_ONLY", False),
     ]
     assert _shape(manifest_policy) == [
         ("manifest_path", "POSITIONAL_OR_KEYWORD", "<required>"),

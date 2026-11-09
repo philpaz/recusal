@@ -100,7 +100,10 @@ class TestCrewAIGate:
             [("echo", {"text": "unsafe"}, "c1")], policy=broken_policy
         )
         assert executed == []
-        assert responses["c1"] == "Recusal failed closed (policy error): policy exploded"
+        assert (
+            responses["c1"]
+            == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        )
 
     def test_a_crash_inside_decide_also_fails_closed(self, example, monkeypatch):
         def crashing_decide(*args, **kwargs):
@@ -109,7 +112,10 @@ class TestCrewAIGate:
         monkeypatch.setattr(example, "decide", crashing_decide)
         responses, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
-        assert responses["c1"] == "Recusal failed closed (policy error): decide crashed"
+        assert (
+            responses["c1"]
+            == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        )
 
     def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
         tool = example.run_sql.to_structured_tool()

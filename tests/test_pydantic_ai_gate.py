@@ -99,7 +99,7 @@ class TestPydanticAiGate:
         assert executed == []
         assert responses["c1"] == (
             "failed",
-            "Recusal failed closed (policy error): policy exploded",
+            "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)",
         )
 
     def test_a_crash_inside_decide_also_fails_closed(self, example, monkeypatch):
@@ -109,7 +109,10 @@ class TestPydanticAiGate:
         monkeypatch.setattr(example, "decide", crashing_decide)
         responses, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
-        assert responses["c1"] == ("failed", "Recusal failed closed (policy error): decide crashed")
+        assert responses["c1"] == (
+            "failed",
+            "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)",
+        )
 
     def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
         assert example._refusal("run_sql", ["DELETE"], example.sql_scope_policy) == (

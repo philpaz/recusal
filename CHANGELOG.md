@@ -6,8 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `safe_errors`, a keyword-only option on `decide`, `run_pretooluse_hook`, `gate_tool_use`
+  and `tool_confirmation`, off by default. When a policy, the input fingerprint, the audit
+  write, the hook's envelope or the evidence raises an unexpected exception, the reason
+  returned to the caller and the finding stored on the audit record have always quoted the
+  exception's text, and that text can carry whatever its raiser put in it (a connection
+  string, a credential, a row). With `safe_errors=True` a stable code and the exception's
+  class name stand in its place: `RECUSAL_POLICY_ERROR`, `RECUSAL_INPUT_BINDING_ERROR`,
+  `RECUSAL_AUDIT_UNAVAILABLE`, `RECUSAL_MALFORMED_EVENT` and `RECUSAL_INVALID_EVIDENCE`,
+  as in `Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)`. The
+  decision, the severity and the fail-open behavior are identical in both modes, and the
+  messages of findings a policy returns are never rewritten. Without the option every
+  reason string and every audit record is byte for byte what it was. From the 2026-11-06
+  architecture review (P2). A separate destination for the withheld exception detail,
+  for operators, is not part of this change.
+
 ### Changed
 
+- Every framework adapter under `examples/` (LangGraph, LangChain, CrewAI, the OpenAI
+  Agents SDK function and MCP tools, the OpenAI Responses and Chat Completions loops,
+  Google ADK, Pydantic AI) now calls `decide(..., safe_errors=True)`, and its own outer
+  exception handler names the code and the class as well. A policy that raises is still
+  refused and nothing runs; the text the model reads changes from
+  `Recusal failed closed (policy error): <exception text>` to
+  `Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (<ExceptionClass>)`, and the
+  audited LangGraph route records the same. The OpenAI Agents gate's "cannot name its
+  validated arguments" refusal names the exception class instead of its text. Conformance
+  invariant 4 now requires the code and the absence of the exception text on every route.
+  The adapters remain examples outside the compatibility perimeter of `STABILITY.md`.
 - The Pydantic AI gate (`examples/pydantic_ai_gate.py`) refuses every Enum member before
   the policy runs, on both the capability and the `Hooks` route. Since 0.13.0 it had
   accepted a member whose value was an immutable JSON scalar and handed the same member

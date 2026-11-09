@@ -257,9 +257,9 @@ def _refusal(tool: Any, args: Any, policy: Policy) -> Optional[str]:
     if invocation is None:
         return f"Recusal refused `{tool_name}`: {why}"
     try:
-        decision, reason = decide(tool_name, invocation, policy)
+        decision, reason = decide(tool_name, invocation, policy, safe_errors=True)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): {exc}"
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
 
 

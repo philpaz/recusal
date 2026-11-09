@@ -167,9 +167,9 @@ def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:
             f"({type(exc).__name__}); declare data-only parameters and validate inside the tool body"
         )
     try:
-        decision, reason = decide(tool_name, observed, policy)
+        decision, reason = decide(tool_name, observed, policy, safe_errors=True)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): {exc}"
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
 
 

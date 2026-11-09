@@ -152,7 +152,10 @@ class TestOpenAIResponsesGate:
 
         run = self.responses_outputs if shape == "responses" else self.chat_outputs
         by_id, _ = run(ex, [("run_sql", {"sql": SELECT}, "a")], policy=broken)
-        assert by_id["a"] == "Recusal failed closed (policy error): policy exploded"
+        assert (
+            by_id["a"]
+            == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        )
         assert ex.EXECUTED == []
 
     @pytest.mark.parametrize("shape", ["responses", "chat"])

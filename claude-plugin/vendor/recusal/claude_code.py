@@ -72,10 +72,12 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List
 from ._adjudicate import (  # noqa: F401, re-exported: the public path is this module
     _AUTHORITATIVE_CONTROL_KEYS,
     _HOOK_SURFACE,
+    _MALFORMED_EVENT,
     Policy,
     _adjudicate,
     _bind_input,
     _control_identity,
+    _error_detail,
     _findings_of,
     _identity_getter,
     _input_fingerprint,
@@ -101,6 +103,7 @@ def decide(
     tool_use_id: Optional[str] = None,
     actor: Optional[str] = None,
     control: Optional[Dict[str, Any]] = None,
+    safe_errors: bool = False,
 ) -> Tuple[str, str]:
     return _decide_impl(
         tool_name,
@@ -113,6 +116,7 @@ def decide(
         tool_use_id=tool_use_id,
         actor=actor,
         control=control,
+        safe_errors=safe_errors,
     )
 
 
@@ -157,6 +161,7 @@ def run_pretooluse_hook(
     control: Optional[Dict[str, Any]] = None,
     stdin: Any = None,
     stdout: Any = None,
+    safe_errors: bool = False,
 ) -> Optional[dict]:
     """Read a Claude Code PreToolUse event on stdin, apply ``policy``, emit the decision.
 
@@ -184,6 +189,11 @@ def run_pretooluse_hook(
     automatically; pass ``{"policy_id": ..., "policy_version": ...}`` (any JSON-safe
     identity) for the policy; a :func:`recusal.mcp.manifest_policy` contributes the
     manifest content digest it enforced automatically.
+
+    ``safe_errors`` is :func:`decide`'s: by default an unexpected exception's text is in
+    the reason Claude reads and on the record; with ``safe_errors=True`` a stable code and
+    the exception's class name stand in for it (``RECUSAL_MALFORMED_EVENT`` for an
+    envelope that cannot be read, and :func:`decide`'s codes for the rest).
     """
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
@@ -228,7 +238,9 @@ def run_pretooluse_hook(
             # its decision cannot depend on whether the input is fingerprintable), and
             # BEFORE the policy sees the input, so the record binds the proposal and not
             # whatever a mutating policy left in the dict
-            input_sha256, refused = _bind_input(tool_input, fail_closed=fail_closed)
+            input_sha256, refused = _bind_input(
+                tool_input, fail_closed=fail_closed, safe_errors=safe_errors
+            )
         if refused is not None:
             decision, reason, verdict = refused
         else:
@@ -238,8 +250,10 @@ def run_pretooluse_hook(
                 policy,
                 allow_on_pass=allow_on_pass,
                 fail_closed=fail_closed,
+                safe_errors=safe_errors,
             )
     except Exception as exc:  # noqa: BLE001 - a malformed event must not silently disable the gate
+        detail = _error_detail(exc, code=_MALFORMED_EVENT, safe_errors=safe_errors)
         if not fail_closed:
             # fail-open: defer to Claude Code's normal flow. Still a decision: if a log
             # was asked for, record it (best-effort; PASS with the warning on record).
@@ -249,7 +263,7 @@ def run_pretooluse_hook(
                         Finding.fail(
                             "recusal_malformed_event",
                             severity="WARNING",
-                            message=f"deferred (fail_closed=False): {exc}",
+                            message=f"deferred (fail_closed=False): {detail}",
                         )
                     ]
                 )
@@ -262,7 +276,7 @@ def run_pretooluse_hook(
                     surface=_HOOK_SURFACE,
                     tool_name=tool_name,
                     decision="defer",
-                    reason=f"malformed PreToolUse event ignored: {exc}",
+                    reason=f"malformed PreToolUse event ignored: {detail}",
                     input_sha256=None,
                     event_ids={},
                     policy=policy,
@@ -271,9 +285,9 @@ def run_pretooluse_hook(
                     fail_closed=False,
                 )
             return None
-        decision, reason = "deny", f"Recusal failed closed: malformed PreToolUse event ({exc})"
+        decision, reason = "deny", f"Recusal failed closed: malformed PreToolUse event ({detail})"
         verdict = compute_verdict(
-            [Finding.fail("recusal_malformed_event", severity="CRITICAL", message=str(exc))]
+            [Finding.fail("recusal_malformed_event", severity="CRITICAL", message=detail)]
         )
 
     if audit is not None:
@@ -290,6 +304,7 @@ def run_pretooluse_hook(
             control=control,
             actor=actor,
             fail_closed=fail_closed,
+            safe_errors=safe_errors,
         )
 
     if decision == "defer":

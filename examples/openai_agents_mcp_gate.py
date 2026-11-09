@@ -125,9 +125,9 @@ def _refusal_for_call(tool_name: str, arguments: Any, policy: Policy) -> Optiona
     if not isinstance(args, dict):
         return f"Recusal refused `{tool_name}`: arguments are not a mapping"
     try:
-        decision, reason = decide(tool_name, copy.deepcopy(args), policy)
+        decision, reason = decide(tool_name, copy.deepcopy(args), policy, safe_errors=True)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): {exc}"
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
 
 

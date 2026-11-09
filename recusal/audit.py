@@ -39,7 +39,10 @@ What this does and does not guarantee (read before relying on it):
 - **The log contains what you put in it.** ``tool_input`` is never embedded by the hook
   wiring (fingerprint only), but finding *messages*, verdict reasons, and exception text
   are stored in plaintext - a policy that writes a secret or a regulated value into a
-  message has put it on the record. Keep payloads out of messages.
+  message has put it on the record. Keep payloads out of messages. Exception text is the
+  part a policy author does not write: ``decide(..., safe_errors=True)`` and
+  ``run_pretooluse_hook(..., safe_errors=True)`` record a stable code and the exception's
+  class in its place.
 
 Deterministic and dependency-free: SHA-256 over canonical JSON, standard library only.
 The record shape maps cleanly onto OWASP Agentic logging and EU AI Act Article 12

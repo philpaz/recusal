@@ -904,7 +904,8 @@ run_pretooluse_hook(
 
 What lands in each entry: the tool, the decision and reasons, a SHA-256 fingerprint of
 the proposed `tool_input` (contents never embedded - but finding *messages* are plaintext
-record content, keep secrets out of them), `prompt_id` for transcript linkage, and
+record content, keep secrets out of them; pass `safe_errors=True` to record a stable code
+in place of an unexpected exception's text), `prompt_id` for transcript linkage, and
 `control` = `{recusal_version, policy_id, policy_version, manifest_sha256}`.
 `recusal_version` and `manifest_sha256` are implementation-owned: caller-supplied values
 for them are stripped, and the digest is invocation-local (a `ContextVar` inside

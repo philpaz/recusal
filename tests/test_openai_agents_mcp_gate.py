@@ -112,7 +112,10 @@ class TestOpenAIAgentsMcpGate:
 
         outputs, called = example.run_calls([("echo", {"text": "x"}, "c1")], policy=broken_policy)
         assert called == []
-        assert _text(outputs["c1"]) == "Recusal failed closed (policy error): policy exploded"
+        assert (
+            _text(outputs["c1"])
+            == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        )
 
     def test_a_policy_that_writes_to_what_it_judged_does_not_change_what_the_server_runs(
         self, example
@@ -388,7 +391,7 @@ class TestOpenAIAgentsMcpGate:
             "approval_request_id": "r1",
             "approve": False,
             "type": "mcp_approval_response",
-            "reason": "Recusal failed closed (policy error): policy exploded",
+            "reason": "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)",
         }
 
     def test_negative_control_the_tools_own_callback_approves_delete_without_the_gate(

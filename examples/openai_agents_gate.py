@@ -199,9 +199,9 @@ def _refusal(tool_name: str, arguments: str, policy: Policy) -> str | None:
     if not isinstance(args, dict):
         return f"Recusal refused `{tool_name}`: arguments are not a JSON object"
     try:
-        decision, reason = decide(tool_name, args, policy)
+        decision, reason = decide(tool_name, args, policy, safe_errors=True)
     except Exception as exc:
-        return f"Recusal failed closed (policy error): {exc}"
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
 
 
@@ -233,9 +233,11 @@ def _function_tool_refusal(
         # agent.as_tool(): no parameter model, the SDK hands the input text to the sub-agent
         # as is, and the sub-agent's own gate (which gate_tools requires) judges its calls
         try:
-            decision, reason = decide(tool_name, args, policy)
+            decision, reason = decide(tool_name, args, policy, safe_errors=True)
         except Exception as exc:
-            return f"Recusal failed closed (policy error): {exc}"
+            return (
+                f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+            )
         return reason if decision == "deny" else None
     prepare = getattr(tool.on_invoke_tool, "prepare_arguments", None)
     if not callable(prepare):
@@ -253,11 +255,11 @@ def _function_tool_refusal(
     try:
         effective = _effective_arguments(tool, prepared)
     except Exception as exc:  # noqa: BLE001, an invocation the gate cannot name is refused
-        return f"Recusal refused `{tool_name}`: cannot name its validated arguments ({exc})"
+        return f"Recusal refused `{tool_name}`: cannot name its validated arguments ({type(exc).__name__})"
     try:
-        decision, reason = decide(tool_name, effective, policy)
+        decision, reason = decide(tool_name, effective, policy, safe_errors=True)
     except Exception as exc:
-        return f"Recusal failed closed (policy error): {exc}"
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     if decision == "deny":
         return reason
     if ctx is not None:

@@ -27,6 +27,7 @@ stays auditable.
 from collections.abc import Mapping
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from ._adjudicate import _INVALID_EVIDENCE, _error_detail
 from .evidence import compute_verdict
 
 # A PASS verdict allows the action; RETRY and FAIL both block it (RETRY means
@@ -62,6 +63,7 @@ def gate_tool_use(
     findings: Evidence,
     *,
     tool_name: str = "tool",
+    safe_errors: bool = False,
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """Adjudicate a proposed Claude tool call against collected evidence.
 
@@ -85,13 +87,19 @@ def gate_tool_use(
                 continue
             results.append({"type": "tool_result", "tool_use_id": tool.id,
                             "content": execute_tool(tool.name, tool.input)})
+
+    Evidence that cannot be folded refuses the call, and by default the refusal quotes
+    the error. Pass ``safe_errors=True`` to put a stable code and the exception's class
+    name there instead (``RECUSAL_INVALID_EVIDENCE``), so nothing the evidence carried
+    reaches the model through an error message.
     """
     # strict at the enforcement boundary: ambiguous evidence (a dict with no
     # status/passed) fails closed to a refusal rather than degrading to PASS.
     try:
         verdict = compute_verdict(_evidence_of(findings), strict=True)
     except Exception as exc:  # noqa: BLE001
-        detail = f"invalid evidence ({exc})"
+        shown = _error_detail(exc, code=_INVALID_EVIDENCE, safe_errors=safe_errors)
+        detail = f"invalid evidence ({shown})"
     else:
         if verdict.passed:
             return True, None
@@ -112,6 +120,8 @@ def gate_tool_use(
 def tool_confirmation(
     tool_use_id: str,
     findings: Evidence,
+    *,
+    safe_errors: bool = False,
 ) -> Dict[str, Any]:
     """Build a Managed Agents ``user.tool_confirmation`` event from a verdict.
 
@@ -119,6 +129,7 @@ def tool_confirmation(
     session idles awaiting confirmation of a tool call, adjudicate the evidence
     and send this event back. PASS → ``allow``; RETRY/FAIL → ``deny`` with the
     verdict message as ``deny_message`` (which the agent receives and reacts to).
+    ``safe_errors`` is :func:`gate_tool_use`'s.
     """
     try:
         verdict = compute_verdict(
@@ -129,7 +140,10 @@ def tool_confirmation(
             "type": "user.tool_confirmation",
             "tool_use_id": tool_use_id,
             "result": "deny",
-            "deny_message": f"invalid evidence ({exc})",
+            "deny_message": (
+                "invalid evidence ("
+                f"{_error_detail(exc, code=_INVALID_EVIDENCE, safe_errors=safe_errors)})"
+            ),
         }
     allow = verdict.passed
 

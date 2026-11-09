@@ -131,6 +131,13 @@ The Claude Code hook **fails closed**: a policy that raises becomes a `deny`, no
 allow. You can opt into fail-open (`fail_closed=False`) only if you understand the
 trade-off. See [`../SECURITY.md`](../SECURITY.md).
 
+By default the deny reason quotes the exception, and the audit record stores it. If an
+exception in your policy could carry something the model or a log reader must not see (a
+database error with its connection string, say), pass `safe_errors=True` to `decide` or
+`run_pretooluse_hook`: the reason and the record then carry a stable code and the
+exception's class, such as `RECUSAL_POLICY_ERROR (OperationalError)`, and never its text.
+The decision is the same in both modes.
+
 ## If I install the hook, can the agent still get around it?
 
 Depends on the posture, and the docs refuse to blur the two:

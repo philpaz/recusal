@@ -101,7 +101,9 @@ class TestGoogleAdkGate:
             [("echo", {"text": "unsafe"}, "c1")], policy=broken_policy, via_plugin=via_plugin
         )
         assert executed == []
-        assert responses["c1"] == {"error": "Recusal failed closed (policy error): policy exploded"}
+        assert responses["c1"] == {
+            "error": "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        }
 
     def test_a_crash_inside_decide_also_fails_closed(self, example, monkeypatch):
         def crashing_decide(*args, **kwargs):
@@ -110,7 +112,9 @@ class TestGoogleAdkGate:
         monkeypatch.setattr(example, "decide", crashing_decide)
         responses, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
-        assert responses["c1"] == {"error": "Recusal failed closed (policy error): decide crashed"}
+        assert responses["c1"] == {
+            "error": "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        }
 
     def test_missing_arguments_reach_the_policy_as_an_empty_mapping(self, example):
         seen = []

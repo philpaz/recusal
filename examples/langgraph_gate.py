@@ -339,9 +339,11 @@ def _unjudgeable(name: str, detail: str, bound: dict, policy: Policy, record: di
         return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
 
     try:
-        _, reason = decide(name, bound, unjudgeable, **record)
+        _, reason = decide(name, bound, unjudgeable, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
-        reason = f"Recusal failed closed (policy error): {exc}"
+        reason = (
+            f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+        )
     return reason
 
 
@@ -394,9 +396,12 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
         except TypeError as exc:
             raise RecusalRefusal(_unjudgeable(name, str(exc), proposal(tool_input), policy, record))
         try:
-            decision, reason = decide(name, judged, policy, **record)
+            decision, reason = decide(name, judged, policy, safe_errors=True, **record)
         except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-            decision, reason = "deny", f"Recusal failed closed (policy error): {exc}"
+            decision, reason = (
+                "deny",
+                f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})",
+            )
         if decision == "deny":
             raise RecusalRefusal(reason)
         return args, kwargs

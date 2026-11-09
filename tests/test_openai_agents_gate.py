@@ -101,7 +101,10 @@ class TestOpenAIAgentsGate:
             [("echo", {"text": "unsafe"}, "c1")], policy=broken_policy
         )
         assert executed == []
-        assert outputs["c1"] == "Recusal failed closed (policy error): policy exploded"
+        assert (
+            outputs["c1"]
+            == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        )
 
     def test_a_crash_inside_decide_also_fails_closed(self, example, monkeypatch):
         # decide() already denies when a policy raises; the guardrail's own except covers
@@ -112,7 +115,10 @@ class TestOpenAIAgentsGate:
         monkeypatch.setattr(example, "decide", crashing_decide)
         outputs, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
-        assert outputs["c1"] == "Recusal failed closed (policy error): decide crashed"
+        assert (
+            outputs["c1"]
+            == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+        )
 
     @pytest.mark.parametrize(
         "arguments, reason",

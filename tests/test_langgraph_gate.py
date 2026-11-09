@@ -113,7 +113,9 @@ class TestLangGraphGate:
         )
         assert executed == []
         assert messages[0].status == "error"
-        assert "failed closed (policy error): policy exploded" in str(messages[0].content)
+        assert "failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)" in str(
+            messages[0].content
+        )
 
     def test_negative_control_runs_delete_without_hook(self, example):
         messages, executed = example.run_calls(
@@ -192,7 +194,9 @@ class TestLangGraphGate:
         )
         assert executed == []
         assert messages[0].status == "error"
-        assert "failed closed (policy error): policy exploded" in str(messages[0].content)
+        assert "failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)" in str(
+            messages[0].content
+        )
 
     def test_async_negative_control_runs_delete_without_hook(self, example):
         messages, executed = asyncio.run(

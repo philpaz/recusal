@@ -13,7 +13,8 @@ shows up as a failure here rather than as a gap in prose. The invariants:
 3. **Calls in one turn are judged separately.** A refused call does not block the allowed
    calls beside it, and the allowed ones run with their own arguments.
 4. **A policy that raises fails closed.** Nothing runs; the model reads that the gate failed
-   closed.
+   closed, as a stable code and the exception's class (every adapter selects
+   ``safe_errors=True``), never the text the exception carried.
 5. **The negative control.** Ungated, the same refused call runs: the adapter's recorder is
    live and the refusal above is the gate's doing.
 6. **A schema that changes an allowed proposal never runs the changed value.** The tool's
@@ -686,7 +687,10 @@ def test_4_a_policy_that_raises_fails_closed(modules, name, route):
     outcomes, executed = run(module, [("echo", {"text": "unsafe"}, "c1")], _broken, True)
     assert executed == []
     refused, text = outcomes["c1"]
-    assert refused and "failed closed" in text and "policy exploded" in text
+    assert refused and "failed closed" in text
+    # the adapters select safe_errors=True: the model reads a stable code and the
+    # exception's class, never the text the exception carried
+    assert "RECUSAL_POLICY_ERROR (RuntimeError)" in text and "policy exploded" not in text
 
 
 @pytest.mark.parametrize("name, route", ROWS, ids=[f"{n}-{r}" for n, r in ROWS])

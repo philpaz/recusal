@@ -769,8 +769,17 @@ Containers are detached by construction, without application copy methods or ser
 Models, dataclasses, Enum members and other objects refuse before policy evaluation;
 declare data-only parameters (a `str` or `int` in place of an Enum) and resolve
 application types inside the tool body. A detachment failure names
-only the exception class, never its text. General policy-error handling retains the
-plaintext boundary documented in `recusal.audit`.
+only the exception class, never its text.
+
+Every adapter above calls `decide(..., safe_errors=True)`. When a policy, the fingerprint
+or the audit write raises, the model reads a stable code and the exception's class, for
+example `Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)`, and
+the audit record stores the same; the exception's own text, which can carry a connection
+string or a credential, reaches neither. The option is off by default on `decide`,
+`run_pretooluse_hook`, `gate_tool_use` and `tool_confirmation`, where the reason keeps the
+exception text as it always has (the plaintext boundary documented in `recusal.audit`);
+pass `safe_errors=True` to select it. The messages of findings a policy returns are never
+rewritten in either mode.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
