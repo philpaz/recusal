@@ -83,7 +83,6 @@ import os
 import re
 import sys
 import threading
-import typing
 from types import SimpleNamespace
 from typing import Any, Callable, List, Optional
 
@@ -128,6 +127,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
 from recusal.claude_code import decide  # noqa: E402
+from recusal.invocation import json_data as _json_data
+from recusal.invocation import supported_annotation as _supported_annotation
 
 Policy = Callable[[str, dict], List[Any]]
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
@@ -203,38 +204,6 @@ def transforming_run_sql() -> BaseTool:
 
 
 # --- the supported invocation: a stock tool and schema, defaults completed before judgment ---
-
-_SCALARS = (str, int, float, bool)
-_UNION_TYPE = type(int | None)  # the PEP 604 union
-
-
-def _supported_annotation(annotation: Any) -> bool:
-    """True for an annotation whose validation is a pure function of the value: ``str``,
-    ``int``, ``float``, ``bool``, ``Optional`` of one, ``list[T]`` and ``dict[str, T]`` with
-    ``T`` supported in turn. Everything else (``Any``, a model, an ``Enum``, an
-    ``Annotated``, a dataclass, a bare ``list``/``dict``) is unsupported."""
-    if annotation in _SCALARS:
-        return True
-    origin, args = typing.get_origin(annotation), typing.get_args(annotation)
-    if origin is typing.Union or origin is _UNION_TYPE:
-        rest = [a for a in args if a is not type(None)]
-        return len(rest) == 1 and _supported_annotation(rest[0])
-    if origin is list:
-        return len(args) == 1 and _supported_annotation(args[0])
-    if origin is dict:
-        return len(args) == 2 and args[0] is str and _supported_annotation(args[1])
-    return False
-
-
-def _json_data(value: Any) -> bool:
-    """True for a value in the JSON domain (what a default may be)."""
-    if value is None or isinstance(value, _SCALARS):
-        return True
-    if isinstance(value, list):
-        return all(_json_data(v) for v in value)
-    if isinstance(value, dict):
-        return all(isinstance(k, str) and _json_data(v) for k, v in value.items())
-    return False
 
 
 #: The names Pydantic's metaclass (and the interpreter) put on a model class that declares

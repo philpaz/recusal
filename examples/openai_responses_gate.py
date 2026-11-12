@@ -44,7 +44,6 @@ import inspect
 import json
 import os
 import sys
-import typing
 from typing import Any, Callable, List, Optional
 
 OPENAI_VERSION = "3.34.0"
@@ -68,6 +67,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
 from recusal.claude_code import decide  # noqa: E402
+from recusal.invocation import unsupported_signature as _unsupported_signature
 
 Policy = Callable[[str, dict], List[Any]]
 Tools = dict[str, Callable[..., Any]]
@@ -99,61 +99,6 @@ def charge(amount: int = 100) -> str:
 TOOLS: Tools = {"echo": echo, "run_sql": run_sql, "charge": charge}
 
 # --- the supported invocation: an explicit type set, defaults completed before judgment -------
-
-_SCALARS = (str, int, float, bool)
-_UNION_TYPE = type(int | None)  # the PEP 604 union, without shadowing any `types` module
-
-
-def _supported_annotation(annotation: Any) -> bool:
-    """True for an annotation whose preparation is a pure function of the value: ``str``,
-    ``int``, ``float``, ``bool``, ``Optional`` of one, ``list[T]`` and ``dict[str, T]`` with
-    ``T`` supported in turn. Everything else (no annotation, ``Any``, a model, an ``Enum``, an
-    ``Annotated``, a dataclass, a bare ``list``/``dict``) is unsupported."""
-    if annotation in _SCALARS:
-        return True
-    origin, args = typing.get_origin(annotation), typing.get_args(annotation)
-    if origin is typing.Union or origin is _UNION_TYPE:
-        rest = [a for a in args if a is not type(None)]
-        return len(rest) == 1 and _supported_annotation(rest[0])
-    if origin is list:
-        return len(args) == 1 and _supported_annotation(args[0])
-    if origin is dict:
-        return len(args) == 2 and args[0] is str and _supported_annotation(args[1])
-    return False
-
-
-def _json_data(value: Any) -> bool:
-    """True for a value in the JSON domain (what a default may be)."""
-    if value is None or isinstance(value, _SCALARS):
-        return True
-    if isinstance(value, list):
-        return all(_json_data(v) for v in value)
-    if isinstance(value, dict):
-        return all(isinstance(k, str) and _json_data(v) for k, v in value.items())
-    return False
-
-
-def _unsupported_signature(func: Callable[..., Any], skip: tuple[str, ...] = ()) -> Optional[str]:
-    """Why this callable's parameters cannot all be judged, or None if they can."""
-    try:
-        parameters = inspect.signature(func).parameters
-        # resolves string annotations (PEP 563) and keeps Annotated so it can be refused
-        hints = typing.get_type_hints(func, include_extras=True)
-    except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
-        return "its signature cannot be inspected"
-    for name, parameter in parameters.items():
-        if name in skip:
-            continue
-        annotation = hints.get(name, parameter.empty)
-        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-            return f"`{name}` is variadic; every argument the tool receives must be judged by name"
-        if parameter.kind is parameter.POSITIONAL_ONLY:
-            return f"`{name}` is positional-only and cannot be judged by name"
-        if not _supported_annotation(annotation):
-            return f"`{name}` is not annotated with a supported data type"
-        if parameter.default is not parameter.empty and not _json_data(parameter.default):
-            return f"`{name}` has a default outside the JSON domain"
-    return None
 
 
 def judge_and_run(name: str, arguments: str | None, tools: Tools, policy: Policy) -> str:

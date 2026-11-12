@@ -126,7 +126,9 @@ the runtime's issue first; the maintainer will share what is already known about
 hook and its traps. A runtime PR is done when it has all of these:
 
 1. **The example.** `examples/<runtime>_gate.py`, offline and deterministic (no model,
-   no API key), following the rules for examples above.
+   no API key), following the rules for examples above. Take the signature check, the
+   JSON-domain check and the detached copy from `recusal.invocation`; do not copy them
+   into the example (`tests/test_invocation.py` refuses a second definition).
 2. **Its tests.** `tests/test_<runtime>_gate.py`: refusals, allowed calls, a policy that
    raises, and an ungated negative control.
 3. **Its surface probe.** `tests/test_compat_<runtime>.py`, modeled on

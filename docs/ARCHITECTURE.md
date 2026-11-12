@@ -24,6 +24,22 @@ checks / policies / MCP observations
 the CLI, or MCP collection. `recusal.mcp` is deterministic MCP adjudication; live process
 collection remains in `recusal.mcp_fetch`.
 
+## What the framework gates share
+
+A gate in front of a tool call promises that the arguments the policy judged are the
+arguments the tool ran with. The parts of that promise that are about data, not about a
+framework, live in `recusal.invocation`: the annotations a gate can judge by value
+(`supported_annotation`), the JSON domain a default must sit in (`json_data`), whether
+every parameter of a callable can be judged by name (`unsupported_signature`), and the
+copy a policy may write to without reaching what executes (`detached`). The module imports
+only the standard library and calls no policy.
+
+The gates under `examples/` import these instead of carrying their own copy, and
+`tests/test_invocation.py` fails if a file under `examples/` defines one of them again.
+What stays in each gate is the framework's own: where its hook sits, how it prepares an
+invocation, and which parameters it injects. The LangGraph gate's projection of models and
+dataclasses (`_faithful`) is specific to that framework's argument types and stays there.
+
 ## Public compatibility perimeter
 
 This section describes the perimeter; [`../STABILITY.md`](../STABILITY.md) is the promise

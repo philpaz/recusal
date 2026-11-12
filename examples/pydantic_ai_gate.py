@@ -54,11 +54,9 @@ Run after installing:
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable, List, Optional
 
 PYDANTIC_AI_VERSION = "2.64.0"
@@ -97,6 +95,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
 from recusal.claude_code import decide  # noqa: E402
+from recusal.invocation import detached as _detached
 
 Policy = Callable[[str, dict], List[Any]]
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
@@ -112,38 +111,6 @@ def run_sql(sql: str) -> str:
     """Record SQL text without connecting to a database."""
     EXECUTED.append(("run_sql", {"sql": sql}))
     return f"recorded SQL: {sql}"
-
-
-def _detached(value: Any, ancestors: tuple[int, ...] = ()) -> Any:
-    """Detach the supported data domain without invoking application copying/serialization.
-
-    Exact container/scalar types avoid subclasses with custom iteration or copy behavior.
-    Every Enum member is refused, whatever its value: a member is one shared object, and
-    attributes its class sets on it (an ``__init__`` that stores a dict, say) would be the
-    same object at policy and at execution. Passing only ``.value`` would hide that state
-    from the policy while the tool still used it, so that is no repair either.
-    """
-    if type(value) in (str, int, bool, type(None)):
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise TypeError("non-finite numbers are not JSON data")
-        return value
-    if isinstance(value, Enum):
-        raise TypeError(
-            "Enum arguments are unsupported; declare data-only parameters "
-            "and resolve application types inside the tool body"
-        )
-    if type(value) not in (dict, list):
-        raise TypeError("arguments must be data-only")
-    if id(value) in ancestors:
-        raise TypeError("cyclic arguments are not JSON data")
-    ancestors = (*ancestors, id(value))
-    if type(value) is list:
-        return [_detached(item, ancestors) for item in value]
-    if any(type(key) is not str for key in value):
-        raise TypeError("argument keys must be strings")
-    return {key: _detached(item, ancestors) for key, item in value.items()}
 
 
 def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:

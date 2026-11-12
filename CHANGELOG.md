@@ -22,6 +22,14 @@ All notable changes to this project are documented here. The format follows
   reason string and every audit record is byte for byte what it was. From the 2026-11-06
   architecture review (P2). A separate destination for the withheld exception detail,
   for operators, is not part of this change.
+- `recusal.invocation`, the data-only checks a gate needs in any framework, in one place:
+  `supported_annotation`, `json_data`, `unsupported_signature` and `detached`. The CrewAI,
+  Google ADK, OpenAI Responses and Pydantic AI gates under `examples/` each carried a copy
+  (three of `json_data`, two of `unsupported_signature`, three of `supported_annotation`,
+  one of `detached`); they now import these, the code is the code they had, and a test
+  refuses a second definition under `examples/`. No gate decides differently. Standard
+  library only, and it works on Python 3.9, where the copies needed 3.10. From the
+  2026-11-11 architecture review.
 
 ### Fixed
 
