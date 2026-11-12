@@ -311,6 +311,22 @@ def _digest(entry: Dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(entry).encode("utf-8")).hexdigest()
 
 
+def _stored_form(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """The entry as a reader of the file will get it back: one pass through the writer's
+    own serialization.
+
+    The hash has to cover what is stored, because a verifier only ever sees what is stored.
+    Serializing changes some values (an integer key becomes a string, a tuple a list, and
+    ``default=str`` turns any other object into its text), and key order after that change
+    is not the order before it: ``{1: .., 2: .., 10: ..}`` sorts 1, 2, 10 in memory and
+    "1", "10", "2" once read back. An entry hashed before the change and verified after
+    it reported "content tampered" on a file nobody had touched. An entry that is already
+    plain JSON with string keys comes back equal, so its hash is what it always was.
+    """
+    stored: Dict[str, Any] = json.loads(json.dumps(entry, ensure_ascii=True, default=str))
+    return stored
+
+
 def _summarize(verdict: Verdict) -> Dict[str, Any]:
     return {
         "decision": verdict.decision.value,
@@ -441,6 +457,8 @@ class AuditLog:
             **_summarize(verdict),
             "prev_hash": prev_hash,
         }
+        # hashed, written, mirrored and handed to sinks in the one form the file holds
+        entry = _stored_form(entry)
         entry["hash"] = _digest(entry)
         return entry
 

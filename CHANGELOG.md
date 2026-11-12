@@ -23,6 +23,22 @@ All notable changes to this project are documented here. The format follows
   architecture review (P2). A separate destination for the withheld exception detail,
   for operators, is not part of this change.
 
+### Fixed
+
+- An audit log nobody had touched could fail verification. The entry hash was taken over
+  the entry in memory, and a verifier hashes the entry as read back from the file. An
+  `action` or `control` value with integer keys, such as `{1: "a", 2: "b", 10: "c"}`,
+  sorts 1, 2, 10 in memory and "1", "10", "2" once stored, so `verify_file` and
+  `recusal audit verify` reported `content tampered - hash does not match` on an honest
+  record while `verify(log.entries)` in the writing process passed. The hash is now taken
+  over the stored form of the entry, and the entry `append` returns, keeps in `entries`
+  and hands to sinks is that same form (a tuple is a list, a non-JSON object is its text,
+  as the file has always held them). An entry with mixed integer and string keys, which
+  used to fail the append, is recorded. Every entry that is plain JSON with string keys
+  hashes exactly as before, pinned against the hash 0.13.1 wrote, so existing logs verify
+  unchanged. A log already written with integer keys by an earlier version still fails
+  verification at those entries. From the 2026-11-11 architecture review.
+
 ### Changed
 
 - Every framework adapter under `examples/` (LangGraph, LangChain, CrewAI, the OpenAI
