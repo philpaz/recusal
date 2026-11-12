@@ -142,6 +142,12 @@ class TestPydanticAiAudit:
             entries[ident] = entry
         return entries
 
+    @staticmethod
+    def observed(responses, executed):
+        """What the model and the tools saw, order-independent: one turn's calls run in
+        parallel, so the order tools ran in is not part of the decision."""
+        return responses, sorted((name, json.dumps(args, sort_keys=True)) for name, args in executed)
+
     # --- every call recorded once, allowed and refused alike -------------------------------
 
     @ROUTES
@@ -194,8 +200,8 @@ class TestPydanticAiAudit:
     def test_decisions_match_the_plain_gate(self, example, gate, log, case, via_hooks):
         policy, calls = _corpus()[case]
         kwargs = {} if policy is None else {"policy": policy}
-        plain = gate.run_calls(calls, via_hooks=via_hooks, **kwargs)
-        audited = example.run_calls(calls, log, via_hooks=via_hooks, **kwargs)
+        plain = self.observed(*gate.run_calls(calls, via_hooks=via_hooks, **kwargs))
+        audited = self.observed(*example.run_calls(calls, log, via_hooks=via_hooks, **kwargs))
         assert audited == plain
         assert len(self.by_id(log)) == len(calls)
 
