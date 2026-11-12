@@ -146,7 +146,9 @@ class TestPydanticAiAudit:
     def observed(responses, executed):
         """What the model and the tools saw, order-independent: one turn's calls run in
         parallel, so the order tools ran in is not part of the decision."""
-        return responses, sorted((name, json.dumps(args, sort_keys=True)) for name, args in executed)
+        return responses, sorted(
+            (name, json.dumps(args, sort_keys=True)) for name, args in executed
+        )
 
     # --- every call recorded once, allowed and refused alike -------------------------------
 
