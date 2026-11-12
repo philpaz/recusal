@@ -34,6 +34,18 @@ All notable changes to this project are documented here. The format follows
   proposed. An unwritable log or a failing sink refuses the call. A turn refused as a
   whole raises before anything is judged, runs nothing and writes no entry. The plain
   gate's decisions and reason strings are unchanged.
+- `examples/google_adk_audit.py`: the Google ADK audit trail. `audited_agent(agent, policy,
+  log)` is `gated_agent` and `audited_plugin(policy, log)` is `RecusalPlugin`, each with a
+  `recording` (a new optional argument of `gated_agent`, `recusal_before_tool` and
+  `RecusalPlugin`) that passes the recording arguments through to `decide`, so each call
+  a gate sees, allowed or refused, is one hash-chained `AuditLog` entry labeled
+  `google_adk.before_tool_callback` under the ADK's function call id, for the agent and
+  for every sub-agent and agent tool it gates. The entry for a judged call carries the
+  fingerprint of the prepared invocation the tool is called with. A call refused before
+  judgment, including a plugin that is not the last before-tool seam, is one deny entry
+  bound to the arguments as proposed. An unwritable log, a failing sink or a `recording`
+  that raises refuses the call. A call another callback answered before the gate ran is
+  not on the log. The plain gate's decisions and reason strings are unchanged.
 
 ## [0.14.0] - 2026-11-11
 

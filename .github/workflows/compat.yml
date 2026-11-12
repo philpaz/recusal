@@ -50,11 +50,11 @@ jobs:
           - runtime: google_adk
             python-version: "3.11"
             packages: "google-adk google-genai"
-            tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py"
+            tests: "tests/test_google_adk_gate.py tests/test_google_adk_audit.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py"
           - runtime: google_adk
             python-version: "3.12"
             packages: "google-adk google-genai"
-            tests: "tests/test_google_adk_gate.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py"
+            tests: "tests/test_google_adk_gate.py tests/test_google_adk_audit.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py"
           - runtime: crewai
             python-version: "3.10"
             packages: "crewai"

@@ -103,6 +103,10 @@ when an agent callback or a later plugin that is not a Recusal gate would run af
 (plugin callbacks run before agent callbacks; gate such an agent with `gated_agent`, list
 the plugin last). Python 3.11+, tested
 with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recusal dependency.
+[`../examples/google_adk_audit.py`](../examples/google_adk_audit.py) is the same gate with
+a record: `audited_agent(agent, policy, log)` and `audited_plugin(policy, log)` write each
+decision, allowed or refused, to a hash-chained `AuditLog` entry under the ADK's function
+call id, and `recusal audit verify` catches an edited entry.
 
 The [CrewAI example](../examples/crewai_gate.py) installs a `before_tool_call` hook that
 judges each call and blocks a refusal, paired with an `after_tool_call` hook that puts

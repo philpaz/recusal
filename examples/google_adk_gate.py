@@ -87,10 +87,13 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import decide  # noqa: E402
+from recusal import Finding, decide  # noqa: E402
 from recusal.invocation import unsupported_signature as _unsupported_signature
 
 Policy = Callable[[str, dict], List[Any]]
+#: Given the call's ``ToolContext``, the recording arguments ``decide`` takes for it
+#: (``audit=``, ``surface=``, ``tool_use_id=``, ...). examples/google_adk_audit.py builds one.
+Recording = Callable[[Any], dict]
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
 
 #: Workflow agents run no tools of their own; their ``sub_agents`` do. ``gated_agent``
@@ -184,39 +187,82 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     return copy.deepcopy(converted), None
 
 
-def _refusal(tool: Any, args: Any, policy: Policy) -> Optional[str]:
+def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
+    """The reason for a call the gate refuses before any policy runs.
+
+    Without recording arguments it is the plain text. With them
+    (examples/google_adk_audit.py) the refusal goes through ``decide`` like every other, so
+    it is one entry on the log, bound to the arguments as the model proposed them, and the
+    reason the model reads is the one on the record.
+    """
+    if not record:
+        return f"Recusal refused `{tool_name}`: {detail}"
+    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
+
+    def unjudgeable(_name, _input):
+        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+    try:
+        _, reason = decide(tool_name, bound, unjudgeable, safe_errors=True, **record)
+    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+    return reason
+
+
+def _record_for(recording: Optional[Recording], tool_context: Any) -> dict:
+    """The recording arguments for this call, or none when the gate keeps no record."""
+    return dict(recording(tool_context)) if recording is not None else {}
+
+
+def _refusal(tool: Any, args: Any, policy: Policy, **record: Any) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
     The ADK hands the callback the same ``args`` dict the tool will be called with; the
     invocation is prepared in place (:func:`_prepared`) and the policy judges a detached
     copy of exactly what will run. A non-dict is refused: the tool would not accept it
     either, and the policy cannot read it.
+
+    ``record`` goes straight to ``decide``, so a gate that puts the decision on a log
+    (examples/google_adk_audit.py) decides, and refuses, exactly as this one does. The
+    entry for a judged call carries the fingerprint of the prepared invocation the tool
+    is called with; a call refused before judgment is bound to the arguments as proposed
+    (:func:`_prepared` changes ``args`` only when it succeeds).
     """
     tool_name = getattr(tool, "name", "?")
     if not isinstance(args, dict):
-        return f"Recusal refused `{tool_name}`: arguments are not a mapping"
+        return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
     try:
         invocation, why = _prepared(tool, args)
     except Exception as exc:  # noqa: BLE001, a preparation the gate cannot complete is refused
-        return f"Recusal refused `{tool_name}`: the invocation cannot be prepared ({type(exc).__name__})"
+        return _unjudgeable(
+            tool_name, f"the invocation cannot be prepared ({type(exc).__name__})", args, record
+        )
     if invocation is None:
-        return f"Recusal refused `{tool_name}`: {why}"
+        return _unjudgeable(tool_name, str(why), args, record)
     try:
-        decision, reason = decide(tool_name, invocation, policy, safe_errors=True)
+        decision, reason = decide(tool_name, invocation, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
 
 
-def recusal_before_tool(policy: Policy):
+def recusal_before_tool(policy: Policy, recording: Optional[Recording] = None):
     """Return a ``before_tool_callback`` that judges each tool call before it runs.
 
     A refusal is returned as the tool's response, ``{"error": reason}``, so the model sees
-    why on its next turn; ``None`` lets the ADK run the tool.
+    why on its next turn; ``None`` lets the ADK run the tool. ``recording`` puts every
+    decision on an audit log (examples/google_adk_audit.py).
     """
 
     def gate(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext):
-        reason = _refusal(tool, args, policy)
+        try:
+            record = _record_for(recording, tool_context)
+        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
+            return {
+                "error": "Recusal failed closed (policy error): "
+                f"RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+            }
+        reason = _refusal(tool, args, policy, **record)
         if reason is not None:
             return {"error": reason}
         return None
@@ -234,17 +280,27 @@ class RecusalPlugin(BasePlugin):
     runs after it (``_ordering_reason``); otherwise it refuses the call before judgment.
     """
 
-    def __init__(self, policy: Policy, name: str = "recusal"):
+    def __init__(
+        self, policy: Policy, name: str = "recusal", recording: Optional[Recording] = None
+    ):
         super().__init__(name=name)
         self._policy = policy
+        self._recording = recording
 
     async def before_tool_callback(
         self, *, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
     ) -> Optional[dict[str, Any]]:
+        try:
+            record = _record_for(self._recording, tool_context)
+        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
+            return {
+                "error": "Recusal failed closed (policy error): "
+                f"RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+            }
         reason = _ordering_reason(self, tool_context)
         if reason is not None:
-            return {"error": f"Recusal refused `{tool.name}`: {reason}"}
-        reason = _refusal(tool, tool_args, self._policy)
+            return {"error": _unjudgeable(tool.name, reason, tool_args, record)}
+        reason = _refusal(tool, tool_args, self._policy, **record)
         return {"error": reason} if reason is not None else None
 
 
@@ -329,30 +385,38 @@ def is_gated(agent: Any, _seen: Optional[set] = None) -> bool:
     return all(is_gated(sub, seen) for sub in agent.sub_agents)
 
 
-def gated_agent(agent: BaseAgent, policy: Policy) -> BaseAgent:
+def gated_agent(
+    agent: BaseAgent, policy: Policy, recording: Optional[Recording] = None
+) -> BaseAgent:
     """Return a copy of the agent whose every tool call is judged by Recusal.
 
     The gate is appended as the LAST before-tool callback; ``sub_agents`` and the agent
     behind every ``AgentTool`` are gated the same way. Raises ValueError if the agent, or
-    any agent under it, can run something the callback cannot see.
+    any agent under it, can run something the callback cannot see. ``recording`` puts
+    every decision of every gate it installs on an audit log.
     """
     reason = _ungateable_reason(agent)
     if reason is not None:
         raise ValueError(f"Recusal cannot gate agent {agent.name!r}: {reason}")
-    update: dict[str, Any] = {"sub_agents": [gated_agent(sub, policy) for sub in agent.sub_agents]}
+    update: dict[str, Any] = {
+        "sub_agents": [gated_agent(sub, policy, recording) for sub in agent.sub_agents]
+    }
     if isinstance(agent, LlmAgent):
         tools = []
         for tool in agent.tools:
             if isinstance(tool, AgentTool):
                 tools.append(
                     AgentTool(
-                        gated_agent(tool.agent, policy), skip_summarization=tool.skip_summarization
+                        gated_agent(tool.agent, policy, recording),
+                        skip_summarization=tool.skip_summarization,
                     )
                 )
             else:
                 tools.append(tool)
         update["tools"] = tools
-        update["before_tool_callback"] = _callbacks(agent) + [recusal_before_tool(policy)]
+        update["before_tool_callback"] = _callbacks(agent) + [
+            recusal_before_tool(policy, recording)
+        ]
     return agent.clone(update=update)
 
 

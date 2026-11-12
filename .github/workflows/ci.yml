@@ -308,7 +308,7 @@ jobs:
       - name: Install Recusal and pinned Google ADK example dependencies
         run: pip install -e ".[dev]" google-adk==2.13.0 google-genai==2.34.0
       - name: Test Google ADK example and its surface probe
-        run: pytest -q tests/test_google_adk_gate.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_google_adk_gate.py tests/test_google_adk_audit.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py
 
   google-adk-example-py312:
     name: Google ADK example (Python 3.12)
@@ -323,7 +323,7 @@ jobs:
       - name: Install Recusal and pinned Google ADK example dependencies
         run: pip install -e ".[dev]" google-adk==2.13.0 google-genai==2.34.0
       - name: Test Google ADK example and its surface probe
-        run: pytest -q tests/test_google_adk_gate.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_google_adk_gate.py tests/test_google_adk_audit.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py
 
   crewai-example-py310:
     name: CrewAI example (Python 3.10)

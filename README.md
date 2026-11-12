@@ -81,6 +81,7 @@ issue nobody has taken yet: comment there to pick it up.
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py) |
 | OpenAI Responses and Chat Completions audit trail | Tested | [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py) |
+| Google ADK audit trail | Tested | [`examples/google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py) |
 | CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) |
 | Pydantic AI `Agent`, capability and hook | Tested | [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) |
 | Pydantic AI audit trail | Tested | [`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) |
@@ -730,7 +731,14 @@ it cannot see runs after it, and refuses the call, naming the fix, when the exec
 carries a `before_tool_callback` that is not a Recusal gate (use `gated_agent` for that
 agent) or a plugin listed after it overrides `before_tool_callback` (list `RecusalPlugin`
 last). Offline (a scripted model, no key), Python 3.11+,
-tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`.
+tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`. To put every one of
+those calls on the record, [`examples/google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py)
+swaps in `audited_agent(agent, policy, log)` (or `audited_plugin(policy, log)` for the
+runner): the same decision, written as a hash-chained `AuditLog` entry labeled
+`google_adk.before_tool_callback` with the ADK's function call id and a fingerprint of the
+prepared invocation, before the call runs or is refused, and an unwritable log refuses
+the call. A call another callback answered before the gate ran is not on the log; the
+tool did not run.
 
 For CrewAI, [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) uses CrewAI's own tool-call
 hooks: `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each
