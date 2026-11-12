@@ -73,6 +73,16 @@ All notable changes to this project are documented here. The format follows
   rejects the approval. A server is a shared connection and carries one recording:
   gating it again with another is refused, as another policy is. The plain gate's
   decisions and reason strings are unchanged.
+- `examples/langchain_agent_audit.py`: the audit trail for a LangChain `create_agent`
+  agent. `audited_gate_middleware(policy, log)` and `audited_agate_middleware(policy, log)`
+  wrap the LangGraph audited hooks as middleware, so each call the agent proposes,
+  allowed or refused, sync or async, is one hash-chained `AuditLog` entry labeled
+  `langchain.create_agent` under the tool call id. `recusal_audited_gate` and
+  `recusal_audited_agate` in `examples/langgraph_audit.py` take an optional `surface` for
+  that label; their default, `langgraph.toolnode`, is unchanged. An argument rewrite by a
+  middleware listed after the gate is recorded as rewritten; a middleware listed after
+  it that answers in the tool's place leaves the call unjudged and unrecorded, so list
+  the gate last.
 
 ## [0.14.0] - 2026-11-11
 

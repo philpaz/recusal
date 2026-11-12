@@ -71,11 +71,17 @@ from recusal.audit import AuditLog  # noqa: E402
 SURFACE = "langgraph.toolnode"
 
 
-def _recording(request, actor: Optional[str], control: Optional[dict[str, Any]], log: AuditLog):
+def _recording(
+    request,
+    actor: Optional[str],
+    control: Optional[dict[str, Any]],
+    log: AuditLog,
+    surface: str = SURFACE,
+):
     """The recording arguments for one call, built in one place for both gates."""
     return {
         "audit": log,
-        "surface": SURFACE,
+        "surface": surface,
         "tool_use_id": request.tool_call["id"],
         "actor": actor,
         "control": control,
@@ -88,11 +94,17 @@ def recusal_audited_gate(
     *,
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
+    surface: str = SURFACE,
 ):
-    """Return a synchronous ToolNode hook that records, then gates, each call."""
+    """Return a synchronous ToolNode hook that records, then gates, each call.
+
+    ``surface`` names the runtime on the record; another host of the same hook
+    (examples/langchain_agent_audit.py, LangChain's ``create_agent``) passes its own."""
 
     def gate(request, execute):
-        refusal, judged = _judge(request, policy, **_recording(request, actor, control, log))
+        refusal, judged = _judge(
+            request, policy, **_recording(request, actor, control, log, surface)
+        )
         return refusal if refusal is not None else execute(judged)
 
     return gate
@@ -104,12 +116,13 @@ def recusal_audited_agate(
     *,
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
+    surface: str = SURFACE,
 ):
     """Return an asynchronous ToolNode hook for awrap_tool_call, same logic as the sync one."""
 
     async def gate(request, execute):
         refusal, judged = _judge(
-            request, policy, is_async=True, **_recording(request, actor, control, log)
+            request, policy, is_async=True, **_recording(request, actor, control, log, surface)
         )
         return refusal if refusal is not None else await execute(judged)
 

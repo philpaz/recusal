@@ -68,6 +68,9 @@ It also requires Python 3.10+ and exactly `langchain==1.4.3` on top of the LangG
 no model key or database is used and the Recusal package has no new dependency. List the
 gate last in `middleware=`, so it judges the call exactly as it will run, and use
 `recusal_agate` for `agent.ainvoke`.
+[`../examples/langchain_agent_audit.py`](../examples/langchain_agent_audit.py) is the same
+middleware with a record: `audited_gate_middleware(policy, log)` writes each decision to
+a hash-chained `AuditLog` entry labeled `langchain.create_agent`.
 
 The [OpenAI Agents SDK example](../examples/openai_agents_gate.py) judges each function
 tool call in a tool input guardrail, and `gated_agent(agent, policy)` refuses an agent

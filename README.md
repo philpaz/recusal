@@ -74,6 +74,7 @@ issue nobody has taken yet: comment there to pick it up.
 | LangGraph `ToolNode`, sync and async | Tested | [`examples/langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py) |
 | Any Python agent loop | Tested | [`examples/agent_loop.py`](https://github.com/philpaz/recusal/blob/main/examples/agent_loop.py) |
 | LangChain `create_agent` middleware, sync and async | Tested | [`examples/langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py) |
+| LangChain `create_agent` audit trail | Tested | [`examples/langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py) |
 | OpenAI Agents SDK, function tools | Tested | [`examples/openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py) |
 | OpenAI Agents SDK audit trail, function tools | Tested | [`examples/openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py) |
 | LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) |
@@ -636,6 +637,13 @@ so the rewritten call is judged as rewritten; but a middleware that swaps the to
 for another, or answers in the tool's place (`LLMToolEmulator`), removes that copy and
 the call is never judged. Listed last, the gate judges whatever the others produced. For `agent.ainvoke`, use
 `wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
+To put every one of those calls on the record,
+[`examples/langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py)
+swaps in `audited_gate_middleware(policy, log)` (or `audited_agate_middleware` for
+`ainvoke`): the LangGraph audited gate as middleware, writing each decision as a
+hash-chained `AuditLog` entry labeled `langchain.create_agent` with the tool call id. A
+middleware listed after it that answers in the tool's place leaves that call unjudged and
+unrecorded, which is the same reason to list the gate last.
 
 For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py)
 attaches a tool input guardrail to each function tool through `gate_tools`, bound to that
