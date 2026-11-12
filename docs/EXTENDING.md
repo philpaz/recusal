@@ -93,6 +93,18 @@ only the wire shape does.* Before relying on another framework's hook, check tha
 refuses the call when your hook raises, not only when it returns a refusal; the README's
 [Works with](../README.md#works-with) table lists the runtimes tested so far.
 
+A gate in front of tool calls uses the evaluator rather than the bare fold:
+`from recusal import decide`, then `decide(tool_name, tool_input, policy,
+safe_errors=True)` returns `(decision, reason)` and fails closed when the policy raises.
+The data-only checks such a gate needs (which annotations it can judge by value, whether
+a default is JSON data, a detached copy for the policy) are in `recusal.invocation`. To
+put its decisions on an audit log, pass `audit=`, `surface=` and the framework's call id
+as `tool_use_id=`; the tested gates each do this in an `examples/<runtime>_audit.py`
+companion, described in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record). The full
+list of what a runtime contribution includes is in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md#adding-a-runtime).
+
 ## 4. Custom severities / policy tiers
 
 Severity is the policy dial. The four tiers map to fixed verdict behavior

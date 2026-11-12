@@ -841,6 +841,13 @@ pass `safe_errors=True` to select it. The Claude Code plugin and the gate script
 `recusal init` writes select it for you. The messages of findings a policy returns are
 never rewritten in either mode.
 
+Every adapter above also has an audited companion, `examples/<runtime>_audit.py`, that
+puts each decision on a hash-chained `AuditLog` through the same code path as the plain
+gate. A judged call is bound to the invocation the tool runs with, a call refused before
+judgment is still one entry, and an unwritable log refuses the call. The surface label
+and the call id each runtime gives the record are listed in
+[`docs/ARCHITECTURE.md`](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record).
+
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
 `examples/sql_scope_policy.py` inspects `run_sql` and `query`, so a SQL tool under another

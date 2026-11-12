@@ -279,6 +279,30 @@ rewrite (in the limit just the last entry), or a forged append by a write-access
 needs an external anchor (`verify(..., expected_head=(count, last_hash))`), the chain is
 tamper-evident, not tamper-proof. See `examples/audit_demo.py`.
 
+To record a tool-call gate's decisions, pass the log to the evaluator instead of
+appending by hand: `decide(tool_name, tool_input, policy, audit=audit,
+surface="my_runtime.tool_gate", tool_use_id=call_id)` writes the entry before it returns,
+with a SHA-256 fingerprint of the input in place of the input, and turns an unwritable
+log into a deny. `run_pretooluse_hook(policy, audit=audit)` does the same for Claude Code.
+Every framework gate under `examples/` has an audited companion that does this for you:
+
+| Runtime | Audited example | Surface on the entry | Call id on the entry |
+|---|---|---|---|
+| LangGraph `ToolNode` | `examples/langgraph_audit.py` | `langgraph.toolnode` | the tool call id |
+| LangChain `create_agent` | `examples/langchain_agent_audit.py` | `langchain.create_agent` | the tool call id |
+| OpenAI Agents SDK, function tools | `examples/openai_agents_audit.py` | `openai_agents.tool_input_guardrail` | the tool call id |
+| OpenAI Agents SDK, local MCP server | `examples/openai_agents_mcp_audit.py` | `openai_agents.mcp.call_tool` | none: the SDK hands `call_tool` no id; the server is `control.mcp_server` |
+| OpenAI Agents SDK, hosted MCP | `examples/openai_agents_mcp_audit.py` | `openai_agents.hosted_mcp.approval` | the approval request id |
+| OpenAI Responses API, your own loop | `examples/openai_responses_audit.py` | `openai.responses.function_call` | the `call_id` |
+| OpenAI Chat Completions, your own loop | `examples/openai_responses_audit.py` | `openai.chat_completions.tool_call` | the tool call id |
+| Google ADK | `examples/google_adk_audit.py` | `google_adk.before_tool_callback` | the function call id |
+| CrewAI | `examples/crewai_audit.py` | `crewai.before_tool_call` | none: the hook context has no id; the agent's role is `control.crewai_agent` |
+| Pydantic AI | `examples/pydantic_ai_audit.py` | `pydantic_ai.before_tool_execute` | the tool call id |
+
+A judged call is bound to the invocation the tool runs with; a call the gate refuses
+before judgment is still one deny entry, bound to the arguments as proposed. Each
+companion's docstring names what its hook never sees and so cannot record.
+
 ## 7. Classify and route a failure
 
 When the gate refuses or an action fails, decide *what kind* of failure it is and where it

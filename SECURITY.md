@@ -79,6 +79,22 @@ best-effort. The full policy is in [`STABILITY.md`](STABILITY.md#supported-versi
   *reads* a protected path is refused too. This is deliberate: the gate fails toward refusal,
   never toward silently allowing. Rephrase the command, or use allowlist mode where reads are
   affirmatively vetted rather than pattern-matched.
+- **Exception text is quoted by default.** When a policy, the input fingerprint or the
+  audit write raises, the deny reason the model reads and the finding stored on the audit
+  record include the exception's text, which can carry whatever its raiser put there (a
+  connection string, a credential, a row). `safe_errors=True` on `decide`,
+  `run_pretooluse_hook`, `gate_tool_use` and `tool_confirmation` replaces that text with a
+  stable code and the exception's class. The Claude Code plugin, the gate script
+  `recusal init` writes and every framework gate under `examples/` select it; a caller of
+  the library functions has to pass it. Findings a policy returns are never rewritten, so
+  a policy that puts a secret in its own finding message still records it.
+- **An audit entry written before 0.14.0 with integer keys does not verify.** Up to
+  0.13.1 the entry hash covered the entry in memory, and a reader hashes it as stored, so
+  an `action` or `control` value with integer keys (`{1: "a", 10: "c"}`) failed
+  `recusal audit verify` as `content tampered` on a log nobody had touched. 0.14.0 hashes
+  the stored form. Entries of plain JSON with string keys were never affected and hash as
+  before; an integer-keyed entry already on disk from an earlier version still fails, and
+  that failure is not evidence of tampering.
 - `recusal.audit` is **tamper-evident, not tamper-proof**: the hash chain detects in-place
   edits and reordering, but the digest is unkeyed, so an attacker with write access can
   truncate the tail or rewrite the whole chain unless the head is anchored somewhere they

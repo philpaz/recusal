@@ -97,6 +97,16 @@ All notable changes to this project are documented here. The format follows
   blocked is not on the log. The plain gate's decisions and reason strings are
   unchanged.
 
+### Changed
+
+- Documentation: `docs/ARCHITECTURE.md` and `docs/HOWTO.md` list every framework gate's
+  audited route with its surface label and call id, `CONTRIBUTING.md` makes the audited
+  route part of adding a runtime, `docs/EXTENDING.md` points an adapter author at
+  `decide` and `recusal.invocation`, and `SECURITY.md` states that exception text is
+  quoted unless `safe_errors` is selected and that an integer-keyed audit entry written
+  before 0.14.0 does not verify. `tests/test_audited_routes.py` fails if a framework
+  gate has no audited companion or a documented surface label stops matching the code.
+
 ## [0.14.0] - 2026-11-11
 
 The two remaining findings of the 2026-11-06 architecture review, and the first

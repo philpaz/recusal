@@ -40,6 +40,48 @@ What stays in each gate is the framework's own: where its hook sits, how it prep
 invocation, and which parameters it injects. The LangGraph gate's projection of models and
 dataclasses (`_faithful`) is specific to that framework's argument types and stays there.
 
+## How a gate puts its decision on the record
+
+Every framework gate has an audited route, in a companion file beside it
+(`examples/<runtime>_audit.py`). None of them decides anything itself. The plain gate's own
+refusal function accepts the recording arguments of `decide` (`audit=`, `surface=`,
+`tool_use_id=`, `actor=`, `control=`) and passes them through, so the audited gate and the
+plain gate are one code path, and `decide` writes the entry before it returns. The
+companion file adds only what is the framework's: where the call id comes from, and the
+surface label.
+
+| Runtime | Audited example | Surface on the entry | Call id on the entry |
+|---|---|---|---|
+| LangGraph `ToolNode` | `examples/langgraph_audit.py` | `langgraph.toolnode` | the tool call id |
+| LangChain `create_agent` | `examples/langchain_agent_audit.py` | `langchain.create_agent` | the tool call id |
+| OpenAI Agents SDK, function tools | `examples/openai_agents_audit.py` | `openai_agents.tool_input_guardrail` | the tool call id |
+| OpenAI Agents SDK, local MCP server | `examples/openai_agents_mcp_audit.py` | `openai_agents.mcp.call_tool` | none: the SDK hands `call_tool` no id; the server is `control.mcp_server` |
+| OpenAI Agents SDK, hosted MCP | `examples/openai_agents_mcp_audit.py` | `openai_agents.hosted_mcp.approval` | the approval request id |
+| OpenAI Responses API, your own loop | `examples/openai_responses_audit.py` | `openai.responses.function_call` | the `call_id` |
+| OpenAI Chat Completions, your own loop | `examples/openai_responses_audit.py` | `openai.chat_completions.tool_call` | the tool call id |
+| Google ADK | `examples/google_adk_audit.py` | `google_adk.before_tool_callback` | the function call id |
+| CrewAI | `examples/crewai_audit.py` | `crewai.before_tool_call` | none: the hook context has no id; the agent's role is `control.crewai_agent` |
+| Pydantic AI | `examples/pydantic_ai_audit.py` | `pydantic_ai.before_tool_execute` | the tool call id |
+
+Three rules hold on every row, and each gate's audit tests hold them:
+
+- **A judged call is bound to what executes.** The entry's `input_sha256` is the
+  fingerprint of the invocation the tool runs with (defaults completed, values coerced,
+  as that framework prepares it), whatever the policy did to the copy it was handed.
+- **A call refused before judgment is still one entry.** A call the gate cannot judge
+  (arguments that are not a mapping, a signature or schema it cannot read) is recorded as
+  a deny with the finding `recusal_unjudgeable_input`, bound to the arguments as the model
+  proposed them.
+- **The record is part of the control.** An unwritable log or a failing sink turns the
+  decision into a deny, and so does a recording callable that raises.
+
+What a gate never sees is not on its log, and each companion file names it: a call the
+framework rejects before the hook runs (a validation failure in Pydantic AI, an unknown
+tool in the OpenAI Agents SDK), a call another hook answered or blocked first, a hosted
+call the provider did not ask approval for, and a whole turn the direct-loop gate refuses
+by raising. `tests/test_audited_routes.py` fails if a framework gate is added without its
+audited companion, or if a surface label in this table stops matching the code.
+
 ## Public compatibility perimeter
 
 This section describes the perimeter; [`../STABILITY.md`](../STABILITY.md) is the promise

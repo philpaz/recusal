@@ -151,6 +151,17 @@ hook and its traps. A runtime PR is done when it has all of these:
    separately, a raising policy fails closed, the ungated control runs), and the file
    joins the runtime's pinned jobs and latest-lane rows. A drift lock fails when a Tested
    `*_gate.py` example is missing from the registry.
+8. **The audited route.** `examples/<runtime>_audit.py` and
+   `tests/test_<runtime>_audit.py`, modeled on `examples/pydantic_ai_audit.py`. The gate's
+   own refusal function takes the recording arguments and passes them to `decide`, so
+   there is no second decision path; the companion adds the surface label and the
+   framework's call id, or says in its docstring that the hook has none. Its tests hold
+   the three rules in
+   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record)
+   (a judged call is bound to what executes, a call refused before judgment is one
+   entry, an unwritable log refuses), decision equivalence with the plain gate, and an
+   unaudited negative control. Add its row to that document's table and to the README's
+   Works with table; `tests/test_audited_routes.py` fails without the file or the row.
 
 `tests/test_compat_process.py` fails if a pinned runtime is missing its surface probe or
 its latest-lane entry, or if the two lanes install different packages, and
