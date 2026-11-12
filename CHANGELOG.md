@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-11
+
+The two remaining findings of the 2026-11-06 architecture review, and the first
+work from the 2026-11-11 review. This is a MINOR release under `STABILITY.md`: it
+adds public surface (`safe_errors`, `recusal.invocation`, `decide` importable from
+the package, `findings_of` and `identity_getter`) and removes or renames nothing.
+Every existing import path resolves to the same object, and without `safe_errors`
+every reason string is byte for byte what it was. The verdict kernel, manifest v8
+and valid fingerprint bytes are unchanged. Audit entries that are plain JSON with
+string keys hash exactly as 0.13.1 hashed them.
+
 ### Added
 
 - `safe_errors`, a keyword-only option on `decide`, `run_pretooluse_hook`, `gate_tool_use`
