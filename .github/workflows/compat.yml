@@ -58,11 +58,11 @@ jobs:
           - runtime: crewai
             python-version: "3.10"
             packages: "crewai"
-            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py tests/test_adapter_conformance.py"
+            tests: "tests/test_crewai_gate.py tests/test_crewai_audit.py tests/test_compat_crewai.py tests/test_adapter_conformance.py"
           - runtime: crewai
             python-version: "3.12"
             packages: "crewai"
-            tests: "tests/test_crewai_gate.py tests/test_compat_crewai.py tests/test_adapter_conformance.py"
+            tests: "tests/test_crewai_gate.py tests/test_crewai_audit.py tests/test_compat_crewai.py tests/test_adapter_conformance.py"
           - runtime: pydantic_ai
             python-version: "3.11"
             packages: "pydantic-ai-slim"

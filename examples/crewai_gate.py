@@ -126,7 +126,7 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import decide  # noqa: E402
+from recusal import Finding, decide  # noqa: E402
 from recusal.invocation import json_data as _json_data
 from recusal.invocation import supported_annotation as _supported_annotation
 
@@ -404,19 +404,54 @@ def _prepared(
     return copy.deepcopy(prepared), None
 
 
-def _refusal(tool: Any, tool_name: str, tool_input: Any, policy: Policy) -> Optional[str]:
+#: Given the hook's ``ToolCallHookContext``, the recording arguments ``decide`` takes for the
+#: call (``audit=``, ``surface=``, ...). examples/crewai_audit.py builds one.
+Recording = Callable[[Any], dict]
+
+
+def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
+    """The reason for a call the gate refuses before any policy runs.
+
+    Without recording arguments it is the plain text. With them (examples/crewai_audit.py)
+    the refusal goes through ``decide`` like every other, so it is one entry on the log,
+    bound to the arguments as the model proposed them, and the reason kept for the model is
+    the one on the record.
+    """
+    if not record:
+        return f"Recusal refused `{tool_name}`: {detail}"
+    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
+
+    def unjudgeable(_name, _input):
+        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+    try:
+        _, reason = decide(tool_name, bound, unjudgeable, safe_errors=True, **record)
+    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+    return reason
+
+
+def _refusal(
+    tool: Any, tool_name: str, tool_input: Any, policy: Policy, **record: Any
+) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
     The policy judges a copy of the prepared invocation (``_prepared``), which is also what
     the dict CrewAI executes now holds. A non-dict is refused: the policy cannot read it.
+
+    ``record`` goes straight to ``decide``, so a gate that puts the decision on a log
+    (examples/crewai_audit.py) decides, and refuses, exactly as this one does. The entry
+    for a judged call carries the fingerprint of the prepared invocation CrewAI executes;
+    a call refused before judgment is bound to the arguments as proposed (``_prepared``
+    changes the dict only when it succeeds).
     """
     if not isinstance(tool_input, dict):
-        return f"Recusal refused `{tool_name}`: arguments are not a mapping"
+        return _unjudgeable(tool_name, "arguments are not a mapping", tool_input, record)
     judged, why = _prepared(tool, tool_input)
     if judged is None:
-        return f"Recusal refused `{tool_name}`: {why}"
+        return _unjudgeable(tool_name, str(why), tool_input, record)
     try:
-        decision, reason = decide(tool_name, judged, policy, safe_errors=True)
+        decision, reason = decide(tool_name, judged, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
@@ -464,11 +499,17 @@ class _Denials:
         return None
 
 
-def recusal_before_tool_call(policy: Policy, denials: Optional[_Denials] = None):
+def recusal_before_tool_call(
+    policy: Policy,
+    denials: Optional[_Denials] = None,
+    recording: Optional[Recording] = None,
+):
     """Return a ``before_tool_call`` hook: ``False`` (block) on a refusal, ``None`` to run.
 
     ``denials`` is shared with the matching after hook (``install_recusal_hooks`` builds the
     pair); without it the reason is not kept and the after hook keeps CrewAI's line.
+    ``recording`` puts every decision on an audit log; a ``recording`` that raises blocks
+    the call, like any other failure inside the hook.
     """
     store = denials
 
@@ -480,7 +521,10 @@ def recusal_before_tool_call(policy: Policy, denials: Optional[_Denials] = None)
                     store.forget(tool_input)
                 except Exception:  # noqa: BLE001, bookkeeping never changes the decision
                     pass
-            reason = _refusal(getattr(context, "tool", None), context.tool_name, tool_input, policy)
+            record = dict(recording(context)) if recording is not None else {}
+            reason = _refusal(
+                getattr(context, "tool", None), context.tool_name, tool_input, policy, **record
+            )
             if reason is None:
                 return None
             if store is not None:
@@ -520,14 +564,17 @@ def recusal_after_tool_call(policy: Policy, denials: Optional[_Denials] = None):
     return explain
 
 
-def install_recusal_hooks(policy: Policy) -> Callable[[], None]:
+def install_recusal_hooks(
+    policy: Policy, recording: Optional[Recording] = None
+) -> Callable[[], None]:
     """Register the gate's two hooks for every tool call in this process; return ``uninstall``.
 
     Register it after your other hooks: hooks run in registration order, and a hook that
-    runs after the gate can change the arguments the gate judged.
+    runs after the gate can change the arguments the gate judged. ``recording`` puts every
+    decision on an audit log (examples/crewai_audit.py).
     """
     denials = _Denials()
-    before = recusal_before_tool_call(policy, denials)
+    before = recusal_before_tool_call(policy, denials, recording)
     after = recusal_after_tool_call(policy, denials)
     register_before_tool_call_hook(before)
     register_after_tool_call_hook(after)

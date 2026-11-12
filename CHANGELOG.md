@@ -83,6 +83,19 @@ All notable changes to this project are documented here. The format follows
   middleware listed after the gate is recorded as rewritten; a middleware listed after
   it that answers in the tool's place leaves the call unjudged and unrecorded, so list
   the gate last.
+- `examples/crewai_audit.py`: the CrewAI audit trail, which completes the set: every
+  framework gate under `examples/` now has an audited route. `install_audited_hooks(policy,
+  log)` is `install_recusal_hooks` with a `recording` (a new optional argument of
+  `install_recusal_hooks` and `recusal_before_tool_call`), so each call the before hook
+  sees, allowed or refused, is one hash-chained `AuditLog` entry labeled
+  `crewai.before_tool_call`. CrewAI's hook context carries no call id, so the entries
+  carry none; the agent's role is recorded as `control.crewai_agent`. The entry for a
+  judged call carries the fingerprint of the prepared invocation CrewAI executes,
+  defaults completed and values validated. A call refused before judgment is one deny
+  entry bound to the arguments as proposed. An unwritable log, a failing sink or a
+  `recording` that raises blocks the call. A call a hook registered before the gate
+  blocked is not on the log. The plain gate's decisions and reason strings are
+  unchanged.
 
 ## [0.14.0] - 2026-11-11
 

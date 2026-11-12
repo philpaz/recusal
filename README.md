@@ -86,6 +86,7 @@ issue nobody has taken yet: comment there to pick it up.
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py) |
 | Google ADK audit trail | Tested | [`examples/google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py) |
 | CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) |
+| CrewAI audit trail | Tested | [`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py) |
 | Pydantic AI `Agent`, capability and hook | Tested | [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) |
 | Pydantic AI audit trail | Tested | [`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) |
 | LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
@@ -790,7 +791,14 @@ process-global: one install covers every agent, task and crew in the process, an
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
 that runs after the gate can change the argument dict the gate judged; the tests show the
 bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.10+, tested with
-exactly `crewai==1.15.34`.
+exactly `crewai==1.15.34`. To put every one of those calls on the record,
+[`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py)
+swaps in `install_audited_hooks(policy, log)`: the same decision, written as a hash-chained
+`AuditLog` entry labeled `crewai.before_tool_call` with a fingerprint of the prepared
+invocation, before the call runs or is blocked, and an unwritable log blocks the call.
+CrewAI's hook context carries no call id, so these entries carry none; the agent's role
+is recorded as `control.crewai_agent`. A call a hook registered before the gate blocked
+never reaches it and is not on the log.
 
 For Pydantic AI, [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) uses the
 framework's own `before_tool_execute` hook, which runs with the validated argument dict

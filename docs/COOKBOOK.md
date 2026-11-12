@@ -127,6 +127,10 @@ tool receives (defaults completed, the tool's own schema validation run once, th
 written back) and supports CrewAI's stock tools and generated schemas; a customised schema
 or an unsupported annotation is refused. Install it after your other hooks.
 Python 3.10+, tested with exactly `crewai==1.15.34`; not a Recusal dependency.
+[`../examples/crewai_audit.py`](../examples/crewai_audit.py) is the same gate with a
+record: `install_audited_hooks(policy, log)` writes each decision, allowed or refused, to
+a hash-chained `AuditLog` entry labeled `crewai.before_tool_call`, and
+`recusal audit verify` catches an edited entry.
 
 The [Pydantic AI example](../examples/pydantic_ai_gate.py) judges each tool call in the
 framework's `before_tool_execute` hook and raises `ToolFailed` with Recusal's reason on a

@@ -338,7 +338,7 @@ jobs:
       - name: Install Recusal and the pinned CrewAI example dependency
         run: pip install -e ".[dev]" crewai==1.15.34
       - name: Test CrewAI example and its surface probe
-        run: pytest -q tests/test_crewai_gate.py tests/test_compat_crewai.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_crewai_gate.py tests/test_crewai_audit.py tests/test_compat_crewai.py tests/test_adapter_conformance.py
 
   crewai-example-py312:
     name: CrewAI example (Python 3.12)
@@ -353,7 +353,7 @@ jobs:
       - name: Install Recusal and the pinned CrewAI example dependency
         run: pip install -e ".[dev]" crewai==1.15.34
       - name: Test CrewAI example and its surface probe
-        run: pytest -q tests/test_crewai_gate.py tests/test_compat_crewai.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_crewai_gate.py tests/test_crewai_audit.py tests/test_compat_crewai.py tests/test_adapter_conformance.py
 
   pydantic-ai-example-py311:
     name: Pydantic AI example (Python 3.11)

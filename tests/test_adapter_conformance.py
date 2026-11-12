@@ -96,13 +96,13 @@ separate row, because each is a separate code path through the framework.
 7. **The record binds what executed.** Where a gate writes an audit entry, its input
    fingerprint is that of the invocation the tool ran with, whatever a policy did to the
    dict it was handed. The evaluator fingerprints the proposal before the policy sees it
-   (`tests/test_decide_audit.py`, `tests/test_hook_audit.py`); each adapter with an
-   audited route proves it on the executed invocation in its own audit tests
-   (`tests/test_langgraph_audit.py`, `tests/test_pydantic_ai_audit.py`,
-   `tests/test_openai_responses_audit.py`, `tests/test_google_adk_audit.py`,
+   (`tests/test_decide_audit.py`, `tests/test_hook_audit.py`); every adapter has an
+   audited route and proves it on the executed invocation in its own audit tests
+   (`tests/test_langgraph_audit.py`, `tests/test_langchain_agent_audit.py`,
    `tests/test_openai_agents_audit.py`, `tests/test_openai_agents_mcp_audit.py`,
-   `tests/test_langchain_agent_audit.py`). Not a row here, because not every adapter
-   example writes a record yet.
+   `tests/test_openai_responses_audit.py`, `tests/test_google_adk_audit.py`,
+   `tests/test_crewai_audit.py`, `tests/test_pydantic_ai_audit.py`). Not a row here,
+   because what a framework gives the record (a call id or none, which seam) differs.
 
 Invariants that only some adapters can express stay in those adapters' own tests, and this
 docstring says where: structural batch rejection with zero executions
