@@ -89,6 +89,10 @@ in your own loop before you run it and answers every call once under its own id;
 type it does not handle raises rather than slipping past. Hosted tools (web search, file
 search, code interpreter, remote MCP) run on the provider's side and never reach this
 loop. Offline, Python 3.10+, tested with exactly `openai==3.34.0`.
+[`../examples/openai_responses_audit.py`](../examples/openai_responses_audit.py) is the
+same loop with a record: `audited_function_calls` and `audited_tool_calls` write each
+decision, run or refused, to a hash-chained `AuditLog` entry under the API's call id, and
+`recusal audit verify` catches an edited entry.
 
 The [Google ADK example](../examples/google_adk_gate.py) judges each tool call in the
 ADK's `before_tool_callback` and answers a refusal as the tool's response;

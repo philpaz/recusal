@@ -21,6 +21,19 @@ All notable changes to this project are documented here. The format follows
   refuses the call. A call Pydantic AI rejects at validation never reaches the hook: it
   does not run and is not on the log. The plain gate's decisions and reason strings are
   unchanged. From the 2026-11-11 architecture review.
+- `examples/openai_responses_audit.py`: the audit trail for the OpenAI loop an application
+  owns, both API shapes. `audited_function_calls` (Responses) and `audited_tool_calls`
+  (Chat Completions) call the plain gate's own functions with the recording arguments
+  passed through to `decide`, so each call the model proposes, run or refused, is one
+  hash-chained `AuditLog` entry labeled `openai.responses.function_call` or
+  `openai.chat_completions.tool_call` under the API's call id. The entry for a judged
+  call carries the fingerprint of the bound invocation the tool is called with, so a
+  default the model omitted is recorded at the value that runs. A call refused before
+  judgment (invalid JSON, a non-object, an unknown tool, a signature that cannot be
+  judged, arguments that do not bind) is one deny entry bound to the arguments as
+  proposed. An unwritable log or a failing sink refuses the call. A turn refused as a
+  whole raises before anything is judged, runs nothing and writes no entry. The plain
+  gate's decisions and reason strings are unchanged.
 
 ## [0.14.0] - 2026-11-11
 

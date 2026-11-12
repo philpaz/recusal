@@ -66,7 +66,7 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import decide  # noqa: E402
+from recusal import Finding, decide  # noqa: E402
 from recusal.invocation import unsupported_signature as _unsupported_signature
 
 Policy = Callable[[str, dict], List[Any]]
@@ -101,7 +101,31 @@ TOOLS: Tools = {"echo": echo, "run_sql": run_sql, "charge": charge}
 # --- the supported invocation: an explicit type set, defaults completed before judgment -------
 
 
-def judge_and_run(name: str, arguments: str | None, tools: Tools, policy: Policy) -> str:
+def _unjudgeable(name: str, plain: str, detail: str, proposal: Any, record: dict) -> str:
+    """The answer for a call the gate refuses before any policy runs.
+
+    Without recording arguments it is ``plain``, the text this gate has always returned.
+    With them (examples/openai_responses_audit.py) the refusal goes through ``decide`` like
+    every other, so it is one entry on the log, bound to the call as the model proposed it,
+    and the text the model reads is the reason on the record.
+    """
+    if not record:
+        return plain
+    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
+
+    def unjudgeable(_name, _input):
+        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+    try:
+        _, reason = decide(name, bound, unjudgeable, safe_errors=True, **record)
+    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+    return reason
+
+
+def judge_and_run(
+    name: str, arguments: str | None, tools: Tools, policy: Policy, **record: Any
+) -> str:
     """Decide one proposed call and run it if allowed; return the text the model gets back.
 
     The ONE decision path for both API shapes. The decoded arguments are bound to the
@@ -113,27 +137,41 @@ def judge_and_run(name: str, arguments: str | None, tools: Tools, policy: Policy
     (variadic or positional-only parameters, an unsupported annotation, a default outside
     the JSON domain) is refused, as is a call that does not bind (an unknown or missing
     parameter; the refusal names the parameter, never a value).
+
+    ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
+    so a loop that puts the decision on a log (examples/openai_responses_audit.py) decides,
+    and refuses, exactly as this one does. The entry for a judged call carries the
+    fingerprint of the bound invocation the tool is called with, defaults included; the
+    entry for a call refused before judgment is bound to the arguments as proposed.
     """
     try:
         args = json.loads(arguments or "{}")
     except ValueError:
-        return f"Recusal refused `{name}`: arguments are not valid JSON"
+        detail = "arguments are not valid JSON"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, arguments, record)
     if not isinstance(args, dict):
-        return f"Recusal refused `{name}`: arguments are not a JSON object"
+        detail = "arguments are not a JSON object"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
     if name not in tools:
-        return f"Recusal refused: unknown tool {name!r}"
+        return _unjudgeable(
+            name, f"Recusal refused: unknown tool {name!r}", "unknown tool", args, record
+        )
     func = tools[name]
     why = _unsupported_signature(func)
     if why is not None:
-        return f"Recusal refused `{name}`: its signature cannot be judged ({why})"
+        detail = f"its signature cannot be judged ({why})"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
     try:
         bound = inspect.signature(func).bind(**args)
     except TypeError as exc:  # the message names parameters only, never values
-        return f"Recusal refused `{name}`: arguments do not bind to the tool ({exc})"
+        detail = f"arguments do not bind to the tool ({exc})"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
     bound.apply_defaults()
     invocation = dict(bound.arguments)
     try:
-        decision, reason = decide(name, copy.deepcopy(invocation), policy, safe_errors=True)
+        decision, reason = decide(
+            name, copy.deepcopy(invocation), policy, safe_errors=True, **record
+        )
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     if decision == "deny":
@@ -146,6 +184,11 @@ def _require_id(call_id: Any, what: str) -> str:
     if not isinstance(call_id, str) or not call_id:
         raise ValueError(f"Recusal refused {what}: it has no call id to answer")
     return call_id
+
+
+def _for_call(record: dict, call_id: str) -> dict:
+    """The recording arguments for one call of a turn: the turn's, plus the call's own id."""
+    return {**record, "tool_use_id": call_id} if record else {}
 
 
 def _check_ids(call_ids: list[str]) -> None:
@@ -166,11 +209,16 @@ def _check_answered_once(call_ids: list[str], answered: list[str]) -> None:
         raise ValueError(f"Recusal refused the turn: duplicate call ids {call_ids}")
 
 
-def gate_function_calls(response: Response, tools: Tools, policy: Policy) -> list[dict[str, Any]]:
+def gate_function_calls(
+    response: Response, tools: Tools, policy: Policy, **record: Any
+) -> list[dict[str, Any]]:
     """Responses API: judge every ``function_call`` item; return ``function_call_output`` items.
 
     Raises TypeError for an output item type this adapter does not handle, and ValueError for
     a call without an id. Pass the returned list as the next request's ``input``.
+    ``record`` is the recording arguments for the turn (``audit=``, ``surface=``, ...);
+    each call is recorded under its own ``call_id``. A turn refused as a whole raises
+    before anything is judged, so it runs nothing and writes no entry.
     """
     # pass 1: every item is one this adapter handles and carries a usable, unique id;
     # nothing runs until the whole turn has passed, so a refused turn has run nothing
@@ -193,7 +241,7 @@ def gate_function_calls(response: Response, tools: Tools, policy: Policy) -> lis
         {
             "type": "function_call_output",
             "call_id": call_id,
-            "output": judge_and_run(name, arguments, tools, policy),
+            "output": judge_and_run(name, arguments, tools, policy, **_for_call(record, call_id)),
         }
         for call_id, name, arguments in calls
     ]
@@ -233,7 +281,12 @@ def _chosen(completion: ChatCompletion, choice: Any):
 
 
 def gate_tool_calls(
-    completion: ChatCompletion, tools: Tools, policy: Policy, *, choice: Optional[int] = None
+    completion: ChatCompletion,
+    tools: Tools,
+    policy: Policy,
+    *,
+    choice: Optional[int] = None,
+    **record: Any,
 ) -> list[dict[str, Any]]:
     """Chat Completions: judge every ``tool_calls`` entry of ONE chosen assistant message;
     return ``role: "tool"`` messages.
@@ -245,6 +298,7 @@ def gate_tool_calls(
     a tool call type this adapter does not handle (``custom``) or a non-int ``choice``, and
     ValueError for a call without an id, no choices, or an out-of-range ``choice``. Append
     the returned messages after the chosen assistant message in the next request.
+    ``record`` is the recording arguments for the turn, as in ``gate_function_calls``.
     """
     chosen = _chosen(completion, choice)
     calls: list[tuple[str, str, Any]] = []
@@ -262,7 +316,7 @@ def gate_tool_calls(
         {
             "role": "tool",
             "tool_call_id": call_id,
-            "content": judge_and_run(name, arguments, tools, policy),
+            "content": judge_and_run(name, arguments, tools, policy, **_for_call(record, call_id)),
         }
         for call_id, name, arguments in calls
     ]

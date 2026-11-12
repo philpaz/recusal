@@ -79,6 +79,7 @@ issue nobody has taken yet: comment there to pick it up.
 | LangGraph pause, resume and replay | Tested | [`examples/langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py) across `interrupt()`, `Command(resume=)` and checkpoint replay |
 | OpenAI Agents SDK, MCP tools, local servers and hosted MCP | Tested | [`examples/openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py) |
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py) |
+| OpenAI Responses and Chat Completions audit trail | Tested | [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py) |
 | CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) |
 | Pydantic AI `Agent`, capability and hook | Tested | [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) |
@@ -697,7 +698,15 @@ run; an output item or tool call of a type the adapter does not handle raises, n
 and a call without an id is refused because the SDK's answer types do not require one.
 Hosted tools (web search, file search, code interpreter, remote MCP) run on the provider's
 side and never reach this loop. Offline (`model_validate` builds real SDK objects, no key),
-Python 3.10+, tested with exactly `openai==3.34.0`.
+Python 3.10+, tested with exactly `openai==3.34.0`. To put every one of those calls on the
+record, [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py)
+swaps in `audited_function_calls(response, tools, policy, log)` and
+`audited_tool_calls(completion, tools, policy, log)`: the same decision, written as a
+hash-chained `AuditLog` entry labeled `openai.responses.function_call` or
+`openai.chat_completions.tool_call` with the API's call id and a fingerprint of the bound
+invocation, defaults included, before the call runs or is refused, and an unwritable log
+refuses the call. A turn refused as a whole (an unhandled item type, a missing or
+duplicate id) raises before anything is judged, so it runs nothing and writes no entry.
 
 For Google's Agent Development Kit, [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py)
 uses the ADK's own `before_tool_callback`: `recusal_before_tool(policy)` judges each tool call
