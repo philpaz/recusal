@@ -30,6 +30,17 @@ All notable changes to this project are documented here. The format follows
   refuses a second definition under `examples/`. No gate decides differently. Standard
   library only, and it works on Python 3.9, where the copies needed 3.10. From the
   2026-11-11 architecture review.
+- `decide` and `Policy` are importable from the package: `from recusal import decide`. The
+  evaluator every runtime's gate calls was reachable only as `recusal.claude_code.decide`,
+  a Claude Code address for a function that knows nothing about Claude Code. Both paths
+  are the same function, and the old one stays.
+- `findings_of` and `identity_getter` in `recusal.claude_code`, public names for the two
+  contracts a policy composer shares with the evaluator (the return contract and the
+  control-identity lookup). They are the same objects as `_findings_of` and
+  `_identity_getter`, which stay. The examples that imported the private names
+  (`composed_policies.py`, `openai_agents_mcp_gate.py`) use the public ones, every
+  framework gate imports `decide` from `recusal`, and a test refuses an example that
+  imports a private name from the package.
 
 ### Fixed
 

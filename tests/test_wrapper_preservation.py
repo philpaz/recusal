@@ -217,8 +217,9 @@ def test_a_no_op_wrapper_keeps_binding_domain_and_identity(pin, tmp_path):
 
 
 def test_no_wrapper_reads_a_leaf_return_without_the_contract():
-    """The drift lock: both wrappers read returns only through ``_findings_of``, and the
-    manifest wrapper treats only ``None`` as an absent policy."""
+    """The drift lock: both wrappers read returns only through ``_findings_of`` (the example
+    by its public name, ``findings_of``, the same function), and the manifest wrapper treats
+    only ``None`` as an absent policy."""
     manifest_source = (ROOT / "recusal" / "_manifest_policy.py").read_text(encoding="utf-8")
     assert "list(policy(tool_name, tool_input))" not in manifest_source
     assert "if policy else" not in manifest_source
@@ -226,7 +227,7 @@ def test_no_wrapper_reads_a_leaf_return_without_the_contract():
     composed_source = (ROOT / "examples" / "composed_policies.py").read_text(encoding="utf-8")
     assert "findings.extend(check(tool_name, tool_input))" not in composed_source
     assert (
-        "findings.extend(_findings_of(check(tool_name, copy.deepcopy(tool_input))))"
+        "findings.extend(findings_of(check(tool_name, copy.deepcopy(tool_input))))"
         in composed_source
     )
 

@@ -29,8 +29,10 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from recusal import compute_verdict  # noqa: E402
-from recusal.claude_code import decide  # noqa: E402
+from recusal import (
+    compute_verdict,  # noqa: E402
+    decide,  # noqa: E402
+)
 from recusal.mcp import (  # noqa: E402
     build_manifest,
     diff_manifest,

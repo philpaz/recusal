@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.destructive_shell_policy import make_policy as make_destructive_policy  # noqa: E402
 from examples.egress_allowlist import make_egress_allowlist  # noqa: E402
 from examples.workspace_policy import make_workspace_policy  # noqa: E402
-from recusal.claude_code import _findings_of, _identity_getter, decide  # noqa: E402
+from recusal import decide  # noqa: E402
+from recusal.claude_code import findings_of, identity_getter  # noqa: E402
 
 
 class ComposedPolicy:
@@ -75,7 +76,7 @@ class ComposedPolicy:
         for check in policies:
             leaves.extend(check.policies if type(check) is ComposedPolicy else (check,))
         self.policies = tuple(leaves)
-        # Carrier discovery is the evaluator's own contract (``_identity_getter``: a
+        # Carrier discovery is the evaluator's own contract (``identity_getter``: a
         # ``get_control_identity()`` method, else a ``last_manifest_digest`` attribute), so
         # whatever ``decide`` would record for a leaf on its own, the composition records too.
         # A kept subclass is the one shape judged here instead: every ComposedPolicy has the
@@ -86,7 +87,7 @@ class ComposedPolicy:
             if isinstance(p, ComposedPolicy):
                 if p._carrier is not None or _overrides_identity(type(p)):
                     carriers.append(p)
-            elif _identity_getter(p) is not None:
+            elif identity_getter(p) is not None:
                 carriers.append(p)
         if len(carriers) > 1:
             raise ValueError(
@@ -121,7 +122,7 @@ class ComposedPolicy:
             # caller executed the original. A copy failure raises and so fails closed.
             # Each leaf's return is then held to the evaluator's contract before it is
             # read: extending with a bare {} or "" would turn a buggy leaf into a screen.
-            findings.extend(_findings_of(check(tool_name, copy.deepcopy(tool_input))))
+            findings.extend(findings_of(check(tool_name, copy.deepcopy(tool_input))))
         return findings
 
     @property
@@ -144,7 +145,7 @@ class ComposedPolicy:
     def get_control_identity(self):
         if self._carrier is None:
             return {}
-        getter = _identity_getter(self._carrier)
+        getter = identity_getter(self._carrier)
         return dict(getter()) if getter is not None else {}
 
     def reset_control_identity(self):

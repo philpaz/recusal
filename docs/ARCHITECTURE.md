@@ -96,7 +96,9 @@ The same pattern was applied to `recusal.claude_code` in the same change: the ne
 evaluator that every adapter reuses (`decide`, the one audit-record path and the control
 identity it writes) lives in the private `recusal._adjudicate`, and `recusal.claude_code`
 keeps the hook, its event parsing and the allowlist, with `decide` as the same kind of wrapper and
-every private name re-exported. The evaluator imports no adapter,
+every private name re-exported. `decide` is also exported from the package itself
+(`from recusal import decide`, the same function), since every runtime's gate calls it and
+only one of them is Claude Code's. The evaluator imports no adapter,
 persistence or MCP code; `tests/test_extractions.py` pins both facades, both boundaries
 and a golden audit record captured before the move.
 

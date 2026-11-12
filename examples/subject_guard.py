@@ -11,8 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from recusal import Finding
-from recusal.claude_code import decide
+from recusal import Finding, decide
 
 
 def make_subject_guard(active_id):

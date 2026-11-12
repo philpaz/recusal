@@ -89,7 +89,8 @@ from examples.openai_agents_gate import (  # noqa: E402
 from examples.openai_agents_gate import (  # noqa: E402
     is_gated as function_tools_gated,
 )
-from recusal.claude_code import _identity_getter, decide  # noqa: E402
+from recusal import decide  # noqa: E402
+from recusal.claude_code import identity_getter  # noqa: E402
 
 try:
     from agents import HostedMCPTool, MCPToolApprovalRequest
@@ -160,7 +161,7 @@ def claude_named(server_name: str, policy: Policy) -> Policy:
 
     bound.recusal_bound_server = server_name  # type: ignore[attr-defined]
     bound.recusal_bound_policy = policy  # type: ignore[attr-defined]
-    getter = _identity_getter(policy)
+    getter = identity_getter(policy)
     if getter is not None:
         bound.get_control_identity = getter  # type: ignore[attr-defined]
     reset = getattr(policy, "reset_control_identity", None)

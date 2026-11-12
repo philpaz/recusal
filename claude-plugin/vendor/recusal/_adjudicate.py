@@ -314,6 +314,13 @@ def _identity_getter(policy: Any) -> Optional[Callable[[], Dict[str, Any]]]:
     return None
 
 
+#: Public names for the two contracts a policy COMPOSER has to share with the evaluator, so
+#: a composition holds each leaf to the same return contract ``decide`` applies and records
+#: the same provenance a direct policy records. The same objects as the private names.
+findings_of = _findings_of
+identity_getter = _identity_getter
+
+
 def _control_identity(policy: Policy, control: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """The control identity recorded on EVERY audit path, built in one place.
 

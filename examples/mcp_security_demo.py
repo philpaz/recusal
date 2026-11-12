@@ -19,8 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from recusal import decide  # noqa: E402
 from recusal.__main__ import mcp_pin_command, mcp_verify_command  # noqa: E402
-from recusal.claude_code import decide  # noqa: E402
 from recusal.mcp import manifest_policy  # noqa: E402
 
 SERVER = r"""import json, pathlib, sys

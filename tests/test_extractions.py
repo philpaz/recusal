@@ -10,6 +10,7 @@ the extraction was for, and holds ``decide`` to an audit record captured before 
 
 import inspect
 import json
+import pathlib
 import sys
 
 import pytest
@@ -264,3 +265,72 @@ def test_identity_getter_prefers_the_method_then_the_legacy_attribute_then_none(
     assert _control_identity(Both(), None)["manifest_sha256"] == "sha256:" + "2" * 64
     assert _control_identity(Attr(), None)["manifest_sha256"] == "sha256:" + "3" * 64
     assert "manifest_sha256" not in _control_identity(Nothing(), None)
+
+
+# --- the neutral names ----------------------------------------------------------------------
+#
+# The evaluator is not Claude Code's: every runtime's gate calls it. It is importable from
+# the package itself, and the two contracts a policy composer shares with it have public
+# names, so an example never teaches an adopter to import a private one.
+
+
+def test_decide_is_one_function_at_the_package_and_at_claude_code():
+    import recusal
+    import recusal.claude_code as facade
+
+    assert recusal.decide is facade.decide
+    assert recusal.Policy is facade.Policy
+    assert "decide" in recusal.__all__ and "Policy" in recusal.__all__
+    assert recusal.decide("Bash", {"command": "ls"}, lambda name, tool_input: []) == (
+        "defer",
+        "Passed with 0 warning(s) and 0 metric(s).",
+    )
+
+
+def test_the_composer_contracts_have_public_names_for_the_same_objects():
+    import recusal._adjudicate as inner
+    import recusal.claude_code as facade
+
+    assert facade.findings_of is inner.findings_of is inner._findings_of
+    assert facade.identity_getter is inner.identity_getter is inner._identity_getter
+
+
+def _is_private(name):
+    """A leading underscore that is not a dunder: ``_adjudicate`` yes, ``__main__`` no."""
+    return name.startswith("_") and not (name.startswith("__") and name.endswith("__"))
+
+
+def _private_recusal_imports(source):
+    import ast
+
+    return [
+        f"{node.module}.{alias.name}"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and (node.module == "recusal" or node.module.startswith("recusal."))
+        for alias in node.names
+        if _is_private(alias.name) or any(_is_private(part) for part in node.module.split("."))
+    ]
+
+
+def test_no_example_imports_a_private_name_from_the_package():
+    examples = pathlib.Path(__file__).resolve().parent.parent / "examples"
+    offenders = {
+        path.name: found
+        for path in sorted(examples.glob("*.py"))
+        if (found := _private_recusal_imports(path.read_text(encoding="utf-8")))
+    }
+    assert offenders == {}
+
+
+def test_negative_control_the_private_import_lock_sees_one():
+    assert _private_recusal_imports("from recusal.claude_code import _findings_of, decide") == [
+        "recusal.claude_code._findings_of"
+    ]
+    assert _private_recusal_imports("from recusal._adjudicate import decide") == [
+        "recusal._adjudicate.decide"
+    ]
+    assert _private_recusal_imports("from recusal import decide") == []
+    # the CLI module is a dunder, not a private name
+    assert _private_recusal_imports("from recusal.__main__ import mcp_pin_command") == []

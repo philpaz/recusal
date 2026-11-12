@@ -22,8 +22,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from recusal import Finding, compute_verdict  # noqa: E402
-from recusal.claude_code import decide  # noqa: E402
+from recusal import (  # noqa: E402
+    Finding,
+    compute_verdict,
+    decide,  # noqa: E402
+)
 from recusal.mcp import build_manifest, manifest_policy, manifest_to_text  # noqa: E402
 
 # A reviewed, pinned catalog for one server (in real use: `recusal mcp pin`).

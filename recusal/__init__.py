@@ -21,6 +21,9 @@ Everything hangs off it:
                  empty-evidence semantics ``evaluate_policy`` (empty = no
                  objection, PASS) and ``certify_evidence`` (empty = refuse).
 - ``checks``, built-in deterministic checks that turn raw data into Findings.
+- ``decide``, the neutral evaluator every runtime's gate calls: one policy call, one
+                 verdict fold, one audit-record path. ``recusal.claude_code.decide`` is the
+                 same function.
 - ``claude``, drop the gate in front of a Claude agent's tool calls so it can
                  refuse *before* a tool runs.
 - ``gates``, staged release checkpoints (G0-G8) rolled into release evidence.
@@ -49,6 +52,7 @@ from .classify import (
     classify_failure,
     classify_verdict,
 )
+from .claude_code import Policy, decide
 from .evidence import (
     Decision,
     Finding,
@@ -77,6 +81,8 @@ __all__ = [
     "DecisionReceipt",
     "Supplied",
     "certify_authorization",
+    "decide",
+    "Policy",
     "GateAdjudicator",
     "GateResult",
     "ReleaseEvidence",

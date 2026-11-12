@@ -83,6 +83,8 @@ from ._adjudicate import (  # noqa: F401, re-exported: the public path is this m
     _input_fingerprint,
     _record,
     _reset_control_identity,
+    findings_of,
+    identity_getter,
 )
 from ._adjudicate import decide as _decide_impl
 from .evidence import Finding, compute_verdict

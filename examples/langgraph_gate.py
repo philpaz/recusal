@@ -74,8 +74,10 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import Finding  # noqa: E402
-from recusal.claude_code import decide  # noqa: E402
+from recusal import (
+    Finding,  # noqa: E402
+    decide,  # noqa: E402
+)
 
 Policy = Callable[[str, dict], List[Any]]
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
