@@ -80,6 +80,7 @@ from examples.openai_agents_gate import (  # noqa: E402
     ScriptedModel,
     _duplicate_names,
     _refusal,
+    _unjudgeable,
     assistant_message,
     gate_tools,
     scripted_model,
@@ -104,6 +105,13 @@ except ImportError as exc:
     ) from exc
 
 Policy = Callable[[str, dict], List[Any]]
+#: Given which seam is deciding and that seam's own context, the recording arguments
+#: ``decide`` takes for the call (``audit=``, ``surface=``, ``tool_use_id=``, ...). The seam
+#: is ``"function_tool"`` (context: the SDK's tool context), ``"mcp_server"`` (context: the
+#: server object) or ``"hosted_mcp"`` (context: the approval request).
+#: examples/openai_agents_mcp_audit.py builds one.
+Recording = Callable[[str, Any], dict]
+_FAILED_CLOSED = "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({name})"
 CALLED: list[tuple[str, str, dict[str, Any]]] = []
 """Every (server, tool, arguments) an in-process MCP server was asked to run."""
 
@@ -111,7 +119,9 @@ CALLED: list[tuple[str, str, dict[str, Any]]] = []
 # --- local MCP servers -----------------------------------------------------------------------
 
 
-def _refusal_for_call(tool_name: str, arguments: Any, policy: Policy) -> Optional[str]:
+def _refusal_for_call(
+    tool_name: str, arguments: Any, policy: Policy, **record: Any
+) -> Optional[str]:
     """Return the reason a server call is refused, or None to let it through.
 
     ``arguments`` is the dict the SDK hands ``call_tool`` (``None`` for a call without
@@ -121,12 +131,17 @@ def _refusal_for_call(tool_name: str, arguments: Any, policy: Policy) -> Optiona
     The policy judges a deep copy of that dict (JSON data, so the copy is exact) and the
     server receives the dict itself, so a policy that writes to what it was handed, after
     gathering its evidence, changes its copy and not the call.
+
+    ``record`` goes straight to ``decide``, which then writes the decision to an audit
+    log; the entry carries the fingerprint of the dict the server receives.
     """
     args = {} if arguments is None else arguments
     if not isinstance(args, dict):
-        return f"Recusal refused `{tool_name}`: arguments are not a mapping"
+        return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
     try:
-        decision, reason = decide(tool_name, copy.deepcopy(args), policy, safe_errors=True)
+        decision, reason = decide(
+            tool_name, copy.deepcopy(args), policy, safe_errors=True, **record
+        )
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
@@ -190,14 +205,17 @@ def _name_domain_refusal(policy: Policy, server_name: Any, where: str) -> Option
     return None
 
 
-def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
+def gate_mcp_server(
+    server: MCPServer, policy: Policy, recording: Optional[Recording] = None
+) -> MCPServer:
     """Wrap the server's ``call_tool`` so every call is judged by the server's own tool
     name and the exact arguments it would run, in place; returns the same server.
 
     The SDK invokes ``call_tool`` with the raw tool name whatever public name the model
     used, after any approval, so this is the point where the policy judges the capability
     that executes. A refusal is returned as an MCP error result carrying the reason, and
-    the server's own ``call_tool`` is not reached.
+    the server's own ``call_tool`` is not reached. ``recording`` puts every decision on an
+    audit log; like the policy, a connection carries one.
     """
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
@@ -211,6 +229,12 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
         # caller believing a stricter policy took effect, and silently replacing it would
         # change the policy under every other agent sharing the connection.
         if server.call_tool.recusal_policy is policy:  # type: ignore[attr-defined]
+            if server.call_tool.recusal_recording is not recording:  # type: ignore[attr-defined]
+                raise ValueError(
+                    f"Recusal: server {server.name!r} is already gated with a different "
+                    "recording; a connection carries one audit record for every agent that "
+                    "shares it. Gate a separate server object to record elsewhere."
+                )
             return server
         raise ValueError(
             f"Recusal: server {server.name!r} is already gated with a different policy; a "
@@ -222,7 +246,12 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
     async def gated_call_tool(
         tool_name: str, arguments: Optional[dict[str, Any]], meta: Any = None
     ) -> CallToolResult:
-        reason = _refusal_for_call(tool_name, arguments, policy)
+        try:
+            record = dict(recording("mcp_server", server)) if recording is not None else {}
+        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
+            reason: Optional[str] = _FAILED_CLOSED.format(name=type(exc).__name__)
+        else:
+            reason = _refusal_for_call(tool_name, arguments, policy, **record)
         if reason is not None:
             return CallToolResult(content=[TextContent(type="text", text=reason)], isError=True)
         if meta is None:
@@ -231,6 +260,7 @@ def gate_mcp_server(server: MCPServer, policy: Policy) -> MCPServer:
 
     gated_call_tool.recusal_gate = True  # type: ignore[attr-defined]
     gated_call_tool.recusal_policy = policy  # type: ignore[attr-defined]
+    gated_call_tool.recusal_recording = recording  # type: ignore[attr-defined]
     server.call_tool = gated_call_tool  # type: ignore[method-assign]
     return server
 
@@ -243,15 +273,21 @@ def is_gated_mcp_server(server: Any) -> bool:
 # --- hosted MCP -------------------------------------------------------------------------------
 
 
-def recusal_approval(policy: Policy, then: Any = None):
+def recusal_approval(policy: Policy, then: Any = None, recording: Optional[Recording] = None):
     """Return an ``on_approval_request`` callback that judges each hosted call OpenAI asks about.
 
     A refusal answers ``{"approve": False, "reason": reason}``. An allowed call is passed to
     ``then`` (the callback the tool already had), or approved when there is none.
+    ``recording`` puts Recusal's decision on an audit log before ``then`` is asked; what
+    ``then`` answers is not Recusal's decision and is not on the log.
     """
 
     async def gate(request: MCPToolApprovalRequest) -> dict:
-        reason = _refusal(request.data.name, request.data.arguments, policy)
+        try:
+            record = dict(recording("hosted_mcp", request)) if recording is not None else {}
+        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not approve
+            return {"approve": False, "reason": _FAILED_CLOSED.format(name=type(exc).__name__)}
+        reason = _refusal(request.data.name, request.data.arguments, policy, **record)
         if reason is not None:
             return {"approve": False, "reason": reason}
         if then is None:
@@ -265,7 +301,9 @@ def recusal_approval(policy: Policy, then: Any = None):
     return gate
 
 
-def gate_hosted_mcp(tool: HostedMCPTool, policy: Policy) -> HostedMCPTool:
+def gate_hosted_mcp(
+    tool: HostedMCPTool, policy: Policy, recording: Optional[Recording] = None
+) -> HostedMCPTool:
     """Return a copy of the hosted MCP tool that requires approval for every call and judges
     each approval request with Recusal; the original is unchanged."""
     if not isinstance(tool, HostedMCPTool):
@@ -277,7 +315,9 @@ def gate_hosted_mcp(tool: HostedMCPTool, policy: Policy) -> HostedMCPTool:
     return dataclasses.replace(
         tool,
         tool_config=config,
-        on_approval_request=recusal_approval(policy, then=tool.on_approval_request),
+        on_approval_request=recusal_approval(
+            policy, then=tool.on_approval_request, recording=recording
+        ),
     )
 
 
@@ -324,23 +364,30 @@ def is_gated(agent: Any) -> bool:
     return function_tools_gated(agent.clone(tools=others, mcp_servers=[]))
 
 
-def gated_agent(agent: Agent, policy: Policy) -> Agent:
+def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = None) -> Agent:
     """Return a copy of the agent whose every tool call is judged by Recusal.
 
     Function tools and hosted MCP tools are replaced by gated copies; the servers in
     ``mcp_servers`` are gated in place and shared with the original. Raises ValueError if
-    the agent can run something no gate sees.
+    the agent can run something no gate sees. ``recording`` puts every decision of all
+    three gates on an audit log.
     """
     reason = _ungateable_reason(agent)
     if reason is not None:
         raise ValueError(f"Recusal cannot gate agent {agent.name!r}: {reason}")
+    for_function_tools = None
+    if recording is not None:
+
+        def for_function_tools(ctx: Any) -> dict:
+            return recording("function_tool", ctx)
+
     tools: list[Any] = []
     for tool in agent.tools:
         if isinstance(tool, HostedMCPTool):
-            tools.append(gate_hosted_mcp(tool, policy))
+            tools.append(gate_hosted_mcp(tool, policy, recording))
         else:
-            tools.extend(gate_tools([tool], policy))
-    servers = [gate_mcp_server(server, policy) for server in agent.mcp_servers]
+            tools.extend(gate_tools([tool], policy, for_function_tools))
+    servers = [gate_mcp_server(server, policy, recording) for server in agent.mcp_servers]
     return agent.clone(tools=tools, mcp_servers=servers)
 
 

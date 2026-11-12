@@ -59,6 +59,20 @@ All notable changes to this project are documented here. The format follows
   call. A call waiting for approval is recorded when it is about to run; a call a person
   rejected, and a call to a tool the agent does not have (the SDK raises), are not on
   the log. The plain gate's decisions and reason strings are unchanged.
+- `examples/openai_agents_mcp_audit.py`: the audit trail for OpenAI Agents SDK MCP tools.
+  `audited_agent(agent, policy, log)` is the MCP example's `gated_agent` with a
+  `recording` (a new optional argument of `gated_agent`, `gate_mcp_server`,
+  `gate_hosted_mcp` and `recusal_approval`), so one hash-chained `AuditLog` covers the
+  agent's three seams, each under its own surface label. A local server's entry is
+  labeled `openai_agents.mcp.call_tool`, names the server as `control.mcp_server`, is
+  bound to the arguments the server receives, and carries no call id, because the SDK
+  hands `call_tool` none. A hosted approval's entry is labeled
+  `openai_agents.hosted_mcp.approval` under the approval request's id; it records
+  Recusal's decision, not what the tool's own approval callback then answered. An
+  unwritable log, a failing sink or a `recording` that raises refuses the call or
+  rejects the approval. A server is a shared connection and carries one recording:
+  gating it again with another is refused, as another policy is. The plain gate's
+  decisions and reason strings are unchanged.
 
 ## [0.14.0] - 2026-11-11
 

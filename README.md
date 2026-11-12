@@ -79,6 +79,7 @@ issue nobody has taken yet: comment there to pick it up.
 | LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) |
 | LangGraph pause, resume and replay | Tested | [`examples/langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py) across `interrupt()`, `Command(resume=)` and checkpoint replay |
 | OpenAI Agents SDK, MCP tools, local servers and hosted MCP | Tested | [`examples/openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py) |
+| OpenAI Agents SDK audit trail, MCP tools | Tested | [`examples/openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py) |
 | OpenAI Responses and Chat Completions, your own loop | Tested | [`examples/openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py) |
 | OpenAI Responses and Chat Completions audit trail | Tested | [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py) |
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py) |
@@ -689,6 +690,15 @@ answers a refusal as a rejection with Recusal's reason; a call OpenAI does not a
 for is never seen, which is why a hosted tool with any other `require_approval` is reported
 ungated. `gated_agent(agent, policy)` there gates function tools, servers and hosted tools
 together. Same pins, same CI jobs, same offline fixtures, plus an in-process MCP server.
+To put every one of those calls on the record,
+[`examples/openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py)
+swaps in `audited_agent(agent, policy, log)`: one hash-chained `AuditLog` for the agent's
+three seams, each under its own label. A local server's entry is labeled
+`openai_agents.mcp.call_tool`, names the server as `control.mcp_server` and carries no
+call id, because the SDK hands `call_tool` none; a hosted approval's entry is labeled
+`openai_agents.hosted_mcp.approval` under the approval request's id; a function tool's is
+the function-tool example's. An unwritable log refuses the call or rejects the approval.
+A server is a shared connection and carries one recording, as it carries one policy.
 
 No framework at all, the OpenAI API called directly: [`examples/openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py)
 gates the loop your application already owns. `gate_function_calls(response, tools, policy)`

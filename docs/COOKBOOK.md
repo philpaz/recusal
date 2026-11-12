@@ -86,6 +86,10 @@ SDK hands over the server's own tool name and the exact arguments whatever publi
 the model called, and
 `gate_hosted_mcp(tool, policy)` makes a hosted MCP tool require approval for every call and
 judges each approval request, the only local point a hosted call has. Same pins and jobs.
+[`../examples/openai_agents_mcp_audit.py`](../examples/openai_agents_mcp_audit.py) is the
+same gate with a record: `audited_agent(agent, policy, log)` writes each decision on a
+function tool, a local server call or a hosted approval to one hash-chained `AuditLog`,
+and `recusal audit verify` catches an edited entry.
 
 Calling the OpenAI API directly, no framework: [`../examples/openai_responses_gate.py`](../examples/openai_responses_gate.py)
 judges each `function_call` item (Responses API) or `tool_calls` entry (Chat Completions)
