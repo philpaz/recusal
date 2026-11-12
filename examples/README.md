@@ -67,6 +67,7 @@ in its module docstring before running it; the Recusal core itself has no SDK de
 | [`google_adk_gate.py`](google_adk_gate.py) | `google-adk==2.13.0`, `google-genai==2.34.0` | A Google ADK before-tool callback denies calls judged unsafe, including those in nested agents. |
 | [`crewai_gate.py`](crewai_gate.py) | `crewai==1.15.34` | CrewAI before/after hooks stop refused tool calls and return the gate's reason to the scripted model. |
 | [`pydantic_ai_gate.py`](pydantic_ai_gate.py) | `pydantic-ai-slim==2.64.0` | A Pydantic AI capability judges each call in `before_tool_execute` and answers a refusal as a failed tool result; a delegated agent needs its own gate. |
+| [`pydantic_ai_audit.py`](pydantic_ai_audit.py) | `pydantic-ai-slim==2.64.0` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
 
 ## The other surfaces (offline, no key)
 

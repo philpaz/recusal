@@ -82,6 +82,7 @@ issue nobody has taken yet: comment there to pick it up.
 | Google ADK `LlmAgent`, callback and plugin | Tested | [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py) |
 | CrewAI tool-call hooks | Tested | [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) |
 | Pydantic AI `Agent`, capability and hook | Tested | [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) |
+| Pydantic AI audit trail | Tested | [`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) |
 | LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
 <!-- works-with:end -->
 
@@ -762,7 +763,14 @@ runs after it, so list the gate last. `Hooks(before_tool_execute=recusal_before_
 is the same gate as a plain hook function with no ordering of its own. An agent called from
 inside a tool function runs under its own capabilities and needs its own gate; the tests show
 the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
-with exactly `pydantic-ai-slim==2.64.0`.
+with exactly `pydantic-ai-slim==2.64.0`. To put every one of those calls on the record,
+[`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) swaps in
+`RecusalAuditedGate(policy, log=log)` (or `recusal_audited_before_tool_execute(policy, log)`
+for `Hooks`): the same decision, written as a hash-chained `AuditLog` entry labeled
+`pydantic_ai.before_tool_execute` with Pydantic AI's tool call id and a fingerprint of the
+arguments the tool is called with, before the call runs or is refused, and an unwritable
+log refuses the call. A call Pydantic AI rejects at validation never reaches the hook, so
+it does not run and is not on the log.
 
 Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts.
 Containers are detached by construction, without application copy methods or serializers.

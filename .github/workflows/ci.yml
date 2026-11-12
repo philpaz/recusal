@@ -368,7 +368,7 @@ jobs:
       - name: Install Recusal and the pinned Pydantic AI example dependency
         run: pip install -e ".[dev]" pydantic-ai-slim==2.64.0
       - name: Test Pydantic AI example and its surface probe
-        run: pytest -q tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
 
   pydantic-ai-example-py312:
     name: Pydantic AI example (Python 3.12)
@@ -383,7 +383,7 @@ jobs:
       - name: Install Recusal and the pinned Pydantic AI example dependency
         run: pip install -e ".[dev]" pydantic-ai-slim==2.64.0
       - name: Test Pydantic AI example and its surface probe
-        run: pytest -q tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
 
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK

@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `examples/pydantic_ai_audit.py`: the Pydantic AI audit trail, the second framework gate
+  with an audited route (LangGraph was the first). `RecusalAuditedGate(policy, log=log)`
+  and `recusal_audited_before_tool_execute(policy, log)` call the plain gate's own
+  `_refusal` with the recording arguments passed through to `decide`, so the decision is
+  the plain gate's and each call the hook sees, allowed or refused, is one hash-chained
+  `AuditLog` entry labeled `pydantic_ai.before_tool_execute` under Pydantic AI's tool call
+  id. The entry for a judged call carries the fingerprint of the arguments the tool is
+  called with, whatever the policy did to its copy and whatever an earlier capability
+  rewrote. A call refused before judgment (arguments the gate cannot detach) is one deny
+  entry bound to the call as the model proposed it. An unwritable log or a failing sink
+  refuses the call. A call Pydantic AI rejects at validation never reaches the hook: it
+  does not run and is not on the log. The plain gate's decisions and reason strings are
+  unchanged. From the 2026-11-11 architecture review.
+
 ## [0.14.0] - 2026-11-11
 
 The two remaining findings of the 2026-11-06 architecture review, and the first

@@ -66,11 +66,11 @@ jobs:
           - runtime: pydantic_ai
             python-version: "3.11"
             packages: "pydantic-ai-slim"
-            tests: "tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py"
+            tests: "tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py"
           - runtime: pydantic_ai
             python-version: "3.12"
             packages: "pydantic-ai-slim"
-            tests: "tests/test_pydantic_ai_gate.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py"
+            tests: "tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

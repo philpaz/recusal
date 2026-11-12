@@ -120,6 +120,10 @@ parameters (a `str` or `int` in place of an Enum) and resolve application types 
 tool body. No application copy method or serializer is invoked.
 An agent called from inside a tool needs its own gate. Python 3.11+, tested with exactly
 `pydantic-ai-slim==2.64.0`; not a Recusal dependency.
+[`../examples/pydantic_ai_audit.py`](../examples/pydantic_ai_audit.py) is the same gate with
+a record: `RecusalAuditedGate(policy, log=log)` writes each decision, allowed or refused, to
+a hash-chained `AuditLog` entry labeled `pydantic_ai.before_tool_execute` under Pydantic
+AI's tool call id, and `recusal audit verify` catches an edited entry.
 
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)

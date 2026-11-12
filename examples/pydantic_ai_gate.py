@@ -94,7 +94,7 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import decide  # noqa: E402
+from recusal import Finding, decide  # noqa: E402
 from recusal.invocation import detached as _detached
 
 Policy = Callable[[str, dict], List[Any]]
@@ -113,7 +113,31 @@ def run_sql(sql: str) -> str:
     return f"recorded SQL: {sql}"
 
 
-def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:
+def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
+    """The reason for a call the gate refuses before any policy runs.
+
+    Without recording arguments it is the plain text. With them (the audited gate,
+    examples/pydantic_ai_audit.py) the refusal goes through ``decide`` like every other, so
+    it is one entry on the log, bound to the call as the model proposed it, and the reason
+    the model reads is the one on the record.
+    """
+    if not record:
+        return f"Recusal refused `{tool_name}`: {detail}"
+    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
+
+    def unjudgeable(_name, _input):
+        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+    try:
+        _, reason = decide(tool_name, bound, unjudgeable, safe_errors=True, **record)
+    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+    return reason
+
+
+def _refusal(
+    tool_name: str, args: Any, policy: Policy, *, proposal: Any = None, **record: Any
+) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
     Pydantic AI hands the hook the validated argument dict the tool will be called with, so
@@ -123,18 +147,30 @@ def _refusal(tool_name: str, args: Any, policy: Policy) -> Optional[str]:
     The policy judges detached data, built by ``_detached``, and the tool runs with the
     validated dict itself. Unsupported values refuse before the policy is called. No
     model projection, application copy method or serializer participates in the decision.
+
+    ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
+    so a gate that puts the decision on a log (examples/pydantic_ai_audit.py) decides, and
+    refuses, exactly as this one does: one function, no second copy to drift. The entry for
+    a call that runs carries the fingerprint of the detached arguments, which are equal to
+    the dict the tool receives. ``proposal`` is the call as the model sent it, and is what
+    the entry for a call refused before judgment is bound to.
     """
     if not isinstance(args, dict):
-        return f"Recusal refused `{tool_name}`: arguments are not a mapping"
+        return _unjudgeable(
+            tool_name, "arguments are not a mapping", args if proposal is None else proposal, record
+        )
     try:
         observed = _detached(args)
     except Exception as exc:  # noqa: BLE001, an unsupported observation must not run
-        return (
-            f"Recusal refused `{tool_name}`: arguments cannot be detached for judging "
-            f"({type(exc).__name__}); declare data-only parameters and validate inside the tool body"
+        return _unjudgeable(
+            tool_name,
+            f"arguments cannot be detached for judging ({type(exc).__name__}); "
+            "declare data-only parameters and validate inside the tool body",
+            proposal,
+            record,
         )
     try:
-        decision, reason = decide(tool_name, observed, policy, safe_errors=True)
+        decision, reason = decide(tool_name, observed, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
