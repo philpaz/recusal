@@ -84,7 +84,7 @@ except ImportError as exc:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import decide  # noqa: E402
+from recusal import Finding, decide  # noqa: E402
 
 Policy = Callable[[str, dict], List[Any]]
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
@@ -184,29 +184,62 @@ def _uninspectable(prepared: Any) -> bool:
     return not prepared.args and not prepared.kwargs and not prepared.unchanged
 
 
-def _refusal(tool_name: str, arguments: str, policy: Policy) -> str | None:
+#: Given the call's tool context, the recording arguments ``decide`` takes for it
+#: (``audit=``, ``surface=``, ``tool_use_id=``, ...). examples/openai_agents_audit.py builds one.
+Recording = Callable[[Any], dict]
+
+
+def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
+    """The reason for a call the gate refuses before any policy runs.
+
+    Without recording arguments it is the plain text. With them
+    (examples/openai_agents_audit.py) the refusal goes through ``decide`` like every other,
+    so it is one entry on the log, bound to the arguments as the model proposed them, and
+    the reason the model reads is the one on the record.
+    """
+    if not record:
+        return f"Recusal refused `{tool_name}`: {detail}"
+    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
+
+    def unjudgeable(_name, _input):
+        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
+
+    try:
+        _, reason = decide(tool_name, bound, unjudgeable, safe_errors=True, **record)
+    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
+        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+    return reason
+
+
+def _refusal(tool_name: str, arguments: str, policy: Policy, **record: Any) -> str | None:
     """Judge a call by the JSON arguments as given: the reason it is refused, or None.
 
     This is the right seam only where nothing validates or transforms the arguments
     between here and execution (the hosted MCP approval callback: OpenAI runs the call
     with exactly these arguments). Function tools go through
     :func:`_function_tool_refusal`, which judges the invocation the SDK prepared.
+    ``record`` goes straight to ``decide``, which then writes the decision to an audit log.
     """
     try:
         args = json.loads(arguments or "{}")
     except ValueError:
-        return f"Recusal refused `{tool_name}`: arguments are not valid JSON"
+        return _unjudgeable(tool_name, "arguments are not valid JSON", arguments, record)
     if not isinstance(args, dict):
-        return f"Recusal refused `{tool_name}`: arguments are not a JSON object"
+        return _unjudgeable(tool_name, "arguments are not a JSON object", args, record)
     try:
-        decision, reason = decide(tool_name, args, policy, safe_errors=True)
+        decision, reason = decide(tool_name, args, policy, safe_errors=True, **record)
     except Exception as exc:
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     return reason if decision == "deny" else None
 
 
 def _function_tool_refusal(
-    tool_name: str, arguments: str, policy: Policy, tool: FunctionTool, ctx: Any = None
+    tool_name: str,
+    arguments: str,
+    policy: Policy,
+    tool: FunctionTool,
+    ctx: Any = None,
+    **record: Any,
 ) -> str | None:
     """Return the reason a function tool call is refused, or None to run it.
 
@@ -222,18 +255,24 @@ def _function_tool_refusal(
     because preparing it would run the tool's code before the gate; such a call is refused,
     since the value it would execute cannot be judged. Validate inside the tool body and
     declare data-only parameters (scalars, lists and dicts of them).
+
+    ``record`` goes straight to ``decide``, so a gate that puts the decision on a log
+    (examples/openai_agents_audit.py) decides, and refuses, exactly as this one does. The
+    entry for a judged call carries the fingerprint of the prepared invocation, named and
+    projected to JSON data; a call refused before judgment is bound to the arguments as
+    the model proposed them.
     """
     try:
         args = json.loads(arguments or "{}")
     except ValueError:
-        return f"Recusal refused `{tool_name}`: arguments are not valid JSON"
+        return _unjudgeable(tool_name, "arguments are not valid JSON", arguments, record)
     if not isinstance(args, dict):
-        return f"Recusal refused `{tool_name}`: arguments are not a JSON object"
+        return _unjudgeable(tool_name, "arguments are not a JSON object", args, record)
     if getattr(tool, "_is_agent_tool", False):
         # agent.as_tool(): no parameter model, the SDK hands the input text to the sub-agent
         # as is, and the sub-agent's own gate (which gate_tools requires) judges its calls
         try:
-            decision, reason = decide(tool_name, args, policy, safe_errors=True)
+            decision, reason = decide(tool_name, args, policy, safe_errors=True, **record)
         except Exception as exc:
             return (
                 f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
@@ -241,23 +280,31 @@ def _function_tool_refusal(
         return reason if decision == "deny" else None
     prepare = getattr(tool.on_invoke_tool, "prepare_arguments", None)
     if not callable(prepare):
-        return (
-            f"Recusal refused `{tool_name}`: its invoker does not expose the arguments it would "
-            "execute; build the tool with function_tool"
+        return _unjudgeable(
+            tool_name,
+            "its invoker does not expose the arguments it would execute; build the tool with "
+            "function_tool",
+            args,
+            record,
         )
     prepared = prepare(arguments, tool_name)
     if prepared is None or _uninspectable(prepared):
-        return (
-            f"Recusal refused `{tool_name}`: the arguments the tool would execute cannot be "
-            "judged (its schema runs custom validation, or the arguments do not validate); "
-            "validate inside the tool body or declare a data-only schema"
+        return _unjudgeable(
+            tool_name,
+            "the arguments the tool would execute cannot be judged (its schema runs custom "
+            "validation, or the arguments do not validate); validate inside the tool body or "
+            "declare a data-only schema",
+            args,
+            record,
         )
     try:
         effective = _effective_arguments(tool, prepared)
     except Exception as exc:  # noqa: BLE001, an invocation the gate cannot name is refused
-        return f"Recusal refused `{tool_name}`: cannot name its validated arguments ({type(exc).__name__})"
+        return _unjudgeable(
+            tool_name, f"cannot name its validated arguments ({type(exc).__name__})", args, record
+        )
     try:
-        decision, reason = decide(tool_name, effective, policy, safe_errors=True)
+        decision, reason = decide(tool_name, effective, policy, safe_errors=True, **record)
     except Exception as exc:
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     if decision == "deny":
@@ -274,26 +321,44 @@ def _duplicate_names(tools: Any) -> list[str]:
     return sorted({n for n in names if names.count(n) > 1})
 
 
-def _guardrail_for(policy: Policy, holder: list):
+def _guardrail_for(policy: Policy, holder: list, recording: Optional[Recording] = None):
     """A tool input guardrail bound to ONE tool: the gated copy ``gate_tools`` puts into
     ``holder`` after building it. The guardrail judges and pins that object, never a tool
     rediscovered by name from the agent (``data.agent.tools`` is metadata, and with a shared
     name the SDK executes the last tool while a lookup would find the first). Unbound, it
-    refuses every call."""
+    refuses every call. ``recording`` puts every decision, these refusals included, on an
+    audit log; a ``recording`` that raises refuses the call."""
 
     def gate(data) -> ToolGuardrailFunctionOutput:
         ctx = data.context
+        try:
+            record = dict(recording(ctx)) if recording is not None else {}
+        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
+            return ToolGuardrailFunctionOutput.reject_content(
+                f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+            )
         if not holder:
             return ToolGuardrailFunctionOutput.reject_content(
-                f"Recusal refused `{ctx.tool_name}`: this guardrail is bound to no tool; "
-                "attach it with gate_tools or gated_agent"
+                _unjudgeable(
+                    ctx.tool_name,
+                    "this guardrail is bound to no tool; attach it with gate_tools or gated_agent",
+                    ctx.tool_arguments,
+                    record,
+                )
             )
         tool = holder[0]
         if ctx.tool_name != tool.name:
             return ToolGuardrailFunctionOutput.reject_content(
-                f"Recusal refused `{ctx.tool_name}`: this guardrail is bound to {tool.name!r}"
+                _unjudgeable(
+                    ctx.tool_name,
+                    f"this guardrail is bound to {tool.name!r}",
+                    ctx.tool_arguments,
+                    record,
+                )
             )
-        reason = _function_tool_refusal(ctx.tool_name, ctx.tool_arguments, policy, tool, ctx)
+        reason = _function_tool_refusal(
+            ctx.tool_name, ctx.tool_arguments, policy, tool, ctx, **record
+        )
         if reason is not None:
             return ToolGuardrailFunctionOutput.reject_content(reason)
         return ToolGuardrailFunctionOutput.allow()
@@ -355,10 +420,13 @@ def is_gated(agent: Any, _seen: set[int] | None = None) -> bool:
     return True
 
 
-def gate_tools(tools: list[Any], policy: Policy) -> list[FunctionTool]:
+def gate_tools(
+    tools: list[Any], policy: Policy, recording: Optional[Recording] = None
+) -> list[FunctionTool]:
     """Return copies of the tools with the Recusal guardrail added; the originals are unchanged.
 
-    Raises TypeError, naming the tool, for anything the guardrail cannot see.
+    Raises TypeError, naming the tool, for anything the guardrail cannot see. ``recording``
+    puts every decision of every guardrail it attaches on an audit log.
     """
     duplicates = _duplicate_names(tools)
     if duplicates:
@@ -395,7 +463,7 @@ def gate_tools(tools: list[Any], policy: Policy) -> list[FunctionTool]:
                 "gated. Use gated_agent(sub_agent, policy).as_tool(...)"
             )
         holder: list = []
-        guardrail = _guardrail_for(policy, holder)
+        guardrail = _guardrail_for(policy, holder, recording)
         copy = dataclasses.replace(
             tool, tool_input_guardrails=[*(tool.tool_input_guardrails or ()), guardrail]
         )
@@ -404,7 +472,7 @@ def gate_tools(tools: list[Any], policy: Policy) -> list[FunctionTool]:
     return gated
 
 
-def gated_agent(agent: Agent, policy: Policy) -> Agent:
+def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = None) -> Agent:
     """Return a copy of the agent whose every tool call is judged by Recusal.
 
     Raises ValueError if the agent can run anything the guardrail cannot see.
@@ -412,7 +480,7 @@ def gated_agent(agent: Agent, policy: Policy) -> Agent:
     reason = _ungateable_reason(agent)
     if reason is not None:
         raise ValueError(f"Recusal cannot gate agent {agent.name!r}: {reason}")
-    return agent.clone(tools=gate_tools(list(agent.tools), policy))
+    return agent.clone(tools=gate_tools(list(agent.tools), policy, recording))
 
 
 def scripted_model(calls: list[tuple[str, Any, str]]) -> ScriptedModel:

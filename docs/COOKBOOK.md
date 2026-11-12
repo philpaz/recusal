@@ -75,6 +75,10 @@ that could run something the guardrail never sees: a non-function tool, `mcp_ser
 handoffs, an ungated sub-agent behind `as_tool`, or an `Agent` subclass. It requires
 Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.34.0`; neither package is
 a Recusal dependency, and no API key is used.
+[`../examples/openai_agents_audit.py`](../examples/openai_agents_audit.py) is the same gate
+with a record: `audited_agent(agent, policy, log)` writes each decision, allowed or
+refused, to a hash-chained `AuditLog` entry under the SDK's tool call id, and
+`recusal audit verify` catches an edited entry.
 
 The [OpenAI Agents SDK MCP example](../examples/openai_agents_mcp_gate.py) gates the two
 MCP paths: `gate_mcp_server(server, policy)` wraps a local server's `call_tool`, where the

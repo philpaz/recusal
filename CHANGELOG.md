@@ -46,6 +46,19 @@ All notable changes to this project are documented here. The format follows
   bound to the arguments as proposed. An unwritable log, a failing sink or a `recording`
   that raises refuses the call. A call another callback answered before the gate ran is
   not on the log. The plain gate's decisions and reason strings are unchanged.
+- `examples/openai_agents_audit.py`: the audit trail for OpenAI Agents SDK function tools.
+  `audited_agent(agent, policy, log)` is `gated_agent` and `audited_tools(tools, policy,
+  log)` is `gate_tools`, each with a `recording` (a new optional argument of both) that
+  passes the recording arguments through to `decide`, so each call a guardrail sees,
+  allowed or refused, through `Runner.run` or `Runner.run_streamed`, is one hash-chained
+  `AuditLog` entry labeled `openai_agents.tool_input_guardrail` under the SDK's tool call
+  id. The entry for a judged call carries the fingerprint of the invocation the SDK
+  prepared, so a default and a coerced value are recorded as the function receives
+  them. A call refused before judgment is one deny entry bound to the arguments as
+  proposed. An unwritable log, a failing sink or a `recording` that raises refuses the
+  call. A call waiting for approval is recorded when it is about to run; a call a person
+  rejected, and a call to a tool the agent does not have (the SDK raises), are not on
+  the log. The plain gate's decisions and reason strings are unchanged.
 
 ## [0.14.0] - 2026-11-11
 

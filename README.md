@@ -75,6 +75,7 @@ issue nobody has taken yet: comment there to pick it up.
 | Any Python agent loop | Tested | [`examples/agent_loop.py`](https://github.com/philpaz/recusal/blob/main/examples/agent_loop.py) |
 | LangChain `create_agent` middleware, sync and async | Tested | [`examples/langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py) |
 | OpenAI Agents SDK, function tools | Tested | [`examples/openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py) |
+| OpenAI Agents SDK audit trail, function tools | Tested | [`examples/openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py) |
 | LangGraph audit trail | Tested | [`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) |
 | LangGraph pause, resume and replay | Tested | [`examples/langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py) across `interrupt()`, `Command(resume=)` and checkpoint replay |
 | OpenAI Agents SDK, MCP tools, local servers and hosted MCP | Tested | [`examples/openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py) |
@@ -655,7 +656,14 @@ tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
 `SandboxAgent`. `Runner.run`, `Runner.run_streamed` and calls a person approved through
 `needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
 `ScriptedModel`, no API key) and needs Python 3.10+ with `openai-agents==0.24.0` and
-`openai==3.34.0` (example-only pins).
+`openai==3.34.0` (example-only pins). To put every one of those calls on the record,
+[`examples/openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py)
+swaps in `audited_agent(agent, policy, log)` (or `audited_tools(tools, policy, log)`):
+the same decision, written as a hash-chained `AuditLog` entry labeled
+`openai_agents.tool_input_guardrail` with the SDK's tool call id and a fingerprint of the
+prepared invocation, before the call runs or is refused, and an unwritable log refuses
+the call. A call waiting for approval is recorded when it is about to run, so a call a
+person rejected is not on the log; it did not run.
 
 For the SDK's MCP tools, [`examples/openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py)
 covers the two paths that example names as out of its sight. A local MCP server

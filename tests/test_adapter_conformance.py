@@ -99,7 +99,8 @@ separate row, because each is a separate code path through the framework.
    (`tests/test_decide_audit.py`, `tests/test_hook_audit.py`); each adapter with an
    audited route proves it on the executed invocation in its own audit tests
    (`tests/test_langgraph_audit.py`, `tests/test_pydantic_ai_audit.py`,
-   `tests/test_openai_responses_audit.py`, `tests/test_google_adk_audit.py`). Not a row here, because not every adapter
+   `tests/test_openai_responses_audit.py`, `tests/test_google_adk_audit.py`,
+   `tests/test_openai_agents_audit.py`). Not a row here, because not every adapter
    example writes a record yet.
 
 Invariants that only some adapters can express stay in those adapters' own tests, and this

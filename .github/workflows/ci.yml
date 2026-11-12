@@ -278,7 +278,7 @@ jobs:
       - name: Install Recusal and pinned OpenAI Agents SDK example dependencies
         run: pip install -e ".[dev]" openai-agents==0.24.0 openai==3.34.0
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
   openai-agents-example-py312:
     name: OpenAI Agents example (Python 3.12)
@@ -293,7 +293,7 @@ jobs:
       - name: Install Recusal and pinned OpenAI Agents SDK example dependencies
         run: pip install -e ".[dev]" openai-agents==0.24.0 openai==3.34.0
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
   google-adk-example-py311:
     name: Google ADK example (Python 3.11)

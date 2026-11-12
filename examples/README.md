@@ -62,6 +62,7 @@ in its module docstring before running it; the Recusal core itself has no SDK de
 | [`langgraph_audit.py`](langgraph_audit.py) | `langgraph==1.2.12`, `langchain-core==1.6.5` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
 | [`langchain_agent_gate.py`](langchain_agent_gate.py) | `langchain==1.4.3`, `langgraph==1.2.12`, `langchain-core==1.6.5` | A LangChain `create_agent` middleware gates calls from a scripted model without a provider connection. |
 | [`openai_agents_gate.py`](openai_agents_gate.py) | `openai-agents==0.24.0`, `openai==3.34.0` | An Agents SDK input guardrail refuses unsafe function tools and unsupported tool surfaces. |
+| [`openai_agents_audit.py`](openai_agents_audit.py) | `openai-agents==0.24.0`, `openai==3.34.0` | The same gate writes an audit record for allowed and refused function tool calls, and denies a call if recording fails. |
 | [`openai_agents_mcp_gate.py`](openai_agents_mcp_gate.py) | `openai-agents==0.24.0`, `openai==3.34.0` | A gate on a local MCP server's own `call_tool`, judging the tool name and arguments the server runs, and the approval callback as the gate for hosted MCP. |
 | [`openai_responses_gate.py`](openai_responses_gate.py) | `openai==3.34.0` | An application-controlled Responses or Chat Completions loop refuses malformed, unknown or unsafe function calls. |
 | [`openai_responses_audit.py`](openai_responses_audit.py) | `openai==3.34.0` | The same loop writes an audit record for run and refused calls, and denies a call if recording fails. |
