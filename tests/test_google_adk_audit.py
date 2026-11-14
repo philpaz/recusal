@@ -46,6 +46,18 @@ def test_python_version_refusal_is_clear_on_every_python(minor):
     assert f"this is Python 3.{minor}." in result.stderr
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_google_adk._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_pinned_versions_are_explicit_in_the_example():
     text = EXAMPLE.read_text(encoding="utf-8")
     for pin in PINS:
@@ -430,13 +442,13 @@ class TestGoogleAdkAudit:
     def test_non_mapping_arguments_are_one_recorded_deny(self, example, gate, log):
         tool = gate.FunctionTool(gate.run_sql)
         record = {"audit": log, "surface": SURFACE, "tool_use_id": "c1"}
-        reason = gate._refusal(tool, ["DELETE"], gate.sql_scope_policy, **record)
+        reason = _adapter()._refusal(tool, ["DELETE"], gate.sql_scope_policy, **record)
         assert reason is not None and "arguments are not a mapping" in reason
         entry = self.by_id(log)["c1"]
         assert entry["action"]["decision"] == "deny"
         assert entry["action"]["input_sha256"] == _sha({"input": ["DELETE"]})
         # without the recording arguments the plain text is unchanged and nothing is written
-        assert gate._refusal(tool, ["DELETE"], gate.sql_scope_policy) == (
+        assert _adapter()._refusal(tool, ["DELETE"], gate.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
         assert len(log.entries) == 1
@@ -448,7 +460,7 @@ class TestGoogleAdkAudit:
         record = example.recording(log)(Context())
         assert record["tool_use_id"] is None
         tool = gate.FunctionTool(gate.echo)
-        assert gate._refusal(tool, {"text": "x"}, lambda *_: [], **record) is None
+        assert _adapter()._refusal(tool, {"text": "x"}, lambda *_: [], **record) is None
         assert len(log.entries) == 1
         assert "tool_use_id" not in log.entries[0]["action"]
 

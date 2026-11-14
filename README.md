@@ -848,26 +848,27 @@ judgment is still one entry, and an unwritable log refuses the call. The surface
 and the call id each runtime gives the record are listed in
 [`docs/ARCHITECTURE.md`](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record).
 
-Two gates are also installable packages, so you import the gate instead of copying a
+Some gates are also installable packages, so you import the gate instead of copying a
 file:
 
-- [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai):
-  `from recusal_pydantic_ai import RecusalGate, RecusalAuditedGate`
-- [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai), for a
-  Responses or Chat Completions loop you own: `from recusal_openai import
-  gate_function_calls, gate_tool_calls, audited_function_calls, audited_tool_calls`
+<!-- adapter-packages:start -->
+| Package | For | Import |
+|---|---|---|
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | a Pydantic AI `Agent` | `from recusal_pydantic_ai import RecusalGate` |
+| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
+<!-- adapter-packages:end -->
 
 Each is a separate distribution with its own version and its framework's dependency;
-`recusal` itself stays zero-dependency. Neither is on PyPI yet, so install from the
-repository:
+`recusal` itself stays zero-dependency. Each package's README shows its audited form
+and what its hook cannot see. None is on PyPI yet, so install from the repository,
+naming the package and its directory:
 
 ```bash
 pip install "recusal-pydantic-ai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/pydantic-ai"
-pip install "recusal-openai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/openai"
 ```
 
-The other runtimes are still examples to copy. Each is planned as its own package in the
-same shape.
+A runtime in the Works with table that is not listed here is still an example to copy.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

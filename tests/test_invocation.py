@@ -226,7 +226,7 @@ SHARED = {
 #: The gates that import the shared helpers, and the names each one uses.
 USERS = {
     "crewai_gate.py": {"json_data", "supported_annotation"},
-    "google_adk_gate.py": {"unsupported_signature"},
+    "adapters/google-adk/src/recusal_google_adk/_gate.py": {"unsupported_signature"},
     "adapters/openai/src/recusal_openai/_gate.py": {"unsupported_signature"},
     "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
 }

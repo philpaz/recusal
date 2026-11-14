@@ -1,13 +1,18 @@
 """
 Offline Google ADK example: gate every tool call with a Recusal before-tool callback.
 
+The gate is the ``recusal-google-adk`` package (``adapters/google-adk`` in this
+repository): ``gated_agent``, ``RecusalPlugin``, ``recusal_before_tool`` and ``is_gated``
+are imported from it. This file is the offline demonstration around it: a scripted
+model, three tools that only record, and the SQL scope policy.
+
 Requires Python 3.11+ (the ADK's minimum) and is tested with exactly google-adk==2.13.0 and
 google-genai==2.34.0. Recusal itself remains Python 3.9+ and has no ADK dependency.
 
 The hook is the ADK's own. An ``LlmAgent`` runs its ``before_tool_callback`` immediately
 before each tool call, with the tool, the arguments the tool will receive and the tool
 context; a callback that returns a dict answers the call instead of running the tool.
-``recusal_before_tool(policy)`` judges the call with ``recusal.claude_code.decide`` and, on
+``recusal_before_tool(policy)`` judges the call with ``recusal.decide`` and, on
 a refusal, returns ``{"error": reason}`` so the model reads Recusal's reason on its next turn
 and the tool never runs. Every call in a model turn is judged separately. The ADK routes
 every ``BaseTool`` through the same path (function tools, long-running tools, agent tools,
@@ -50,11 +55,9 @@ Run after installing:
 from __future__ import annotations
 
 import asyncio
-import copy
-import inspect
 import os
 import sys
-from typing import Any, AsyncGenerator, Callable, List, Optional
+from typing import Any, AsyncGenerator, Optional
 
 GOOGLE_ADK_VERSION = "2.13.0"
 GOOGLE_GENAI_VERSION = "2.34.0"
@@ -70,13 +73,9 @@ if sys.version_info < (3, 11):
 
 try:
     from google.adk.agents import BaseAgent, LlmAgent
-    from google.adk.agents.loop_agent import LoopAgent
-    from google.adk.agents.parallel_agent import ParallelAgent
-    from google.adk.agents.sequential_agent import SequentialAgent
     from google.adk.models import BaseLlm, LlmRequest, LlmResponse
-    from google.adk.plugins import BasePlugin
     from google.adk.runners import InMemoryRunner
-    from google.adk.tools import AgentTool, BaseTool, FunctionTool, ToolContext
+    from google.adk.tools import FunctionTool
     from google.genai import types
 except ImportError as exc:
     raise SystemExit(
@@ -84,21 +83,33 @@ except ImportError as exc:
         f"google-adk=={GOOGLE_ADK_VERSION} google-genai=={GOOGLE_GENAI_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-google-adk` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "google-adk", "src"))
+
+from recusal_google_adk import (  # noqa: E402
+    Policy,
+    Recording,
+    RecusalPlugin,
+    gated_agent,
+    is_gated,
+    recusal_before_tool,
+)
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import Finding, decide  # noqa: E402
-from recusal.invocation import unsupported_signature as _unsupported_signature
 
-Policy = Callable[[str, dict], List[Any]]
-#: Given the call's ``ToolContext``, the recording arguments ``decide`` takes for it
-#: (``audit=``, ``surface=``, ``tool_use_id=``, ...). examples/google_adk_audit.py builds one.
-Recording = Callable[[Any], dict]
+__all__ = [
+    "Policy",
+    "Recording",
+    "RecusalPlugin",
+    "gated_agent",
+    "is_gated",
+    "recusal_before_tool",
+]
+
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
-
-#: Workflow agents run no tools of their own; their ``sub_agents`` do. ``gated_agent``
-#: gates those and leaves the workflow agent's own class alone.
-_WORKFLOW_AGENTS = (SequentialAgent, ParallelAgent, LoopAgent)
 
 
 def echo(text: str) -> str:
@@ -117,307 +128,6 @@ def charge(amount: int = 100) -> str:
     """Record a hypothetical charge with a default the model may omit; contacts nothing."""
     EXECUTED.append(("charge", {"amount": amount}))
     return "recorded"
-
-
-# --- the supported invocation: an explicit type set, defaults completed before judgment -------
-
-
-#: The FunctionTool methods that prepare and run an invocation. A tool class is supported
-#: only while every one of them is FunctionTool's own (the ADK's built-in subclasses such as
-#: transfer_to_agent inherit them; a user subclass that overrides preprocessing is refused).
-_STOCK_LIFECYCLE = (
-    "_preprocess_args",
-    "_preprocess_args_with_validation",
-    "_validate_args",
-    "run_async",
-)
-
-
-def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """Prepare the invocation the tool will execute, in place, and return a detached copy
-    for judgment; or ``(None, reason)`` when it cannot be prepared faithfully.
-
-    Supported: a ``google.adk.tools.FunctionTool`` whose class keeps FunctionTool's own
-    preparation and run methods (``_STOCK_LIFECYCLE``; the ADK's built-in subclasses do, a
-    user subclass that overrides preprocessing does not) and whose parameters, outside the
-    ones the ADK injects (``_ignore_params``),
-    all carry a supported data annotation and JSON defaults. Omitted parameters are completed
-    from the signature's defaults INTO the raw arguments first, then the tool's own
-    ``_preprocess_args_with_validation`` runs once, so a default such as ``int = "100"`` is
-    prepared exactly as explicit input would be; the converted values are written back into
-    ``args`` (the ADK calls the tool with this dict) and the policy judges a deep copy. On
-    the supported set the ADK's execution-time preparation returns equal values, with the
-    validation feature on (coercion) or off (none), so judged equals received. A validation
-    failure is refused as such, without the SDK's text, which carries input values.
-    """
-    if not isinstance(tool, FunctionTool):
-        return (
-            None,
-            f"only a google.adk.tools.FunctionTool can be judged, not {type(tool).__name__}",
-        )
-    for method in _STOCK_LIFECYCLE:
-        if getattr(type(tool), method) is not getattr(FunctionTool, method):
-            return (
-                None,
-                f"{type(tool).__name__} overrides FunctionTool.{method}, so its preparation "
-                "is not the stock one",
-            )
-    func = tool.func
-    skip = tuple(getattr(tool, "_ignore_params", ()) or ())
-    why = _unsupported_signature(func, skip)
-    if why is not None:
-        return None, f"its signature cannot be judged ({why})"
-    parameters = inspect.signature(func).parameters
-    raw: dict[str, Any] = {}
-    for name, parameter in parameters.items():
-        if name in skip or name in args:
-            continue
-        if parameter.default is parameter.empty:
-            return None, f"required parameter `{name}` was not supplied"
-        raw[name] = copy.deepcopy(parameter.default)
-    unknown = sorted(k for k in args if k not in parameters)
-    if unknown:
-        return None, f"unknown parameter(s) {unknown!r}"
-    raw.update(args)
-    converted, errors = tool._preprocess_args_with_validation(raw)
-    if errors:
-        return None, f"{len(errors)} argument(s) do not validate against the tool's parameters"
-    args.clear()
-    args.update(converted)
-    return copy.deepcopy(converted), None
-
-
-def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
-    """The reason for a call the gate refuses before any policy runs.
-
-    Without recording arguments it is the plain text. With them
-    (examples/google_adk_audit.py) the refusal goes through ``decide`` like every other, so
-    it is one entry on the log, bound to the arguments as the model proposed them, and the
-    reason the model reads is the one on the record.
-    """
-    if not record:
-        return f"Recusal refused `{tool_name}`: {detail}"
-    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
-
-    def unjudgeable(_name, _input):
-        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
-
-    try:
-        _, reason = decide(tool_name, bound, unjudgeable, safe_errors=True, **record)
-    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
-        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-    return reason
-
-
-def _record_for(recording: Optional[Recording], tool_context: Any) -> dict:
-    """The recording arguments for this call, or none when the gate keeps no record."""
-    return dict(recording(tool_context)) if recording is not None else {}
-
-
-def _refusal(tool: Any, args: Any, policy: Policy, **record: Any) -> Optional[str]:
-    """Return the reason a call is refused, or None to run it.
-
-    The ADK hands the callback the same ``args`` dict the tool will be called with; the
-    invocation is prepared in place (:func:`_prepared`) and the policy judges a detached
-    copy of exactly what will run. A non-dict is refused: the tool would not accept it
-    either, and the policy cannot read it.
-
-    ``record`` goes straight to ``decide``, so a gate that puts the decision on a log
-    (examples/google_adk_audit.py) decides, and refuses, exactly as this one does. The
-    entry for a judged call carries the fingerprint of the prepared invocation the tool
-    is called with; a call refused before judgment is bound to the arguments as proposed
-    (:func:`_prepared` changes ``args`` only when it succeeds).
-    """
-    tool_name = getattr(tool, "name", "?")
-    if not isinstance(args, dict):
-        return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
-    try:
-        invocation, why = _prepared(tool, args)
-    except Exception as exc:  # noqa: BLE001, a preparation the gate cannot complete is refused
-        return _unjudgeable(
-            tool_name, f"the invocation cannot be prepared ({type(exc).__name__})", args, record
-        )
-    if invocation is None:
-        return _unjudgeable(tool_name, str(why), args, record)
-    try:
-        decision, reason = decide(tool_name, invocation, policy, safe_errors=True, **record)
-    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-    return reason if decision == "deny" else None
-
-
-def recusal_before_tool(policy: Policy, recording: Optional[Recording] = None):
-    """Return a ``before_tool_callback`` that judges each tool call before it runs.
-
-    A refusal is returned as the tool's response, ``{"error": reason}``, so the model sees
-    why on its next turn; ``None`` lets the ADK run the tool. ``recording`` puts every
-    decision on an audit log (examples/google_adk_audit.py).
-    """
-
-    def gate(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext):
-        try:
-            record = _record_for(recording, tool_context)
-        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
-            return {
-                "error": "Recusal failed closed (policy error): "
-                f"RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-            }
-        reason = _refusal(tool, args, policy, **record)
-        if reason is not None:
-            return {"error": reason}
-        return None
-
-    gate.recusal_gate = True  # type: ignore[attr-defined]
-    return gate
-
-
-class RecusalPlugin(BasePlugin):
-    """The same gate as a runner plugin: every agent the runner drives.
-    ``InMemoryRunner(agent, plugins=[..., RecusalPlugin(policy)])``.
-
-    Plugin callbacks run before any agent's before-tool callbacks, and plugins run in list
-    order, so the plugin judges a call only when nothing that could change the arguments
-    runs after it (``_ordering_reason``); otherwise it refuses the call before judgment.
-    """
-
-    def __init__(
-        self, policy: Policy, name: str = "recusal", recording: Optional[Recording] = None
-    ):
-        super().__init__(name=name)
-        self._policy = policy
-        self._recording = recording
-
-    async def before_tool_callback(
-        self, *, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
-    ) -> Optional[dict[str, Any]]:
-        try:
-            record = _record_for(self._recording, tool_context)
-        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
-            return {
-                "error": "Recusal failed closed (policy error): "
-                f"RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-            }
-        reason = _ordering_reason(self, tool_context)
-        if reason is not None:
-            return {"error": _unjudgeable(tool.name, reason, tool_args, record)}
-        reason = _refusal(tool, tool_args, self._policy, **record)
-        return {"error": reason} if reason is not None else None
-
-
-def _ordering_reason(plugin: RecusalPlugin, tool_context: Any) -> Optional[str]:
-    """Why the plugin is not the last before-tool seam for this call, or None if it is.
-
-    The executing agent is read from the invocation context behind ``tool_context``; its
-    before-tool callbacks run after every plugin, so any callback that is not a Recusal gate
-    could change the arguments the plugin judged. A plugin listed after this one whose class
-    overrides ``before_tool_callback`` runs after it too. Either is refused with the fix
-    named; so is a context that does not expose the agent.
-    """
-    invocation = getattr(tool_context, "_invocation_context", None)
-    agent = getattr(invocation, "agent", None)
-    if agent is None:
-        return "the invocation context does not expose the executing agent"
-    if not isinstance(agent, LlmAgent):
-        return (
-            f"the executing agent {agent.name!r} is a {type(agent).__name__}, "
-            "whose before-tool callbacks this plugin cannot read"
-        )
-    for callback in _callbacks(agent):
-        if not getattr(callback, "recusal_gate", False):
-            name = getattr(callback, "__name__", type(callback).__name__)
-            return (
-                f"agent {agent.name!r} runs a before_tool_callback ({name}) after this "
-                "plugin; gate it with gated_agent(agent, policy)"
-            )
-    plugins = list(getattr(getattr(invocation, "plugin_manager", None), "plugins", []))
-    position = next((i for i, p in enumerate(plugins) if p is plugin), None)
-    for later in plugins[position + 1 :] if position is not None else []:
-        if isinstance(later, RecusalPlugin):
-            continue
-        if type(later).before_tool_callback is not BasePlugin.before_tool_callback:
-            return (
-                f"plugin {later.name!r} runs a before_tool_callback after this plugin; "
-                "list RecusalPlugin last"
-            )
-    return None
-
-
-def _callbacks(agent: LlmAgent) -> list:
-    existing = agent.before_tool_callback
-    if existing is None:
-        return []
-    return list(existing) if isinstance(existing, list) else [existing]
-
-
-def _carries_gate(agent: LlmAgent) -> bool:
-    return any(getattr(cb, "recusal_gate", False) for cb in _callbacks(agent))
-
-
-def _ungateable_reason(agent: Any) -> Optional[str]:
-    """Why an agent can run something the callback never sees, or None if it cannot."""
-    if isinstance(agent, _WORKFLOW_AGENTS):
-        return None
-    if type(agent) is not LlmAgent:
-        return (
-            f"{type(agent).__name__} is not a plain LlmAgent; a subclass can run tools or "
-            "code the before-tool callback never sees"
-        )
-    if agent.code_executor is not None:
-        return "it has a code_executor; model-written code runs outside the tool path"
-    return None
-
-
-def is_gated(agent: Any, _seen: Optional[set] = None) -> bool:
-    """True if every tool call this agent, its sub-agents and its agent tools can make
-    passes through a Recusal before-tool callback."""
-    seen = set() if _seen is None else _seen
-    if id(agent) in seen:
-        return True
-    seen.add(id(agent))
-    if _ungateable_reason(agent) is not None:
-        return False
-    if isinstance(agent, LlmAgent):
-        if not _carries_gate(agent):
-            return False
-        for tool in agent.tools:
-            if isinstance(tool, AgentTool) and not is_gated(tool.agent, seen):
-                return False
-    return all(is_gated(sub, seen) for sub in agent.sub_agents)
-
-
-def gated_agent(
-    agent: BaseAgent, policy: Policy, recording: Optional[Recording] = None
-) -> BaseAgent:
-    """Return a copy of the agent whose every tool call is judged by Recusal.
-
-    The gate is appended as the LAST before-tool callback; ``sub_agents`` and the agent
-    behind every ``AgentTool`` are gated the same way. Raises ValueError if the agent, or
-    any agent under it, can run something the callback cannot see. ``recording`` puts
-    every decision of every gate it installs on an audit log.
-    """
-    reason = _ungateable_reason(agent)
-    if reason is not None:
-        raise ValueError(f"Recusal cannot gate agent {agent.name!r}: {reason}")
-    update: dict[str, Any] = {
-        "sub_agents": [gated_agent(sub, policy, recording) for sub in agent.sub_agents]
-    }
-    if isinstance(agent, LlmAgent):
-        tools = []
-        for tool in agent.tools:
-            if isinstance(tool, AgentTool):
-                tools.append(
-                    AgentTool(
-                        gated_agent(tool.agent, policy, recording),
-                        skip_summarization=tool.skip_summarization,
-                    )
-                )
-            else:
-                tools.append(tool)
-        update["tools"] = tools
-        update["before_tool_callback"] = _callbacks(agent) + [
-            recusal_before_tool(policy, recording)
-        ]
-    return agent.clone(update=update)
 
 
 # --- offline fixtures: a scripted model, no network --------------------------------------

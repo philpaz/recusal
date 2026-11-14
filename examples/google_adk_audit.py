@@ -8,7 +8,8 @@ own function call id, so a quiet edit, a reordering, or a dropped entry is detec
 ``recusal audit verify``. The log holds a SHA-256 fingerprint of each call's arguments,
 never the arguments themselves.
 
-The decision logic is the one in google_adk_gate.py: ``audited_agent(agent, policy, log)``
+The audited gate is the ``recusal-google-adk`` package (``adapters/google-adk`` in this
+repository), imported here: ``audited_agent(agent, policy, log)``
 is ``gated_agent`` and ``audited_plugin(policy, log)`` is ``RecusalPlugin``, each with a
 ``recording`` that passes the recording arguments through to ``recusal.decide``, which
 writes the entry before returning. If the log cannot be written the decision becomes a
@@ -68,67 +69,29 @@ except ImportError as exc:
         f"google-adk=={GOOGLE_ADK_VERSION} google-genai=={GOOGLE_GENAI_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-google-adk` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "google-adk", "src"))
+
+from recusal_google_adk import (  # noqa: E402
+    SURFACE,
+    Policy,
+    audited_agent,
+    audited_plugin,
+    recording,
+)
 
 from examples.google_adk_gate import (  # noqa: E402
     EXECUTED,
-    Policy,
-    Recording,
-    RecusalPlugin,
-    gated_agent,
     run_agent,
     scripted_agent,
     sql_scope_policy,
 )
 from recusal.audit import AuditLog  # noqa: E402
 
-#: The surface label every entry carries: the ADK hook that adjudicated.
-SURFACE = "google_adk.before_tool_callback"
-
-
-def recording(
-    log: AuditLog, *, actor: Optional[str] = None, control: Optional[dict[str, Any]] = None
-) -> Recording:
-    """The recording arguments for each call, built in one place for both forms of the gate.
-
-    The ADK gives every function call an id (it generates one when the model sends none);
-    a blank id is recorded as no id rather than refused."""
-
-    def for_call(tool_context: Any) -> dict[str, Any]:
-        ident = getattr(tool_context, "function_call_id", None)
-        return {
-            "audit": log,
-            "surface": SURFACE,
-            "tool_use_id": ident if isinstance(ident, str) and ident else None,
-            "actor": actor,
-            "control": control,
-        }
-
-    return for_call
-
-
-def audited_agent(
-    agent: BaseAgent,
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> BaseAgent:
-    """``gated_agent`` with every decision, of the agent and of every agent under it, on
-    ``log``."""
-    return gated_agent(agent, policy, recording(log, actor=actor, control=control))
-
-
-def audited_plugin(
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> RecusalPlugin:
-    """``RecusalPlugin`` with every decision on ``log``; list it last, as with the plain one."""
-    return RecusalPlugin(policy, recording=recording(log, actor=actor, control=control))
+__all__ = ["SURFACE", "audited_agent", "audited_plugin", "recording"]
 
 
 def run_calls(

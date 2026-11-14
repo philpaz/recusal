@@ -121,6 +121,15 @@ All notable changes to this project are documented here. The format follows
   keep the offline demonstration. Nothing under `recusal/` changed. The same locks and
   the same kind of CI job (build, install both wheels, smoke test from outside the
   checkout) cover it.
+- `adapters/google-adk`: the Google ADK gate as its own distribution, `recusal-google-adk`
+  0.1.0 (`from recusal_google_adk import gated_agent, RecusalPlugin, recusal_before_tool,
+  is_gated, audited_agent, audited_plugin, recording, SURFACE`). It depends on
+  `recusal>=0.14.0,<1` and `google-adk>=2.13.0,<3`, needs Python 3.11+, and is not
+  published to PyPI yet. The gate's code moved out of `examples/google_adk_gate.py` and
+  `examples/google_adk_audit.py` unchanged; those files import the package and keep the
+  offline demonstration. Nothing under `recusal/` changed. The package tables in
+  `README.md` and `docs/ARCHITECTURE.md` now list every adapter package, and
+  `tests/test_adapter_packages.py` fails if a table and the packages disagree.
 
 ### Changed
 

@@ -38,6 +38,18 @@ def test_the_adk_stays_out_of_the_recusal_package_and_dependencies():
         assert "google.adk" not in source and "google.genai" not in source, path
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_google_adk._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_pinned_versions_are_explicit_in_example_docs_and_ci():
     expected = ("google-adk==2.13.0", "google-genai==2.34.0")
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
@@ -45,8 +57,9 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text, f"{path.name}: {pin}"
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # the two example jobs pin both; the recusal-google-adk wheel job pins both again
     for pin in expected:
-        assert ci.count(pin) == 2, pin
+        assert ci.count(pin) == 3, pin
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="the Google ADK requires Python 3.11+")
@@ -109,7 +122,7 @@ class TestGoogleAdkGate:
         def crashing_decide(*args, **kwargs):
             raise RuntimeError("decide crashed")
 
-        monkeypatch.setattr(example, "decide", crashing_decide)
+        monkeypatch.setattr(_adapter(), "decide", crashing_decide)
         responses, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
         assert responses["c1"] == {
@@ -132,10 +145,10 @@ class TestGoogleAdkGate:
 
     def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
         tool = example.FunctionTool(example.run_sql)
-        assert example._refusal(tool, ["DELETE"], example.sql_scope_policy) == (
+        assert _adapter()._refusal(tool, ["DELETE"], example.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
-        assert example._refusal(tool, "DELETE", example.sql_scope_policy) is not None
+        assert _adapter()._refusal(tool, "DELETE", example.sql_scope_policy) is not None
 
     def test_negative_control_runs_delete_without_the_gate(self, example):
         responses, executed = example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False)
@@ -283,7 +296,7 @@ class TestGoogleAdkGate:
             tools=[example.FunctionTool(example.run_sql)],
         )
         parent = example.scripted_agent(
-            [("child", {"request": "clean up"}, "a1")], tools=[example.AgentTool(child)]
+            [("child", {"request": "clean up"}, "a1")], tools=[_adapter().AgentTool(child)]
         )
         assert not example.is_gated(
             parent.clone(
@@ -294,15 +307,15 @@ class TestGoogleAdkGate:
         )
         gated = example.gated_agent(parent, example.sql_scope_policy)
         assert example.is_gated(gated)
-        inner = [t for t in gated.tools if isinstance(t, example.AgentTool)][0].agent
+        inner = [t for t in gated.tools if isinstance(t, _adapter().AgentTool)][0].agent
         assert example.is_gated(inner)
         assert inner is not child
 
     def test_gated_agent_gates_the_sub_agents_of_a_workflow_agent(self, example):
         child = example.scripted_agent([("run_sql", {"sql": DELETE}, "s1")])
-        flow = example.SequentialAgent(name="flow", sub_agents=[child])
+        flow = _adapter().SequentialAgent(name="flow", sub_agents=[child])
         gated = example.gated_agent(flow, example.sql_scope_policy)
-        assert isinstance(gated, example.SequentialAgent)
+        assert isinstance(gated, _adapter().SequentialAgent)
         assert example.is_gated(gated) and not example.is_gated(flow)
         example.EXECUTED.clear()
         responses = asyncio.run(example.run_agent(gated))
@@ -509,8 +522,8 @@ class TestPreparedInvocation:
         assert received == []
         from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
 
-        assert example._prepared.__doc__  # the stock-lifecycle rule is documented
-        for method in example._STOCK_LIFECYCLE:
+        assert _adapter()._prepared.__doc__  # the stock-lifecycle rule is documented
+        for method in _adapter()._STOCK_LIFECYCLE:
             assert getattr(TransferToAgentTool, method) is getattr(example.FunctionTool, method)
 
     def test_a_validation_failure_is_refused_without_the_sdk_text(self, example):
@@ -594,7 +607,7 @@ class TestPluginOrdering:
 
     def test_negative_control_the_naive_plugin_order_runs_the_rewrite(self, example, monkeypatch):
         """Without the contract the plugin judges SELECT and the agent callback runs DELETE."""
-        monkeypatch.setattr(example, "_ordering_reason", lambda plugin, tool_context: None)
+        monkeypatch.setattr(_adapter(), "_ordering_reason", lambda plugin, tool_context: None)
         policy, seen = self.recording(example)
         agent = example.scripted_agent([("run_sql", {"sql": SELECT}, "c1")]).clone(
             update={"before_tool_callback": self.rewrite}
@@ -632,7 +645,7 @@ class TestPluginOrdering:
         assert seen == [("run_sql", {"sql": SELECT})] * 2
 
     def test_a_later_plugin_overriding_before_tool_callback_is_refused(self, example):
-        class Rewriter(example.BasePlugin):
+        class Rewriter(_adapter().BasePlugin):
             async def before_tool_callback(self, *, tool, tool_args, tool_context):
                 if tool.name == "run_sql":
                     tool_args["sql"] = DELETE
@@ -658,7 +671,7 @@ class TestPluginOrdering:
         assert "Recusal refused `run_sql` [FAIL]" in responses["c2"]["error"]
 
     def test_a_later_plugin_without_a_before_tool_callback_is_accepted(self, example):
-        class Logger(example.BasePlugin):
+        class Logger(_adapter().BasePlugin):
             async def after_tool_callback(self, *, tool, tool_args, tool_context, result):
                 return None
 
@@ -733,7 +746,7 @@ class TestPluginOrdering:
         policy, seen = self.recording(example)
         plugin = example.RecusalPlugin(policy)
         tool = example.FunctionTool(example.run_sql)
-        agent = example.SequentialAgent(name="flow")
+        agent = _adapter().SequentialAgent(name="flow")
         context = SimpleNamespace(_invocation_context=SimpleNamespace(agent=agent))
         result = asyncio.run(
             plugin.before_tool_callback(tool=tool, tool_args={"sql": SELECT}, tool_context=context)

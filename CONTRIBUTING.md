@@ -84,6 +84,7 @@ They are the same for every contribution, large or small:
 | `CrewAI example (Python 3.12)` | the pinned CrewAI adapter works on the current cross-platform smoke Python |
 | `Pydantic AI example (Python 3.11)` | the pinned Pydantic AI adapter works on its minimum supported Python |
 | `Pydantic AI example (Python 3.12)` | the pinned Pydantic AI adapter works on the current cross-platform smoke Python |
+| `recusal-google-adk wheel (build, install, smoke)` | the `recusal-google-adk` package builds with the hash-locked toolchain, and its installed wheel gates and records a Google ADK agent, by callback and by runner plugin, from outside the checkout |
 | `recusal-openai wheel (build, install, smoke)` | the `recusal-openai` package builds with the hash-locked toolchain, and its installed wheel gates and records SDK-validated Responses and Chat Completions objects from outside the checkout |
 | `recusal-pydantic-ai wheel (build, install, smoke)` | the `recusal-pydantic-ai` package builds with the hash-locked toolchain, and its installed wheel gates and records a Pydantic AI agent from outside the checkout |
 | `Cookbook with the MCP SDK (Python 3.12)` | cookbook recipe 14 runs with the real MCP SDK, not skipped |
@@ -166,10 +167,12 @@ hook and its traps. A runtime PR is done when it has all of these:
    Works with table; `tests/test_audited_routes.py` fails without the file or the row.
 
 A gate that has settled can become its own distribution under `adapters/<runtime>/`,
-following `adapters/pydantic-ai` and `adapters/openai`: the gate and its audited route move into the package,
+following `adapters/pydantic-ai`: the gate and its audited route move into the package,
 the example files import it and keep only the offline demonstration, and a CI job
 builds the wheel and smoke-tests it from an install. Register the package in
-`tests/test_adapter_packages.py` and `PACKAGED` in `tests/test_audited_routes.py`.
+`tests/test_adapter_packages.py` and `PACKAGED` in `tests/test_audited_routes.py`, and
+add its row to the package tables in `README.md` and `docs/ARCHITECTURE.md` (a test
+fails without the rows).
 Nothing under `recusal/` changes for an adapter, and the kernel never depends on one.
 
 `tests/test_compat_process.py` fails if a pinned runtime is missing its surface probe or

@@ -85,14 +85,21 @@ audited companion, or if a surface label in this table stops matching the code.
 ## Adapter packages
 
 A framework gate starts as a tested example and can become its own distribution under
-`adapters/<runtime>/`. Two exist: `adapters/pydantic-ai`, the package
-`recusal-pydantic-ai`, and `adapters/openai`, the package `recusal-openai`. The
-dependency points one way:
+`adapters/<runtime>/`:
+
+<!-- adapter-packages:start -->
+| Package | Directory | Import | Framework dependency | Python |
+|---|---|---|---|---|
+| `recusal-openai` | `adapters/openai` | `recusal_openai` | `openai>=3.34.0,<4` | 3.10+ |
+| `recusal-pydantic-ai` | `adapters/pydantic-ai` | `recusal_pydantic_ai` | `pydantic-ai-slim>=2.64.0,<3` | 3.11+ |
+| `recusal-google-adk` | `adapters/google-adk` | `recusal_google_adk` | `google-adk>=2.13.0,<3` | 3.11+ |
+<!-- adapter-packages:end -->
+
+The dependency points one way:
 
 ```text
-recusal-pydantic-ai  ->  recusal (public names only)  +  pydantic-ai-slim
-recusal-openai       ->  recusal (public names only)  +  openai
-recusal              ->  nothing
+recusal-<runtime>  ->  recusal (public names only)  +  the framework
+recusal            ->  nothing
 ```
 
 The kernel declares no dependency, imports nothing from an adapter and does not name

@@ -20,6 +20,7 @@ ADAPTERS = ROOT / "adapters"
 #: Every adapter package: directory, distribution name, import name, the framework's
 #: distribution it must depend on.
 PACKAGES = {
+    "google-adk": ("recusal-google-adk", "recusal_google_adk", "google-adk"),
     "openai": ("recusal-openai", "recusal_openai", "openai"),
     "pydantic-ai": ("recusal-pydantic-ai", "recusal_pydantic_ai", "pydantic-ai-slim"),
 }
@@ -169,6 +170,44 @@ def test_ci_builds_installs_and_smoke_tests_the_wheel(directory):
     assert f"python -m build --no-isolation --outdir dist-adapters adapters/{directory}" in ci
     assert (ADAPTERS / directory / "smoke_test.py").is_file()
     assert (ADAPTERS / directory / "README.md").is_file()
+
+
+def _table(rel):
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    return text.split("<!-- adapter-packages:start -->", 1)[1].split(
+        "<!-- adapter-packages:end -->", 1
+    )[0]
+
+
+def test_the_architecture_table_lists_exactly_the_packages_and_their_requirements():
+    rows = re.findall(
+        r"^\| `([\w-]+)` \| `adapters/([\w-]+)` \| `(\w+)` \| `([^`]+)` \| (3\.\d+)\+ \|$",
+        _table("docs/ARCHITECTURE.md"),
+        re.M,
+    )
+    documented = {
+        directory: (dist, module, req, python) for dist, directory, module, req, python in rows
+    }
+    assert set(documented) == set(PACKAGES), sorted(set(documented) ^ set(PACKAGES))
+    for directory, (distribution, module, framework) in PACKAGES.items():
+        project = _project(directory)["project"]
+        dist, mod, requirement, python = documented[directory]
+        assert (dist, mod) == (distribution, module)
+        assert requirement in project["dependencies"], requirement
+        assert requirement.startswith(framework)
+        assert project["requires-python"] == f">={python}"
+
+
+def test_the_readme_table_lists_exactly_the_packages():
+    rows = re.findall(r"^\| \[`([\w-]+)`\]\(([^)]+)\) \|", _table("README.md"), re.M)
+    expected = {
+        (dist, f"https://github.com/philpaz/recusal/tree/main/adapters/{directory}")
+        for directory, (dist, _module, _framework) in PACKAGES.items()
+    }
+    assert set(rows) == expected, sorted(set(rows) ^ expected)
+    table = _table("README.md")
+    for _dist, module, _framework in PACKAGES.values():
+        assert f"from {module} import" in table, module
 
 
 def test_negative_control_the_import_reader_sees_a_private_kernel_import(tmp_path):
