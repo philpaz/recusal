@@ -136,6 +136,16 @@ keeps the three in step), so "Tested" always names a version CI ran. A runtime w
 latest lane stays red through a whole minor release of Recusal, or whose framework is no
 longer maintained, goes back from Tested to Wanted, and the changelog says so.
 
+**Adapter packages.** An integration can also be published as its own distribution
+under `adapters/`, such as `adapters/pydantic-ai` (`recusal-pydantic-ai`). An adapter
+package is outside the frozen list above, like the example it came from, and it has
+its own version: a framework's breaking change is answered by a release of that
+adapter, never by a release of `recusal`. Its public names are the ones in its
+`__all__`. It depends on `recusal` only through names this document or the changelog
+calls public (`tests/test_adapter_packages.py` holds that), and `recusal` declares no
+dependency on, and imports nothing from, any adapter. The same two lanes test it, and
+a third job builds its wheel and runs it from an install outside the checkout.
+
 Adding a runtime follows the checklist in
 [`CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-runtime). Where to ask for help is in
 [`SUPPORT.md`](SUPPORT.md).

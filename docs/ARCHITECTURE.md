@@ -82,6 +82,31 @@ call the provider did not ask approval for, and a whole turn the direct-loop gat
 by raising. `tests/test_audited_routes.py` fails if a framework gate is added without its
 audited companion, or if a surface label in this table stops matching the code.
 
+## Adapter packages
+
+A framework gate starts as a tested example and can become its own distribution under
+`adapters/<runtime>/`. The first is `adapters/pydantic-ai`, the package
+`recusal-pydantic-ai`. The dependency points one way:
+
+```text
+recusal-pydantic-ai  ->  recusal (public names only)  +  pydantic-ai-slim
+recusal              ->  nothing
+```
+
+The kernel declares no dependency, imports nothing from an adapter and does not name
+one. An adapter imports `recusal`, `recusal.audit` and `recusal.invocation` and nothing
+private. A packaged gate has no default policy and no demonstration code: what to
+refuse is the adopter's decision. The example files for a packaged gate
+(`examples/pydantic_ai_gate.py`, `examples/pydantic_ai_audit.py`) import the package and
+keep only the offline demonstration, so the code a user installs is the code the
+examples and their tests run; there is no second copy. `tests/test_adapter_packages.py`
+and `tests/test_audited_routes.py` hold each of these statements, and a CI job builds
+the wheel with the hash-locked release toolchain, installs it with the kernel's wheel
+in a clean environment, and runs `adapters/pydantic-ai/smoke_test.py` from outside the
+checkout.
+
+An adapter has its own version and its own release. None has been published yet.
+
 ## Public compatibility perimeter
 
 This section describes the perimeter; [`../STABILITY.md`](../STABILITY.md) is the promise

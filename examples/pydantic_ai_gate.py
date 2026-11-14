@@ -1,6 +1,11 @@
 """
 Offline Pydantic AI example: gate every tool call with a Recusal capability.
 
+The gate is the ``recusal-pydantic-ai`` package (``adapters/pydantic-ai`` in this
+repository): ``RecusalGate``, ``recusal_before_tool_execute`` and ``is_gated`` are
+imported from it. This file is the offline demonstration around it: a scripted model,
+two tools that only record, and the SQL scope policy.
+
 Requires Python 3.11+ (Pydantic AI's minimum) and is tested with exactly
 pydantic-ai-slim==2.64.0. Recusal itself remains Python 3.9+ and has no Pydantic AI
 dependency.
@@ -10,7 +15,7 @@ hook after a tool call's arguments are validated and immediately before the tool
 the call, the tool definition and the validated argument dict the tool will receive. The
 hook returns the arguments to run with, or raises ``ToolFailed`` to answer the call with a
 failed tool result instead of running it. ``RecusalGate(policy)`` judges the call with
-``recusal.claude_code.decide`` and, on a refusal, raises ``ToolFailed(reason)``, so the
+``recusal.decide`` and, on a refusal, raises ``ToolFailed(reason)``, so the
 model reads Recusal's reason on its next turn, the tool never runs, and no retry budget is
 spent (a refusal is not a model mistake to correct). Every tool call in a model turn is
 judged separately. Every toolset the agent runs, ``tools=``, ``toolsets=`` or a capability's
@@ -56,8 +61,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from typing import Any, Optional
 
 PYDANTIC_AI_VERSION = "2.64.0"
 
@@ -76,28 +80,31 @@ os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 try:
     from pydantic_ai import Agent
-    from pydantic_ai.capabilities import (
-        AbstractCapability,
-        CapabilityOrdering,
-        CombinedCapability,
-        Hooks,
-    )
-    from pydantic_ai.exceptions import ToolFailed
+    from pydantic_ai.capabilities import Hooks
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
     from pydantic_ai.models.function import AgentInfo, FunctionModel
-    from pydantic_ai.tools import ToolDefinition
 except ImportError as exc:
     raise SystemExit(
         f"Install the example dependency first: pydantic-ai-slim=={PYDANTIC_AI_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-pydantic-ai` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "pydantic-ai", "src"))
+
+from recusal_pydantic_ai import (  # noqa: E402
+    Policy,
+    RecusalGate,
+    is_gated,
+    recusal_before_tool_execute,
+)
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
-from recusal import Finding, decide  # noqa: E402
-from recusal.invocation import detached as _detached
 
-Policy = Callable[[str, dict], List[Any]]
+__all__ = ["Policy", "RecusalGate", "is_gated", "recusal_before_tool_execute"]
+
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
 
 
@@ -111,124 +118,6 @@ def run_sql(sql: str) -> str:
     """Record SQL text without connecting to a database."""
     EXECUTED.append(("run_sql", {"sql": sql}))
     return f"recorded SQL: {sql}"
-
-
-def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
-    """The reason for a call the gate refuses before any policy runs.
-
-    Without recording arguments it is the plain text. With them (the audited gate,
-    examples/pydantic_ai_audit.py) the refusal goes through ``decide`` like every other, so
-    it is one entry on the log, bound to the call as the model proposed it, and the reason
-    the model reads is the one on the record.
-    """
-    if not record:
-        return f"Recusal refused `{tool_name}`: {detail}"
-    bound = proposal if isinstance(proposal, dict) else {"input": proposal}
-
-    def unjudgeable(_name, _input):
-        return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
-
-    try:
-        _, reason = decide(tool_name, bound, unjudgeable, safe_errors=True, **record)
-    except Exception as exc:  # noqa: BLE001, the refusal stands even if the record cannot be written
-        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-    return reason
-
-
-def _refusal(
-    tool_name: str, args: Any, policy: Policy, *, proposal: Any = None, **record: Any
-) -> Optional[str]:
-    """Return the reason a call is refused, or None to run it.
-
-    Pydantic AI hands the hook the validated argument dict the tool will be called with, so
-    the policy judges exactly what would run. A non-dict is refused: the tool would not
-    accept it either, and the policy cannot read it.
-
-    The policy judges detached data, built by ``_detached``, and the tool runs with the
-    validated dict itself. Unsupported values refuse before the policy is called. No
-    model projection, application copy method or serializer participates in the decision.
-
-    ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
-    so a gate that puts the decision on a log (examples/pydantic_ai_audit.py) decides, and
-    refuses, exactly as this one does: one function, no second copy to drift. The entry for
-    a call that runs carries the fingerprint of the detached arguments, which are equal to
-    the dict the tool receives. ``proposal`` is the call as the model sent it, and is what
-    the entry for a call refused before judgment is bound to.
-    """
-    if not isinstance(args, dict):
-        return _unjudgeable(
-            tool_name, "arguments are not a mapping", args if proposal is None else proposal, record
-        )
-    try:
-        observed = _detached(args)
-    except Exception as exc:  # noqa: BLE001, an unsupported observation must not run
-        return _unjudgeable(
-            tool_name,
-            f"arguments cannot be detached for judging ({type(exc).__name__}); "
-            "declare data-only parameters and validate inside the tool body",
-            proposal,
-            record,
-        )
-    try:
-        decision, reason = decide(tool_name, observed, policy, safe_errors=True, **record)
-    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-    return reason if decision == "deny" else None
-
-
-def recusal_before_tool_execute(policy: Policy):
-    """Return a ``before_tool_execute`` hook that judges each tool call before it runs.
-
-    For ``Hooks(before_tool_execute=...)``. A refusal is raised as ``ToolFailed(reason)``,
-    which Pydantic AI turns into a failed tool result the model reads on its next turn;
-    the returned arguments run the tool unchanged.
-    """
-
-    async def gate(ctx: Any, *, call: ToolCallPart, tool_def: ToolDefinition, args: dict) -> dict:
-        reason = _refusal(call.tool_name, args, policy)
-        if reason is not None:
-            raise ToolFailed(reason)
-        return args
-
-    gate.recusal_gate = True  # type: ignore[attr-defined]
-    return gate
-
-
-@dataclass
-class RecusalGate(AbstractCapability[Any]):
-    """The gate as a capability: ``Agent(..., capabilities=[RecusalGate(policy)])``.
-
-    Declares the ``innermost`` position, so it runs after every ordinary capability's
-    ``before_tool_execute`` and judges the arguments as they reach the tool.
-    """
-
-    policy: Policy = field(default=sql_scope_policy)
-
-    def get_ordering(self) -> CapabilityOrdering:
-        return CapabilityOrdering(position="innermost")
-
-    async def before_tool_execute(
-        self, ctx: Any, *, call: ToolCallPart, tool_def: ToolDefinition, args: dict
-    ) -> dict:
-        reason = _refusal(call.tool_name, args, self.policy)
-        if reason is not None:
-            raise ToolFailed(reason)
-        return args
-
-
-def _leaves(capability: Any) -> list:
-    if isinstance(capability, CombinedCapability):
-        return [leaf for child in capability.capabilities for leaf in _leaves(child)]
-    return [capability]
-
-
-def is_gated(agent: Agent) -> bool:
-    """True if a ``RecusalGate`` is among the agent's own capabilities.
-
-    Reads only this agent: an agent it calls from inside a tool function runs under its own
-    capabilities and must be checked, and gated, itself.
-    """
-    return any(isinstance(leaf, RecusalGate) for leaf in _leaves(agent.root_capability))
 
 
 # --- offline fixtures: a scripted model, no network --------------------------------------

@@ -126,6 +126,19 @@ class TestPydanticAiAudit:
         return importlib.import_module("examples.pydantic_ai_gate")
 
     @pytest.fixture
+    def adapter(self, example):
+        """The package module the gate's decision lives in. Loading the example first puts
+        the in-tree adapter on the path, so this is the code under review, not an install."""
+        module = importlib.import_module("recusal_pydantic_ai._gate")
+        assert "adapters" in Path(module.__file__).parts, module.__file__
+        return module
+
+    @pytest.fixture
+    def adapter_audit(self, example):
+        """The package module the audited gate's recording lives in."""
+        return importlib.import_module("recusal_pydantic_ai._audit")
+
+    @pytest.fixture
     def log_path(self, tmp_path):
         return tmp_path / "pydantic-ai-audit.jsonl"
 
@@ -401,25 +414,27 @@ class TestPydanticAiAudit:
         assert entry["action"]["input_sha256"] == _sha(proposed)
         assert "MARKER" not in log_path.read_text(encoding="utf-8")
 
-    def test_non_mapping_arguments_are_one_recorded_deny(self, example, gate, log):
+    def test_non_mapping_arguments_are_one_recorded_deny(self, example, adapter, gate, log):
         record = {"audit": log, "surface": SURFACE, "tool_use_id": "c1"}
-        reason = gate._refusal("run_sql", ["DELETE"], gate.sql_scope_policy, **record)
+        reason = adapter._refusal("run_sql", ["DELETE"], gate.sql_scope_policy, **record)
         assert reason is not None and "arguments are not a mapping" in reason
         entry = self.by_id(log)["c1"]
         assert entry["action"]["decision"] == "deny"
         assert entry["action"]["input_sha256"] == _sha({"input": ["DELETE"]})
         # without the recording arguments the plain text is unchanged and nothing is written
-        assert gate._refusal("run_sql", ["DELETE"], gate.sql_scope_policy) == (
+        assert adapter._refusal("run_sql", ["DELETE"], gate.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
         assert len(log.entries) == 1
 
-    def test_a_proposal_the_record_cannot_bind_is_still_one_recorded_deny(self, example, gate, log):
+    def test_a_proposal_the_record_cannot_bind_is_still_one_recorded_deny(
+        self, example, adapter, gate, log
+    ):
         class Opaque:
             pass
 
         record = {"audit": log, "surface": SURFACE, "tool_use_id": "c1"}
-        reason = gate._refusal(
+        reason = adapter._refusal(
             "run_sql", {"h": Opaque()}, lambda *_: [], proposal={"h": Opaque()}, **record
         )
         assert reason is not None and reason.startswith("Recusal failed closed")
@@ -428,23 +443,23 @@ class TestPydanticAiAudit:
         assert entry["action"]["decision"] == "deny"
         assert "input_sha256" not in entry["action"]
 
-    def test_a_blank_call_id_is_recorded_as_no_id(self, example, gate, log):
+    def test_a_blank_call_id_is_recorded_as_no_id(self, example, adapter, adapter_audit, gate, log):
         from pydantic_ai.messages import ToolCallPart
 
         call = ToolCallPart(tool_name="echo", args={"text": "x"}, tool_call_id="")
-        recording = example._recording(call, None, None, log)
+        recording = adapter_audit._recording(call, None, None, log)
         assert recording["tool_use_id"] is None
-        assert gate._refusal("echo", {"text": "x"}, lambda *_: [], **recording) is None
+        assert adapter._refusal("echo", {"text": "x"}, lambda *_: [], **recording) is None
         assert len(log.entries) == 1
         assert "tool_use_id" not in log.entries[0]["action"]
         assert log.entries[0]["action"]["input_sha256"] == _sha({"text": "x"})
 
-    def test_the_proposal_of_a_call_never_raises(self, example):
+    def test_the_proposal_of_a_call_never_raises(self, example, adapter_audit):
         from pydantic_ai.messages import ToolCallPart
 
-        assert example._proposal(ToolCallPart(tool_name="t", args='{"a": 1}')) == {"a": 1}
-        assert example._proposal(ToolCallPart(tool_name="t", args=None)) == {}
-        assert isinstance(example._proposal(ToolCallPart(tool_name="t", args="[1, 2")), dict)
+        assert adapter_audit._proposal(ToolCallPart(tool_name="t", args='{"a": 1}')) == {"a": 1}
+        assert adapter_audit._proposal(ToolCallPart(tool_name="t", args=None)) == {}
+        assert isinstance(adapter_audit._proposal(ToolCallPart(tool_name="t", args="[1, 2")), dict)
 
     # --- what the hook never sees is not on the log, as the example says -------------------
 

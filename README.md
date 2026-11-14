@@ -848,6 +848,20 @@ judgment is still one entry, and an unwritable log refuses the call. The surface
 and the call id each runtime gives the record are listed in
 [`docs/ARCHITECTURE.md`](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record).
 
+The Pydantic AI gate is also an installable package,
+[`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai),
+so you import the gate instead of copying a file: `from recusal_pydantic_ai import
+RecusalGate, RecusalAuditedGate`. It is a separate distribution with its own version and
+the Pydantic AI dependency; `recusal` itself stays zero-dependency. It is not on PyPI
+yet, so install it from the repository:
+
+```bash
+pip install "recusal-pydantic-ai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/pydantic-ai"
+```
+
+The other runtimes are still examples to copy. Each is planned as its own package in the
+same shape.
+
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:
 `examples/sql_scope_policy.py` inspects `run_sql` and `query`, so a SQL tool under another

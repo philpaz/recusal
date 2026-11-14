@@ -385,6 +385,37 @@ jobs:
       - name: Test Pydantic AI example and its surface probe
         run: pytest -q tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
 
+  # The adapter packages under adapters/ are separate distributions from the kernel. The
+  # example jobs above run the adapter's code from the tree; this job proves the artifact:
+  # it builds the kernel and the adapter with the hash-locked release toolchain, installs
+  # both wheels with the pinned framework into a clean environment, and runs the adapter's
+  # smoke test from outside the checkout, where only an installed package can be imported.
+  # The smoke test itself refuses to pass if what it imported is the source tree.
+  adapter-pydantic-ai-wheel:
+    name: recusal-pydantic-ai wheel (build, install, smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the locked toolchain (--require-hashes)
+        run: python -m pip install --require-hashes -r release-requirements.txt
+      - name: Build the kernel and the adapter with no uncontrolled isolation env
+        run: |
+          python -m build --no-isolation --outdir dist-adapters .
+          python -m build --no-isolation --outdir dist-adapters adapters/pydantic-ai
+      - name: Check metadata
+        run: python -m twine check dist-adapters/*
+      - name: Install both wheels and the pinned framework into a clean environment
+        run: |
+          python -m venv /tmp/adapter
+          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_pydantic_ai-*.whl pydantic-ai-slim==2.64.0
+      - name: Smoke test the installed wheel from outside the checkout
+        run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/pydantic-ai/smoke_test.py"
+
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK
   # and makes the skip a failure, so the printed recipe runs on every pull request.

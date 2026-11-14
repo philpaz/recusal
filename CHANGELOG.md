@@ -97,6 +97,21 @@ All notable changes to this project are documented here. The format follows
   blocked is not on the log. The plain gate's decisions and reason strings are
   unchanged.
 
+- `adapters/pydantic-ai`: the Pydantic AI gate as its own distribution,
+  `recusal-pydantic-ai` 0.1.0 (`from recusal_pydantic_ai import RecusalGate,
+  RecusalAuditedGate, recusal_before_tool_execute, recusal_audited_before_tool_execute,
+  is_gated, SURFACE`). It depends on `recusal>=0.14.0,<1` and
+  `pydantic-ai-slim>=2.64.0,<3`, needs Python 3.11+, and is not published to PyPI yet;
+  its README has the install-from-repository line. The gate's code moved out of
+  `examples/pydantic_ai_gate.py` and `examples/pydantic_ai_audit.py` unchanged, and
+  those files now import the package and keep the offline demonstration. One
+  difference from the example: `RecusalGate(policy)` requires its policy, where the
+  example defaulted to the demonstration SQL policy. Nothing under `recusal/` changed,
+  and the kernel declares no dependency on, and imports nothing from, the adapter;
+  `tests/test_adapter_packages.py` holds that boundary. A new CI job builds the kernel
+  and the adapter with the hash-locked toolchain, installs both wheels in a clean
+  environment and runs the adapter's smoke test from outside the checkout.
+
 ### Changed
 
 - Documentation: `docs/ARCHITECTURE.md` and `docs/HOWTO.md` list every framework gate's

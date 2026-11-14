@@ -40,7 +40,8 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
         assert PIN in path.read_text(encoding="utf-8"), path.name
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert ci.count(PIN) == 2
+    # the two example jobs and the job that smoke-tests the installed adapter wheel
+    assert ci.count(PIN) == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="Pydantic AI requires Python 3.11+")
@@ -55,6 +56,16 @@ class TestPydanticAiGate:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture
+    def adapter(self, example):
+        """The package module the gate's decision lives in. Loading the example first puts
+        the in-tree adapter on the path, so this is the code under review, not an install."""
+        import importlib
+
+        module = importlib.import_module("recusal_pydantic_ai._gate")
+        assert "adapters" in Path(module.__file__).parts, module.__file__
         return module
 
     @staticmethod
@@ -102,11 +113,11 @@ class TestPydanticAiGate:
             "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)",
         )
 
-    def test_a_crash_inside_decide_also_fails_closed(self, example, monkeypatch):
+    def test_a_crash_inside_decide_also_fails_closed(self, example, adapter, monkeypatch):
         def crashing_decide(*args, **kwargs):
             raise RuntimeError("decide crashed")
 
-        monkeypatch.setattr(example, "decide", crashing_decide)
+        monkeypatch.setattr(adapter, "decide", crashing_decide)
         responses, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
         assert responses["c1"] == (
@@ -114,11 +125,11 @@ class TestPydanticAiGate:
             "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)",
         )
 
-    def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
-        assert example._refusal("run_sql", ["DELETE"], example.sql_scope_policy) == (
+    def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example, adapter):
+        assert adapter._refusal("run_sql", ["DELETE"], example.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
-        assert example._refusal("run_sql", "DELETE", example.sql_scope_policy) is not None
+        assert adapter._refusal("run_sql", "DELETE", example.sql_scope_policy) is not None
 
     @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
     def test_a_policy_that_writes_to_what_it_judged_does_not_change_what_runs(
@@ -143,7 +154,9 @@ class TestPydanticAiGate:
         assert executed == [("run_sql", {"sql": SELECT})]
         assert responses == {"c1": ("success", f"recorded SQL: {SELECT}")}
 
-    def test_the_policy_observes_nested_containers_detached_from_the_invocation(self, example):
+    def test_the_policy_observes_nested_containers_detached_from_the_invocation(
+        self, example, adapter
+    ):
         invocation = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
         before = {"sql": SELECT, "meta": {"tags": ["read"], "limits": [1, 2]}}
         observed = []
@@ -155,12 +168,14 @@ class TestPydanticAiGate:
             args["sql"] = DELETE
             return []
 
-        assert example._refusal("run_sql", invocation, mutating) is None
+        assert adapter._refusal("run_sql", invocation, mutating) is None
         assert invocation == before, "the invocation is what the tool runs; it is untouched"
         assert observed[0] is not invocation and observed[0]["meta"] is not invocation["meta"]
         assert observed[0]["sql"] == DELETE  # the policy changed its own copy only
 
-    def test_unsupported_objects_are_refused_without_calling_their_copy_method(self, example):
+    def test_unsupported_objects_are_refused_without_calling_their_copy_method(
+        self, example, adapter
+    ):
         called = []
 
         class Undetachable:
@@ -168,7 +183,7 @@ class TestPydanticAiGate:
                 called.append("copy")
                 raise TypeError("PRIVATE_CREDENTIAL_SENTINEL")
 
-        reason = example._refusal("run_sql", {"sql": SELECT, "h": Undetachable()}, lambda *_: [])
+        reason = adapter._refusal("run_sql", {"sql": SELECT, "h": Undetachable()}, lambda *_: [])
         assert reason == (
             "Recusal refused `run_sql`: arguments cannot be detached for judging (TypeError); "
             "declare data-only parameters and validate inside the tool body"
@@ -347,7 +362,7 @@ class TestPydanticAiGate:
         )
         assert executed == [[Action.READ] if shape == "list" else {"first": Action.READ}]
 
-    def test_no_enum_member_is_ever_returned_by_the_detachment(self, example):
+    def test_no_enum_member_is_ever_returned_by_the_detachment(self, example, adapter):
         from enum import Enum, IntEnum
 
         class Plain(Enum):
@@ -358,8 +373,8 @@ class TestPydanticAiGate:
 
         for value in (Plain.A, Number.ONE, [Plain.A], {"k": Number.ONE}, {"k": [Plain.A]}):
             with pytest.raises(TypeError, match="Enum arguments are unsupported"):
-                example._detached(value)
-        assert example._detached({"k": [1, "a", None, True, 1.5]}) == {
+                adapter._detached(value)
+        assert adapter._detached({"k": [1, "a", None, True, 1.5]}) == {
             "k": [1, "a", None, True, 1.5]
         }
 
@@ -421,12 +436,12 @@ class TestPydanticAiGate:
 
     @pytest.mark.parametrize("via_hooks", [False, True], ids=["capability", "hooks"])
     def test_detachment_errors_name_the_class_without_disclosing_exception_text(
-        self, example, monkeypatch, via_hooks
+        self, example, adapter, monkeypatch, via_hooks
     ):
         def fail_detachment(*args):
             raise RuntimeError("PRIVATE_CREDENTIAL_SENTINEL")
 
-        monkeypatch.setattr(example, "_detached", fail_detachment)
+        monkeypatch.setattr(adapter, "_detached", fail_detachment)
         responses, executed = example.run_calls(
             [("run_sql", {"sql": SELECT}, "c1")], via_hooks=via_hooks
         )
@@ -435,16 +450,18 @@ class TestPydanticAiGate:
         assert "PRIVATE_CREDENTIAL_SENTINEL" not in responses["c1"][1]
 
     @pytest.mark.parametrize("bad", [(1, 2), {1, 2}, b"bytes", {1: "value"}, float("nan")])
-    def test_non_json_values_refuse_before_the_policy_runs(self, example, bad):
+    def test_non_json_values_refuse_before_the_policy_runs(self, example, adapter, bad):
         judged = []
-        reason = example._refusal("record", {"value": bad}, lambda *a: judged.append(a))
+        reason = adapter._refusal("record", {"value": bad}, lambda *a: judged.append(a))
         assert reason is not None and "(TypeError)" in reason
         assert judged == []
 
-    def test_cyclic_arguments_refuse_and_shared_json_containers_are_detached(self, example):
+    def test_cyclic_arguments_refuse_and_shared_json_containers_are_detached(
+        self, example, adapter
+    ):
         cyclic = []
         cyclic.append(cyclic)
-        assert "(TypeError)" in example._refusal("record", {"value": cyclic}, lambda *_: [])
+        assert "(TypeError)" in adapter._refusal("record", {"value": cyclic}, lambda *_: [])
         shared = {"tags": ["read"]}
         invocation = {"left": shared, "right": shared}
 
@@ -452,7 +469,7 @@ class TestPydanticAiGate:
             observed["left"]["tags"].append("write")
             return []
 
-        assert example._refusal("record", invocation, mutate) is None
+        assert adapter._refusal("record", invocation, mutate) is None
         assert shared == {"tags": ["read"]}
 
     def test_negative_control_runs_delete_without_the_gate(self, example):

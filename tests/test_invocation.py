@@ -228,13 +228,24 @@ USERS = {
     "crewai_gate.py": {"json_data", "supported_annotation"},
     "google_adk_gate.py": {"unsupported_signature"},
     "openai_responses_gate.py": {"unsupported_signature"},
-    "pydantic_ai_gate.py": {"detached"},
+    "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
 }
+
+
+class _Source:
+    """A gate source file and the name the lock reports it by: the file name for an
+    example, the repository path for a module of an adapter package."""
+
+    def __init__(self, path, name):
+        self.path, self.name = path, name
 
 
 def _trees():
     for path in sorted(EXAMPLES.glob("*.py")):
-        yield path, ast.parse(path.read_text(encoding="utf-8"))
+        yield _Source(path, path.name), ast.parse(path.read_text(encoding="utf-8"))
+    for path in sorted((EXAMPLES.parent / "adapters").glob("*/src/**/*.py")):
+        name = path.relative_to(EXAMPLES.parent).as_posix()
+        yield _Source(path, name), ast.parse(path.read_text(encoding="utf-8"))
 
 
 def test_no_example_defines_its_own_copy_of_a_shared_helper():

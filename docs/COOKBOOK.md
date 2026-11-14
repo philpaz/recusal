@@ -148,6 +148,12 @@ a record: `RecusalAuditedGate(policy, log=log)` writes each decision, allowed or
 a hash-chained `AuditLog` entry labeled `pydantic_ai.before_tool_execute` under Pydantic
 AI's tool call id, and `recusal audit verify` catches an edited entry.
 
+Both gates are importable from the
+[`recusal-pydantic-ai`](../adapters/pydantic-ai) package (`from recusal_pydantic_ai
+import RecusalGate, RecusalAuditedGate`), a separate distribution that is not on PyPI
+yet; its README has the install line. The example files are the offline demonstration
+around it.
+
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,
 > egress, coverage, budget) live in [`../examples/scenarios.py`](../examples/scenarios.py)
 > and are exercised by the suite, lift from there when you want the proven form.

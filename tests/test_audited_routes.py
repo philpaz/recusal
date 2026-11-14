@@ -44,7 +44,36 @@ ROUTES = {
     "pydantic_ai_gate.py": ("pydantic_ai_audit.py", ["pydantic_ai.before_tool_execute"]),
 }
 
+#: Gates whose code is an installable package under ``adapters/``. The example is then a
+#: demonstration that imports the package, and the checks below read the package: the
+#: module that decides, the module that records, and the name the example must import.
+PACKAGED = {
+    "pydantic_ai_gate.py": (
+        "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py",
+        "adapters/pydantic-ai/src/recusal_pydantic_ai/_audit.py",
+        "recusal_pydantic_ai",
+    ),
+}
+
 DOCUMENTS = ("docs/ARCHITECTURE.md", "docs/HOWTO.md")
+
+
+def _deciding_source(gate: str) -> Path:
+    """The file a gate's ``decide`` calls are in: the package module, or the example."""
+    return ROOT / PACKAGED[gate][0] if gate in PACKAGED else EXAMPLES / gate
+
+
+def _recording_source(gate: str) -> Path:
+    """The file a gate's surface labels are defined in."""
+    return ROOT / PACKAGED[gate][1] if gate in PACKAGED else EXAMPLES / ROUTES[gate][0]
+
+
+def _decide_calls(path: Path) -> list:
+    return [
+        node
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "decide"
+    ]
 
 
 def _string_constants(path: Path) -> set:
@@ -83,10 +112,10 @@ def test_the_gate_has_an_audited_companion_and_its_tests(gate):
 
 @pytest.mark.parametrize("gate", sorted(ROUTES))
 def test_the_companion_defines_the_registered_surfaces(gate):
-    companion, surfaces = ROUTES[gate]
-    constants = _string_constants(EXAMPLES / companion)
-    missing = sorted(set(surfaces) - constants)
-    assert not missing, f"{companion} does not define the surface(s) {missing}"
+    _, surfaces = ROUTES[gate]
+    source = _recording_source(gate)
+    missing = sorted(set(surfaces) - _string_constants(source))
+    assert not missing, f"{source.name} does not define the surface(s) {missing}"
 
 
 @pytest.mark.parametrize("gate", sorted(ROUTES))
@@ -94,12 +123,7 @@ def test_the_gate_passes_recording_arguments_to_decide(gate):
     """One decision path: the plain gate's own call to ``decide`` carries ``**record``, so
     the audited route cannot be a second copy. The LangChain gate has no ``decide`` call of
     its own (it wraps the LangGraph hooks)."""
-    source = (EXAMPLES / gate).read_text(encoding="utf-8")
-    calls = [
-        node
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "decide"
-    ]
+    calls = _decide_calls(_deciding_source(gate))
     if gate == "langchain_agent_gate.py":
         assert calls == []
         return
@@ -109,6 +133,27 @@ def test_the_gate_passes_recording_arguments_to_decide(gate):
             f"{gate}:{call.lineno}: a decide(...) call takes no **record, so a decision made "
             "there cannot be put on an audit log"
         )
+
+
+@pytest.mark.parametrize("gate", sorted(PACKAGED))
+def test_a_packaged_gate_has_no_second_copy_in_its_examples(gate):
+    """The example and its audited companion import the package and decide nothing
+    themselves, so the code a user installs is the code the examples and their tests
+    run."""
+    decides, records, package = PACKAGED[gate]
+    assert (ROOT / decides).is_file() and (ROOT / records).is_file()
+    for name in (gate, ROUTES[gate][0]):
+        path = EXAMPLES / name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        assert package in imported, f"{name} does not import {package}"
+        assert _decide_calls(path) == [], f"{name} calls decide itself"
+        defined = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        assert not defined & {"_refusal", "_unjudgeable", "_recording"}, name
 
 
 @pytest.mark.parametrize("document", DOCUMENTS)
