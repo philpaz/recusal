@@ -1,5 +1,10 @@
 """Offline LangChain create_agent example sharing the existing Recusal ToolNode gate.
 
+The middleware is the ``recusal-langchain`` package (``adapters/langchain`` in this
+repository), which wraps the ``recusal-langgraph`` gate. This file is the offline
+demonstration around it: a scripted model, tools that only record, and the SQL scope
+policy as the default the package itself does not have.
+
 Requires Python 3.10+, langgraph==1.2.12, langchain-core==1.6.5,
 and langchain==1.4.3. No model, credential, or database is contacted.
 Install pins as in README and run: python examples/langchain_agent_gate.py
@@ -26,7 +31,6 @@ if sys.version_info < (3, 10):
 
 try:
     from langchain.agents import create_agent
-    from langchain.agents.middleware import wrap_tool_call
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 except ImportError as exc:
@@ -36,14 +40,21 @@ except ImportError as exc:
         f"langchain=={LANGCHAIN_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapters are read from the tree; installed, `pip install
+# recusal-langchain` provides the same packages and these paths do not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "langgraph", "src"))
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "langchain", "src"))
+
+from recusal_langchain import agate_middleware as _agate_middleware  # noqa: E402
+from recusal_langchain import gate_middleware as _gate_middleware  # noqa: E402
+
 from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
     charge_tool,  # noqa: F401, re-exported: the conformance suite drives it here
     echo,
     narrow_charge_tool,  # noqa: F401, re-exported: the conformance suite drives it here
-    recusal_agate,
-    recusal_gate,
     run_sql,
     sql_scope_policy,
     transforming_run_sql,  # noqa: F401, re-exported: the conformance suite drives it here
@@ -58,19 +69,20 @@ class ScriptedChatModel(GenericFakeChatModel):
 
 
 def gate_middleware(policy=sql_scope_policy):
-    """The shared gate as create_agent middleware. List it LAST in ``middleware=``.
+    """The package's ``gate_middleware`` with this demonstration's policy as the default.
+    List it LAST in ``middleware=``.
 
     The first middleware in the list is the outermost, so anything listed after the gate
     runs between the gate and the tool: a middleware that rewrites the arguments, a
     human-in-the-loop edit, or a tool emulator would act on a call the gate never saw.
     Listed last, the gate judges the call exactly as it will run.
     """
-    return wrap_tool_call(recusal_gate(policy))
+    return _gate_middleware(policy)
 
 
 def agate_middleware(policy=sql_scope_policy):
     """The async gate for ``agent.ainvoke``; the sync gate alone raises there. List it LAST."""
-    return wrap_tool_call(recusal_agate(policy))
+    return _agate_middleware(policy)
 
 
 def scripted_agent(calls, middleware, tools=None, **kwargs):

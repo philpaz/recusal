@@ -43,6 +43,18 @@ def lc():
     return module
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_langchain._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def _call(name, args, id_):
     return {"name": name, "args": args, "id": id_, "type": "tool_call"}
 
@@ -135,7 +147,7 @@ def test_create_agent_still_takes_wrap_tool_call_middleware(lc):
     from langchain.agents import create_agent
 
     assert "middleware" in inspect.signature(create_agent).parameters
-    assert callable(lc.wrap_tool_call)
+    assert callable(_adapter().wrap_tool_call)
 
 
 @pytest.mark.parametrize("route", _routes(), ids=lambda r: r[0])

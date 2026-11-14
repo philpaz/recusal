@@ -1,0 +1,55 @@
+# The Recusal adapter for LangChain create_agent, a separate distribution from `recusal`.
+#
+# Why separate: `recusal` has zero runtime dependencies and a frozen compatibility
+# perimeter (STABILITY.md). An adapter follows a framework that releases on its own
+# schedule, so it carries that dependency and its own version here, and a framework's
+# breaking change never forces a release of the kernel.
+#
+# Build backend pinned exactly, the same pin as the kernel's pyproject.toml: a floating
+# backend is unreviewed code in the release path.
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "recusal-langchain"
+dynamic = ["version"]
+description = "Recusal gate for LangChain create_agent: the recusal-langgraph ToolNode gate as tool-call middleware, refusing a call before it runs and optionally putting each decision on a hash-chained audit log."
+readme = "README.md"
+# LangChain's own minimum.
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
+keywords = ["recusal", "langchain", "ai-agents", "agent-governance", "guardrails", "tool-use"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
+    "recusal>=0.14.0,<1",
+    # The gate itself. This package wraps its public hooks and nothing private.
+    "recusal-langgraph>=0.1.0,<1",
+    # The lower bound is the version the pinned CI lane tests; the weekly latest lane
+    # (.github/workflows/compat.yml) tests the newest release.
+    "langchain>=1.4.3,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/philpaz/recusal"
+Documentation = "https://github.com/philpaz/recusal/tree/main/adapters/langchain"
+Repository = "https://github.com/philpaz/recusal"
+Issues = "https://github.com/philpaz/recusal/issues"
+Changelog = "https://github.com/philpaz/recusal/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/recusal_langchain/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recusal_langchain"]

@@ -56,9 +56,10 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs and the recusal-langgraph wheel job
+    # the two example jobs, the recusal-langgraph wheel job and the recusal-langchain
+    # wheel job, which installs the gate it wraps
     for pin in expected:
-        assert ci.count(pin) == 3
+        assert ci.count(pin) == 4
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")

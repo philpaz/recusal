@@ -8,10 +8,12 @@ surface ``langchain.create_agent`` and LangChain's own tool call id, so a quiet 
 reordering, or a dropped entry is detectable with ``recusal audit verify``. The log holds a
 SHA-256 fingerprint of each call's arguments, never the arguments themselves.
 
-The decision logic is the LangGraph gate's: ``audited_gate_middleware(policy, log)`` and
-``audited_agate_middleware(policy, log)`` wrap the audited ToolNode hooks of
-examples/langgraph_audit.py, which call the same ``_judge`` as the plain gate with the
-recording arguments passed through to ``recusal.decide``. If the log cannot be written the
+The audited middleware is the ``recusal-langchain`` package (``adapters/langchain`` in
+this repository), imported here. Its decision logic is the LangGraph gate's:
+``audited_gate_middleware(policy, log)`` and ``audited_agate_middleware(policy, log)``
+wrap the audited ToolNode hooks of ``recusal-langgraph``, which call the plain gate's own
+judging function with the recording arguments passed through to ``recusal.decide``. If
+the log cannot be written the
 decision becomes a deny, so nothing runs unrecorded. Each entry is bound to the invocation
 the tool runs with, as the LangGraph audited gate binds it.
 
@@ -51,7 +53,6 @@ if sys.version_info < (3, 10):
     raise SystemExit(2)
 
 try:
-    from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import HumanMessage, ToolMessage
 except ImportError as exc:
     raise SystemExit(
@@ -60,7 +61,18 @@ except ImportError as exc:
         f"langchain=={LANGCHAIN_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapters are read from the tree; installed, `pip install
+# recusal-langchain` provides the same packages and these paths do not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "langgraph", "src"))
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "langchain", "src"))
+
+from recusal_langchain import (  # noqa: E402
+    SURFACE,
+    audited_agate_middleware,
+    audited_gate_middleware,
+)
 
 from examples.langchain_agent_gate import (  # noqa: E402
     EXECUTED,
@@ -69,16 +81,10 @@ from examples.langchain_agent_gate import (  # noqa: E402
     tool_messages,
 )
 from examples.langgraph_audit import (  # noqa: E402
-    recusal_audited_agate,
-    recusal_audited_gate,
     tamper,
     verify_with_cli,
 )
 from recusal.audit import AuditLog  # noqa: E402
-
-#: The surface label every entry carries: the runtime that adjudicated, a ``create_agent``
-#: agent's tool-call middleware.
-SURFACE = "langchain.create_agent"
 
 __all__ = [
     "SURFACE",
@@ -88,32 +94,6 @@ __all__ = [
     "tamper",
     "verify_with_cli",
 ]
-
-
-def audited_gate_middleware(
-    policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-):
-    """The audited gate as create_agent middleware. List it LAST in ``middleware=``."""
-    return wrap_tool_call(
-        recusal_audited_gate(policy, log, actor=actor, control=control, surface=SURFACE)
-    )
-
-
-def audited_agate_middleware(
-    policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-):
-    """The audited async gate for ``agent.ainvoke``. List it LAST."""
-    return wrap_tool_call(
-        recusal_audited_agate(policy, log, actor=actor, control=control, surface=SURFACE)
-    )
 
 
 def run_calls(

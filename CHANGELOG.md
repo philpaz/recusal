@@ -149,6 +149,16 @@ All notable changes to this project are documented here. The format follows
   import the package and keep the offline demonstration. The LangChain `create_agent`
   examples, which wrap the same hooks, are unchanged and reach the package through those
   two files. Nothing under `recusal/` changed.
+- `adapters/langchain`: the LangChain `create_agent` middleware as its own distribution,
+  `recusal-langchain` 0.1.0 (`from recusal_langchain import gate_middleware,
+  agate_middleware, audited_gate_middleware, audited_agate_middleware, SURFACE`). It
+  depends on `recusal>=0.14.0,<1`, `recusal-langgraph>=0.1.0,<1` and `langchain>=1.4.3,<2`,
+  needs Python 3.10+, and is not published to PyPI yet. It adds no decision logic: it
+  wraps the public hooks of `recusal-langgraph` as middleware and names its own surface on
+  the record. The packaged `gate_middleware(policy)` requires its policy; the example
+  keeps the demonstration SQL policy as its default. `tests/test_adapter_packages.py` now
+  also holds that an adapter importing another adapter uses that package's top-level
+  names only. Nothing under `recusal/` changed.
 
 ### Changed
 

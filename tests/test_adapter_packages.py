@@ -20,6 +20,7 @@ ADAPTERS = ROOT / "adapters"
 #: Every adapter package: directory, distribution name, import name, the framework's
 #: distribution it must depend on.
 PACKAGES = {
+    "langchain": ("recusal-langchain", "recusal_langchain", "langchain"),
     "langgraph": ("recusal-langgraph", "recusal_langgraph", "langgraph"),
     "openai-agents": ("recusal-openai-agents", "recusal_openai_agents", "openai-agents"),
     "google-adk": ("recusal-google-adk", "recusal_google_adk", "google-adk"),
@@ -96,6 +97,11 @@ def test_the_adapter_is_its_own_distribution_depending_on_the_kernel(directory):
     assert any(r.startswith(framework) for r in requirements), requirements
     for requirement in requirements:
         assert ">=" in requirement and "<" in requirement, f"{requirement} is not bounded"
+    # an adapter that imports another adapter declares it as a requirement
+    imported = {name.split(".")[0] for path in _sources(directory) for name in _imports(path)}
+    for other, (other_dist, other_module, _f) in PACKAGES.items():
+        if other != directory and other_module in imported:
+            assert any(r.startswith(other_dist + ">=") for r in requirements), other_dist
 
 
 @pytest.mark.parametrize("directory", sorted(PACKAGES))
@@ -146,12 +152,16 @@ def test_every_exported_name_is_defined(directory):
 def test_the_adapter_reaches_the_kernel_through_its_public_surface_only(directory):
     """No ``recusal._private`` module, no ``recusal.claude_code`` internals, and no import
     of the repository's examples or tests: an installed adapter has neither."""
+    siblings = {module for key, (_d, module, _f) in PACKAGES.items() if key != directory}
     for path in _sources(directory):
         for name in _imports(path):
             top = name.split(".")[0]
             if top == "recusal":
                 assert name in KERNEL_IMPORTS, f"{path.name} imports {name}"
             assert top not in {"examples", "tests", "adapters"}, f"{path.name} imports {name}"
+            # another adapter is reached through its public, top-level names only
+            if top in siblings:
+                assert name == top, f"{path.name} imports {name}, private to {top}"
 
 
 @pytest.mark.parametrize("directory", sorted(PACKAGES))

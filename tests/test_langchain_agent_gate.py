@@ -36,7 +36,8 @@ def test_langchain_pins_are_documented_and_in_existing_ci_jobs():
     for path in paths:
         assert "langchain==1.4.3" in path.read_text(encoding="utf-8")
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert ci.count("langchain==1.4.3") == 2
+    # the two example jobs and the recusal-langchain wheel job
+    assert ci.count("langchain==1.4.3") == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="LangChain requires Python 3.10+")

@@ -859,6 +859,7 @@ file:
 | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
 | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
 | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | a LangGraph `ToolNode` | `from recusal_langgraph import recusal_gate, recusal_agate` |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | a LangChain `create_agent` agent | `from recusal_langchain import gate_middleware, agate_middleware` |
 <!-- adapter-packages:end -->
 
 Each is a separate distribution with its own version and its framework's dependency;
