@@ -25,6 +25,14 @@ from ._gate import (
     recusal_guardrail,
 )
 
+# Building blocks for a gate on another seam of the same SDK (recusal-openai-agents-mcp
+# gates MCP servers with them): the decision for a call whose arguments are a JSON
+# string, the recorded refusal for a call that cannot be judged, and the tool names an
+# agent lists more than once.
+from ._gate import _duplicate_names as duplicate_names
+from ._gate import _refusal as refusal
+from ._gate import _unjudgeable as unjudgeable
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -35,9 +43,12 @@ __all__ = [
     "__version__",
     "audited_agent",
     "audited_tools",
+    "duplicate_names",
     "gate_tools",
     "gated_agent",
     "is_gated",
     "recording",
     "recusal_guardrail",
+    "refusal",
+    "unjudgeable",
 ]

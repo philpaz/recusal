@@ -7,7 +7,9 @@ allowed or refused, is one hash-chained entry on a Recusal AuditLog, so a quiet 
 reordering, or a dropped entry is detectable with ``recusal audit verify``. The log holds a
 SHA-256 fingerprint of each call's arguments, never the arguments themselves.
 
-``audited_agent(agent, policy, log)`` is the MCP example's ``gated_agent`` with a
+The audited gate is the ``recusal-openai-agents-mcp`` package
+(``adapters/openai-agents-mcp`` in this repository), imported here.
+``audited_agent(agent, policy, log)`` is its ``gated_agent`` with a
 ``recording`` that passes the recording arguments through to ``recusal.decide``, which
 writes the entry before returning. If the log cannot be written the decision becomes a
 deny, so nothing runs unrecorded. One log covers the agent's three seams, each under its
@@ -57,7 +59,14 @@ if sys.version_info < (3, 10):
     )
     raise SystemExit(2)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapters are read from the tree; installed, `pip install
+# recusal-openai-agents-mcp` provides the same packages and these paths do not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai-agents", "src"))
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai-agents-mcp", "src"))
+
+from recusal_openai_agents_mcp import SURFACES, audited_agent, recording  # noqa: E402
 
 from examples.openai_agents_mcp_gate import (  # noqa: E402
     CALLED,
@@ -68,12 +77,10 @@ from examples.openai_agents_mcp_gate import (  # noqa: E402
     InProcessMCPServer,
     MCPServer,
     Policy,
-    Recording,
     ScriptedModel,
     approval_request,
     approval_responses,
     assistant_message,
-    gated_agent,
     run_agent,
     scripted_model,
     sql_scope_policy,
@@ -81,63 +88,7 @@ from examples.openai_agents_mcp_gate import (  # noqa: E402
 )
 from recusal.audit import AuditLog  # noqa: E402
 
-#: The surface label per seam: which gate of the agent adjudicated the call.
-SURFACES = {
-    "function_tool": "openai_agents.tool_input_guardrail",
-    "mcp_server": "openai_agents.mcp.call_tool",
-    "hosted_mcp": "openai_agents.hosted_mcp.approval",
-}
-
 __all__ = ["OPENAI_AGENTS_VERSION", "OPENAI_VERSION", "SURFACES", "audited_agent", "recording"]
-
-
-def _text_or_none(value: Any) -> Optional[str]:
-    return value if isinstance(value, str) and value else None
-
-
-def recording(
-    log: AuditLog, *, actor: Optional[str] = None, control: Optional[dict[str, Any]] = None
-) -> Recording:
-    """The recording arguments for each call, built in one place for the three seams.
-
-    The call id is the SDK's own where the seam has one: the tool call id for a function
-    tool, the approval request id for hosted MCP, none for a local server's ``call_tool``.
-    The MCP server a call went to is recorded as ``control.mcp_server``; a caller's own
-    ``control`` cannot overwrite it."""
-
-    def for_call(seam: str, context: Any) -> dict[str, Any]:
-        identity = dict(control or {})
-        ident: Optional[str] = None
-        if seam == "function_tool":
-            ident = _text_or_none(getattr(context, "tool_call_id", None))
-        elif seam == "hosted_mcp":
-            data = getattr(context, "data", None)
-            ident = _text_or_none(getattr(data, "id", None))
-            identity["mcp_server"] = getattr(data, "server_label", None)
-        else:
-            identity["mcp_server"] = getattr(context, "name", None)
-        return {
-            "audit": log,
-            "surface": SURFACES[seam],
-            "tool_use_id": ident,
-            "actor": actor,
-            "control": identity or None,
-        }
-
-    return for_call
-
-
-def audited_agent(
-    agent: Agent,
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> Agent:
-    """``gated_agent`` with every decision, on function tools, local MCP servers and hosted
-    MCP approvals, on ``log``."""
-    return gated_agent(agent, policy, recording(log, actor=actor, control=control))
 
 
 def run_calls(

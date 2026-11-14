@@ -168,6 +168,17 @@ All notable changes to this project are documented here. The format follows
   those files import the package and keep the offline demonstration. The package sets no
   environment variables; turning CrewAI's telemetry off stays in the examples. Nothing
   under `recusal/` changed.
+- `adapters/openai-agents-mcp`: the OpenAI Agents SDK MCP gate as its own distribution,
+  `recusal-openai-agents-mcp` 0.1.0 (`from recusal_openai_agents_mcp import gated_agent,
+  gate_mcp_server, gate_hosted_mcp, recusal_approval, claude_named, is_gated,
+  is_gated_mcp_server, is_gated_hosted_mcp, audited_agent, recording, SURFACES`). It
+  depends on `recusal>=0.14.0,<1`, `recusal-openai-agents>=0.1.0,<1`,
+  `openai-agents>=0.24.0,<1` and `mcp>=2.3.0,<3`, needs Python 3.10+, and is not published
+  to PyPI yet. The gate's code moved out of `examples/openai_agents_mcp_gate.py` and
+  `examples/openai_agents_mcp_audit.py` unchanged. `recusal-openai-agents` gains three
+  public names the MCP gate builds on, `refusal`, `unjudgeable` and `duplicate_names`, so
+  no adapter imports another's private module. With this every framework gate under
+  `examples/` is an installable package. Nothing under `recusal/` changed.
 
 ### Fixed
 

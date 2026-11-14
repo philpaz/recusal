@@ -48,6 +48,11 @@ ROUTES = {
 #: demonstration that imports the package, and the checks below read the package: the
 #: module that decides, the module that records, and the name the example must import.
 PACKAGED = {
+    "openai_agents_mcp_gate.py": (
+        "adapters/openai-agents-mcp/src/recusal_openai_agents_mcp/_gate.py",
+        "adapters/openai-agents-mcp/src/recusal_openai_agents_mcp/_audit.py",
+        "recusal_openai_agents_mcp",
+    ),
     "crewai_gate.py": (
         "adapters/crewai/src/recusal_crewai/_gate.py",
         "adapters/crewai/src/recusal_crewai/_audit.py",
@@ -163,6 +168,12 @@ def test_the_gate_passes_recording_arguments_to_decide(gate):
             f"{gate}:{call.lineno}: a decide(...) call takes no **record, so a decision made "
             "there cannot be put on an audit log"
         )
+
+
+def test_every_framework_gate_is_an_installable_package():
+    """Each framework gate's code lives in an adapter package under ``adapters/``, and
+    its example demonstrates that package."""
+    assert set(PACKAGED) == set(ROUTES), sorted(set(PACKAGED) ^ set(ROUTES))
 
 
 @pytest.mark.parametrize("gate", sorted(PACKAGED))

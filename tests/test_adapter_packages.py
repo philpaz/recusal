@@ -20,6 +20,11 @@ ADAPTERS = ROOT / "adapters"
 #: Every adapter package: directory, distribution name, import name, the framework's
 #: distribution it must depend on.
 PACKAGES = {
+    "openai-agents-mcp": (
+        "recusal-openai-agents-mcp",
+        "recusal_openai_agents_mcp",
+        "openai-agents",
+    ),
     "crewai": ("recusal-crewai", "recusal_crewai", "crewai"),
     "langchain": ("recusal-langchain", "recusal_langchain", "langchain"),
     "langgraph": ("recusal-langgraph", "recusal_langgraph", "langgraph"),
@@ -33,6 +38,11 @@ PACKAGES = {
 #: ``recusal.invocation`` is public from 0.14.0 (CHANGELOG.md) and ``recusal.audit`` is the
 #: audit module the README documents.
 KERNEL_IMPORTS = {"recusal", "recusal.audit", "recusal.invocation"}
+
+#: Names an adapter may take from a kernel module that is otherwise off limits.
+#: ``identity_getter`` is public from 0.14.0 (CHANGELOG.md) and lives beside the Claude
+#: Code hook, whose other names an adapter has no business importing.
+KERNEL_NAMES = {"recusal.claude_code": {"identity_getter", "findings_of"}}
 
 pytestmark = pytest.mark.skipif(
     sys.version_info < (3, 11), reason="tomllib is in the standard library from Python 3.11"
@@ -157,12 +167,28 @@ def test_the_adapter_reaches_the_kernel_through_its_public_surface_only(director
     for path in _sources(directory):
         for name in _imports(path):
             top = name.split(".")[0]
-            if top == "recusal":
+            if top == "recusal" and name not in KERNEL_NAMES:
                 assert name in KERNEL_IMPORTS, f"{path.name} imports {name}"
             assert top not in {"examples", "tests", "adapters"}, f"{path.name} imports {name}"
             # another adapter is reached through its public, top-level names only
             if top in siblings:
                 assert name == top, f"{path.name} imports {name}, private to {top}"
+
+
+@pytest.mark.parametrize("directory", sorted(PACKAGES))
+def test_the_adapter_takes_only_the_named_public_names_from_a_guarded_kernel_module(
+    directory,
+):
+    for path in _sources(directory):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name not in KERNEL_NAMES, f"{path.name}: import {alias.name}"
+            elif isinstance(node, ast.ImportFrom) and node.module in KERNEL_NAMES:
+                taken = {alias.name for alias in node.names}
+                extra = sorted(taken - KERNEL_NAMES[node.module])
+                assert not extra, f"{path.name} takes {extra} from {node.module}"
 
 
 @pytest.mark.parametrize("directory", sorted(PACKAGES))

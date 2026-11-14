@@ -1,6 +1,11 @@
 """
 Offline OpenAI Agents SDK example: gate MCP tools, local servers and hosted MCP, with Recusal.
 
+The gate is the ``recusal-openai-agents-mcp`` package (``adapters/openai-agents-mcp`` in
+this repository): ``gated_agent``, ``gate_mcp_server``, ``gate_hosted_mcp`` and the rest
+are imported from it. This file is the offline demonstration around it: an MCP server
+that lives in this process, a scripted model and a scripted approval request.
+
 Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.34.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency. The function-tool gate it
 builds on is examples/openai_agents_gate.py; this example covers the two MCP paths that one
@@ -54,12 +59,10 @@ Run after installing:
 from __future__ import annotations
 
 import asyncio
-import copy
-import dataclasses
 import json
 import os
 import sys
-from typing import Any, Callable, List, Optional
+from typing import Any, Optional
 
 if sys.version_info < (3, 10):
     print(
@@ -71,16 +74,22 @@ if sys.version_info < (3, 10):
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
-# In a checkout the adapter is read from the tree; installed, `pip install
-# recusal-openai-agents` provides the same package and this path does not exist.
+# In a checkout the adapters are read from the tree; installed, `pip install
+# recusal-openai-agents-mcp` provides the same packages and these paths do not exist.
 sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai-agents", "src"))
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai-agents-mcp", "src"))
 
-# The function-tool gate's shared pieces. They are private to recusal-openai-agents
-# today; when this MCP gate becomes its own package they need a public name there.
-from recusal_openai_agents._gate import (  # noqa: E402
-    _duplicate_names,
-    _refusal,
-    _unjudgeable,
+from recusal_openai_agents_mcp import (  # noqa: E402
+    Policy,
+    Recording,
+    claude_named,
+    gate_hosted_mcp,
+    gate_mcp_server,
+    gated_agent,
+    is_gated,
+    is_gated_hosted_mcp,
+    is_gated_mcp_server,
+    recusal_approval,
 )
 
 from examples.openai_agents_gate import (  # noqa: E402
@@ -91,19 +100,13 @@ from examples.openai_agents_gate import (  # noqa: E402
     Runner,
     ScriptedModel,
     assistant_message,
-    gate_tools,
     scripted_model,
     sql_scope_policy,
     tool_outputs,
 )
-from examples.openai_agents_gate import (  # noqa: E402
-    is_gated as function_tools_gated,
-)
-from recusal import decide  # noqa: E402
-from recusal.claude_code import identity_getter  # noqa: E402
 
 try:
-    from agents import HostedMCPTool, MCPToolApprovalRequest
+    from agents import HostedMCPTool
     from agents.mcp import MCPServer
     from mcp.types import CallToolResult, GetPromptResult, ListPromptsResult, TextContent, Tool
     from openai.types.responses.response_output_item import McpApprovalRequest
@@ -113,291 +116,21 @@ except ImportError as exc:
         f"openai-agents=={OPENAI_AGENTS_VERSION} openai=={OPENAI_VERSION}"
     ) from exc
 
-Policy = Callable[[str, dict], List[Any]]
-#: Given which seam is deciding and that seam's own context, the recording arguments
-#: ``decide`` takes for the call (``audit=``, ``surface=``, ``tool_use_id=``, ...). The seam
-#: is ``"function_tool"`` (context: the SDK's tool context), ``"mcp_server"`` (context: the
-#: server object) or ``"hosted_mcp"`` (context: the approval request).
-#: examples/openai_agents_mcp_audit.py builds one.
-Recording = Callable[[str, Any], dict]
-_FAILED_CLOSED = "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({name})"
+__all__ = [
+    "Policy",
+    "Recording",
+    "claude_named",
+    "gate_hosted_mcp",
+    "gate_mcp_server",
+    "gated_agent",
+    "is_gated",
+    "is_gated_hosted_mcp",
+    "is_gated_mcp_server",
+    "recusal_approval",
+]
+
 CALLED: list[tuple[str, str, dict[str, Any]]] = []
 """Every (server, tool, arguments) an in-process MCP server was asked to run."""
-
-
-# --- local MCP servers -----------------------------------------------------------------------
-
-
-def _refusal_for_call(
-    tool_name: str, arguments: Any, policy: Policy, **record: Any
-) -> Optional[str]:
-    """Return the reason a server call is refused, or None to let it through.
-
-    ``arguments`` is the dict the SDK hands ``call_tool`` (``None`` for a call without
-    any), so the policy judges exactly what the server will receive. A non-mapping is
-    refused: the server would not accept it either, and the policy cannot read it.
-
-    The policy judges a deep copy of that dict (JSON data, so the copy is exact) and the
-    server receives the dict itself, so a policy that writes to what it was handed, after
-    gathering its evidence, changes its copy and not the call.
-
-    ``record`` goes straight to ``decide``, which then writes the decision to an audit
-    log; the entry carries the fingerprint of the dict the server receives.
-    """
-    args = {} if arguments is None else arguments
-    if not isinstance(args, dict):
-        return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
-    try:
-        decision, reason = decide(
-            tool_name, copy.deepcopy(args), policy, safe_errors=True, **record
-        )
-    except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-    return reason if decision == "deny" else None
-
-
-def claude_named(server_name: str, policy: Policy) -> Policy:
-    """Bind a policy written for Claude Code's MCP tool names to one server connection.
-
-    :func:`recusal.mcp.manifest_policy` (and any composition carrying one) judges
-    ``mcp__<server>__<tool>``, the name Claude Code gives an MCP tool. The gates in this
-    module hand a policy the server's own tool name, so that policy would never see an MCP
-    name, run no membership check and raise no objection. The bound policy presents each
-    call as ``mcp__{server_name}__{tool}``, carries the server it is bound to (a gate refuses
-    it for any other server, and so does a composition carrying it), and forwards the
-    manifest digest to the audit record through the policy's own control identity. A policy
-    already bound to this server is returned as it is, so binding twice never prefixes
-    twice; one bound to another server is refused.
-    """
-    if not isinstance(server_name, str) or not server_name:
-        raise ValueError("claude_named needs the name of the server the policy is bound to")
-    already = getattr(policy, "recusal_bound_server", None)
-    if already is not None:
-        if already != server_name:
-            raise ValueError(
-                f"Recusal: this policy is already bound to server {already!r} by claude_named, "
-                f"not to {server_name!r}; bind one policy object per server"
-            )
-        return policy
-
-    def bound(tool_name: str, arguments: dict) -> List[Any]:
-        return policy(f"mcp__{server_name}__{tool_name}", arguments)
-
-    bound.recusal_bound_server = server_name  # type: ignore[attr-defined]
-    bound.recusal_bound_policy = policy  # type: ignore[attr-defined]
-    getter = identity_getter(policy)
-    if getter is not None:
-        bound.get_control_identity = getter  # type: ignore[attr-defined]
-    reset = getattr(policy, "reset_control_identity", None)
-    if callable(reset):
-        bound.reset_control_identity = reset  # type: ignore[attr-defined]
-    return bound
-
-
-def _name_domain_refusal(policy: Policy, server_name: Any, where: str) -> Optional[str]:
-    """Why this policy cannot judge this server's own tool names, or None if it can."""
-    # The naming requirement is checked before the binding: a policy that still judges
-    # Claude Code's names is never installable, bound neighbour or not.
-    if getattr(policy, "recusal_name_domain", None) == "claude_code":
-        return (
-            "Recusal: this policy judges Claude Code's MCP names (`mcp__<server>__<tool>`, the "
-            f"shape of recusal.mcp.manifest_policy), but {where} hands a policy the server's "
-            "own tool name, so its membership check would see no MCP name and raise no "
-            f"objection. Bind it to the connection: claude_named({server_name!r}, policy)."
-        )
-    bound_to = getattr(policy, "recusal_bound_server", None)
-    if bound_to is not None and bound_to != server_name:
-        return (
-            f"Recusal: this policy is bound to server {bound_to!r} by claude_named, not to "
-            f"{server_name!r}; bind one policy object per server"
-        )
-    return None
-
-
-def gate_mcp_server(
-    server: MCPServer, policy: Policy, recording: Optional[Recording] = None
-) -> MCPServer:
-    """Wrap the server's ``call_tool`` so every call is judged by the server's own tool
-    name and the exact arguments it would run, in place; returns the same server.
-
-    The SDK invokes ``call_tool`` with the raw tool name whatever public name the model
-    used, after any approval, so this is the point where the policy judges the capability
-    that executes. A refusal is returned as an MCP error result carrying the reason, and
-    the server's own ``call_tool`` is not reached. ``recording`` puts every decision on an
-    audit log; like the policy, a connection carries one.
-    """
-    if not isinstance(server, MCPServer):
-        raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
-    mismatch = _name_domain_refusal(policy, server.name, "gate_mcp_server")
-    if mismatch is not None:
-        raise ValueError(mismatch)
-    if is_gated_mcp_server(server):
-        # A server object is a connection, shared by every agent that lists it, and it
-        # carries ONE policy. Installing the same policy again is a no-op; asking for a
-        # different one is refused, because silently keeping the first would leave the
-        # caller believing a stricter policy took effect, and silently replacing it would
-        # change the policy under every other agent sharing the connection.
-        if server.call_tool.recusal_policy is policy:  # type: ignore[attr-defined]
-            if server.call_tool.recusal_recording is not recording:  # type: ignore[attr-defined]
-                raise ValueError(
-                    f"Recusal: server {server.name!r} is already gated with a different "
-                    "recording; a connection carries one audit record for every agent that "
-                    "shares it. Gate a separate server object to record elsewhere."
-                )
-            return server
-        raise ValueError(
-            f"Recusal: server {server.name!r} is already gated with a different policy; a "
-            "connection carries one policy for every agent that shares it. Gate a separate "
-            "server object for a different policy."
-        )
-    original = server.call_tool
-
-    async def gated_call_tool(
-        tool_name: str, arguments: Optional[dict[str, Any]], meta: Any = None
-    ) -> CallToolResult:
-        try:
-            record = dict(recording("mcp_server", server)) if recording is not None else {}
-        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
-            reason: Optional[str] = _FAILED_CLOSED.format(name=type(exc).__name__)
-        else:
-            reason = _refusal_for_call(tool_name, arguments, policy, **record)
-        if reason is not None:
-            return CallToolResult(content=[TextContent(type="text", text=reason)], isError=True)
-        if meta is None:
-            return await original(tool_name, arguments)
-        return await original(tool_name, arguments, meta=meta)
-
-    gated_call_tool.recusal_gate = True  # type: ignore[attr-defined]
-    gated_call_tool.recusal_policy = policy  # type: ignore[attr-defined]
-    gated_call_tool.recusal_recording = recording  # type: ignore[attr-defined]
-    server.call_tool = gated_call_tool  # type: ignore[method-assign]
-    return server
-
-
-def is_gated_mcp_server(server: Any) -> bool:
-    """True if the server's ``call_tool`` is wrapped by the Recusal gate."""
-    return isinstance(server, MCPServer) and bool(getattr(server.call_tool, "recusal_gate", False))
-
-
-# --- hosted MCP -------------------------------------------------------------------------------
-
-
-def recusal_approval(policy: Policy, then: Any = None, recording: Optional[Recording] = None):
-    """Return an ``on_approval_request`` callback that judges each hosted call OpenAI asks about.
-
-    A refusal answers ``{"approve": False, "reason": reason}``. An allowed call is passed to
-    ``then`` (the callback the tool already had), or approved when there is none.
-    ``recording`` puts Recusal's decision on an audit log before ``then`` is asked; what
-    ``then`` answers is not Recusal's decision and is not on the log.
-    """
-
-    async def gate(request: MCPToolApprovalRequest) -> dict:
-        try:
-            record = dict(recording("hosted_mcp", request)) if recording is not None else {}
-        except Exception as exc:  # noqa: BLE001, a gate that cannot record must not approve
-            return {"approve": False, "reason": _FAILED_CLOSED.format(name=type(exc).__name__)}
-        reason = _refusal(request.data.name, request.data.arguments, policy, **record)
-        if reason is not None:
-            return {"approve": False, "reason": reason}
-        if then is None:
-            return {"approve": True}
-        result = then(request)
-        if asyncio.iscoroutine(result):
-            result = await result
-        return result
-
-    gate.recusal_gate = True  # type: ignore[attr-defined]
-    return gate
-
-
-def gate_hosted_mcp(
-    tool: HostedMCPTool, policy: Policy, recording: Optional[Recording] = None
-) -> HostedMCPTool:
-    """Return a copy of the hosted MCP tool that requires approval for every call and judges
-    each approval request with Recusal; the original is unchanged."""
-    if not isinstance(tool, HostedMCPTool):
-        raise TypeError(f"Recusal cannot gate {type(tool).__name__}: not a HostedMCPTool")
-    mismatch = _name_domain_refusal(policy, tool.tool_config.get("server_label"), "gate_hosted_mcp")
-    if mismatch is not None:
-        raise ValueError(mismatch)
-    config = {**tool.tool_config, "require_approval": "always"}
-    return dataclasses.replace(
-        tool,
-        tool_config=config,
-        on_approval_request=recusal_approval(
-            policy, then=tool.on_approval_request, recording=recording
-        ),
-    )
-
-
-def is_gated_hosted_mcp(tool: Any) -> bool:
-    """True if every call to this hosted tool is sent for approval and judged by Recusal."""
-    return (
-        isinstance(tool, HostedMCPTool)
-        and tool.tool_config.get("require_approval") == "always"
-        and getattr(tool.on_approval_request, "recusal_gate", False)
-    )
-
-
-# --- the whole agent --------------------------------------------------------------------------
-
-
-def _ungateable_reason(agent: Any) -> Optional[str]:
-    if type(agent) is not Agent:
-        return (
-            f"{type(agent).__name__} is not a plain Agent; a subclass can add tools at run "
-            "time that no gate sees"
-        )
-    if agent.handoffs:
-        return "it has handoffs, which hand the conversation to another agent's tools"
-    duplicates = _duplicate_names(agent.tools)
-    if duplicates:
-        return (
-            f"its function tools share a name {duplicates!r}; the SDK resolves a shared name "
-            "last-wins at execution, so a guardrail could judge one tool while another runs"
-        )
-    return None
-
-
-def is_gated(agent: Any) -> bool:
-    """True if every call this agent can make, function tool, local MCP tool or hosted MCP
-    call OpenAI asks approval for, passes through a Recusal gate."""
-    if _ungateable_reason(agent) is not None:
-        return False
-    hosted = [tool for tool in agent.tools if isinstance(tool, HostedMCPTool)]
-    others = [tool for tool in agent.tools if not isinstance(tool, HostedMCPTool)]
-    if not all(is_gated_hosted_mcp(tool) for tool in hosted):
-        return False
-    if not all(is_gated_mcp_server(server) for server in agent.mcp_servers):
-        return False
-    return function_tools_gated(agent.clone(tools=others, mcp_servers=[]))
-
-
-def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = None) -> Agent:
-    """Return a copy of the agent whose every tool call is judged by Recusal.
-
-    Function tools and hosted MCP tools are replaced by gated copies; the servers in
-    ``mcp_servers`` are gated in place and shared with the original. Raises ValueError if
-    the agent can run something no gate sees. ``recording`` puts every decision of all
-    three gates on an audit log.
-    """
-    reason = _ungateable_reason(agent)
-    if reason is not None:
-        raise ValueError(f"Recusal cannot gate agent {agent.name!r}: {reason}")
-    for_function_tools = None
-    if recording is not None:
-
-        def for_function_tools(ctx: Any) -> dict:
-            return recording("function_tool", ctx)
-
-    tools: list[Any] = []
-    for tool in agent.tools:
-        if isinstance(tool, HostedMCPTool):
-            tools.append(gate_hosted_mcp(tool, policy, recording))
-        else:
-            tools.extend(gate_tools([tool], policy, for_function_tools))
-    servers = [gate_mcp_server(server, policy, recording) for server in agent.mcp_servers]
-    return agent.clone(tools=tools, mcp_servers=servers)
 
 
 # --- offline fixtures: an in-process MCP server, a scripted model, a scripted approval ------

@@ -17,6 +17,18 @@ DELETE = "DELETE FROM audit_log"
 REFUSED = "Recusal refused `run_sql` [FAIL]"
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_openai_agents_mcp._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_python_version_refusal_is_clear_on_every_python():
     code = (
         "import runpy, sys; "
@@ -150,7 +162,7 @@ class TestOpenAIAgentsMcpGate:
             args["sql"] = DELETE
             return []
 
-        assert example._refusal_for_call("run_sql", arguments, mutating) is None
+        assert _adapter()._refusal_for_call("run_sql", arguments, mutating) is None
         assert arguments == before, "the arguments are what the server receives; untouched"
         assert observed[0] is not arguments and observed[0]["meta"] is not arguments["meta"]
         assert observed[0]["sql"] == DELETE  # the policy changed its own copy only

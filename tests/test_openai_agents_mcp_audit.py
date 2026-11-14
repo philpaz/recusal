@@ -30,6 +30,18 @@ SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_openai_agents_mcp._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_python_version_refusal_is_clear_on_every_python():
     code = (
         "import runpy, sys; "
@@ -188,18 +200,20 @@ class TestOpenAIAgentsMcpAudit:
 
     def test_a_call_without_arguments_is_recorded_as_the_empty_mapping(self, example, gate, log):
         record = example.recording(log)("mcp_server", gate.InProcessMCPServer())
-        assert gate._refusal_for_call("echo", None, lambda *_: [], **record) is None
+        assert _adapter()._refusal_for_call("echo", None, lambda *_: [], **record) is None
         assert log.entries[0]["action"]["input_sha256"] == _sha({})
 
     def test_non_mapping_arguments_are_one_recorded_deny(self, example, gate, log):
         record = example.recording(log)("mcp_server", gate.InProcessMCPServer())
-        reason = gate._refusal_for_call("run_sql", ["DELETE"], gate.sql_scope_policy, **record)
+        reason = _adapter()._refusal_for_call(
+            "run_sql", ["DELETE"], gate.sql_scope_policy, **record
+        )
         assert reason is not None and "arguments are not a mapping" in reason
         entry = log.entries[0]
         assert entry["action"]["decision"] == "deny"
         assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
         assert entry["action"]["input_sha256"] == _sha({"input": ["DELETE"]})
-        assert gate._refusal_for_call("run_sql", ["DELETE"], gate.sql_scope_policy) == (
+        assert _adapter()._refusal_for_call("run_sql", ["DELETE"], gate.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
         assert len(log.entries) == 1
