@@ -119,7 +119,11 @@ the wheel with the hash-locked release toolchain, installs it with the kernel's 
 in a clean environment, and runs the adapter's `smoke_test.py` from outside the
 checkout.
 
-An adapter has its own version and its own release. None has been published yet.
+An adapter has its own version and its own release, by its own tag and its own
+workflows (`release-adapter.yml`, which delegates the build to
+`build-adapter-dist.yml`); the kernel's release workflow ignores an adapter's tag and
+the adapter's ignores the kernel's. The steps are in
+[`adapters/README.md`](../adapters/README.md). None has been published yet.
 
 ## Public compatibility perimeter
 

@@ -179,6 +179,18 @@ All notable changes to this project are documented here. The format follows
   public names the MCP gate builds on, `refusal`, `unjudgeable` and `duplicate_names`, so
   no adapter imports another's private module. With this every framework gate under
   `examples/` is an installable package. Nothing under `recusal/` changed.
+- A release path for the adapter packages, separate from the kernel's.
+  `release-adapter.yml` publishes one adapter per GitHub Release whose tag is
+  `<package>-v<version>`: the full gate at the release commit, then the adapter's own
+  tests with its pinned framework (none may skip), a hash-locked build delegated to the
+  reusable `build-adapter-dist.yml` with a smoke test of the built wheel, an SBOM and a
+  build-provenance attestation, Sigstore signing, and trusted publishing.
+  `verify-adapter-release.yml` checks a published adapter from its artifacts alone, with
+  the kernel's own two workflows as negative controls. `tools/adapter_meta.py` resolves
+  an adapter from its files and refuses a tag that names no adapter or another version.
+  Each adapter's `tested-with.txt` holds the framework pins a release installs, equal to
+  the pull request lane's. `adapters/README.md` has the steps. No adapter has been
+  released, and the kernel's builder and its signing identity are unchanged.
 
 ### Fixed
 
@@ -190,6 +202,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `release.yml` runs only for the kernel's own `vX.Y.Z` tags and for a manual
+  rehearsal. Every published GitHub Release reaches it, and an adapter's release is
+  not a release of `recusal`; before this it would have built the kernel again and
+  failed at publish. Nothing about a kernel release changes.
 - Documentation: `docs/ARCHITECTURE.md` and `docs/HOWTO.md` list every framework gate's
   audited route with its surface label and call id, `CONTRIBUTING.md` makes the audited
   route part of adding a runtime, `docs/EXTENDING.md` points an adapter author at

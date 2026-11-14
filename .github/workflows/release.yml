@@ -22,6 +22,11 @@ jobs:
   # a release workflow that skipped the tests.
   test:
     name: Full suite at the release commit
+    # Every published release reaches this workflow, an adapter's included (tags of the
+    # form recusal-<adapter>-vX.Y.Z, released by release-adapter.yml). Those are not
+    # releases of this package: this job, and with it every job below, runs only for the
+    # kernel's own vX.Y.Z tags and for a manual rehearsal.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     steps:
       # Actions are pinned to immutable commit SHAs (a moving tag is a rug-pull surface;

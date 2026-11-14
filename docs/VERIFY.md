@@ -128,6 +128,27 @@ real limitation and it is stated rather than papered over: if you need a durable
 for a specific version, download it while the run artifact still exists, or open an
 issue and it will be attached to releases going forward.
 
+## Adapter packages
+
+The packages under `adapters/` (`recusal-langgraph` and the others) are released
+separately from `recusal`, each by its own tag of the form `<package>-v<version>`,
+through their own workflows. **None has been released yet**, so there is nothing to
+verify today; this section says what will be true of one when it is.
+
+The same three checks apply, with different names:
+
+| | `recusal` | an adapter |
+|---|---|---|
+| Tag | `vX.Y.Z` | `<package>-vX.Y.Z` |
+| Builder, for `--signer-workflow` | `build-dist.yml` | `build-adapter-dist.yml` |
+| Signer, in the certificate identity | `release.yml` at the tag | `release-adapter.yml` at the tag |
+| Publisher in PyPI's PEP 740 provenance | `release.yml` | `release-adapter.yml` |
+
+An adapter's artifact that verified against `build-dist.yml` or `release.yml` would be
+wrong: those built and signed the kernel. The workflow
+`verify-adapter-release.yml` runs the adapter procedure against a published version and
+uses exactly those two kernel workflows as its negative controls.
+
 ## What none of this establishes
 
 - **Not byte-reproducibility.** Provenance says which workflow produced these bytes.
