@@ -96,6 +96,7 @@ A framework gate starts as a tested example and can become its own distribution 
 | `recusal-openai-agents` | `adapters/openai-agents` | `recusal_openai_agents` | `openai-agents>=0.24.0,<1` | 3.10+ |
 | `recusal-langgraph` | `adapters/langgraph` | `recusal_langgraph` | `langgraph>=1.2.12,<2` | 3.10+ |
 | `recusal-langchain` | `adapters/langchain` | `recusal_langchain` | `langchain>=1.4.3,<2` | 3.10+ |
+| `recusal-crewai` | `adapters/crewai` | `recusal_crewai` | `crewai>=1.15.34,<2` | 3.10+ |
 <!-- adapter-packages:end -->
 
 The dependency points one way:

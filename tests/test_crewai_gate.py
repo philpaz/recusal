@@ -14,6 +14,18 @@ DELETE = "DELETE FROM audit_log"
 REFUSED = "Recusal refused `run_sql` [FAIL]"
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_crewai._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_python_version_refusal_is_clear_on_every_python():
     code = (
         "import runpy, sys; "
@@ -39,7 +51,8 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
         assert "crewai==1.15.34" in path.read_text(encoding="utf-8"), path.name
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert ci.count("crewai==1.15.34") == 2
+    # the two example jobs and the recusal-crewai wheel job
+    assert ci.count("crewai==1.15.34") == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
@@ -109,7 +122,7 @@ class TestCrewAIGate:
         def crashing_decide(*args, **kwargs):
             raise RuntimeError("decide crashed")
 
-        monkeypatch.setattr(example, "decide", crashing_decide)
+        monkeypatch.setattr(_adapter(), "decide", crashing_decide)
         responses, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
         assert (
@@ -119,7 +132,7 @@ class TestCrewAIGate:
 
     def test_non_mapping_arguments_are_refused_by_the_gate_itself(self, example):
         tool = example.run_sql.to_structured_tool()
-        assert example._refusal(tool, "run_sql", ["x"], example.sql_scope_policy) == (
+        assert _adapter()._refusal(tool, "run_sql", ["x"], example.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
 
@@ -267,7 +280,7 @@ class TestDenialReasonLifecycle:
         if result is not None:
             kwargs["tool_result"] = result
         try:
-            return example.ToolCallHookContext(**kwargs)
+            return _adapter().ToolCallHookContext(**kwargs)
         except TypeError:
             from types import SimpleNamespace
 
@@ -296,7 +309,7 @@ class TestDenialReasonLifecycle:
         def policy(name, args):
             return [Finding.fail("deny", severity="CRITICAL", message=next(reasons))]
 
-        denials = example._Denials()
+        denials = _adapter()._Denials()
         before = example.recusal_before_tool_call(policy, denials)
         after = example.recusal_after_tool_call(policy, denials)
         d1, d2 = {"sql": "SELECT 1"}, {"sql": "SELECT 1"}
@@ -311,7 +324,7 @@ class TestDenialReasonLifecycle:
         from recusal import Finding
 
         decisions = iter([[Finding.fail("deny", severity="CRITICAL", message="stale A")], []])
-        denials = example._Denials()
+        denials = _adapter()._Denials()
         before = example.recusal_before_tool_call(lambda n, a: next(decisions), denials)
         after = example.recusal_after_tool_call(lambda n, a: [], denials)
         shared = {"sql": "SELECT 1"}
@@ -321,7 +334,7 @@ class TestDenialReasonLifecycle:
         assert after(self.context(example, "run_sql", shared, blocked)) is None
 
     def test_a_call_another_hook_blocked_keeps_crewais_line(self, example):
-        denials = example._Denials()
+        denials = _adapter()._Denials()
         after = example.recusal_after_tool_call(lambda n, a: [], denials)
         blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
         assert after(self.context(example, "run_sql", {"sql": "x"}, blocked)) is None
@@ -331,7 +344,7 @@ class TestDenialReasonLifecycle:
 
         from recusal import Finding
 
-        denials = example._Denials()
+        denials = _adapter()._Denials()
         before = example.recusal_before_tool_call(
             lambda n, a: [Finding.fail("deny", severity="CRITICAL", message="mine")], denials
         )
@@ -351,7 +364,7 @@ class TestDenialReasonLifecycle:
     def test_retention_is_bounded_under_abandoned_calls(self, example):
         from recusal import Finding
 
-        denials = example._Denials()
+        denials = _adapter()._Denials()
         before = example.recusal_before_tool_call(
             lambda n, a: [Finding.fail("deny", severity="CRITICAL", message="r")], denials
         )
@@ -370,7 +383,7 @@ class TestDenialReasonLifecycle:
     def test_a_failure_to_keep_the_reason_cannot_unblock(self, example):
         from recusal import Finding
 
-        class Broken(example._Denials):
+        class Broken(_adapter()._Denials):
             def keep(self, tool_input, reason):
                 raise RuntimeError("store broke")
 
@@ -403,7 +416,7 @@ class TestDenialReasonLifecycle:
             calls["n"] += 1
             return []
 
-        denials = example._Denials()
+        denials = _adapter()._Denials()
         after = example.recusal_after_tool_call(counting, denials)
         blocked = example.BLOCKED_PREFIX + " Tool: run_sql"
         after(self.context(example, "run_sql", {"sql": "x"}, blocked))
@@ -495,7 +508,7 @@ class TestPreparedInvocation:
 
     @staticmethod
     def context(example, tool, name, tool_input):
-        return example.ToolCallHookContext(
+        return _adapter().ToolCallHookContext(
             tool_name=name, tool_input=tool_input, tool=tool, agent=None, task=None, crew=None
         )
 
@@ -505,7 +518,7 @@ class TestPreparedInvocation:
         before = example.recusal_before_tool_call(policy)
         assert before(self.context(example, tool, name, tool_input)) is False
         assert policy.seen == []
-        reason = example._refusal(tool, name, dict(tool_input), policy)
+        reason = _adapter()._refusal(tool, name, dict(tool_input), policy)
         assert reason is not None and reason.startswith(f"Recusal refused `{name}`"), reason
         return reason
 
@@ -563,26 +576,32 @@ class TestPreparedInvocation:
         def charge(label: str, amount: int = 100) -> str:
             return "recorded"
 
-        narrow = example.Tool(
-            name="charge", description="d", func=charge, args_schema=LabelOnly
-        ).to_structured_tool()
-        assert example._unsupported_tool(narrow) == (
+        narrow = (
+            _adapter()
+            .Tool(name="charge", description="d", func=charge, args_schema=LabelOnly)
+            .to_structured_tool()
+        )
+        assert _adapter()._unsupported_tool(narrow) == (
             "its callable's parameter `amount` is absent from the argument schema"
         )
         assert "cannot be judged" in self.reason(
             example, narrow, {"label": "review"}, name="charge"
         )
-        complete = example.Tool(
-            name="charge", description="d", func=charge, args_schema=Full
-        ).to_structured_tool()
-        assert example._execution_callable(complete) is charge
-        assert example._unsupported_tool(complete) is None
+        complete = (
+            _adapter()
+            .Tool(name="charge", description="d", func=charge, args_schema=Full)
+            .to_structured_tool()
+        )
+        assert _adapter()._execution_callable(complete) is charge
+        assert _adapter()._unsupported_tool(complete) is None
 
     def test_a_structured_tool_whose_callable_is_not_the_originals_run_is_refused(self, example):
         tool = example.charge.to_structured_tool()
-        assert example._unsupported_tool(tool) is None
+        assert _adapter()._unsupported_tool(tool) is None
         tool.func = lambda **kwargs: "elsewhere"
-        assert example._unsupported_tool(tool) == "its callable is not the original tool's `_run`"
+        assert (
+            _adapter()._unsupported_tool(tool) == "its callable is not the original tool's `_run`"
+        )
 
     def test_a_positional_only_callable_parameter_is_refused(self, example):
         from pydantic import BaseModel
@@ -593,11 +612,14 @@ class TestPreparedInvocation:
         def charge(label: str, /) -> str:
             return "recorded"
 
-        tool = example.Tool(
-            name="charge", description="d", func=charge, args_schema=LabelOnly
-        ).to_structured_tool()
+        tool = (
+            _adapter()
+            .Tool(name="charge", description="d", func=charge, args_schema=LabelOnly)
+            .to_structured_tool()
+        )
         assert (
-            example._unsupported_tool(tool) == "its callable's parameter `label` is positional-only"
+            _adapter()._unsupported_tool(tool)
+            == "its callable's parameter `label` is positional-only"
         )
 
     def test_every_schema_subset_of_the_callable_refuses_unless_complete(self, example):
@@ -624,7 +646,7 @@ class TestPreparedInvocation:
                         return "recorded"
 
                 tool = Charge().to_structured_tool()
-                why = example._unsupported_tool(tool)
+                why = _adapter()._unsupported_tool(tool)
                 if len(declared) < len(names):
                     missing = sorted(set(names) - set(declared))[0]
                     assert why == (
@@ -636,7 +658,7 @@ class TestPreparedInvocation:
                 for proposal_size in range(len(names) + 1):
                     for proposed in combinations(names, proposal_size):
                         proposal = {n: 10 + defaults[n] for n in proposed}
-                        judged, why = example._prepared(tool, dict(proposal))
+                        judged, why = _adapter()._prepared(tool, dict(proposal))
                         assert why is None and judged == {**defaults, **proposal}, proposal
 
     def test_a_non_canonical_default_is_prepared_before_judgment(self, example):
@@ -678,7 +700,7 @@ class TestPreparedInvocation:
 
     def test_a_described_default_on_a_user_schema_is_supported_and_judged_exactly(self, example):
         class Args(example.BaseModel):
-            amount: int = example.Field(default=100, description="the amount", title="Amount")
+            amount: int = _adapter().Field(default=100, description="the amount", title="Amount")
 
         tool = self.tool_with(example, Args, name="charge")
         policy = self.recording(self.budget)
@@ -716,7 +738,7 @@ class TestPreparedInvocation:
             return state["n"] % 2 == 0
 
         class Args(example.BaseModel):
-            amount: int = example.Field(default=100, exclude_if=flip)
+            amount: int = _adapter().Field(default=100, exclude_if=flip)
 
         policy = self.recording()
         responses, executed = example.run_calls(
@@ -772,7 +794,7 @@ class TestPreparedInvocation:
 
         tool = wide.to_structured_tool()
         for proposed in ({}, {"amount": "7", "ratio": 2, "flag": "false", "tags": ["3"]}):
-            judged, why = example._prepared(tool, dict(proposed))
+            judged, why = _adapter()._prepared(tool, dict(proposed))
             assert why is None, why
             assert _same(tool._parse_args(dict(judged)), judged)
             assert _same(tool._original_tool._validate_kwargs(dict(judged)), judged)
@@ -780,8 +802,8 @@ class TestPreparedInvocation:
     # --- refused before judgment: schema, field, tool, input ---------------------------------
 
     def test_crewais_own_generated_schemas_are_stock(self, example):
-        assert example._unsupported_schema(example.charge.args_schema) is None
-        assert example._unsupported_schema(example.run_sql.args_schema) is None
+        assert _adapter()._unsupported_schema(example.charge.args_schema) is None
+        assert _adapter()._unsupported_schema(example.run_sql.args_schema) is None
 
         class Plain(example.BaseTool):
             name: str = "plain"
@@ -790,7 +812,7 @@ class TestPreparedInvocation:
             def _run(self, amount: int = 100, note: str = "x") -> str:
                 return "ok"
 
-        assert example._unsupported_tool(Plain().to_structured_tool()) is None
+        assert _adapter()._unsupported_tool(Plain().to_structured_tool()) is None
 
     def test_field_settings_beyond_the_contract_are_refused(self, example):
         from pydantic import Field, create_model
@@ -808,7 +830,7 @@ class TestPreparedInvocation:
         }
         for label, field in rows.items():
             schema = create_model("S", amount=(int, field))
-            why = example._unsupported_schema(schema)
+            why = _adapter()._unsupported_schema(schema)
             # deprecated=True also puts a descriptor named `amount` on the class, which the
             # class check refuses first; every other row fails the canonical comparison
             assert why is not None and "`amount`" in why, (label, why)
@@ -832,7 +854,7 @@ class TestPreparedInvocation:
             maybe=(Optional[int], None),
             required=(str, ...),
         )
-        assert example._unsupported_schema(schema) is None
+        assert _adapter()._unsupported_schema(schema) is None
         tool = self.tool_with(example, schema).to_structured_tool()
         policy = self.recording()
         before = example.recusal_before_tool_call(policy)
@@ -869,7 +891,7 @@ class TestPreparedInvocation:
             "dict with int keys": (dict[int, int], {}),
         }
         for label, declaration in rows.items():
-            why = example._unsupported_schema(create_model("S", amount=declaration))
+            why = _adapter()._unsupported_schema(create_model("S", amount=declaration))
             assert why is not None, label
             assert "field `amount`" in why, (label, why)
 
@@ -886,7 +908,7 @@ class TestPreparedInvocation:
 
         from pydantic import create_model
 
-        why = example._unsupported_schema(create_model("S", amount=(int, decimal.Decimal(1))))
+        why = _adapter()._unsupported_schema(create_model("S", amount=(int, decimal.Decimal(1))))
         assert why == "field `amount` has a default outside the JSON domain"
 
     def test_customised_model_classes_are_refused(self, example):
@@ -964,17 +986,17 @@ class TestPreparedInvocation:
             ),
         }
         for label, (schema, expected) in rows.items():
-            why = example._unsupported_schema(schema)
+            why = _adapter()._unsupported_schema(schema)
             assert why is not None and expected in why, (label, why)
             tool = self.tool_with(example, schema, name="charge").to_structured_tool()
             assert expected in self.reason(example, tool, {}, name="charge"), label
-        assert example._unsupported_schema(dict) == "its argument schema is not a Pydantic model"
+        assert _adapter()._unsupported_schema(dict) == "its argument schema is not a Pydantic model"
 
     def test_tool_classes_that_change_validation_or_running_are_refused(self, example):
         class Args(example.BaseModel):
             amount: int = 100
 
-        class LooseStructured(example.CrewStructuredTool):
+        class LooseStructured(_adapter().CrewStructuredTool):
             def _parse_args(self, raw_args):
                 return raw_args if isinstance(raw_args, dict) else {}
 
@@ -1033,7 +1055,7 @@ class TestPreparedInvocation:
         def boom(tool, tool_input):
             raise RuntimeError("bookkeeping bug")
 
-        monkeypatch.setattr(example, "_prepared", boom)
+        monkeypatch.setattr(_adapter(), "_prepared", boom)
         policy = self.recording()
         before = example.recusal_before_tool_call(policy)
         tool = example.charge.to_structured_tool()
@@ -1048,7 +1070,7 @@ class TestPreparedInvocation:
         class Statement(BaseModel):
             amount: int = 100
 
-        allowed = lambda n: n in example._GENERATED_NAMES or example._PYDANTIC_FAMILY.match(n)  # noqa: E731
+        allowed = lambda n: n in _adapter()._GENERATED_NAMES or _adapter()._PYDANTIC_FAMILY.match(n)  # noqa: E731
         for schema in (create_model("S", amount=(int, 100)), Statement, example.charge.args_schema):
             own = sorted(n for n in vars(schema) if not allowed(n))
             assert own == [], (schema, own)
@@ -1061,15 +1083,15 @@ class TestPreparedInvocation:
         fields = create_model(
             "S", a=(int, 100), b=(int, ...), c=(int, Field(default=1, description="d"))
         ).model_fields
-        assert set(example._canonical_field(fields["a"])._attributes_set) == {
+        assert set(_adapter()._canonical_field(fields["a"])._attributes_set) == {
             "annotation",
             "default",
         }
-        assert set(example._canonical_field(fields["b"])._attributes_set) == {"annotation"}
-        assert set(example._canonical_field(fields["c"])._attributes_set) == {
+        assert set(_adapter()._canonical_field(fields["b"])._attributes_set) == {"annotation"}
+        assert set(_adapter()._canonical_field(fields["c"])._attributes_set) == {
             "annotation",
             "default",
             "description",
         }
         for name in fields:
-            assert example._unsupported_field(name, fields[name]) is None, name
+            assert _adapter()._unsupported_field(name, fields[name]) is None, name

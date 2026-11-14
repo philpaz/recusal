@@ -10,6 +10,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -24,6 +25,18 @@ PIN = "crewai==1.15.34"
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"
+
+
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_crewai._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
 
 
 def test_python_version_refusal_is_clear_on_every_python():
@@ -314,13 +327,13 @@ class TestCrewAiAudit:
 
     def test_non_mapping_arguments_are_one_recorded_deny(self, example, gate, log):
         record = {"audit": log, "surface": SURFACE}
-        reason = gate._refusal(None, "run_sql", ["DELETE"], gate.sql_scope_policy, **record)
+        reason = _adapter()._refusal(None, "run_sql", ["DELETE"], gate.sql_scope_policy, **record)
         assert reason is not None and "arguments are not a mapping" in reason
         entry = log.entries[0]
         assert entry["action"]["decision"] == "deny"
         assert entry["action"]["input_sha256"] == _sha({"input": ["DELETE"]})
         # without the recording arguments the plain text is unchanged and nothing is written
-        assert gate._refusal(None, "run_sql", ["DELETE"], gate.sql_scope_policy) == (
+        assert _adapter()._refusal(None, "run_sql", ["DELETE"], gate.sql_scope_policy) == (
             "Recusal refused `run_sql`: arguments are not a mapping"
         )
         assert len(log.entries) == 1
@@ -407,7 +420,10 @@ class TestCrewAiAudit:
         assert result.returncode == 0, result.stderr
         out = result.stdout
         assert "c2 run_sql  refused" in out
-        assert f"1 {SURFACE} run_sql  deny" in out
+        # CrewAI runs one turn's tool calls on a thread pool, so the refused call can be
+        # any of the three entries: assert the line, never its position on the chain
+        assert re.search(rf"^  [0-2] {re.escape(SURFACE)} run_sql  deny ", out, re.M), out
+        assert len(re.findall(rf"^  [0-2] {re.escape(SURFACE)} ", out, re.M)) == 3, out
         assert "verify intact:   exit 0" in out
         assert "verify tampered: exit 1" in out
         assert "DELETE" not in out

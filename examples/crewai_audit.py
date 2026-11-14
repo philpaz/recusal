@@ -8,7 +8,8 @@ refused, is one hash-chained entry on a Recusal AuditLog, labeled with the surfa
 with ``recusal audit verify``. The log holds a SHA-256 fingerprint of each call's arguments,
 never the arguments themselves.
 
-The decision logic is the one in crewai_gate.py: ``install_audited_hooks(policy, log)`` is
+The audited gate is the ``recusal-crewai`` package (``adapters/crewai`` in this
+repository), imported here: ``install_audited_hooks(policy, log)`` is
 ``install_recusal_hooks`` with a ``recording`` that passes the recording arguments through
 to ``recusal.decide``, which writes the entry before returning. If the log cannot be written
 the decision becomes a deny, so nothing runs unrecorded. Like the plain gate it is
@@ -47,7 +48,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 CREWAI_VERSION = "1.15.34"
 
@@ -62,56 +63,20 @@ if sys.version_info < (3, 10):
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from examples.crewai_gate import (  # noqa: E402
+# Imported first: it turns CrewAI's telemetry off before anything imports crewai, and
+# puts the in-tree adapter on the path.
+from examples.crewai_gate import (  # noqa: E402, I001
     EXECUTED,
     Policy,
-    Recording,
-    install_recusal_hooks,
     run_crew,
     scripted_agent,
     sql_scope_policy,
 )
+from recusal_crewai import SURFACE, install_audited_hooks, recording  # noqa: E402
+
 from recusal.audit import AuditLog  # noqa: E402
 
-#: The surface label every entry carries: the CrewAI hook that adjudicated.
-SURFACE = "crewai.before_tool_call"
-
-
-def recording(
-    log: AuditLog, *, actor: Optional[str] = None, control: Optional[dict[str, Any]] = None
-) -> Recording:
-    """The recording arguments for each call, built in one place.
-
-    CrewAI's hook context carries no call id, so none is recorded. The role of the agent
-    making the call is recorded as ``control.crewai_agent`` when CrewAI supplies one; a
-    caller's own ``control`` cannot overwrite it."""
-
-    def for_call(context: Any) -> dict[str, Any]:
-        identity = dict(control or {})
-        role = getattr(getattr(context, "agent", None), "role", None)
-        if isinstance(role, str) and role:
-            identity["crewai_agent"] = role
-        else:
-            identity.pop("crewai_agent", None)
-        return {
-            "audit": log,
-            "surface": SURFACE,
-            "actor": actor,
-            "control": identity or None,
-        }
-
-    return for_call
-
-
-def install_audited_hooks(
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> Callable[[], None]:
-    """``install_recusal_hooks`` with every decision on ``log``; returns ``uninstall``."""
-    return install_recusal_hooks(policy, recording(log, actor=actor, control=control))
+__all__ = ["SURFACE", "install_audited_hooks", "recording"]
 
 
 def run_calls(

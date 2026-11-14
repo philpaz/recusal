@@ -48,6 +48,11 @@ ROUTES = {
 #: demonstration that imports the package, and the checks below read the package: the
 #: module that decides, the module that records, and the name the example must import.
 PACKAGED = {
+    "crewai_gate.py": (
+        "adapters/crewai/src/recusal_crewai/_gate.py",
+        "adapters/crewai/src/recusal_crewai/_audit.py",
+        "recusal_crewai",
+    ),
     "langchain_agent_gate.py": (
         "adapters/langchain/src/recusal_langchain/_gate.py",
         "adapters/langchain/src/recusal_langchain/_audit.py",

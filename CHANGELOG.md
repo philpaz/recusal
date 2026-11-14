@@ -159,6 +159,23 @@ All notable changes to this project are documented here. The format follows
   keeps the demonstration SQL policy as its default. `tests/test_adapter_packages.py` now
   also holds that an adapter importing another adapter uses that package's top-level
   names only. Nothing under `recusal/` changed.
+- `adapters/crewai`: the CrewAI tool-call hooks as their own distribution,
+  `recusal-crewai` 0.1.0 (`from recusal_crewai import install_recusal_hooks,
+  recusal_before_tool_call, recusal_after_tool_call, install_audited_hooks, recording,
+  SURFACE, BLOCKED_PREFIX, PENDING_LIMIT`). It depends on `recusal>=0.14.0,<1` and
+  `crewai>=1.15.34,<2`, needs Python 3.10+, and is not published to PyPI yet. The gate's
+  code moved out of `examples/crewai_gate.py` and `examples/crewai_audit.py` unchanged;
+  those files import the package and keep the offline demonstration. The package sets no
+  environment variables; turning CrewAI's telemetry off stays in the examples. Nothing
+  under `recusal/` changed.
+
+### Fixed
+
+- `tests/test_crewai_audit.py`: the end-to-end test of the audit example asserted that
+  the refused call was the second entry on the chain. CrewAI runs one turn's tool calls on
+  a thread pool, so the entries can land in any order and the test could fail on a correct
+  run. It now asserts the refused entry is present and that there are three, without a
+  position. No example or package behaviour changed.
 
 ### Changed
 

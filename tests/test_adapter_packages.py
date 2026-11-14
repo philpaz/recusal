@@ -20,6 +20,7 @@ ADAPTERS = ROOT / "adapters"
 #: Every adapter package: directory, distribution name, import name, the framework's
 #: distribution it must depend on.
 PACKAGES = {
+    "crewai": ("recusal-crewai", "recusal_crewai", "crewai"),
     "langchain": ("recusal-langchain", "recusal_langchain", "langchain"),
     "langgraph": ("recusal-langgraph", "recusal_langgraph", "langgraph"),
     "openai-agents": ("recusal-openai-agents", "recusal_openai_agents", "openai-agents"),
