@@ -123,7 +123,8 @@ isolation claim is earned, and no isolation is claimed before them.
 | Broker | Identity validation, scoped grant and action transactions, audit append | Business credentials; grant issuance under its runtime role |
 | Executor | Approved persisted actions, guarded state transitions, a target-restricted business credential, audit append | Creating grants, changing approved arguments, deploying policy, target operations outside the credential's documented scope |
 | Grant issuer | Creating and revoking narrow grants through a protected operator path | Agent or broker runtime impersonation |
-| Deployment identity | Reviewed release artifacts, configuration and protected policy activation | Use by the running agent |
+| Admission controller | Setting the global pause on the active-policy record (section 6.9), reading outbox backlog and audit acknowledgements | Clearing the pause, changing the epoch or digests, grants, actions, business credentials |
+| Deployment identity | Reviewed release artifacts, configuration, protected policy activation, and clearing the global pause | Use by the running agent |
 | Audit reader | Reading evidence by role | Altering retained records |
 
 The attacker model includes hostile prompts, hostile tool arguments, repeated and
@@ -436,8 +437,10 @@ one.
    before returning. The nonce is not examined on this path.
 4. After the locks are acquired, sample `clock_timestamp()`. Read the active epoch and
    digests, grant status, count already reserved (`calls_so_far`, section 4.1), and the
-   presented nonce row. Require the grant and loaded artifacts to match the active
-   record, and for updates require the proposed intent to match the trusted approval.
+   presented nonce row. Require that neither the global pause nor this grant's
+   admission suspension (section 6.9) is in force, that the grant and loaded artifacts
+   match the active record, and for updates that the proposed intent matches the trusted
+   approval. A paused or suspended proposal gets a retryable status and reserves nothing.
 5. Build a detached `ActionRequest` carrying the presented nonce, and the
    `AuthorizationContext` per section 4.1. Run the application's bounded-grant checks
    and `certify_authorization`.
@@ -462,10 +465,15 @@ delivery in the same transaction as the action.
 The outbox relay delivers the authorization intent with its stable event ID to the
 independent audit destination, outside any database transaction. Only after
 acknowledgement of that action's authorization-intent event may a transaction
-conditionally change `PENDING_AUDIT` to `READY`. The transaction verifies the event's
-association with the action and locks the action row only; it subsequently acquires
-neither an active-policy lock nor a grant lock, so it cannot invert the order in sections
-6.1 and 6.3 (active policy, then grant, then action).
+conditionally change `PENDING_AUDIT` to `READY`. The transaction locks the shared
+active-policy row for share, then the action row for update, in that order, and takes no
+grant lock. The order in sections 6.1 and 6.3 is active policy, then grant, then action;
+leaving the grant out does not invert it. Under those locks it verifies the event's
+association with the action and requires that the global pause of section 6.9 is not
+set. While the pause is set it changes nothing: the action stays `PENDING_AUDIT` and the
+promotion is attempted again after the pause is cleared, so "nothing new becomes `READY`
+during a pause" is enforced by this transaction and not only by the audit destination
+being unreachable.
 Duplicate or delayed acknowledgements may update audit-delivery bookkeeping, but leave
 `READY`, `DISPATCHING`, `SUCCEEDED`, `FAILED`, `OUTCOME_UNKNOWN` and `CANCELED` actions
 unchanged. Acknowledgements of outcome or chain-anchor events never promote an action.
@@ -481,8 +489,9 @@ The protocol is one locked transaction:
 
 1. Begin. Lock the shared active-policy row for share, then the grant row for update,
    then the action row for update, in that order.
-2. Under those locks, first decide whether the action is claimable at all: its state is
-   `READY` and it has no prior dispatch attempt. If not, stop and change nothing. A
+2. Under those locks, first decide whether the action is claimable at all: the global
+   pause of section 6.9 is not set, the action's state is `READY`, and it has no prior
+   dispatch attempt. If not, stop and change nothing. A
    duplicate worker, a late worker, or a sweeper attempting an ordinary dispatch claim
    must leave `DISPATCHING`, `SUCCEEDED`, `FAILED`, `OUTCOME_UNKNOWN` and `CANCELED`
    actions unchanged. Lease recovery uses the separate protocol in section 6.5.
@@ -518,12 +527,17 @@ requests. Both revocation orderings are tested.
 | `DISPATCHING` | One worker holds the claim; a crash may leave the external outcome uncertain. The recovery process conditionally moves an expired claim to `OUTCOME_UNKNOWN`, never back to `READY` |
 | `SUCCEEDED` | The target confirmed; outcome recorded; outcome audit acknowledged separately |
 | `FAILED` | The target definitively refused |
-| `OUTCOME_UNKNOWN` | Outcome not established; reconcile by the same action and idempotency key before any retry |
-| `CANCELED` | Revoked, expired or invalidated before dispatch |
+| `OUTCOME_UNKNOWN` | Outcome not established; reconcile by the same action and idempotency key before any retry. The only way back to `DISPATCHING` is the re-send transition of section 6.5, which records a further attempt; the state never returns to `READY` |
+| `CANCELED` | Revoked, expired or invalidated before dispatch; or, in the restore procedure of section 6.10 only, closed on evidence that a possibly sent request was not applied and cannot be |
 
 Audit delivery state is tracked apart from execution state. An audit outage after a
 confirmed success cannot undo the success: persist the outcome, retry delivery, alert,
 and pause new dispatch while required auditing is unhealthy.
+
+Every transition above is taken in normal operation. The restore procedure of section
+6.10 adds two that happen nowhere else: any non-terminal restored action is moved to
+`OUTCOME_UNKNOWN`, because what happened to it after the backup is not known, and an
+`OUTCOME_UNKNOWN` action is closed as `CANCELED` on the evidence that section names.
 
 ### 6.5 Recovery rules
 
@@ -549,18 +563,41 @@ and pause new dispatch while required auditing is unhealthy.
 - A duplicate claim or an expired lease never authorizes blind re-execution. If the
   previous request might have reached the target, reconcile first.
 - **The re-send transition, specified.** Only the recovery process may re-send, never
-  the dispatch worker and never the agent. It runs the section 6.3 transaction shape:
-  lock the grant row, then the action row; require state `OUTCOME_UNKNOWN`; require the
-  grant not revoked, not expired at fresh time, and the active epoch (section 6.6)
-  unchanged since the action was authorized; require the target's idempotency
-  retention window for the action-derived key to be still open (next bullet); then
-  record attempt N+1 with a new claim ID and lease, write the recovery event to the
-  outbox, commit, and only then send with the same action-derived key. Any condition
-  failing leaves the action in `OUTCOME_UNKNOWN` for an operator. A second recovery
-  worker finds the state or claim changed and stops without mutation. Revocation,
-  expiry or a policy activation that lands between the original dispatch and the
-  re-send therefore blocks the re-send; it never cancels an original request already
-  accepted by the target (A42).
+  the dispatch worker and never the agent. A re-send is a dispatch, so it takes every
+  lock and passes every check an ordinary dispatch does (section 6.3), plus two of its
+  own. In one transaction:
+  1. Lock the shared active-policy row for share, then the grant row for update, then
+     the action row for update, in that order. The shared lock on the active-policy row
+     is what keeps an activation or a pause from committing between the checks below and
+     the state change: PostgreSQL holds it until this transaction ends, and an update of
+     that row waits for it.
+  2. Decide whether the action may be re-sent at all: the global pause is not set, the
+     state is `OUTCOME_UNKNOWN`, and the claim ID on the row is the one this recovery
+     worker read when it chose the action. If not, stop and change nothing. This is the
+     condition a second recovery worker fails: by the time it holds the action lock the
+     first has committed, the state is `DISPATCHING` and the claim ID is new.
+  3. Sample fresh `clock_timestamp()` and verify, exactly as section 6.3 step 3 does:
+     the grant is not revoked; grant expiry and the action's `not_after` have not
+     passed; grant and action epochs and digests match the active record; the loaded
+     artifact digests match; the Recusal fingerprint recomputed from the stored request
+     equals the stored one; and the stored update intent and record precondition match
+     the trusted approval.
+  4. Verify the two conditions only a re-send has: the target's idempotency retention
+     window for the action-derived key is still open (next bullet), and the connector
+     declares that the target binds that key to the payload.
+  5. All pass: in the guarded state update, recheck expiry and `not_after` with
+     `clock_timestamp()`, change `OUTCOME_UNKNOWN` to `DISPATCHING`, record attempt N+1
+     with a new claim ID, the worker ID and a lease expiry, write the recovery event to
+     the outbox, and commit. Only after that commit send, with the same action-derived
+     key.
+
+  Any check in steps 3 to 5 failing leaves the action in `OUTCOME_UNKNOWN` for an
+  operator and writes the reason to the outbox; unlike an ordinary dispatch it is not
+  canceled, because the original request may have been applied. Revocation, expiry, a
+  pause or a policy activation that lands between the original dispatch and the re-send
+  therefore blocks the re-send; it never cancels an original request already accepted by
+  the target. A lease that expires on the new attempt is recovered like any other, back
+  to `OUTCOME_UNKNOWN`, by the lease-recovery rule above (A42).
 - **The downstream retention contract.** Each connector declares how long the target
   retains an idempotency key and whether it binds the key to the payload. A re-send is
   permitted only inside that window; after it, the same key would be a new mutation,
@@ -581,7 +618,9 @@ and pause new dispatch while required auditing is unhealthy.
 
 A singleton active-policy row in the primary authority database holds a monotonically
 increasing epoch and the active policy and catalog digests. Only the protected
-deployment identity may change it. Grant issuance, new authorization and dispatch read
+deployment identity may change the epoch and the digests. The same row carries the global
+pause flag of section 6.9, which the admission controller may set and only the deployment
+identity may clear. Grant issuance, new authorization, promotion and dispatch read
 that row under a shared lock, held until commit, and compare it with their immutable
 records and actual loaded artifact digests. Epoch equality is an application check;
 Recusal's digest checks do not enforce it. A process with old artifacts, a missing
@@ -663,44 +702,222 @@ The design therefore requires:
   broker, executor and recovery processes resolve to the fenced-and-promoted primary
   only; split-brain between two writable primaries is the failure this rule exists to
   prevent.
-- **Reconciliation gates the resumption of dispatch.** After any failover or restore,
-  dispatch stays paused until a reconciliation sweep has compared every action in
-  `DISPATCHING`, `OUTCOME_UNKNOWN` and `PENDING_AUDIT` against target outcomes by the
-  action-derived key and against the audit destination's received event IDs, and has
-  recorded the result. The sweep is the same procedure the stale-backup rule in section
-  7 requires; failover does not get a lighter one (A41).
+- **Only a candidate that provably holds every acknowledged commit is promoted.**
+  Fencing stops the old primary from writing; it says nothing about what the new one
+  holds. With more than one standby, synchronous replication to some of them does not
+  make every one of them current: under `synchronous_standby_names = 'ANY k (s1, ...,
+  sn)'` PostgreSQL makes "transaction commits wait until their WAL records are
+  replicated to at least the requested number of synchronous standbys in the list", so
+  an acknowledged commit is on at least `k` of the `n` listed standbys and may be
+  missing from the other `n - k`. The priority form, `FIRST k (s1, ..., sn)`, gives the
+  same bound and no better one: a commit waits for the `k` highest-priority standbys
+  connected at that moment, which are not always the same `k`. The promotion rule is
+  therefore:
+  1. Only a standby named in `synchronous_standby_names` is a candidate. An
+     asynchronous standby is never promoted by this procedure.
+  2. At least `n - k + 1` of the `n` listed standbys must be reachable and report
+     their position. Any set that large contains at least one standby holding every
+     acknowledged commit. With one synchronous standby (`k = n = 1`) that is the one
+     standby; with `ANY 2 (s1, s2, s3)` it is any two of the three.
+  3. Among those, the candidate is the one with the greatest
+     `pg_last_wal_receive_lsn()`, which PostgreSQL defines as "the last write-ahead log
+     location that has been received and synced to disk by streaming replication". On
+     one timeline the write-ahead log is a single sequence, so the furthest position
+     among them contains every acknowledged commit. `synchronous_commit` is `on` or
+     stronger, so an acknowledgement means that sync has happened; a weaker setting
+     would acknowledge commits this comparison cannot see.
+  4. If fewer than `n - k + 1` are reachable, or positions cannot be read, completeness
+     cannot be established and nothing is promoted by this rule. The deployment stays
+     paused. Bringing a database up anyway is a restore, not a failover, and section
+     6.10 applies in full.
+  5. After promotion and before the pause is cleared, a check that does not depend on
+     replication at all: every authorization-intent event the audit destination has
+     acknowledged must be present in the promoted database. An acknowledged event whose
+     action is missing proves a committed transaction was lost; that too turns the
+     failover into a restore (section 6.10).
+- **Reconciliation gates the resumption of dispatch.** A failover sets the global pause
+  (section 6.9) before promotion, and it is cleared only after a reconciliation sweep
+  has compared every action in `DISPATCHING`, `OUTCOME_UNKNOWN` and `PENDING_AUDIT`
+  against target outcomes by the action-derived key and against the audit destination's
+  received event IDs, and has recorded the result (A41). That sweep is enough for a
+  failover that passed the promotion rule above, because no acknowledged commit was
+  lost. It is not enough for a restore, which loses authority changes the sweep cannot
+  see; section 6.10 is the procedure for that.
 
-The report states the measured replication lag at failover tests, the fencing mechanism
-used, and the time dispatch stayed paused.
+The report states, for each failover test: the `synchronous_standby_names` setting, the
+position each reachable standby reported and which was promoted, the fencing mechanism
+used, the result of the audit-destination completeness check, and the time the
+deployment stayed paused (A44).
 
 ### 6.9 Audit availability, admission and overload
 
 Requiring acknowledgement before execution makes the audit destination part of the
-execution path. That is deliberate, and it has to be engineered rather than hoped for:
+execution path. That is deliberate, and it has to be engineered rather than hoped for.
+Two controls stop work, and they have different scope. Keeping them apart is what lets
+one grant's flood be contained without stopping every other grant, and lets a
+deployment-wide fault stop everything without pretending otherwise.
 
-- **Bounded outbox.** The outbox has a configured backlog limit and an oldest-event age
-  limit. When either is exceeded, or the destination has not acknowledged within its
-  configured window, the broker enters **admission pause**: new proposals receive a
-  retryable "paused" status before any database work, and the executor stops claiming.
-  Nothing already `READY` is affected; nothing new becomes `READY`.
-- **The pause reaches every worker through the database, not through memory.** The
-  pause is a flag on the singleton active-policy row of section 6.6. Every claim and
-  authorization transaction already reads that row under a shared lock, so a paused
-  flag is seen by every worker on its next transaction, old replicas included, and a
-  worker cannot miss it by holding a stale cache. Resuming is the same row update,
-  audited.
-- **Flood control before the database.** Per-caller and per-grant request rate limits,
-  body-size limits and the nonce check for shape are applied at authentication, before
-  any transaction opens. Refusal sampling in the audit record (A35) limits what the
-  destination receives; it does not protect connection pools or row locks, so the
-  admission limits sit in front of them. Connection pools are sized per process and
-  the lock wait timeouts of section 6.7 bound how long a flood can hold a grant row.
-- **What a flood can and cannot do.** Within the attacker model a flooding agent can
-  make its own grant slow and can trip admission pause for itself. It cannot exhaust
-  another grant's budget, dispatch anything, or cause an action to execute unaudited;
-  it can cause a denial of service to itself and, if admission limits are misconfigured,
-  to other grants on the same broker. The report measures the broker's throughput at the
-  admission limit and the point at which pause engages (A43).
+**The global pause stops the whole deployment.** It is one flag on the singleton
+active-policy row of section 6.6, with the time and reason it was set.
+
+- **When it is set.** The outbox has a configured backlog limit and an oldest-event age
+  limit. When either is exceeded, when the audit destination has not acknowledged
+  within its configured window, during a failover (section 6.8) or a restore (section
+  6.10), or by an operator, the pause is set.
+- **What it stops, for every grant.** New authorization (section 6.1 step 4: the
+  proposal gets a retryable "paused" status and reserves nothing), promotion of
+  `PENDING_AUDIT` to `READY` (section 6.2), the ordinary dispatch claim (section 6.3
+  step 2), and the re-send transition (section 6.5). Each of those transactions already
+  reads the active-policy row under a shared lock, so each sees the flag on its next
+  attempt, old replicas included, and none can miss it by holding a stale cache. The
+  broker also answers "paused" from a cached copy of the flag before opening a
+  transaction, to shed load; the cache is a courtesy and the transaction is the control.
+- **What it does not stop.** Recording the outcome of a request that was already sent
+  (a worker past its `DISPATCHING` commit finishes and records what the target said),
+  lease recovery to `OUTCOME_UNKNOWN`, outbox delivery, status reads, and revocation.
+  A revocation is never held up by a pause.
+- **What it does to queued work.** Nothing is canceled or altered by the pause itself:
+  a `READY` action stays `READY` and a `PENDING_AUDIT` action stays `PENDING_AUDIT`,
+  for every grant, and neither moves until the pause is cleared. Waiting is not free. A
+  queued action can pass its grant's expiry or its own `not_after` while paused, and
+  when it does, the checks at claim time cancel it after the pause is cleared (section
+  6.3 step 3). The pause delays; the deadlines still decide.
+- **Who sets it and who clears it.** The admission controller (section 3) may set the
+  flag and nothing else on that row. Brokers and executors can only read it. Clearing it
+  is an operator action under the deployment identity, audited through the outbox like
+  an activation. Setting or clearing takes the row's exclusive lock, so it waits for
+  transactions already holding the shared lock and locks no grant or action row; it
+  does not change the epoch. A fault in the admission controller can therefore stop the
+  deployment and cannot start it.
+
+**Admission suspension stops one grant.** It is a time, `admission_suspended_until`, on
+that grant's row.
+
+- **When it is set.** Each grant has a refusal rate limit and a cap on its own
+  undelivered outbox events, both well below the global limits. When a grant exceeds
+  either, the broker sets the suspension on that grant's row, under the grant lock, to a
+  configured interval ahead of fresh `clock_timestamp()`.
+- **What it stops.** New authorization for that grant, checked in section 6.1 step 4
+  against fresh time, and answered before database work from the broker's own rate
+  limiter where it can be. Nothing else: that grant's actions that are already `READY`
+  were authorized and audited and are still dispatched, and no other grant is touched in
+  any way.
+- **How it ends.** It lapses when its time passes, or an operator clears it. It is not a
+  revocation; revoking a grant is the issuer's act (section 6.3).
+- **Why a flood stops here and not at the global pause.** Because a grant is cut off at
+  its own cap, one grant cannot by itself fill the outbox to the global limit. The
+  global pause is reached by a deployment-wide cause (the audit destination slow or
+  down, many grants busy at once, a failover), and then stopping every grant is the
+  correct outcome, not a side effect.
+
+**Before the database.** Per-caller and per-grant request rate limits, body-size limits
+and the nonce check for shape are applied at authentication, before any transaction
+opens. Refusal sampling in the audit record (A35) limits what the destination receives;
+it does not protect connection pools or row locks, so these limits sit in front of them.
+Connection pools are sized per process, and the lock wait timeouts of section 6.7 bound
+how long a flood can hold a grant row.
+
+**What a flood can and cannot do.** Within the attacker model a flooding agent can make
+its own grant slow and get its own grant suspended. It cannot exhaust another grant's
+budget, dispatch anything, cause an action to execute unaudited, or by itself set the
+global pause. If the per-grant caps are misconfigured (too close to the global limits,
+or so many grants flooding at once that their caps sum past it), a flood can contribute
+to a global pause, which is a denial of service to every grant on the deployment and is
+reported as such. The report measures the broker's throughput at the admission limit,
+the point at which a grant is suspended, and the point at which the global pause engages
+(A35, A43, A45).
+
+### 6.10 Restore from a backup: authority does not come back
+
+A restore is not a failover. A failover that passes the promotion rule of section 6.8
+loses no acknowledged commit. A restore from a backup, or a promotion that could not
+establish completeness, returns the authority database to an earlier point, and
+everything committed after that point is gone from it: revocations, budget and nonce
+consumption, policy activations, actions authorized since, and the dispatch records of
+actions already sent.
+
+Reconciling in-flight actions against the target does not find most of that. A grant
+revoked after the backup is live again in the restored database. A spent budget is
+unspent and a consumed nonce is unconsumed. An action authorized and dispatched after
+the backup is not in the database at all, and an action restored as `READY` may already
+have run. None of the first three leaves any disagreement at the target to detect.
+
+This reference does not try to replay lost authority changes. It discards the authority
+the restored database claims to hold, and accounts for every action from a record the
+restore could not touch. The procedure, each step recorded:
+
+1. **Nothing connects until it is done.** The restored database comes up with the
+   runtime roles of broker, executor and recovery unable to log in and the global pause
+   set. The pause flag in a backup is whatever it was when the backup was taken, so it
+   is set again as part of the restore and is not trusted from the backup.
+2. **Fence everything that ran against the lost database.** Every broker, executor and
+   recovery worker that was attached to it is stopped or cut off before the next step,
+   so that none can send a request to the target on the strength of a claim the restored
+   database does not contain.
+3. **Advance the epoch past every epoch anything was authorized under.** The deployment
+   identity reads the highest policy epoch on any event the audit destination holds
+   (activation events and authorization-intent events both carry it, section 8), takes
+   the greater of that and the restored row's epoch, and activates the next one with the
+   current reviewed digests (section 6.6). From that commit, no grant and no action
+   recorded under an earlier epoch can authorize, be promoted to dispatch or be re-sent.
+   That is the invalidation, and it is why the lost changes need no recovery: every
+   restored grant is without authority whatever its restored status, budget or nonces
+   say, so a lost revocation, a lost reservation and a lost nonce consumption no longer
+   decide anything. An activation that committed in the lost window and never produced
+   an acknowledged event authorized nothing that could have been dispatched, since
+   nothing is dispatched before its intent event is acknowledged (section 6.2); the new
+   activation's event names the restore, so the two are told apart on the record even if
+   they share a number.
+4. **Account for every action the audit destination knows.** No action becomes `READY`
+   until the destination has acknowledged its authorization-intent event, so the
+   destination holds an intent event for every action that could ever have been
+   dispatched, including those authorized after the backup. For each such event not
+   already closed on the destination's own record by an acknowledged outcome event:
+   - **The action is in the restored database in a terminal state** (`SUCCEEDED`,
+     `FAILED`, `CANCELED`). A terminal state at backup time is still true. Nothing
+     changes.
+   - **The action is in the restored database in any other state** (`PENDING_AUDIT`,
+     `READY`, `DISPATCHING`, `OUTCOME_UNKNOWN`). What happened to it after the backup is
+     not known, and it may have been sent. It is moved to `OUTCOME_UNKNOWN`.
+   - **The action is not in the restored database.** A reconstructed record is inserted
+     from the audit event (action ID, tenant and grant references, fingerprints, epoch
+     and digests, `not_after`), in `OUTCOME_UNKNOWN`, marked as reconstructed. It holds
+     no arguments, because the audit destination never held them.
+
+   Each is then reconciled against the target by its action-derived key. A confirmed
+   outcome is recorded. "Not found" is definitive only when two things are both true:
+   the workers of step 2 are fenced, and the action's `not_after` has passed by the
+   target's clock plus the tolerated skew, because the target admits no new mutation at
+   or after that deadline (section 6.7). Then it is closed as `CANCELED`, with the
+   restore and that evidence recorded as the reason. A target
+   that does not enforce the deadline cannot give that evidence, and the action stays
+   `OUTCOME_UNKNOWN` for an operator.
+5. **Nothing from before the restore is sent again.** The re-send transition requires
+   the epoch unchanged since the action was authorized (section 6.5), and step 3
+   changed it. A reconstructed record could not be sent in any case; it has no
+   arguments.
+6. **Resume.** When steps 3 and 4 are recorded, the runtime roles are allowed to log in
+   and an operator clears the pause. Grants are issued again through the protected
+   issuer path. A re-issued grant's budget is the issuer's decision, taken with the
+   audit destination's count of what the old grant reserved in view; the record does
+   not refund itself. New actions get new random action IDs, so their downstream
+   idempotency keys cannot collide with a pre-restore action's.
+
+**What this costs.** Every grant outstanding at the time of a restore dies, and work in
+progress has to be re-proposed under new grants. That is the price of never reviving a
+revoked or exhausted grant, and this reference pays it. The alternative is to journal
+every authority change (revocation, reservation, nonce consumption, activation)
+synchronously to a store independent of the authority database, and replay it after a
+restore. That is a second system of record with its own failure and ordering cases. It
+is not part of this reference; a deployment that adds one has to prove the journal
+complete for the lost window before trusting a replay, and until it can, this procedure
+is the one that holds.
+
+**What it rests on.** The audit destination is independent of the authority database
+and survives its loss (section 8). If both are lost, there is no record from which to
+account for dispatched actions, and the deployment does not resume by this procedure:
+every action that might have run is an operator's reconciliation against the target
+directly (A26).
 
 ## 7 Deployment properties
 
@@ -727,8 +944,10 @@ infrastructure is AWS). Required properties, each tested, none asserted:
 - Agent egress restricted to the broker and any approved model endpoint, with a stated
   rule on what data may go there.
 - No provider-hosted tool or plugin that reaches the business system around the broker.
-- Backups preserve authorization state; restoring a stale nonce or idempotency ledger
-  pauses dispatch until target outcomes are reconciled.
+- Backups are taken, and a restore from one follows section 6.10: a restored database
+  is behind on revocations, reservations, nonces and activations as well as on
+  dispatch records, so its grants are invalidated and its actions accounted for from
+  the audit destination before anything resumes.
 
 Infrastructure is reviewable code before anything is provisioned. Provisioning is a
 separate spend decision.
@@ -818,7 +1037,7 @@ successful run.
 | A23 | Another tenant's action ID guessed or otherwise known | Tenant and caller authorization deny status and result access; response indistinguishable from nonexistent regardless of how the ID was obtained |
 | A24 | Audit sink fails after confirmed execution | Outcome retained, delivered later, never re-executed |
 | A25 | Audit record altered or truncated | Detected or prevented within the destination's documented scope |
-| A26 | Restore from a stale backup | Dispatch paused until reconciled |
+| A26 | Restore from a backup taken before each of: a grant's revocation; a budget reservation and nonce use; a policy activation; an action's authorization; an action's dispatch. Also: both the authority database and the audit destination lost | The restored database comes up paused with runtime roles unable to log in; old workers are fenced; the epoch is advanced past every epoch the audit destination holds, so the revoked grant, the exhausted grant and every other restored grant cannot authorize, be promoted, dispatch or be re-sent; every action with an acknowledged intent event is accounted for, including one absent from the restored database (reconstructed, without arguments) and one restored as `READY` that had already run; "not found" closes an action only after fencing and its `not_after`; nothing from before the restore is sent again; the pause is cleared by an operator only after that is recorded. With the audit destination lost too, the procedure refuses to resume |
 | A27 | Tool response carries injected instructions, including a well-formed alternative address | Prohibited proposals and updates that differ from independently approved values are refused; field and syntax checks alone cannot authorize the alternative address (A36) |
 | A28 | Alternative tool or provider path to the target | None exists |
 | A29 | Target returns extra fields, malformed or oversized body | Projection rejects or trims; nothing forbidden reaches agent, status or logs |
@@ -827,15 +1046,17 @@ successful run.
 | A32 | Agent proposes an operation that would edit policy, the catalog, a grant, its budget or its expiry | No such operation exists in the catalog; refused at `tool_operation`; no file, row or artifact changed |
 | A33 | New policy artifacts staged and activated while grants and queued actions exist | Staging alone does not change authority; activation advances the shared epoch and is audited; older grants/actions cannot newly authorize or dispatch after cutover; pre-cutover committed dispatches remain subject to the documented in-flight boundary |
 | A34 | Agent attempts to modify, replace, shadow, uninstall or redeploy the gate code, the broker image, or the hook settings from inside its sandbox | No route to the broker or executor images; a local hook, where present, refuses the edit and the package-manager command; the broker's next decision is unchanged and its image digest is unchanged |
-| A35 | Agent floods the broker with proposals it knows will be refused | Refusals consume no budget but hit the per-grant refusal rate limit; the audit destination receives a bounded, sampled record of the flood with counts, not every event; dispatch of other grants is unaffected |
+| A35 | Agent floods the broker with proposals it knows will be refused | Refusals consume no budget but hit the per-grant refusal rate limit, and that grant's admission is suspended on its own row; the audit destination receives a bounded, sampled record of the flood with counts, not every event; the global pause is not set; every other grant authorizes, is promoted and dispatches as before; the flooding grant's own already-`READY` actions still dispatch |
 | A36 | Correct caller, tenant, customer, operation and fields, but an attacker-selected address, altered record precondition or agent-asserted approval | No trusted matching approval means refusal before reservation or dispatch; a validly shaped address is insufficient; the exact trusted intent succeeds; incorrect trusted input remains a stated limitation |
 | A37 | Mixed old/new broker and executor replicas during activation; dispatch races with cutover; rollback restores earlier digest values | Shared-row locking orders cutover and dispatch; after activation, old replicas and grants cannot newly authorize or dispatch; rollback increments the epoch and does not revive old grants; unavailable active state refuses; already committed dispatches are reported separately |
 | A38 | Authorization or dispatch waits on a lock across grant expiry | Fresh `clock_timestamp()` after the wait and at the guarded update refuses the expired grant; no new reservation or dispatch is justified by a transaction-start timestamp |
 | A39 | Protected harness calls the target directly under the executor principal | Synthetic target denies out-of-scope operations, customers, tenants and fields; report records the credential's remaining in-scope powers and does not claim that executor compromise is contained |
 | A40 | Worker pauses after `DISPATCHING` and resumes after `not_after` | Synthetic target admits no new mutation at or after the deadline, including if the worker's earlier local time check passed; recovery can still query outcomes; already accepted writes and production targets without deadline support retain their stated limitations |
-| A41 | Primary fails after the target accepted a request but before the dispatch commit replicated; standby promoted | With synchronous replication the commit never returned, so the worker never sent, or the record is on the standby; dispatch stays paused until the reconciliation sweep compares every open action against target outcomes and audit event IDs; the old primary is fenced and a worker still attached to it fails its next guarded update; no action executes twice and none is forgotten |
-| A42 | Recovery process attempts a re-send: inside and outside the target's retention window; with and without an intervening revocation, expiry or policy activation; two recovery workers concurrently | Inside the window with authority intact: one re-send with the same action-derived key, recorded as a new attempt. Outside the window, or with authority changed: no re-send, action stays `OUTCOME_UNKNOWN` for an operator. The second worker finds the claim changed and stops without mutation |
-| A43 | Audit destination slow, then down, under a proposal flood from one grant | Outbox reaches its limit; admission pause engages before database work; new proposals get a retryable paused status; the pause flag is read by every worker through the active-policy row; nothing new reaches `READY`; other grants' already-`READY` actions are unaffected; throughput at the admission limit and the engagement point are measured and reported |
+| A41 | Primary fails after the target accepted a request but before the dispatch commit replicated; a standby that passes the promotion rule is promoted | With synchronous replication the commit never returned, so the worker never sent, or the record is on the promoted standby; the global pause is set before promotion and cleared only after the reconciliation sweep compares every open action against target outcomes and audit event IDs; the old primary is fenced and a worker still attached to it fails its next guarded update; no action executes twice and none is forgotten |
+| A42 | Recovery process attempts a re-send: inside and outside the target's retention window; with and without an intervening revocation, expiry, pause or policy activation; a policy activation racing the re-send; two recovery workers concurrently | Inside the window with authority intact: the action moves `OUTCOME_UNKNOWN` to `DISPATCHING` under the active-policy, grant and action locks, is recorded as attempt N+1 with a new claim ID, and one re-send goes out with the same action-derived key. An activation commits either before the re-send's locks (the epoch check fails, no re-send) or after its commit (the request was already authorized to go), never between the check and the state change. Outside the window, paused, or with authority changed: no re-send, the action stays `OUTCOME_UNKNOWN` for an operator and is not canceled. The second worker finds the state `DISPATCHING` and the claim ID changed and stops without mutation |
+| A43 | Audit destination slow, then down, while one grant floods and others work normally | The flooding grant reaches its own cap and is suspended first; the outbox then reaches its global limit and the admission controller sets the global pause; under it no grant authorizes (retryable paused status, nothing reserved), no action of any grant is promoted to `READY` even if a late acknowledgement arrives, and no action of any grant is claimed or re-sent; `READY` and `PENDING_AUDIT` actions of every grant are retained unchanged and none is canceled by the pause; requests already sent record their outcomes; a queued action whose deadline passes while paused is canceled at claim time after resume; the pause is cleared only by the operator path; throughput at the admission limit and both engagement points are measured and reported |
+| A44 | Failover with several standbys: the most advanced listed standby is reachable; only a lagging listed standby is reachable; fewer than `n - k + 1` listed standbys are reachable; an asynchronous standby is the only one reachable; the promoted database lacks an action whose intent event the audit destination acknowledged | The standby with the greatest received-and-synced position among at least `n - k + 1` listed standbys is promoted and holds every acknowledged reservation and revocation. In each other case nothing is promoted by the failover rule and the deployment stays paused, or the completeness check fails after promotion; either way the restore procedure of section 6.10 applies and no restored grant regains authority. The positions compared are in the report |
+| A45 | Pause permissions and scope: the admission controller sets the global pause and tries to clear it; a broker and an executor try to set or clear it; an operator clears it; a grant's suspension lapses; a revocation arrives during a global pause | The controller can set and cannot clear; broker and executor roles can do neither; the operator's clear is audited; a lapsed suspension readmits that grant only; the revocation commits during the pause and the grant's queued actions are canceled at their next claim attempt after resume. A suspension on one grant changes nothing for any other grant, and a global pause changes the same things for all of them |
 
 ## 10 Why this shape, and what would make it wrong
 
@@ -935,7 +1156,7 @@ None of it has started.
 | 1 | Decisions recorded (repository, cloud, ownership); threat model; exact-intent approval contract; replay and dispatch protocols; shared policy activation; time/deadline semantics; credential-scope matrix; scenario ledger | Every control maps to a layer, an owner, a test and expected evidence; target limitations and trusted-runtime exclusions recorded |
 | 2 | Synthetic target, agent driver, broker and executor vertical slice, Recusal wired, authenticated callers, database roles, trusted intent issuance and target-side credential restrictions | Authorized read and exact approved update succeed; wrong customer, fields, address values, missing authority and unbound caller refuse; A36 and A39 pass |
 | 3 | Migrations, column-level roles, transactional reservations, replay, refusal rate limit, immutable actions, shared policy cutover and fresh-time dispatch protocol | Concurrency and budget tests pass (A09, A10, A31, A35); altered payloads cannot execute; A20 and A30 pass; mixed replicas, rollback, lock-wait expiry and delayed dispatch pass (A37, A38, A40) |
-| 4 | Outbox, audit acknowledgement, admission pause and flood limits, outcome recording, the re-send transition and retention contract, synchronous replication with fencing and the failover sweep, response projection | No dispatch before audit; A17 to A19, A29 pass; A41 to A43 pass locally with a two-node database |
+| 4 | Outbox, audit acknowledgement, the global pause and per-grant suspension with their permissions, flood limits, outcome recording, the re-send transition and retention contract, synchronous replication with fencing and the promotion rule, the failover sweep, the restore procedure, response projection | No dispatch before audit; A17 to A19, A29 pass; A26 and A41 to A45 pass locally with a database of one primary and at least two listed standbys |
 | **Gate 1** | **Functional reference, local only, no isolation claim** | |
 | 5 | Local network isolation, negative-path suite, packaged-artifact CI | A13, A14, A28 pass; zero skips in the required suite |
 | 6 | One cloud deployment: identities, network, secret delivery, retention, monitoring | The same controls pass in the cloud with deployment evidence |
@@ -952,13 +1173,18 @@ unresolved findings, measurements, tested recovery points; reviewer and operator
 date, reproduction instructions, limitations.
 Include the approved-intent provenance without exposing address values, activation
 epochs and cutover ordering, clock/skew and deadline evidence, actual target-side
-credential restrictions and residual powers, measured replication lag and the fencing
-mechanism at failover tests, the admission limits and the throughput at which pause
-engaged, each connector's declared idempotency retention, and the usefulness measures
-of section 10. Passing these scenarios supports only the
+credential restrictions and residual powers, for each failover test the
+`synchronous_standby_names` setting, the position each standby reported, which was
+promoted and the fencing mechanism, for each restore test the backup point, the epoch
+activated and the count of actions accounted for by kind, the admission limits and the
+throughput at which a grant was suspended and at which the global pause engaged, each
+connector's declared idempotency retention, and the usefulness measures of section 10.
+Passing these scenarios supports only the
 tested deployment and stated attacker model; it is not proof that all attacks fail.
 
-The README links here only when a stated deployment and its evidence exist.
+The README lists this document for what it is, a reference architecture and a position
+with nothing built. It will describe a deployment only when a stated deployment and its
+evidence exist.
 
 ## 12 Sources checked for this document
 
@@ -999,3 +1225,22 @@ Design guidance checked on 2026-11-09:
 - [AWS Builders' Library, making retries safe with idempotent APIs](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/): idempotency records cannot be retained indefinitely and a reused identifier with different parameters is a validation error; basis for the retention contract in section 6.5.
 - [Transactional outbox pattern](https://microservices.io/patterns/data/transactional-outbox.html): the relay may deliver an event more than once, so the consumer deduplicates; basis for the event-ID deduplication the audit destination must perform (section 4.2).
 - [Claude Code hooks reference](https://code.claude.com/docs/en/hooks): `PreToolUse` timeout is fail-open unless `onFailure: block`; `disableAllHooks` cannot disable managed hooks; `allowManagedHooksOnly`; basis for the hook wording in section 4.4.
+
+Revised on 2026-11-14 after a fifth review, which found four gaps: a restore could revive
+revoked or exhausted authority (now section 6.10 and A26), promotion had a fencing rule
+and no durability rule (now the promotion rule in section 6.8 and A44), the re-send
+transaction omitted the active-policy lock and the state change (now spelled out in
+section 6.5 and A42), and one pause flag was described with two different scopes (now
+the global pause and the per-grant suspension of section 6.9, with section 6.2 checking
+the pause, and A35, A43 and A45). No library statement changed; the library was not
+re-read for this revision.
+
+Design guidance checked on 2026-11-14, each quoted as it reads on that date:
+
+- [PostgreSQL high availability, log-shipping standby servers](https://www.postgresql.org/docs/current/warm-standby.html), "Multiple Synchronous Standbys": "The method `ANY` specifies a quorum-based synchronous replication and makes transaction commits wait until their WAL records are replicated to at least the requested number of synchronous standbys in the list." Basis for the count `n - k + 1` in section 6.8: an acknowledged commit is on at least `k` of the `n` listed standbys, so any `n - k + 1` of them include one that has it. Of the priority form the same page says "The method `FIRST` specifies a priority-based synchronous replication and makes transaction commits wait until their WAL records are replicated to the requested number of synchronous standbys chosen based on their priorities", with later names "potential synchronous standbys"; that is the basis for applying the same count to it. The arithmetic is this document's, not PostgreSQL's.
+- [PostgreSQL system administration functions](https://www.postgresql.org/docs/current/functions-admin.html), recovery information functions: `pg_last_wal_receive_lsn()` "Returns the last write-ahead log location that has been received and synced to disk by streaming replication." Basis for comparing candidates by that position in section 6.8.
+- [PostgreSQL explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html), row-level lock modes: under `FOR SHARE`, "A shared lock blocks other transactions from performing `UPDATE`, `DELETE`, `SELECT FOR UPDATE` or `SELECT FOR NO KEY UPDATE` on these rows, but it does not prevent them from performing `SELECT FOR SHARE` or `SELECT FOR KEY SHARE`." Basis for the claim in sections 6.2, 6.5 and 6.9 that a transaction holding the active-policy row for share cannot have an activation or a pause committed under it, while other readers proceed.
+
+None of these pages describes this design, and none is evidence that the procedures in
+sections 6.8 to 6.10 have been implemented or tested. They are the documented behavior
+the procedures are built on.

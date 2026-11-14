@@ -218,6 +218,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `docs/ENTERPRISE.md`, after a review that found four gaps. It is still a position
+  with nothing built. (1) A restore from a backup could revive a revoked or exhausted
+  grant, since reconciling in-flight actions sees no lost revocation, reservation or
+  activation: new section 6.10 invalidates every restored grant by advancing the epoch
+  past every epoch the audit destination holds, and accounts for every action from the
+  audit destination's intent events, including actions absent from the backup.
+  (2) Failover had a fencing rule and no durability rule: section 6.8 now promotes only
+  the most advanced of at least `n - k + 1` listed synchronous standbys, and treats a
+  promotion that cannot prove completeness as a restore. (3) The re-send transaction
+  omitted the active-policy lock and the state change: section 6.5 spells out the lock
+  order, the guarded `OUTCOME_UNKNOWN` to `DISPATCHING` transition and every check.
+  (4) One pause flag was described with two scopes: section 6.9 separates a global
+  pause, which stops every grant and is now checked by the promotion transaction too,
+  from a per-grant admission suspension, with who may set and clear each. Scenarios
+  A26, A35, A41, A42 and A43 are rewritten to match and A44 and A45 are new.
+  `tests/test_enterprise_doc.py` holds the document to itself: scenario and section
+  references resolve, states are the seven defined, every locking transaction states
+  one lock order and checks the pause.
 - `README.md`: the adapter packages have their own section near the top, *The kernel
   and its adapters*, with a picture of the dependencies, in place of a passage 850 lines
   down. The opening paragraph names the eight packages where it named one LangGraph
