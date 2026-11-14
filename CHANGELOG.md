@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-14
+
+A PATCH release under `STABILITY.md` that changes no behaviour. The only line that differs
+under `recusal/` between 0.14.0 and this release is the version string: the verdict
+kernel, the decision path, the audit log, every reason string and every import path are
+the files 0.14.0 shipped. It is released so that the page PyPI shows for `recusal`, which
+is this repository's README at the time of a release, describes the project as it now
+stands: the eight adapter packages (each on PyPI under its own name and version, released
+by its own tag), the audited route on every framework gate, and the figures. It also
+corrects a link on that page that was relative and so led nowhere on PyPI. Everything
+listed below was added to the repository since 0.14.0; the adapter packages among it are
+separate distributions and are not part of the `recusal` wheel.
+
 ### Added
 
 - All eight adapter packages are on PyPI, each published by `release-adapter.yml` through

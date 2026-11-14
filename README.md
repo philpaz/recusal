@@ -31,7 +31,7 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 [How it works](#how-it-works) · [CI](#gate-your-ci) ·
 [Built to be checked](#built-to-be-checked) · [Documentation](#documentation)
 
-> **New on `main` since 0.14.0**
+> **New with 0.14.1**
 >
 > - **Eight adapter packages**, one per agent framework, each a separate package with its
 >   own version: [the kernel and its adapters](#the-kernel-and-its-adapters).
@@ -44,10 +44,10 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 >   how it would be built, and nothing in it is built yet:
 >   [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md).
 >
-> Each adapter is on PyPI under its own name and version. `recusal` 0.14.0 on
-> PyPI is unchanged by any of this: nothing in the kernel package has changed since it.
-> The full list is in the
-> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#unreleased).
+> Each adapter is on PyPI under its own name and version. `recusal` 0.14.1 is the
+> same kernel code as 0.14.0: no behaviour changed, and the adapters are not part of its
+> wheel. The full list is in the
+> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0141---2026-11-14).
 
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
@@ -753,7 +753,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.14.0   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.14.1   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

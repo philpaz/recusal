@@ -21,7 +21,7 @@ def _version() -> str:
 
 
 def _callout() -> str:
-    start = README.index("> **New on `main` since ")
+    start = README.index("> **New with ")
     block = README[start:].split("\n\n", 1)[0]
     assert all(line.startswith(">") for line in block.splitlines()), "the note is one quote block"
     return block
@@ -29,23 +29,26 @@ def _callout() -> str:
 
 def test_the_note_sits_above_the_first_section_and_below_the_badges():
     opening = README.split("\n## ", 1)[0]
-    assert "> **New on `main` since " in opening
+    assert "> **New with " in opening
     assert opening.index("runtime%20deps") < opening.index("**Contents:**")
-    assert opening.index("**Contents:**") < opening.index("> **New on `main` since ")
+    assert opening.index("**Contents:**") < opening.index("> **New with ")
 
 
 def test_the_note_names_the_released_version_of_the_kernel():
-    """When a release is cut, the things this note calls new are released, and the note
-    has to be rewritten or removed: this fails until it is."""
+    """The note names one release and links that release's changelog section. At the
+    next release it names a version that is no longer the packaged one, and this fails
+    until the note is rewritten or removed."""
     version = _version()
     note = _callout()
-    assert f"> **New on `main` since {version}**" in note
-    assert f"`recusal` {version} on\n> PyPI is unchanged" in note
+    assert f"> **New with {version}**" in note
+    assert f"`recusal` {version} is the\n> same kernel code as" in note
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    released = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.M).group(1)
-    assert released == version, "the newest released changelog section is the packaged version"
-    unreleased = changelog.split("## [Unreleased]", 1)[1].split(f"## [{version}]", 1)[0]
-    assert unreleased.strip(), "the note points at an Unreleased section that has entries"
+    heading = re.search(r"^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$", changelog, re.M)
+    assert heading.group(1) == version, "the newest released section is the packaged version"
+    anchor = f"CHANGELOG.md#{version.replace('.', '')}---{heading.group(2)})"
+    assert anchor in note, "the note links the section of the release it names"
+    section = changelog.split(heading.group(0), 1)[1].split("\n## [", 1)[0]
+    assert "### Added" in section, "the section the note links has entries"
 
 
 def test_the_note_counts_the_adapters_that_exist():
