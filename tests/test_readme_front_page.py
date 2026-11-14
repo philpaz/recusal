@@ -3,8 +3,8 @@
 A "what's new" note is the part of a home page most likely to be wrong a month later. This
 one names a version, and these tests fail when that version stops being the released one,
 when the count of adapters changes, when it claims the kernel package is unchanged and the
-packaged version says otherwise, or when the two places that say the adapters are not on
-PyPI stop agreeing. The links in it are followed by ``tests/test_markdown_links.py``.
+packaged version says otherwise, or when a page stops saying the adapters are on
+PyPI. The links in it are followed by ``tests/test_markdown_links.py``.
 """
 
 import re
@@ -111,3 +111,18 @@ def test_the_contents_line_links_sections_that_exist_in_this_order():
     ]
     positions = [slugs.index(anchor) for anchor in anchors]
     assert positions == sorted(positions), "the contents line follows the page's own order"
+
+
+def test_a_readme_that_pypi_renders_has_no_relative_link_or_image():
+    """PyPI shows a package's README as its project page and resolves nothing against the
+    repository, so a relative path there is a dead link or a missing picture. The kernel's
+    README and each adapter's are those pages: every link and image in them is absolute."""
+    pages = [ROOT / "README.md", *sorted((ROOT / "adapters").glob("*/README.md"))]
+    assert len(pages) == 9
+    for page in pages:
+        text = page.read_text(encoding="utf-8")
+        targets = re.findall(r'(?:src|srcset|href)="([^"]+)"', text)
+        targets += re.findall(r"\]\(([^)\s]+)", text)
+        assert targets, page
+        relative = [t for t in targets if not t.startswith(("https://", "#", "mailto:"))]
+        assert relative == [], (page.relative_to(ROOT).as_posix(), relative)

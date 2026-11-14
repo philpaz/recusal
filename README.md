@@ -52,7 +52,7 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
 </p>
-<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then <code>pip install recusal &amp;&amp; recusal demo --scenario wrong-subject</code>, no API key and no clone. The second panel is rendered from that command's captured output by <a href="tools/render_demo_gif.py"><code>tools/render_demo_gif.py</code></a>, so "verbatim" is reproducible rather than asserted.</sub></p>
+<p align="center"><sub>Verbatim transcripts, rendered: a live Claude Code session where the repo's own hook refuses <code>rm -rf</code> under <code>--dangerously-skip-permissions</code>, then <code>pip install recusal &amp;&amp; recusal demo --scenario wrong-subject</code>, no API key and no clone. The second panel is rendered from that command's captured output by <a href="https://github.com/philpaz/recusal/blob/main/tools/render_demo_gif.py"><code>tools/render_demo_gif.py</code></a>, so "verbatim" is reproducible rather than asserted.</sub></p>
 
 ## See it refuse (20 seconds, no API key, no clone)
 
