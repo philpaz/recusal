@@ -23,6 +23,11 @@ certify a tool call *before* it runs. Start with whichever door fits you:
   not progression · a gate that can't say no isn't a gate.
 - **[EVIDENCE](EVIDENCE.md)**: the contract: `Finding`, `Verdict`, `Severity`, `Decision`,
   and `compute_verdict`. Two objects and one function; the whole spine.
+- **[ENTERPRISE](ENTERPRISE.md)**: reference architecture for an isolated enterprise
+  deployment of Recusal: an authenticated broker, immutable
+  prepared actions, atomic budget and replay in the database, audit acknowledgement
+  before dispatch, and a separate executor that alone holds the business credential. A
+  position on how we would build it, not a deployment claim; nothing in it is built yet.
 
 ## Use it
 

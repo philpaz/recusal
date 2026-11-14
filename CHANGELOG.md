@@ -106,6 +106,12 @@ All notable changes to this project are documented here. The format follows
   quoted unless `safe_errors` is selected and that an integer-keyed audit entry written
   before 0.14.0 does not verify. `tests/test_audited_routes.py` fails if a framework
   gate has no audited companion or a documented surface label stops matching the code.
+- Documentation: `docs/ENTERPRISE.md`, a reference architecture for an isolated
+  enterprise deployment (an authenticated broker, immutable prepared actions, budget and
+  replay enforced in the database, audit acknowledgement before dispatch, a separate
+  executor holding the only business credential), indexed from `docs/README.md`. It is a
+  position on how it would be built. Nothing in it is built, deployed or validated, and it
+  does not advance the 1.0 criteria in `STABILITY.md`.
 
 ## [0.14.0] - 2026-11-11
 
