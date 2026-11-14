@@ -12,6 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "langgraph_gate.py"
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_langgraph._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_python_version_refusal_is_clear_on_every_python():
     code = (
         "import runpy, sys; "
@@ -44,8 +56,9 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # the two example jobs and the recusal-langgraph wheel job
     for pin in expected:
-        assert ci.count(pin) == 2
+        assert ci.count(pin) == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
@@ -328,7 +341,7 @@ class TestEffectiveArguments:
 
     def test_the_judging_copy_runs_only_what_it_judged(self, example):
         call = {"name": "run_sql", "args": {"sql": SELECT}, "id": "c1", "type": "tool_call"}
-        copy = example._judging(example.run_sql, call, example.sql_scope_policy, {}, False)
+        copy = _adapter()._judging(example.run_sql, call, example.sql_scope_policy, {}, False)
         assert copy._to_args_and_kwargs({"sql": SELECT}, "c1") == ((), {"sql": SELECT})
         with pytest.raises(example.RecusalRefusal, match="Recusal refused `run_sql`"):
             copy._to_args_and_kwargs({"sql": DELETE}, "c1")
@@ -347,7 +360,7 @@ class TestEffectiveArguments:
 
         log = AuditLog(path=str(tmp_path / "audit.jsonl"))
         call = {"name": "run_sql", "args": {"sql": 5}, "id": "c1", "type": "tool_call"}
-        copy = example._judging(
+        copy = _adapter()._judging(
             example.run_sql, call, example.sql_scope_policy, {"audit": log, "surface": "t"}, False
         )
         with pytest.raises(example.RecusalRefusal) as refused:
@@ -855,7 +868,7 @@ class TestFinalInvocation:
             inner: Inner
             when: datetime.date
 
-        faithful = example._faithful
+        faithful = _adapter()._faithful
         assert faithful((1, True, "s", None)) == [1, True, "s", None]
         projected = faithful([1, True])
         assert [type(v) for v in projected] == [int, bool], "1 and True stay distinct"
@@ -1046,7 +1059,7 @@ class TestFinalInvocation:
 
         with pytest.raises(ValidationError) as caught:
             Args(sql="x", count="SECRET-not-an-int")
-        text = example._sanitized(caught.value, frozenset())
+        text = _adapter()._sanitized(caught.value, frozenset())
         assert "SECRET" not in text, text
         assert "count: Input should be a valid integer" in text, text
         assert "sql: value_error" in text, text
@@ -1060,7 +1073,7 @@ class TestFinalInvocation:
 
         with pytest.raises(ValidationError) as caught:
             Whole(sql="x")
-        assert example._sanitized(caught.value, frozenset()) == "model: value_error"
+        assert _adapter()._sanitized(caught.value, frozenset()) == "model: value_error"
 
         class Asserting(BaseModel):
             sql: str
@@ -1073,7 +1086,7 @@ class TestFinalInvocation:
 
         with pytest.raises(ValidationError) as caught:
             Asserting(sql="x")
-        assert example._sanitized(caught.value, frozenset()) == "sql: assertion_error"
+        assert _adapter()._sanitized(caught.value, frozenset()) == "sql: assertion_error"
 
     def test_a_validation_error_on_a_model_argument_names_the_location_not_the_input(self, example):
         messages, _ = example.run_calls(
@@ -1414,13 +1427,13 @@ class TestFinalInvocation:
             assert seen == [{"sql": SELECT}]
         assert ran == [("sync", SELECT, True), ("async", SELECT, True)]
         tool = Direct()
-        assert example._execution_callable(tool, False).__func__ is Direct._run
-        assert example._execution_callable(tool, True).__func__ is Direct._arun
+        assert _adapter()._execution_callable(tool, False).__func__ is Direct._run
+        assert _adapter()._execution_callable(tool, True).__func__ is Direct._arun
 
     def test_the_reserved_names_are_the_sdks_own(self, example):
         from langchain_core.tools.base import FILTERED_ARGS
 
-        assert example._RESERVED == frozenset(FILTERED_ARGS) == {"run_manager", "callbacks"}
+        assert _adapter()._RESERVED == frozenset(FILTERED_ARGS) == {"run_manager", "callbacks"}
 
     def test_a_positional_only_callable_parameter_is_refused(self, example):
         from langchain_core.tools import StructuredTool

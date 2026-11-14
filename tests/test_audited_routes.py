@@ -48,6 +48,11 @@ ROUTES = {
 #: demonstration that imports the package, and the checks below read the package: the
 #: module that decides, the module that records, and the name the example must import.
 PACKAGED = {
+    "langgraph_gate.py": (
+        "adapters/langgraph/src/recusal_langgraph/_gate.py",
+        "adapters/langgraph/src/recusal_langgraph/_audit.py",
+        "recusal_langgraph",
+    ),
     "openai_agents_gate.py": (
         "adapters/openai-agents/src/recusal_openai_agents/_gate.py",
         "adapters/openai-agents/src/recusal_openai_agents/_audit.py",

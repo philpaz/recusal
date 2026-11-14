@@ -8,9 +8,10 @@ own tool call id, so a quiet edit, a reordering, or a dropped entry is detectabl
 ``recusal audit verify``. The log holds a SHA-256 fingerprint of each call's arguments,
 never the arguments themselves.
 
-The decision logic is the one in langgraph_gate.py: ``recusal_audited_gate(policy, log)``
-and ``recusal_audited_agate(policy, log)`` call the same ``_judge`` with the recording
-arguments passed through to ``recusal.claude_code.decide``, which writes the entry before
+The audited gate is the ``recusal-langgraph`` package (``adapters/langgraph`` in this
+repository): ``recusal_audited_gate(policy, log)`` and ``recusal_audited_agate(policy,
+log)`` are imported from it. They call the plain gate's own judging function with the
+recording arguments passed through to ``recusal.decide``, which writes the entry before
 returning. If the log cannot be written the decision becomes a deny, so nothing runs
 unrecorded.
 
@@ -53,12 +54,21 @@ except ImportError as exc:
         f"langgraph=={LANGGRAPH_VERSION} langchain-core=={LANGCHAIN_CORE_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-langgraph` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "langgraph", "src"))
+
+from recusal_langgraph import (  # noqa: E402
+    SURFACE,
+    Policy,
+    recusal_audited_agate,
+    recusal_audited_gate,
+)
 
 from examples.langgraph_gate import (  # noqa: E402
     EXECUTED,
-    Policy,
-    _judge,
     echo,
     run_in_graph,
     run_in_graph_async,
@@ -67,66 +77,7 @@ from examples.langgraph_gate import (  # noqa: E402
 )
 from recusal.audit import AuditLog  # noqa: E402
 
-#: The surface label every entry carries: the runtime that adjudicated, LangGraph's ToolNode.
-SURFACE = "langgraph.toolnode"
-
-
-def _recording(
-    request,
-    actor: Optional[str],
-    control: Optional[dict[str, Any]],
-    log: AuditLog,
-    surface: str = SURFACE,
-):
-    """The recording arguments for one call, built in one place for both gates."""
-    return {
-        "audit": log,
-        "surface": surface,
-        "tool_use_id": request.tool_call["id"],
-        "actor": actor,
-        "control": control,
-    }
-
-
-def recusal_audited_gate(
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-    surface: str = SURFACE,
-):
-    """Return a synchronous ToolNode hook that records, then gates, each call.
-
-    ``surface`` names the runtime on the record; another host of the same hook
-    (examples/langchain_agent_audit.py, LangChain's ``create_agent``) passes its own."""
-
-    def gate(request, execute):
-        refusal, judged = _judge(
-            request, policy, **_recording(request, actor, control, log, surface)
-        )
-        return refusal if refusal is not None else execute(judged)
-
-    return gate
-
-
-def recusal_audited_agate(
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-    surface: str = SURFACE,
-):
-    """Return an asynchronous ToolNode hook for awrap_tool_call, same logic as the sync one."""
-
-    async def gate(request, execute):
-        refusal, judged = _judge(
-            request, policy, is_async=True, **_recording(request, actor, control, log, surface)
-        )
-        return refusal if refusal is not None else await execute(judged)
-
-    return gate
+__all__ = ["SURFACE", "recusal_audited_agate", "recusal_audited_gate"]
 
 
 def run_calls(

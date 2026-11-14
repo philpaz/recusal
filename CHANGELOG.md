@@ -140,6 +140,15 @@ All notable changes to this project are documented here. The format follows
   the offline demonstration. `examples/openai_agents_mcp_gate.py`, still an example,
   imports the three helpers it shares with the function-tool gate from the package.
   Nothing under `recusal/` changed.
+- `adapters/langgraph`: the LangGraph `ToolNode` gate as its own distribution,
+  `recusal-langgraph` 0.1.0 (`from recusal_langgraph import recusal_gate, recusal_agate,
+  recusal_audited_gate, recusal_audited_agate, RecusalRefusal, SURFACE`). It depends on
+  `recusal>=0.14.0,<1`, `langgraph>=1.2.12,<2` and `langchain-core>=1.6.5,<2`, needs
+  Python 3.10+, and is not published to PyPI yet. The gate's code moved out of
+  `examples/langgraph_gate.py` and `examples/langgraph_audit.py` unchanged; those files
+  import the package and keep the offline demonstration. The LangChain `create_agent`
+  examples, which wrap the same hooks, are unchanged and reach the package through those
+  two files. Nothing under `recusal/` changed.
 
 ### Changed
 
