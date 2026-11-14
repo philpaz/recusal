@@ -111,6 +111,16 @@ All notable changes to this project are documented here. The format follows
   `tests/test_adapter_packages.py` holds that boundary. A new CI job builds the kernel
   and the adapter with the hash-locked toolchain, installs both wheels in a clean
   environment and runs the adapter's smoke test from outside the checkout.
+- `adapters/openai`: the gate for a Responses or Chat Completions loop you own as its own
+  distribution, `recusal-openai` 0.1.0 (`from recusal_openai import gate_function_calls,
+  gate_tool_calls, judge_and_run, audited_function_calls, audited_tool_calls,
+  SURFACE_RESPONSES, SURFACE_CHAT`). It depends on `recusal>=0.14.0,<1` and
+  `openai>=3.34.0,<4`, needs Python 3.10+, and is not published to PyPI yet. The gate's
+  code moved out of `examples/openai_responses_gate.py` and
+  `examples/openai_responses_audit.py` unchanged; those files import the package and
+  keep the offline demonstration. Nothing under `recusal/` changed. The same locks and
+  the same kind of CI job (build, install both wheels, smoke test from outside the
+  checkout) cover it.
 
 ### Changed
 

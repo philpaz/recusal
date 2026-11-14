@@ -46,8 +46,9 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text, f"{path.name}: {pin}"
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for pin in expected:
-        assert ci.count(pin) == 2, pin
+    # the two example jobs pin both; the recusal-openai wheel job pins the SDK a third time
+    assert ci.count("openai-agents==0.24.0") == 2
+    assert ci.count("openai==3.34.0") == 3
 
 
 @pytest.mark.skipif(

@@ -9,11 +9,11 @@ own call id, so a quiet edit, a reordering, or a dropped entry is detectable wit
 ``recusal audit verify``. The log holds a SHA-256 fingerprint of each call's arguments,
 never the arguments themselves.
 
-The decision logic is the one in openai_responses_gate.py: ``audited_function_calls`` and
-``audited_tool_calls`` call ``gate_function_calls`` and ``gate_tool_calls`` with the
-recording arguments passed through to ``recusal.decide``, which writes the entry before
-returning. If the log cannot be written the decision becomes a deny, so nothing runs
-unrecorded.
+The audited loop is the ``recusal-openai`` package (``adapters/openai`` in this repository):
+``audited_function_calls`` and ``audited_tool_calls`` are imported from it. They call
+``gate_function_calls`` and ``gate_tool_calls`` with the recording arguments passed through
+to ``recusal.decide``, which writes the entry before returning. If the log cannot be
+written the decision becomes a deny, so nothing runs unrecorded.
 
 What each entry is bound to:
 
@@ -59,76 +59,43 @@ if sys.version_info < (3, 10):
     raise SystemExit(2)
 
 try:
-    from openai.types.chat import ChatCompletion
-    from openai.types.responses import Response
+    import openai  # noqa: F401, the package this example demonstrates needs it
 except ImportError as exc:
     raise SystemExit(f"Install the example dependency first: openai=={OPENAI_VERSION}") from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-openai` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai", "src"))
+
+from recusal_openai import (  # noqa: E402
+    SURFACE_CHAT,
+    SURFACE_RESPONSES,
+    Policy,
+    Tools,
+    audited_function_calls,
+    audited_tool_calls,
+)
 
 from examples.openai_responses_gate import (  # noqa: E402
     CALLS,
     EXECUTED,
     TOOLS,
-    Policy,
-    Tools,
     completion_with,
     function_call,
-    gate_function_calls,
-    gate_tool_calls,
     response_with,
     sql_scope_policy,
     tool_call,
 )
 from recusal.audit import AuditLog  # noqa: E402
 
-#: The surface labels: which API shape's loop adjudicated the call.
-SURFACE_RESPONSES = "openai.responses.function_call"
-SURFACE_CHAT = "openai.chat_completions.tool_call"
-
-
-def audited_function_calls(
-    response: Response,
-    tools: Tools,
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> list[dict[str, Any]]:
-    """Responses API: ``gate_function_calls`` with every call recorded under its ``call_id``."""
-    return gate_function_calls(
-        response,
-        tools,
-        policy,
-        audit=log,
-        surface=SURFACE_RESPONSES,
-        actor=actor,
-        control=control,
-    )
-
-
-def audited_tool_calls(
-    completion: ChatCompletion,
-    tools: Tools,
-    policy: Policy,
-    log: AuditLog,
-    *,
-    choice: Optional[int] = None,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> list[dict[str, Any]]:
-    """Chat Completions: ``gate_tool_calls`` with every call recorded under its ``id``."""
-    return gate_tool_calls(
-        completion,
-        tools,
-        policy,
-        choice=choice,
-        audit=log,
-        surface=SURFACE_CHAT,
-        actor=actor,
-        control=control,
-    )
+__all__ = [
+    "SURFACE_CHAT",
+    "SURFACE_RESPONSES",
+    "audited_function_calls",
+    "audited_tool_calls",
+]
 
 
 def run_calls(

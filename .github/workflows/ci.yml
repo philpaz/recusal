@@ -416,6 +416,32 @@ jobs:
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/pydantic-ai/smoke_test.py"
 
+  # The same proof for recusal-openai, the gate for a Responses or Chat Completions loop.
+  adapter-openai-wheel:
+    name: recusal-openai wheel (build, install, smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the locked toolchain (--require-hashes)
+        run: python -m pip install --require-hashes -r release-requirements.txt
+      - name: Build the kernel and the adapter with no uncontrolled isolation env
+        run: |
+          python -m build --no-isolation --outdir dist-adapters .
+          python -m build --no-isolation --outdir dist-adapters adapters/openai
+      - name: Check metadata
+        run: python -m twine check dist-adapters/*
+      - name: Install both wheels and the pinned SDK into a clean environment
+        run: |
+          python -m venv /tmp/adapter
+          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai-*.whl openai==3.34.0
+      - name: Smoke test the installed wheel from outside the checkout
+        run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai/smoke_test.py"
+
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK
   # and makes the skip a failure, so the printed recipe runs on every pull request.

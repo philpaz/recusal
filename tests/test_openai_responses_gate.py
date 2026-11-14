@@ -391,10 +391,13 @@ class TestOpenAIResponsesGate:
         assert ex.EXECUTED == []
 
     def test_an_answer_for_a_call_that_was_not_made_is_refused(self, ex):
+        # the check lives in the package; loading the example put the in-tree one on the path
+        adapter = importlib.import_module("recusal_openai._gate")
+        assert "adapters" in Path(adapter.__file__).parts, adapter.__file__
         with pytest.raises(ValueError, match="calls \\['a'\\] but answers \\['a', 'ghost'\\]"):
-            ex._check_answered_once(["a"], ["a", "ghost"])
+            adapter._check_answered_once(["a"], ["a", "ghost"])
         with pytest.raises(ValueError, match="answers \\['a'\\]"):
-            ex._check_answered_once(["a", "b"], ["a"])
+            adapter._check_answered_once(["a", "b"], ["a"])
 
     # --- the answers are what the SDK will accept -----------------------------------------
 

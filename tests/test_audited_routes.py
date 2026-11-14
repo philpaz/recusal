@@ -48,6 +48,11 @@ ROUTES = {
 #: demonstration that imports the package, and the checks below read the package: the
 #: module that decides, the module that records, and the name the example must import.
 PACKAGED = {
+    "openai_responses_gate.py": (
+        "adapters/openai/src/recusal_openai/_gate.py",
+        "adapters/openai/src/recusal_openai/_audit.py",
+        "recusal_openai",
+    ),
     "pydantic_ai_gate.py": (
         "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py",
         "adapters/pydantic-ai/src/recusal_pydantic_ai/_audit.py",

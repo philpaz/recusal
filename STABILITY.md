@@ -137,7 +137,8 @@ latest lane stays red through a whole minor release of Recusal, or whose framewo
 longer maintained, goes back from Tested to Wanted, and the changelog says so.
 
 **Adapter packages.** An integration can also be published as its own distribution
-under `adapters/`, such as `adapters/pydantic-ai` (`recusal-pydantic-ai`). An adapter
+under `adapters/`: `adapters/pydantic-ai` (`recusal-pydantic-ai`) and `adapters/openai`
+(`recusal-openai`) so far. An adapter
 package is outside the frozen list above, like the example it came from, and it has
 its own version: a framework's breaking change is answered by a release of that
 adapter, never by a release of `recusal`. Its public names are the ones in its

@@ -20,6 +20,7 @@ ADAPTERS = ROOT / "adapters"
 #: Every adapter package: directory, distribution name, import name, the framework's
 #: distribution it must depend on.
 PACKAGES = {
+    "openai": ("recusal-openai", "recusal_openai", "openai"),
     "pydantic-ai": ("recusal-pydantic-ai", "recusal_pydantic_ai", "pydantic-ai-slim"),
 }
 

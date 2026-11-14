@@ -227,7 +227,7 @@ SHARED = {
 USERS = {
     "crewai_gate.py": {"json_data", "supported_annotation"},
     "google_adk_gate.py": {"unsupported_signature"},
-    "openai_responses_gate.py": {"unsupported_signature"},
+    "adapters/openai/src/recusal_openai/_gate.py": {"unsupported_signature"},
     "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
 }
 
