@@ -19,6 +19,11 @@ What each one gates, and what its hook cannot see, is in its own README. How the
 relate to the kernel is in
 [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md#adapter-packages).
 
+Every package ships inline types (`py.typed`). On every pull request the installed
+wheel is type-checked with mypy against its framework's own types, with function
+bodies checked whether or not they are annotated. Not every function is annotated, so
+some of what a package returns is typed as `Any`.
+
 **None is published to PyPI yet.** Until one is, install it from this repository, as its
 README shows.
 
@@ -61,8 +66,9 @@ it requires is there. Release `recusal-langgraph` before `recusal-langchain`, an
 - the full suite, lint, format and type checks at the release commit, then the adapter's
   own tests with its pinned framework installed, where none may skip;
 - a hash-locked build in the reusable `build-adapter-dist.yml` workflow, which also
-  installs the built wheel in a clean environment and runs the adapter's `smoke_test.py`
-  from outside the checkout, then records an SBOM and a build-provenance attestation;
+  installs the built wheel in a clean environment, runs the adapter's `smoke_test.py`
+  from outside the checkout and type-checks the installed package, then records an SBOM
+  and a build-provenance attestation;
 - Sigstore signing, with the bundles attached to the GitHub Release;
 - publication to PyPI by trusted publishing. A version already on PyPI is a hard failure.
 

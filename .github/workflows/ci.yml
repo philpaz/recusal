@@ -415,6 +415,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_pydantic_ai-*.whl pydantic-ai-slim==2.64.0
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/pydantic-ai/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
 
   # The same proof for recusal-openai, the gate for a Responses or Chat Completions loop.
   adapter-openai-wheel:
@@ -441,6 +447,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai-*.whl openai==3.34.0
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai
 
   # The same proof for recusal-google-adk.
   adapter-google-adk-wheel:
@@ -467,6 +479,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_google_adk-*.whl google-adk==2.13.0 google-genai==2.34.0
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/google-adk/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
 
   # The same proof for recusal-openai-agents.
   adapter-openai-agents-wheel:
@@ -493,6 +511,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl openai-agents==0.24.0 openai==3.34.0
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai-agents/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents
 
   # The same proof for recusal-langgraph.
   adapter-langgraph-wheel:
@@ -519,6 +543,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl langgraph==1.2.12 langchain-core==1.6.5
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/langgraph/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langgraph
 
   # The same proof for recusal-langchain.
   adapter-langchain-wheel:
@@ -546,6 +576,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl dist-adapters/recusal_langchain-*.whl langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/langchain/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langchain
 
   # The same proof for recusal-crewai.
   adapter-crewai-wheel:
@@ -572,6 +608,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_crewai-*.whl crewai==1.15.34
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/crewai/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
 
   # The same proof for recusal-openai-agents-mcp.
   adapter-openai-agents-mcp-wheel:
@@ -599,6 +641,12 @@ jobs:
           /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl dist-adapters/recusal_openai_agents_mcp-*.whl openai-agents==0.24.0 openai==3.34.0
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai-agents-mcp/smoke_test.py"
+      # The package ships py.typed, so the claim is checked on what was installed,
+      # against the framework's own types, from outside the checkout.
+      - name: Type-check the installed package
+        run: |
+          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents_mcp
 
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK

@@ -341,7 +341,7 @@ def gated_agent(
         "sub_agents": [gated_agent(sub, policy, recording) for sub in agent.sub_agents]
     }
     if isinstance(agent, LlmAgent):
-        tools = []
+        tools: list[Any] = []
         for tool in agent.tools:
             if isinstance(tool, AgentTool):
                 tools.append(

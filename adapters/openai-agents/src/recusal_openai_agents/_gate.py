@@ -281,7 +281,9 @@ def _guardrail_for(policy: Policy, holder: list, recording: Optional[Recording] 
         return ToolGuardrailFunctionOutput.allow()
 
     gate.recusal_gate = True  # type: ignore[attr-defined]
-    return tool_input_guardrail(gate, name=GUARDRAIL_NAME)
+    # the decorator form: the SDK types the function and the name as separate overloads,
+    # and builds the same ToolInputGuardrail either way
+    return tool_input_guardrail(name=GUARDRAIL_NAME)(gate)
 
 
 def recusal_guardrail(policy: Policy):

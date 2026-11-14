@@ -179,8 +179,11 @@ def gate_function_calls(
                 f"Recusal refused output item of type {item_type!r}: "
                 "this adapter handles function_call items only"
             )
-        call_id = _require_id(getattr(item, "call_id", None), f"function_call {item.name!r}")
-        calls.append((call_id, item.name, item.arguments))
+        # the type check above is on the item's ``type`` string, which a type checker cannot
+        # use to narrow the SDK's union of output items; from here it is a function call
+        call: Any = item
+        call_id = _require_id(getattr(call, "call_id", None), f"function_call {call.name!r}")
+        calls.append((call_id, call.name, call.arguments))
     call_ids = [call_id for call_id, _, _ in calls]
     _check_ids(call_ids)
     # pass 2: judge and run each call, answering it under its own id

@@ -30,6 +30,7 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
 ]
 dependencies = [
     # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.

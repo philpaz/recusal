@@ -131,13 +131,13 @@ def _canonical_field(field: FieldInfo) -> FieldInfo:
         extra["description"] = field.description
     if field.title is not None:
         extra["title"] = field.title
+    # Pydantic types a field's annotation as optional; a field read from a model class has one
+    annotation: Any = field.annotation
     if field.is_required():
         if extra:
-            return FieldInfo.from_annotated_attribute(field.annotation, Field(**extra))
-        return FieldInfo.from_annotation(field.annotation)
-    return FieldInfo.from_annotated_attribute(
-        field.annotation, Field(default=field.default, **extra)
-    )
+            return FieldInfo.from_annotated_attribute(annotation, Field(**extra))
+        return FieldInfo.from_annotation(annotation)
+    return FieldInfo.from_annotated_attribute(annotation, Field(default=field.default, **extra))
 
 
 def _unsupported_field(name: str, field: FieldInfo) -> Optional[str]:

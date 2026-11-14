@@ -111,6 +111,21 @@ class TestOpenAIAgentsMcpGate:
         text = _text(outputs["c1"])
         assert text.startswith(REFUSED) and "top-level WHERE" in text
 
+    def test_a_refusal_is_an_mcp_error_result_and_an_allowed_call_is_not(self, example):
+        """The gated ``call_tool`` answers a refused call with an MCP result flagged as an
+        error, carrying the reason; an allowed call's result comes back from the server,
+        unflagged. Read by the wire name, ``isError``, which is what a client sees."""
+        import asyncio
+
+        example.CALLED.clear()
+        server = example.gate_mcp_server(example.InProcessMCPServer(), example.sql_scope_policy)
+        refused = asyncio.run(server.call_tool("run_sql", {"sql": DELETE}))
+        allowed = asyncio.run(server.call_tool("run_sql", {"sql": SELECT}))
+        assert refused.model_dump(by_alias=True)["isError"] is True
+        assert refused.content[0].text.startswith("Recusal refused `run_sql` [FAIL]")
+        assert not allowed.model_dump(by_alias=True).get("isError")
+        assert example.CALLED == [("db", "run_sql", {"sql": SELECT})]
+
     def test_several_calls_in_one_turn_are_gated_separately(self, example):
         outputs, called = example.run_calls(self.three_calls())
         assert _text(outputs["c1"]) == "hello"

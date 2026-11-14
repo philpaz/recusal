@@ -201,7 +201,12 @@ def gate_mcp_server(
         else:
             reason = _refusal_for_call(tool_name, arguments, policy, **record)
         if reason is not None:
-            return CallToolResult(content=[TextContent(type="text", text=reason)], isError=True)
+            # ``isError`` is the field's name on the wire, which MCP's model accepts as an
+            # alias; a type checker knows only the Python name, ``is_error``
+            return CallToolResult(
+                content=[TextContent(type="text", text=reason)],
+                isError=True,  # type: ignore[call-arg]
+            )
         if meta is None:
             return await original(tool_name, arguments)
         return await original(tool_name, arguments, meta=meta)
@@ -259,7 +264,8 @@ def gate_hosted_mcp(
     mismatch = _name_domain_refusal(policy, tool.tool_config.get("server_label"), "gate_hosted_mcp")
     if mismatch is not None:
         raise ValueError(mismatch)
-    config = {**tool.tool_config, "require_approval": "always"}
+    # the SDK's own typed dict, with one key replaced
+    config: Any = {**tool.tool_config, "require_approval": "always"}
     return dataclasses.replace(
         tool,
         tool_config=config,

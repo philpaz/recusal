@@ -191,6 +191,15 @@ All notable changes to this project are documented here. The format follows
   Each adapter's `tested-with.txt` holds the framework pins a release installs, equal to
   the pull request lane's. `adapters/README.md` has the steps. No adapter has been
   released, and the kernel's builder and its signing identity are unchanged.
+- The eight adapter packages ship inline types (`py.typed`, `Typing :: Typed`). Each
+  adapter's wheel job, and the release build, now type-checks the installed package with
+  mypy against its framework's own types, bodies of unannotated functions included.
+  Getting there took six typing-only changes in five packages and none in behaviour: an
+  `Any`-typed local where the SDK's types cannot follow a runtime check
+  (`recusal-openai`, `recusal-google-adk`, `recusal-crewai`,
+  `recusal-openai-agents-mcp`), the decorator form of `tool_input_guardrail`, which
+  builds the same guardrail (`recusal-openai-agents`), and one `type: ignore` where MCP's
+  model takes its error flag by its wire name. Not every function is annotated.
 
 ### Fixed
 
@@ -199,6 +208,10 @@ All notable changes to this project are documented here. The format follows
   a thread pool, so the entries can land in any order and the test could fail on a correct
   run. It now asserts the refused entry is present and that there are three, without a
   position. No example or package behaviour changed.
+- `tests/test_openai_agents_mcp_gate.py`: nothing held that a refused local MCP call
+  comes back flagged as an MCP error; deleting the flag went unnoticed. A test now
+  holds that a refusal is an error result carrying the reason and an allowed call is
+  not. The gate's behaviour is unchanged.
 
 ### Changed
 

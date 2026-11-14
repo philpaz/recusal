@@ -211,6 +211,30 @@ def test_ci_builds_installs_and_smoke_tests_the_wheel(directory):
     assert (ADAPTERS / directory / "README.md").is_file()
 
 
+@pytest.mark.parametrize("directory", sorted(PACKAGES))
+def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(directory):
+    """``py.typed`` is a claim to every user's type checker. It is made only where CI
+    type-checks the installed package against the framework's own types, with the
+    checker the kernel pins."""
+    import tomllib
+
+    _, module, _ = PACKAGES[directory]
+    marker = ADAPTERS / directory / "src" / module / "py.typed"
+    assert marker.is_file() and marker.read_bytes() == b""
+    assert "Typing :: Typed" in _project(directory)["project"]["classifiers"]
+    kernel = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev = kernel["project"]["optional-dependencies"]["dev"]
+    pin = next(spec for spec in dev if spec.startswith("mypy"))
+    flags = "--check-untyped-defs --warn-unused-ignores --warn-redundant-casts"
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = ci.split(f"  adapter-{directory}-wheel:\n", 1)[1].split("\n  # ", 1)[0]
+    assert f'/tmp/adapter/bin/pip install --quiet "{pin}"' in job
+    assert f"cd /tmp && /tmp/adapter/bin/python -m mypy {flags} -p {module}\n" in job
+    build = (ROOT / ".github" / "workflows" / "build-adapter-dist.yml").read_text("utf-8")
+    assert f'/tmp/wheelcheck/bin/pip install --quiet "{pin}"' in build
+    assert f'-m mypy {flags} -p "$MODULE"' in build
+
+
 def _table(rel):
     text = (ROOT / rel).read_text(encoding="utf-8")
     return text.split("<!-- adapter-packages:start -->", 1)[1].split(

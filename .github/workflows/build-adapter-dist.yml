@@ -113,6 +113,15 @@ jobs:
           fi
           (cd /tmp && /tmp/wheelcheck/bin/python "$GITHUB_WORKSPACE/adapters/$DIRECTORY/smoke_test.py")
 
+      # The wheel ships py.typed: check the installed package against the
+      # framework's own types, the same check the pull request lane runs.
+      - name: Type-check the built wheel as installed
+        env:
+          MODULE: ${{ steps.adapter.outputs.module }}
+        run: |
+          /tmp/wheelcheck/bin/pip install --quiet "mypy>=1.8,<2"
+          (cd /tmp && /tmp/wheelcheck/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p "$MODULE")
+
       # Supply-chain records for the exact bytes that ship (stated narrowly: the SBOM
       # catalogs the built distributions, and the attestation binds them to this
       # workflow run's provenance; neither makes the build byte-reproducible).
