@@ -89,7 +89,7 @@ def test_every_place_that_says_the_adapters_are_not_on_pypi_says_it_together():
 def test_the_contents_line_links_sections_that_exist_in_this_order():
     line = README.split("**Contents:**", 1)[1].split("\n\n", 1)[0]
     anchors = re.findall(r"\]\(#([a-z0-9-]+)\)", line)
-    assert len(anchors) == 10 and len(set(anchors)) == 10
+    assert len(anchors) == 11 and len(set(anchors)) == 11
     headings = re.findall(r"^## (.+)$", README, re.M)
     slugs = [
         re.sub(r"[^\w\- ]", "", re.sub(r"[`*_]", "", h).lower()).replace(" ", "-") for h in headings

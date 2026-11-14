@@ -43,6 +43,10 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 - **[COOKBOOK](COOKBOOK.md)**: copy-paste policies for the actions people actually gate:
   destructive shell, unscoped SQL, secret-file writes, wrong-subject writes, egress
   allowlists, injection quarantine, action budgets, quality gates. Lift one and adapt it.
+- **[FRAMEWORKS](FRAMEWORKS.md)**: each framework gate in detail (LangGraph, LangChain,
+  the OpenAI Agents SDK and its MCP tools, the OpenAI API, Google ADK, CrewAI, Pydantic
+  AI): where it attaches, what it hands the policy, what it refuses and what it cannot
+  see.
 - **[Adapter packages](../adapters/README.md)**: the eight installable gates, one per
   framework (LangGraph, LangChain, the OpenAI API and Agents SDK, Google ADK, CrewAI,
   Pydantic AI), which ones build on another, and how each is built, signed and

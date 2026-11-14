@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650" width="1200" height="650" role="img" aria-labelledby="title desc">
+<title id="title">recusal: evidence in, one verdict out</title>
+<desc id="desc">A proposed tool call goes to checks, which return findings, and compute_verdict folds them into one verdict. A worst finding of WARNING or INFO gives PASS. A worst finding of ERROR gives RETRY. A worst finding of CRITICAL gives FAIL. The verdict drives the gate, the audit log and the failure classifier. No model is in the decision path.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6f7791"/></marker>
+</defs>
+<rect width="1200" height="650" fill="#131829"/>
+<rect x="22" y="22" width="1156" height="606" fill="none" stroke="#4a3640" stroke-width="1.5"/>
+<text x="70" y="92" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="19" letter-spacing="6" fill="#c1553a">EVIDENCE IN · ONE VERDICT OUT</text>
+<text x="1130" y="92" text-anchor="end" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" letter-spacing="3" fill="#9aa0b4">NO MODEL IN THE DECISION PATH</text>
+<rect x="70" y="150" width="300" height="76" rx="6" fill="#1b2238" stroke="#6f7791" stroke-width="1.2"/>
+<text x="220" y="182" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="18" fill="#efe7d8">a proposed tool call</text>
+<text x="220" y="207" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="13" fill="#9aa0b4">the tool name and its arguments</text>
+<rect x="450" y="150" width="300" height="76" rx="6" fill="#1b2238" stroke="#6f7791" stroke-width="1.2"/>
+<text x="600" y="182" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="18" fill="#efe7d8">checks</text>
+<text x="600" y="207" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="13" fill="#9aa0b4">your policy returns findings</text>
+<path d="M370 188H446" fill="none" stroke="#6f7791" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="830" y="150" width="300" height="76" rx="6" fill="#1b2238" stroke="#6f7791" stroke-width="1.2"/>
+<text x="980" y="182" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="18" fill="#efe7d8">compute_verdict</text>
+<text x="980" y="207" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="13" fill="#9aa0b4">the worst finding decides</text>
+<path d="M750 188H826" fill="none" stroke="#6f7791" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M980 226V280" fill="none" stroke="#6f7791" stroke-width="1.6"/>
+<path d="M240 280H980" fill="none" stroke="#6f7791" stroke-width="1.6"/>
+<path d="M240 280V314" fill="none" stroke="#6f7791" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="70" y="318" width="340" height="176" rx="8" fill="#1b2238" stroke="#6f7791" stroke-width="1.2"/>
+<text x="98" y="384" font-family="Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif" font-size="46" font-weight="bold" fill="#efe7d8">Pass</text>
+<text x="98" y="418" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="13" letter-spacing="1" fill="#9aa0b4">WORST FINDING: WARNING OR INFO</text>
+<text x="98" y="448" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">Proceed.</text>
+<text x="98" y="470" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">Warnings are recorded.</text>
+<path d="M600 280V314" fill="none" stroke="#6f7791" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="430" y="318" width="340" height="176" rx="8" fill="#1b2238" stroke="#6f7791" stroke-width="1.2"/>
+<text x="458" y="384" font-family="Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif" font-size="46" font-weight="bold" fill="#efe7d8">Retry</text>
+<text x="458" y="418" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="13" letter-spacing="1" fill="#9aa0b4">WORST FINDING: ERROR</text>
+<text x="458" y="448" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">Recoverable.</text>
+<text x="458" y="470" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">Retry once, with the failures.</text>
+<path d="M960 280V314" fill="none" stroke="#6f7791" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="790" y="318" width="340" height="176" rx="8" fill="#1b2238" stroke="#c1553a" stroke-width="2"/>
+<text x="818" y="384" font-family="Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif" font-size="46" font-weight="bold" fill="#efe7d8">Fail<tspan fill="#c1553a">.</tspan></text>
+<text x="818" y="418" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="13" letter-spacing="1" fill="#9aa0b4">WORST FINDING: CRITICAL</text>
+<text x="818" y="448" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">Terminal.</text>
+<text x="818" y="470" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">Refused before the call runs.</text>
+<text x="70" y="546" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="14" letter-spacing="3" fill="#c1553a">THE VERDICT DRIVES</text>
+<text x="330" y="546" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">gate<tspan fill="#9aa0b4">  allow or refuse the call</tspan></text>
+<text x="620" y="546" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">audit<tspan fill="#9aa0b4">  a hash-chained record</tspan></text>
+<text x="900" y="546" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" fill="#efe7d8">classify<tspan fill="#9aa0b4">  route the failure</tspan></text>
+<text x="600" y="600" text-anchor="middle" font-family="Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif" font-size="24" font-style="italic" fill="#9aa0b4">Same evidence, same verdict.</text>
+</svg>

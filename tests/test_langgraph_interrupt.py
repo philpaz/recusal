@@ -37,10 +37,14 @@ def test_interrupt_tests_are_in_the_langgraph_ci_jobs():
 
 
 def test_docs_explain_pause_resume_and_replay():
-    for path in (ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
+    # the explanation is in the framework detail and the cookbook; the README points at it
+    for path in (ROOT / "docs" / "FRAMEWORKS.md", ROOT / "docs" / "COOKBOOK.md"):
         text = path.read_text(encoding="utf-8")
         assert "judged again" in text, path
         assert "resume" in text, path
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "pause, resume and replay" in readme
+    assert "docs/FRAMEWORKS.md#langgraph" in readme
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")

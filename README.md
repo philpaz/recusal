@@ -28,7 +28,8 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 [Works with](#works-with) · [Adapters](#the-kernel-and-its-adapters) ·
 [Install](#install) · [Policies](#write-the-policy-two-postures-one-principle) ·
 [MCP](#mcp-tools-the-same-gate) · [Audit](#tamper-evident-audit) ·
-[How it works](#how-it-works) · [CI](#gate-your-ci) · [Documentation](#documentation)
+[How it works](#how-it-works) · [CI](#gate-your-ci) ·
+[Built to be checked](#built-to-be-checked) · [Documentation](#documentation)
 
 > **New on `main` since 0.14.0**
 >
@@ -196,6 +197,13 @@ certifies it.
 returns a finding) · **Claude-native** (a Claude Code hook, a Claude Messages API loop or
 Managed Agents as a tool gate) · **framework-neutral** (the core works in any agent loop;
 in LangGraph it is `ToolNode(tools, wrap_tool_call=recusal_gate(policy))`).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/philpaz/recusal/main/assets/gate-position.svg">
+    <img alt="Before the tool runs. An agent proposes a tool call. Recusal, your policy with no model in it, decides. With no objection the tool runs. On a failing finding, or when the policy itself raises, the call is refused: the tool never runs and the reason goes back to the model. Every decision can be written to a hash-chained audit log, if you pass one." src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/gate-position-light.svg" width="880">
+  </picture>
+</p>
 
 Recusal places deterministic policy between the proposed action and its execution. No
 model makes the decision: explicit findings fold into a **`PASS` / `RETRY` / `FAIL`**
@@ -541,20 +549,17 @@ One object model, one pipeline. Checks (or your own evidence) produce **Findings
 `compute_verdict` folds them into a **Verdict**; and the Verdict drives every surface:
 the gate refuses, the audit log records, the classifier routes.
 
-```
-  data / a proposed agent action / a tool call
-          │
-     [ checks ]            emit Findings               (recusal.checks, recusal.authorization, or your own)
-          │
-   compute_verdict()       fold findings → one Verdict (PASS / RETRY / FAIL)
-          │
-       Verdict
-        │   │   │
-        │   │   └─ recusal.classify        route the failure (retry / refuse / ask-human / …)
-        │   └───── recusal.audit           tamper-evident, hash-chained record
-        └───────── recusal.claude(_code)   allow or refuse the tool call
-                   recusal.gates           staged G0-G8 release decision
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/philpaz/recusal/main/assets/verdict-pipeline.svg">
+    <img alt="Evidence in, one verdict out. A proposed tool call goes to checks, which return findings, and compute_verdict folds them into one verdict. A worst finding of WARNING or INFO gives PASS: proceed. A worst finding of ERROR gives RETRY: recoverable, retry once with the failures. A worst finding of CRITICAL gives FAIL: terminal, refused before the call runs. The verdict drives the gate, the audit log and the failure classifier. No model is in the decision path." src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/verdict-pipeline-light.svg" width="880">
+  </picture>
+</p>
+
+The same verdict is read in four places: `recusal.claude` and `recusal.claude_code` allow
+or refuse the tool call, `recusal.audit` writes the hash-chained record,
+`recusal.classify` routes the failure (retry, refuse, ask a human), and `recusal.gates`
+applies it at each stage of a `G0`-`G8` release decision.
 
 | Module | What it is |
 |---|---|
@@ -664,246 +669,28 @@ loop whose only import is `recusal`. The same `compute_verdict` seam fits any ru
 lets you check a call before the tool runs; [Works with](#works-with) lists what is tested
 today and what is coming.
 
-For a concrete LangGraph integration, [`examples/langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py)
-puts existing `@tool` functions unchanged into LangGraph's `ToolNode` and attaches
-`recusal_gate(policy)` with `wrap_tool_call`, so `recusal.claude_code.decide` runs immediately
-before each individual tool call. The policy judges the invocation the tool executes:
-execution gets a per-call copy of the tool whose parse step validates the input once,
-after ToolNode has injected the host's state, store and runtime, holds the callable the
-route executes to the schema (a parameter the callable declares that the schema omits, and
-that neither the host nor the framework fills, refuses the call: Python would fill it after
-judgment and the policy would never see the value that runs), completes any schema
-parameter the framework's parse dropped (an `exclude=True` field, a root serializer)
-from that callable's default, projects every model-controlled argument field by field
-through a projection that runs no serializer of its own, decides, and passes those same
-completed objects to the function. Host arguments are never judged and never the model's
-to supply; a suppressed parameter with no default, a value the
-projection does not support, and a tool whose class or instance overrides the standard
-`invoke`/`run` lifecycle, are refused. Async graphs use `recusal_agate(policy)` with `awrap_tool_call`
-and `ainvoke`. It is offline and deterministic (no model or API key), requires
-**Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
-`langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
-and its Python 3.9+ support are unchanged. To put every one of those calls on the record,
-[`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) swaps in
-`recusal_audited_gate(policy, log)` (or `recusal_audited_agate` for `awrap_tool_call`): the
-same decision, written as a hash-chained `AuditLog` entry labeled `langgraph.toolnode` with
-LangGraph's tool call id and a fingerprint of the arguments, before the call runs or is
-refused, and an unwritable log refuses the call.
+Each framework below has a tested gate. The table gives the package, the exact versions
+it is tested with on every pull request, and a runnable offline example of the plain gate
+and of the gate with an audit log. What each gate hands the policy, what it refuses before
+the policy runs and what its hook cannot see is in
+[`docs/FRAMEWORKS.md`](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md), one section per framework.
 
-**Pause, resume and replay.** The gate decides at execution time, under the policy in force
-at that moment, so a decision made before a pause never becomes permission that outlives
-it. A review node that calls `interrupt()` before the `ToolNode` is judged once, on resume,
-as the call will run: a reviewer's edit to a `DELETE` is refused, and a policy revoked or a
-grant expired during the pause refuses the resumed call. A tool that calls `interrupt()`
-itself is judged before the pause and judged again on resume, one execution. A replay or
-fork from a checkpoint is a new execution and is judged again. One pattern is outside any
-pre-tool gate: a value supplied on resume and consumed inside the tool, which the gate never
-sees; route reviewer edits through a review node before the `ToolNode` instead. All of it is
-pinned, with zero executions on every refusal and the limitation asserted on purpose, in
-[`tests/test_langgraph_interrupt.py`](https://github.com/philpaz/recusal/blob/main/tests/test_langgraph_interrupt.py).
+<!-- framework-gates:start -->
+| Framework | Package | Tested with | Offline examples | More |
+|---|---|---|---|---|
+| LangGraph | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | `langgraph==1.2.12` `langchain-core==1.6.5` | [`langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py), [`langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph) |
+| LangChain `create_agent` | [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | `langgraph==1.2.12` `langchain-core==1.6.5` `langchain==1.4.3` | [`langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py), [`langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langchain-createagent) |
+| OpenAI Agents SDK, function tools | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | `openai-agents==0.24.0` `openai==3.34.0` | [`openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py), [`openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-function-tools) |
+| OpenAI Agents SDK, MCP tools | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | `openai-agents==0.24.0` `openai==3.34.0` | [`openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py), [`openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-mcp-tools) |
+| OpenAI API, your own loop | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | `openai==3.34.0` | [`openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py), [`openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-api-your-own-loop) |
+| Google ADK | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | `google-adk==2.13.0` `google-genai==2.34.0` | [`google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py), [`google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#google-adk) |
+| CrewAI | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | `crewai==1.15.34` | [`crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py), [`crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#crewai) |
+| Pydantic AI | [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | `pydantic-ai-slim==2.64.0` | [`pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py), [`pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#pydantic-ai) |
+<!-- framework-gates:end -->
 
-For LangChain's `create_agent` middleware, [`examples/langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py)
-reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a second policy
-implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.12`,
-`langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins). List the gate **last**
-in `middleware=`, so it judges the call exactly as it will run: the first middleware is the
-outermost, and one listed after the gate acts between the gate and the tool. An argument
-rewriter or a human-in-the-loop edit listed there still reaches the gate's judging copy,
-so the rewritten call is judged as rewritten; but a middleware that swaps the tool object
-for another, or answers in the tool's place (`LLMToolEmulator`), removes that copy and
-the call is never judged. Listed last, the gate judges whatever the others produced. For `agent.ainvoke`, use
-`wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
-To put every one of those calls on the record,
-[`examples/langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py)
-swaps in `audited_gate_middleware(policy, log)` (or `audited_agate_middleware` for
-`ainvoke`): the LangGraph audited gate as middleware, writing each decision as a
-hash-chained `AuditLog` entry labeled `langchain.create_agent` with the tool call id. A
-middleware listed after it that answers in the tool's place leaves that call unjudged and
-unrecorded, which is the same reason to list the gate last.
-
-For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py)
-attaches a tool input guardrail to each function tool through `gate_tools`, bound to that
-tool (a standalone `recusal_guardrail(policy)` is bound to nothing and refuses every
-call), which the SDK runs immediately before the tool executes. Function tools must have
-unique names: the SDK resolves a shared name last-wins, so `gate_tools`, `gated_agent`
-and `is_gated` refuse an agent whose tools share one. The guardrail judges the invocation the SDK
-prepares from the model's arguments, validated against the tool's parameter model with
-defaults filled and types coerced (`{"amount": "50"}` reaches an `int` parameter as
-`50`), and pins that invocation so the SDK executes exactly what was judged. A parameter
-model the SDK will not prepare, one that runs a custom validator or holds a nested
-application model, is refused, because the value it would execute cannot be judged; keep
-parameters data-only and validate inside the tool body. A refusal becomes the call's
-output, so the model reads Recusal's reason and the tool never runs. Gate a finished agent with
-`gated_agent(agent, policy)`: it returns a gated copy, and it refuses, rather than skips,
-anything the guardrail cannot see. That means hosted tools and the SDK's other non-function
-tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
-`agent.as_tool(...)` whose sub-agent is not itself gated, and `Agent` subclasses such as
-`SandboxAgent`. `Runner.run`, `Runner.run_streamed` and calls a person approved through
-`needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
-`ScriptedModel`, no API key) and needs Python 3.10+ with `openai-agents==0.24.0` and
-`openai==3.34.0` (example-only pins). To put every one of those calls on the record,
-[`examples/openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py)
-swaps in `audited_agent(agent, policy, log)` (or `audited_tools(tools, policy, log)`):
-the same decision, written as a hash-chained `AuditLog` entry labeled
-`openai_agents.tool_input_guardrail` with the SDK's tool call id and a fingerprint of the
-prepared invocation, before the call runs or is refused, and an unwritable log refuses
-the call. A call waiting for approval is recorded when it is about to run, so a call a
-person rejected is not on the log; it did not run.
-
-For the SDK's MCP tools, [`examples/openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py)
-covers the two paths that example names as out of its sight. A local MCP server
-(`mcp_servers=`) has its tools listed and renamed for the model at run time, prefixed,
-sanitized, hashed on collision or shortened, so a gate keyed on the public name judges a
-presentation of the capability. `gate_mcp_server(server, policy)` instead wraps the
-server's own `call_tool`, in place, the one point where the SDK hands over the server's
-tool name and the exact arguments it will run, after any approval; the policy judges a
-deep copy of those arguments and the server receives them as they were, so a policy's
-write to what it judged changes its copy, not the call. A refusal is returned
-as an MCP error result carrying the reason, so the model reads it and the server is never
-called. A policy keyed by tool name names the server's own tools. A policy written for
-Claude Code's names, `recusal.mcp.manifest_policy` or a composition carrying one, judges
-`mcp__<server>__<tool>`; hand it to either gate through `claude_named(server.name, policy)`,
-which presents each call under that name and keeps the manifest digest on the audit
-record. Unbound, the gate refuses the pairing at setup, because a membership check that
-never sees an MCP name would raise no objection. A composition carrying a bound policy
-is bound to the same server, in either order of wrapping; policies bound to different
-servers, or a bound policy beside an unbound manifest policy, cannot be composed.
-Hosted MCP runs on OpenAI's servers, and the one local point is the approval callback, so
-`gate_hosted_mcp(tool, policy)` returns a copy that requires approval for every call and
-answers a refusal as a rejection with Recusal's reason; a call OpenAI does not ask approval
-for is never seen, which is why a hosted tool with any other `require_approval` is reported
-ungated. `gated_agent(agent, policy)` there gates function tools, servers and hosted tools
-together. Same pins, same CI jobs, same offline fixtures, plus an in-process MCP server.
-To put every one of those calls on the record,
-[`examples/openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py)
-swaps in `audited_agent(agent, policy, log)`: one hash-chained `AuditLog` for the agent's
-three seams, each under its own label. A local server's entry is labeled
-`openai_agents.mcp.call_tool`, names the server as `control.mcp_server` and carries no
-call id, because the SDK hands `call_tool` none; a hosted approval's entry is labeled
-`openai_agents.hosted_mcp.approval` under the approval request's id; a function tool's is
-the function-tool example's. An unwritable log refuses the call or rejects the approval.
-A server is a shared connection and carries one recording, as it carries one policy.
-
-No framework at all, the OpenAI API called directly: [`examples/openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py)
-gates the loop your application already owns. `gate_function_calls(response, tools, policy)`
-judges every `function_call` item in a Responses API result and returns one
-`function_call_output` per call under its own `call_id`; `gate_tool_calls(completion, tools,
-policy)` does the same for the `tool_calls` of one Chat Completions choice, returning
-`role: "tool"` messages: a completion with several choices (`n > 1`) carries alternative
-messages, so it is refused until the application passes `choice=` for the one it selected.
-Each call is bound to the tool's signature with its defaults applied before judgment
-(argument binding, no type coercion on this path), so a default the model omitted is
-judged at the value the function would use, and the bound invocation is what runs; a
-tool with variadic, positional-only or unannotated parameters, or a default outside the
-JSON domain, is refused, as is a call that does not bind.
-Invalid JSON, non-object arguments, an unknown tool and a raising policy are refused, never
-run; an output item or tool call of a type the adapter does not handle raises, naming it,
-and a call without an id is refused because the SDK's answer types do not require one.
-Hosted tools (web search, file search, code interpreter, remote MCP) run on the provider's
-side and never reach this loop. Offline (`model_validate` builds real SDK objects, no key),
-Python 3.10+, tested with exactly `openai==3.34.0`. To put every one of those calls on the
-record, [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py)
-swaps in `audited_function_calls(response, tools, policy, log)` and
-`audited_tool_calls(completion, tools, policy, log)`: the same decision, written as a
-hash-chained `AuditLog` entry labeled `openai.responses.function_call` or
-`openai.chat_completions.tool_call` with the API's call id and a fingerprint of the bound
-invocation, defaults included, before the call runs or is refused, and an unwritable log
-refuses the call. A turn refused as a whole (an unhandled item type, a missing or
-duplicate id) raises before anything is judged, so it runs nothing and writes no entry.
-
-For Google's Agent Development Kit, [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py)
-uses the ADK's own `before_tool_callback`: `recusal_before_tool(policy)` judges each tool call
-immediately before the `LlmAgent` runs it and answers a refusal as the tool's response, so the
-model reads the reason and the tool never runs. The callback prepares the invocation the
-tool will execute: omitted parameters are completed from the function's defaults into the
-arguments, the tool's own preparation (coercion, when the ADK's argument validation is on)
-runs once on them, the converted values are written back and a copy is judged, so the
-policy sees exactly what the function receives. Only a `FunctionTool` keeping the stock
-preparation methods, with parameters annotated `str`, `int`, `float`, `bool`, optionals
-and lists or string-keyed dicts of those, is supported; a model-typed, `Annotated`,
-`Enum`, variadic or unannotated parameter is refused, and a validation failure is
-refused without the SDK's message. `gated_agent(agent, policy)` returns a gated
-copy with the gate as the last callback (a callback listed after it could change the
-arguments it judged) and gates `sub_agents` and the agent behind every `AgentTool` the same
-way; it refuses an agent with a `code_executor` or an `LlmAgent` subclass, which can run
-things the callback never sees. `RecusalPlugin(policy)` is the same gate as a runner plugin,
-covering every agent the runner drives, with an explicit ordering contract: plugin
-callbacks run before any agent's callbacks, so the plugin judges a call only when nothing
-it cannot see runs after it, and refuses the call, naming the fix, when the executing agent
-carries a `before_tool_callback` that is not a Recusal gate (use `gated_agent` for that
-agent) or a plugin listed after it overrides `before_tool_callback` (list `RecusalPlugin`
-last). Offline (a scripted model, no key), Python 3.11+,
-tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`. To put every one of
-those calls on the record, [`examples/google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py)
-swaps in `audited_agent(agent, policy, log)` (or `audited_plugin(policy, log)` for the
-runner): the same decision, written as a hash-chained `AuditLog` entry labeled
-`google_adk.before_tool_callback` with the ADK's function call id and a fingerprint of the
-prepared invocation, before the call runs or is refused, and an unwritable log refuses
-the call. A call another callback answered before the gate ran is not on the log; the
-tool did not run.
-
-For CrewAI, [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py) uses CrewAI's own tool-call
-hooks: `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each
-call and blocks a refusal, and an `after_tool_call` hook that replaces CrewAI's fixed
-"blocked by hook" line with the reason the before hook blocked on (kept per invocation and
-never judged again; on the sync Crew runner, elsewhere the fixed line stays), so the model
-reads why. The policy judges the invocation the tool receives, not the proposal: the hook
-completes omitted fields from the schema's defaults, runs the tool's own `args_schema`
-validation once, writes the validated values back into the dict CrewAI executes and judges
-a copy, so `charge(amount: int = 100)` proposed with `{}` is judged as `{"amount": 100}`.
-It supports a stock tool and schema only: a `CrewStructuredTool` and `BaseTool` that keep
-CrewAI's run and validation methods, and a schema that is a direct `BaseModel` with no
-members of its own, configuration limited to `extra` and `title`, and bare field
-declarations (a supported annotation among `str`, `int`, `float`, `bool`, optionals, lists
-and string-keyed dicts of those, an optional JSON default, description and title),
-which is what CrewAI generates for `@tool` functions and `BaseTool` subclasses. A
-customised schema (a validator, an overridden `model_validate`, an intermediate base, a
-field with `exclude`, `exclude_if`, `default_factory`, an alias or a constraint), an
-unsupported annotation, an unknown parameter, a missing required one and a validation
-failure (named by field, never with Pydantic's text) are refused before judgment. The
-registry is
-process-global: one install covers every agent, task and crew in the process, and the
-function it returns uninstalls both hooks. Install it after your other hooks, because a hook
-that runs after the gate can change the argument dict the gate judged; the tests show the
-bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.10+, tested with
-exactly `crewai==1.15.34`. To put every one of those calls on the record,
-[`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py)
-swaps in `install_audited_hooks(policy, log)`: the same decision, written as a hash-chained
-`AuditLog` entry labeled `crewai.before_tool_call` with a fingerprint of the prepared
-invocation, before the call runs or is blocked, and an unwritable log blocks the call.
-CrewAI's hook context carries no call id, so these entries carry none; the agent's role
-is recorded as `control.crewai_agent`. A call a hook registered before the gate blocked
-never reaches it and is not on the log.
-
-For Pydantic AI, [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) uses the
-framework's own `before_tool_execute` hook, which runs with the validated argument dict
-immediately before a tool runs. `RecusalGate(policy)` is a capability that judges each call
-there (the policy sees detached data; the tool runs with the validated dict itself,
-so a policy's write to its containers changes its observation, not the call) and raises
-`ToolFailed(reason)` on a refusal, so the model reads the reason as a failed
-tool result, the tool never runs, and no retry budget is spent; attach it with
-`Agent(..., capabilities=[RecusalGate(policy)])` or per run. It declares itself `innermost`,
-so Pydantic AI sorts it after every ordinary capability (a hook that ran after the gate could
-change the arguments it judged); only another `innermost` capability listed after it still
-runs after it, so list the gate last. `Hooks(before_tool_execute=recusal_before_tool_execute(policy))`
-is the same gate as a plain hook function with no ordering of its own. An agent called from
-inside a tool function runs under its own capabilities and needs its own gate; the tests show
-the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
-with exactly `pydantic-ai-slim==2.64.0`. To put every one of those calls on the record,
-[`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) swaps in
-`RecusalAuditedGate(policy, log=log)` (or `recusal_audited_before_tool_execute(policy, log)`
-for `Hooks`): the same decision, written as a hash-chained `AuditLog` entry labeled
-`pydantic_ai.before_tool_execute` with Pydantic AI's tool call id and a fingerprint of the
-arguments the tool is called with, before the call runs or is refused, and an unwritable
-log refuses the call. A call Pydantic AI rejects at validation never reaches the hook, so
-it does not run and is not on the log.
-
-Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts.
-Containers are detached by construction, without application copy methods or serializers.
-Models, dataclasses, Enum members and other objects refuse before policy evaluation;
-declare data-only parameters (a `str` or `int` in place of an Enum) and resolve
-application types inside the tool body. A detachment failure names
-only the exception class, never its text.
+LangGraph pause, resume and replay are covered in the
+[LangGraph detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph): the gate decides at execution time,
+under the policy in force when the call runs.
 
 Every adapter above calls `decide(..., safe_errors=True)`. When a policy, the fingerprint
 or the audit write raises, the model reads a stable code and the exception's class, for
@@ -1002,22 +789,53 @@ Default taxonomy (extend or replace it): `transient → retry` · `policy_violat
 `data_missing → fetch-data` · `spec_ambiguity → ask-human`. Unmatched failures fall back to
 `ask-human`; it never guesses. `classify_verdict(verdict)` routes a non-PASS verdict.
 
+## Built to be checked
+
+A gate is only worth trusting if you can check it. This is what the project does to hold
+itself to the rule it asks of agents, each with where to verify it:
+
+<!-- built-to-be-checked:start -->
+| | What | Verify it |
+|---|---|---|
+| **Tests** | More than 4,600, run on every pull request on Python 3.9 to 3.15, on Linux, macOS and Windows | [`ci.yml`](https://github.com/philpaz/recusal/blob/main/.github/workflows/ci.yml) |
+| **Runtime dependencies** | None. The kernel is standard library only | [`pyproject.toml`](https://github.com/philpaz/recusal/blob/main/pyproject.toml) |
+| **Framework gates** | Eight packages, each tested against a pinned framework version on every pull request and against the newest release weekly | [`compat.yml`](https://github.com/philpaz/recusal/blob/main/.github/workflows/compat.yml) |
+| **Every gate, one contract** | One conformance suite holds all of them to the same invariants | [`test_adapter_conformance.py`](https://github.com/philpaz/recusal/blob/main/tests/test_adapter_conformance.py) |
+| **Releases** | Built by a reusable workflow with provenance, signed with Sigstore, published by trusted publishing, and verified from the artifacts with negative controls | [`docs/VERIFY.md`](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md) |
+| **Its own repository** | Governed by its own hook, which refuses destructive tool calls in live sessions | [`docs/PROVEN.md`](https://github.com/philpaz/recusal/blob/main/docs/PROVEN.md) |
+| **Documents** | Tables, diagrams and links in this README are held to the code by tests, so they fail when they stop being true | [`tests/`](https://github.com/philpaz/recusal/blob/main/tests) |
+| **Limits** | What the gate does not defend against is written down, not left to be found | [`SECURITY.md`](https://github.com/philpaz/recusal/blob/main/SECURITY.md) |
+<!-- built-to-be-checked:end -->
+
 ## Documentation
 
-**New here?** The quick objections (*do I need this? doesn't Claude already do it? is it
-ready to use?*) are answered in the [`docs/FAQ.md`](https://github.com/philpaz/recusal/blob/main/docs/FAQ.md). The plain-terms "so
-what": [`docs/WHY.md`](https://github.com/philpaz/recusal/blob/main/docs/WHY.md).
+Everything is indexed in [`docs/`](https://github.com/philpaz/recusal/blob/main/docs/README.md). By what you are trying to do:
 
-**Full documentation index: [`docs/`](https://github.com/philpaz/recusal/blob/main/docs/README.md).** MCP governance in full,
-boundaries and residuals included: [`docs/MCP.md`](https://github.com/philpaz/recusal/blob/main/docs/MCP.md). Comparison with the
-landscape: [`docs/LANDSCAPE.md`](https://github.com/philpaz/recusal/blob/main/docs/LANDSCAPE.md). The principles and why each helps:
-[`CONSTITUTION.md`](https://github.com/philpaz/recusal/blob/main/CONSTITUTION.md). The contract: [`docs/EVIDENCE.md`](https://github.com/philpaz/recusal/blob/main/docs/EVIDENCE.md).
-Usage & extending: [`docs/HOWTO.md`](https://github.com/philpaz/recusal/blob/main/docs/HOWTO.md) · [`docs/EXTENDING.md`](https://github.com/philpaz/recusal/blob/main/docs/EXTENDING.md).
-Copy-paste policies: [`docs/COOKBOOK.md`](https://github.com/philpaz/recusal/blob/main/docs/COOKBOOK.md).
-A full worked configuration: [`docs/EXAMPLE.md`](https://github.com/philpaz/recusal/blob/main/docs/EXAMPLE.md).
-Proof it governs itself: [`docs/PROVEN.md`](https://github.com/philpaz/recusal/blob/main/docs/PROVEN.md).
-Verify the artifacts yourself: [`docs/VERIFY.md`](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md).
-What will not move under you, and what 1.0 has to earn: [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md).
+<!-- documentation:start -->
+| To | Read | What it is |
+|---|---|---|
+| **Decide whether you need it** | [`docs/FAQ.md`](https://github.com/philpaz/recusal/blob/main/docs/FAQ.md) | The questions people ask before adopting: do I need this, doesn't Claude already do it, is it ready. |
+|  | [`docs/WHY.md`](https://github.com/philpaz/recusal/blob/main/docs/WHY.md) | The long-form case, for the people who own the decision to run agents that take real actions. |
+|  | [`docs/LANDSCAPE.md`](https://github.com/philpaz/recusal/blob/main/docs/LANDSCAPE.md) | Where Recusal sits among frameworks, guardrails, evals and its closest peers. |
+| **Use it** | [`docs/HOWTO.md`](https://github.com/philpaz/recusal/blob/main/docs/HOWTO.md) | The integration paths: Claude Code hook, Messages API loop, Managed Agents, direct adjudication, audit. |
+|  | [`docs/FRAMEWORKS.md`](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md) | Each framework gate in detail: where it attaches, what it refuses, what it cannot see. |
+|  | [`adapters/README.md`](https://github.com/philpaz/recusal/blob/main/adapters/README.md) | The eight adapter packages, which build on another, and how each is released. |
+|  | [`docs/COOKBOOK.md`](https://github.com/philpaz/recusal/blob/main/docs/COOKBOOK.md) | Copy-paste policies for the actions people actually gate. |
+|  | [`docs/EXAMPLE.md`](https://github.com/philpaz/recusal/blob/main/docs/EXAMPLE.md) | One complete configuration for a real use case, end to end. |
+|  | [`docs/MCP.md`](https://github.com/philpaz/recusal/blob/main/docs/MCP.md) | MCP governance in full: pinning, verification, the call-time gate, every named residual. |
+|  | [`docs/EXTENDING.md`](https://github.com/philpaz/recusal/blob/main/docs/EXTENDING.md) | Write your own checks, bundle policies, add a gate for another framework. |
+| **Understand the design** | [`CONSTITUTION.md`](https://github.com/philpaz/recusal/blob/main/CONSTITUTION.md) | The four rules, and why each one helps. |
+|  | [`docs/EVIDENCE.md`](https://github.com/philpaz/recusal/blob/main/docs/EVIDENCE.md) | The contract: `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`. |
+|  | [`docs/ARCHITECTURE.md`](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md) | Dependency direction, the kernel and its adapters, the compatibility perimeter. |
+|  | [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md) | A reference architecture for an isolated enterprise deployment. A position; nothing in it is built. |
+| **Check it yourself** | [`docs/PROVEN.md`](https://github.com/philpaz/recusal/blob/main/docs/PROVEN.md) | Recusal governing its own repository: a real hook refusing real destructive calls, verbatim. |
+|  | [`docs/VERIFY.md`](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md) | Verify a release's provenance, signatures and PyPI bytes, with the negative controls. |
+|  | [`SECURITY.md`](https://github.com/philpaz/recusal/blob/main/SECURITY.md) | The threat model, what the gate does not defend against, and how to report a vulnerability. |
+|  | [`docs/REFERENCES.md`](https://github.com/philpaz/recusal/blob/main/docs/REFERENCES.md) | Primary sources for every empirical claim, with what each does and does not support. |
+| **Depend on it** | [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) | What is frozen, what each version number promises, and what 1.0 has to earn. |
+|  | [`CHANGELOG.md`](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md) | Every release, and what is on `main` but not yet released. |
+| **Contribute** | [`CONTRIBUTING.md`](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md) | The checks a change has to pass, and how to add a runtime. |
+<!-- documentation:end -->
 
 ## Development
 
