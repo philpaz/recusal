@@ -12,9 +12,10 @@ the unsafe or unapproved ones before the tool runs. No model makes that decision
 policy functions do.**
 
 It drops into Claude Code as a hook, [MCP tool calls included](#mcp-tools-the-same-gate),
-gates a Claude Messages API loop or any Python agent loop, and a
-[tested example](#any-agent-loop-no-claude-required) gates LangGraph's `ToolNode` with one
-argument. Zero runtime dependencies, Python 3.9+.
+and gates a Claude Messages API loop or any Python agent loop. For agent frameworks there
+are [eight adapter packages](#the-kernel-and-its-adapters), each tested against its
+framework: LangGraph, LangChain, the OpenAI API and Agents SDK, Google ADK, CrewAI and
+Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -22,6 +23,30 @@ argument. Zero runtime dependencies, Python 3.9+.
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 ![runtime deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
+
+**Contents:** [See it refuse](#see-it-refuse-20-seconds-no-api-key-no-clone) ·
+[Works with](#works-with) · [Adapters](#the-kernel-and-its-adapters) ·
+[Install](#install) · [Policies](#write-the-policy-two-postures-one-principle) ·
+[MCP](#mcp-tools-the-same-gate) · [Audit](#tamper-evident-audit) ·
+[How it works](#how-it-works) · [CI](#gate-your-ci) · [Documentation](#documentation)
+
+> **New on `main` since 0.14.0**
+>
+> - **Eight adapter packages**, one per agent framework, each a separate package with its
+>   own version: [the kernel and its adapters](#the-kernel-and-its-adapters).
+> - **Every framework gate can put its decisions on a hash-chained audit log**, through the
+>   same code path as the plain gate:
+>   [how a gate puts its decision on the record](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record).
+> - **A signed, verifiable release path for each adapter**, separate from the kernel's:
+>   [releasing an adapter](https://github.com/philpaz/recusal/blob/main/adapters/README.md#releasing-an-adapter-maintainer).
+> - **A reference architecture for an isolated enterprise deployment.** It is a position on
+>   how it would be built, and nothing in it is built yet:
+>   [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md).
+>
+> The adapters are not on PyPI yet and install from this repository. `recusal` 0.14.0 on
+> PyPI is unchanged by any of this: nothing in the kernel package has changed since it.
+> The full list is in the
+> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#unreleased).
 
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
@@ -102,6 +127,56 @@ exception is a hosted call the provider asks your code to approve first: the Ope
 SDK's hosted MCP approval callback is such a point, and
 [`examples/openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py) gates it, for
 the calls that are sent for approval and no others.
+
+## The kernel and its adapters
+
+> *The thing that generates the work must never certify it.*
+
+Recusal is built the way it asks you to build: the part that decides is kept apart from
+the part that does. `recusal` is the kernel. It holds the verdict, the audit log and the
+MCP pinning, and it depends on nothing. Each agent framework gets its own small package
+that carries a tool call from that framework's hook to the kernel and carries the answer
+back. An adapter has no verdict of its own: it refuses a call it cannot present to the
+kernel faithfully, and for every other call the kernel's decision is the decision. The
+kernel never imports an adapter.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/philpaz/recusal/main/assets/adapter-map.svg">
+    <img alt="One kernel, eight adapters. Each adapter package depends on recusal: recusal-crewai, recusal-google-adk, recusal-langchain, recusal-langgraph, recusal-openai, recusal-openai-agents, recusal-openai-agents-mcp and recusal-pydantic-ai. recusal-langchain also depends on recusal-langgraph, and recusal-openai-agents-mcp on recusal-openai-agents. The kernel depends on nothing." src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/adapter-map-light.svg" width="880">
+  </picture>
+</p>
+
+An arrow means "depends on". No arrow leaves the kernel, so a framework's breaking
+change is answered by a release of that framework's adapter, not by a release of the
+kernel.
+
+<!-- adapter-packages:start -->
+| Package | For | Import |
+|---|---|---|
+| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | every agent, task and crew in a CrewAI process | `from recusal_crewai import install_recusal_hooks` |
+| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | a LangChain `create_agent` agent | `from recusal_langchain import gate_middleware, agate_middleware` |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | a LangGraph `ToolNode` | `from recusal_langgraph import recusal_gate, recusal_agate` |
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
+| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | MCP tools on an OpenAI Agents SDK `Agent`: local servers and hosted MCP | `from recusal_openai_agents_mcp import gated_agent, gate_mcp_server` |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | a Pydantic AI `Agent` | `from recusal_pydantic_ai import RecusalGate` |
+<!-- adapter-packages:end -->
+
+
+Each package's README shows how to attach the gate, its audited form, and what its hook
+cannot see. Every package ships inline types, and is tested on each pull request against
+a pinned version of its framework and weekly against the newest release. How the
+packages are built, signed and released is in
+[`adapters/README.md`](https://github.com/philpaz/recusal/blob/main/adapters/README.md).
+
+None is on PyPI yet, so install from the repository, naming the package and its
+directory:
+
+```bash
+pip install "recusal-pydantic-ai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/pydantic-ai"
+```
 
 ## The problem
 
@@ -847,33 +922,6 @@ gate. A judged call is bound to the invocation the tool runs with, a call refuse
 judgment is still one entry, and an unwritable log refuses the call. The surface label
 and the call id each runtime gives the record are listed in
 [`docs/ARCHITECTURE.md`](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record).
-
-Some gates are also installable packages, so you import the gate instead of copying a
-file:
-
-<!-- adapter-packages:start -->
-| Package | For | Import |
-|---|---|---|
-| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
-| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | a Pydantic AI `Agent` | `from recusal_pydantic_ai import RecusalGate` |
-| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | a LangGraph `ToolNode` | `from recusal_langgraph import recusal_gate, recusal_agate` |
-| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | a LangChain `create_agent` agent | `from recusal_langchain import gate_middleware, agate_middleware` |
-| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | every agent, task and crew in a CrewAI process | `from recusal_crewai import install_recusal_hooks` |
-| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | MCP tools on an OpenAI Agents SDK `Agent`: local servers and hosted MCP | `from recusal_openai_agents_mcp import gated_agent, gate_mcp_server` |
-<!-- adapter-packages:end -->
-
-Each is a separate distribution with its own version and its framework's dependency;
-`recusal` itself stays zero-dependency. Each package's README shows its audited form
-and what its hook cannot see. None is on PyPI yet, so install from the repository,
-naming the package and its directory:
-
-```bash
-pip install "recusal-pydantic-ai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/pydantic-ai"
-```
-
-A runtime in the Works with table that is not listed here is still an example to copy.
 
 **What the gate guards, and what it doesn't.** It judges each call the model proposes, the
 tool name and its arguments, before that tool runs. A policy covers only the tools it names:

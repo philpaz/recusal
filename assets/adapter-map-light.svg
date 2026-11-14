@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 610" width="1200" height="610" role="img" aria-labelledby="title desc">
+<title id="title">recusal: one kernel, eight adapter packages</title>
+<desc id="desc">Each adapter package depends on the recusal kernel. recusal-langchain also depends on recusal-langgraph. recusal-openai-agents-mcp also depends on recusal-openai-agents. The kernel depends on nothing.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8b8894"/></marker>
+</defs>
+<rect width="1200" height="610" fill="#e9ebf0"/>
+<rect x="22" y="22" width="1156" height="566" fill="none" stroke="#d3c3c6" stroke-width="1.5"/>
+<text x="70" y="92" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="19" letter-spacing="6" fill="#b4443a">ONE KERNEL · EIGHT ADAPTERS</text>
+<text x="1130" y="92" text-anchor="end" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" letter-spacing="3" fill="#6b6470">AN ARROW MEANS DEPENDS ON</text>
+<rect x="70" y="150" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="220" y="183" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-langchain</text>
+<rect x="414" y="150" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="564" y="183" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-langgraph</text>
+<path d="M370 177H411" fill="none" stroke="#8b8894" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M714 177H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<path d="M220 204V217H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<rect x="70" y="230" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="220" y="263" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-openai-agents-mcp</text>
+<rect x="414" y="230" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="564" y="263" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-openai-agents</text>
+<path d="M370 257H411" fill="none" stroke="#8b8894" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M714 257H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<path d="M220 284V297H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<rect x="70" y="310" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="220" y="343" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-crewai</text>
+<rect x="414" y="310" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="564" y="343" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-google-adk</text>
+<path d="M714 337H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<path d="M220 364V377H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<rect x="70" y="390" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="220" y="423" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-openai</text>
+<rect x="414" y="390" width="300" height="54" rx="6" fill="#f4f5f8" stroke="#8b8894" stroke-width="1.2"/>
+<text x="564" y="423" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="17" fill="#1b1e29">recusal-pydantic-ai</text>
+<path d="M714 417H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<path d="M220 444V457H760" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<path d="M760 177V457" fill="none" stroke="#8b8894" stroke-width="1.6"/>
+<path d="M760 297H826" fill="none" stroke="#8b8894" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="830" y="202" width="300" height="190" rx="8" fill="#f4f5f8" stroke="#b4443a" stroke-width="2"/>
+<text x="980" y="286" text-anchor="middle" font-family="Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif" font-size="60" font-weight="bold" fill="#1b1e29">recusal<tspan fill="#b4443a">.</tspan></text>
+<text x="980" y="326" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="15" letter-spacing="2" fill="#6b6470">THE KERNEL</text>
+<text x="980" y="358" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="14" fill="#1b1e29">decides · records</text>
+<text x="980" y="380" text-anchor="middle" font-family="Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace" font-size="14" fill="#1b1e29">depends on nothing</text>
+<path d="M540 506H660" stroke="#b4443a" stroke-width="1.5"/>
+<text x="600" y="548" text-anchor="middle" font-family="Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif" font-size="26" font-style="italic" fill="#6b6470">The thing that generates the work must never certify it.</text>
+</svg>

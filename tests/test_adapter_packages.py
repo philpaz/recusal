@@ -273,6 +273,42 @@ def test_the_readme_table_lists_exactly_the_packages():
         assert f"from {module} import" in table, module
 
 
+def _diagram_edges(rel):
+    """The ``a --> b`` edges of the one Mermaid diagram in a document."""
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    blocks = re.findall(r"```mermaid\n(.*?)```", text, re.S)
+    assert len(blocks) == 1, f"{rel} has {len(blocks)} Mermaid diagrams"
+    return set(re.findall(r"^\s*([a-z0-9-]+) --> ([a-z0-9-]+)\s*$", blocks[0], re.M)), blocks[0]
+
+
+def test_the_dependency_diagram_is_the_packages_and_their_requirements():
+    """Every adapter points at the kernel, an adapter that requires another points at it,
+    and nothing points out of the kernel: the picture is the dependency metadata."""
+    edges, block = _diagram_edges("adapters/README.md")
+    expected = set()
+    for directory, (distribution, _module, _framework) in PACKAGES.items():
+        expected.add((distribution, "recusal"))
+        for requirement in _project(directory)["project"]["dependencies"]:
+            name = re.match(r"[A-Za-z0-9_.-]+", requirement).group(0)
+            if name.startswith("recusal-"):
+                expected.add((distribution, name))
+    assert edges == expected, sorted(edges ^ expected)
+    assert not [source for source, _target in edges if source == "recusal"]
+    for distribution, _module, _framework in PACKAGES.values():
+        assert distribution in block, distribution
+
+
+def test_the_readme_opening_counts_the_adapters_that_exist():
+    words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    opening = readme.split("## See it refuse", 1)[0]
+    assert f"[{words[len(PACKAGES)]} adapter packages](#the-kernel-and-its-adapters)" in opening
+    assert "## The kernel and its adapters\n" in readme
+    index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    assert f"the {words[len(PACKAGES)]} installable gates" in index
+    assert "(../adapters/README.md)" in index
+
+
 def test_negative_control_the_import_reader_sees_a_private_kernel_import(tmp_path):
     probe = tmp_path / "probe.py"
     probe.write_text("from recusal.claude_code import decide\nimport examples.x\n", "utf-8")

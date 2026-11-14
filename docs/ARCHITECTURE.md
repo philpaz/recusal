@@ -90,14 +90,14 @@ A framework gate starts as a tested example and can become its own distribution 
 <!-- adapter-packages:start -->
 | Package | Directory | Import | Framework dependency | Python |
 |---|---|---|---|---|
-| `recusal-openai` | `adapters/openai` | `recusal_openai` | `openai>=3.34.0,<4` | 3.10+ |
-| `recusal-pydantic-ai` | `adapters/pydantic-ai` | `recusal_pydantic_ai` | `pydantic-ai-slim>=2.64.0,<3` | 3.11+ |
-| `recusal-google-adk` | `adapters/google-adk` | `recusal_google_adk` | `google-adk>=2.13.0,<3` | 3.11+ |
-| `recusal-openai-agents` | `adapters/openai-agents` | `recusal_openai_agents` | `openai-agents>=0.24.0,<1` | 3.10+ |
-| `recusal-langgraph` | `adapters/langgraph` | `recusal_langgraph` | `langgraph>=1.2.12,<2` | 3.10+ |
-| `recusal-langchain` | `adapters/langchain` | `recusal_langchain` | `langchain>=1.4.3,<2` | 3.10+ |
 | `recusal-crewai` | `adapters/crewai` | `recusal_crewai` | `crewai>=1.15.34,<2` | 3.10+ |
+| `recusal-google-adk` | `adapters/google-adk` | `recusal_google_adk` | `google-adk>=2.13.0,<3` | 3.11+ |
+| `recusal-langchain` | `adapters/langchain` | `recusal_langchain` | `langchain>=1.4.3,<2` | 3.10+ |
+| `recusal-langgraph` | `adapters/langgraph` | `recusal_langgraph` | `langgraph>=1.2.12,<2` | 3.10+ |
+| `recusal-openai` | `adapters/openai` | `recusal_openai` | `openai>=3.34.0,<4` | 3.10+ |
+| `recusal-openai-agents` | `adapters/openai-agents` | `recusal_openai_agents` | `openai-agents>=0.24.0,<1` | 3.10+ |
 | `recusal-openai-agents-mcp` | `adapters/openai-agents-mcp` | `recusal_openai_agents_mcp` | `openai-agents>=0.24.0,<1` | 3.10+ |
+| `recusal-pydantic-ai` | `adapters/pydantic-ai` | `recusal_pydantic_ai` | `pydantic-ai-slim>=2.64.0,<3` | 3.11+ |
 <!-- adapter-packages:end -->
 
 The dependency points one way:

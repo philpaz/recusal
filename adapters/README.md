@@ -15,6 +15,30 @@ none of them and has no runtime dependencies.
 | `openai-agents-mcp` | `recusal-openai-agents-mcp` | `recusal-openai-agents` |
 | `pydantic-ai` | `recusal-pydantic-ai` | |
 
+```mermaid
+flowchart LR
+    subgraph adapters["Adapters: one package per framework, each with its own version"]
+        direction TB
+        recusal-langchain --> recusal-langgraph
+        recusal-openai-agents-mcp --> recusal-openai-agents
+        recusal-openai
+        recusal-google-adk
+        recusal-crewai
+        recusal-pydantic-ai
+    end
+    recusal-langgraph --> recusal
+    recusal-langchain --> recusal
+    recusal-openai-agents --> recusal
+    recusal-openai-agents-mcp --> recusal
+    recusal-openai --> recusal
+    recusal-google-adk --> recusal
+    recusal-crewai --> recusal
+    recusal-pydantic-ai --> recusal
+    recusal(["recusal<br/>the kernel: decides, records, depends on nothing"])
+```
+
+An arrow means "depends on". No arrow leaves the kernel.
+
 What each one gates, and what its hook cannot see, is in its own README. How the packages
 relate to the kernel is in
 [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md#adapter-packages).
