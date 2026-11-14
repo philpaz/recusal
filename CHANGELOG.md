@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- `assets/banner-gate.png`, `assets/banner-ledger.png` and `assets/banner-seal-light.png`:
+  three banner variants that no page, test, workflow or package in the repository
+  referenced. The banner the README shows, `banner-gate-strip.png` and its light variant,
+  is unchanged. The wheel never contained them. The source distribution carries the
+  `assets` directory, so the next release's will be smaller by these three files.
+
 ## [0.14.1] - 2026-11-14
 
 A PATCH release under `STABILITY.md` that changes no behaviour. The only line that differs
