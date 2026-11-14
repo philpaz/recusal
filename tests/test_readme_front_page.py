@@ -69,21 +69,36 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
     assert "Nothing in\nit is built, deployed or independently validated today" in enterprise
 
 
-def test_every_place_that_says_the_adapters_are_not_on_pypi_says_it_together():
-    """Publishing an adapter means changing all of these in one commit. While any one of
-    them still says "not on PyPI", every one of them does."""
-    places = {
-        "README note": "The adapters are not on PyPI yet" in _callout(),
-        "README section": "None is on PyPI yet" in README,
-        "adapters/README.md": "**None is published to PyPI yet.**"
-        in (ROOT / "adapters" / "README.md").read_text(encoding="utf-8"),
-        "docs/ARCHITECTURE.md": "None has been published yet."
-        in (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8"),
+def test_every_place_says_the_adapters_are_on_pypi_and_installs_them_by_name():
+    """All eight adapters are on PyPI. Each place that tells a reader how to get one says
+    so, each adapter's README gives its own ``pip install``, and none of them has gone
+    back to an install-from-repository line or to saying the package is unpublished."""
+    pages = {
+        "README.md": README,
+        "adapters/README.md": (ROOT / "adapters" / "README.md").read_text(encoding="utf-8"),
+        "docs/ARCHITECTURE.md": (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8"),
+        "docs/COOKBOOK.md": (ROOT / "docs" / "COOKBOOK.md").read_text(encoding="utf-8"),
     }
-    for directory in sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml")):
+    assert "> Each adapter is on PyPI under its own name and version." in _callout()
+    assert "Each is on PyPI under its own name." in README
+    assert "**Each is published to PyPI**" in pages["adapters/README.md"]
+    assert "Each is published to PyPI." in pages["docs/ARCHITECTURE.md"]
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert len(directories) == 8
+    for directory in directories:
         text = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
-        places[f"adapters/{directory}/README.md"] = "not yet published to PyPI" in text
-    assert len(set(places.values())) == 1, {k: v for k, v in places.items()}
+        pages[f"adapters/{directory}/README.md"] = text
+        assert f"```bash\npip install recusal-{directory}\n```" in text, directory
+    for name, text in pages.items():
+        flat = " ".join(text.split())
+        assert "git+https://github.com/philpaz/recusal" not in text, name
+        for stale in (
+            "not on PyPI",
+            "not yet published",
+            "published to PyPI yet",
+            "None has been published",
+        ):
+            assert stale not in flat, (name, stale)
 
 
 def test_the_contents_line_links_sections_that_exist_in_this_order():

@@ -150,8 +150,8 @@ AI's tool call id, and `recusal audit verify` catches an edited entry.
 
 Both gates are importable from the
 [`recusal-pydantic-ai`](../adapters/pydantic-ai) package (`from recusal_pydantic_ai
-import RecusalGate, RecusalAuditedGate`), a separate distribution that is not on PyPI
-yet; its README has the install line. The example files are the offline demonstration
+import RecusalGate, RecusalAuditedGate`), a separate distribution on PyPI
+(`pip install recusal-pydantic-ai`). The example files are the offline demonstration
 around it.
 
 > Tested versions of the core recipes (wrong-subject, destructive path, unscoped SQL,

@@ -48,8 +48,8 @@ wheel is type-checked with mypy against its framework's own types, with function
 bodies checked whether or not they are annotated. Not every function is annotated, so
 some of what a package returns is typed as `Any`.
 
-**None is published to PyPI yet.** Until one is, install it from this repository, as its
-README shows.
+**Each is published to PyPI** and installs by name, for example
+`pip install recusal-langgraph`. A package that requires another brings it along.
 
 ## Releasing an adapter (maintainer)
 
@@ -68,6 +68,11 @@ with the project name filled in:
 | Environment name | `pypi` |
 
 A pending publisher does not reserve the name. The name is claimed by the first release.
+
+PyPI refuses a second pending publisher whose owner, repository, workflow and
+environment match one that is still pending, so new adapters are registered and
+released one at a time: the first release turns the pending publisher into the
+project's own, and the next can then be registered.
 
 **Each release.**
 

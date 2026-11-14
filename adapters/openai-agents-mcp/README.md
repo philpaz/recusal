@@ -13,12 +13,10 @@ It builds on
 [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents),
 the function-tool gate, and depends on that package.
 
-**Status: not yet published to PyPI.** Until it is, install both from the repository,
-`recusal-openai-agents` first since this package requires it:
+Install it from PyPI. `recusal-openai-agents`, which this package requires, comes with it:
 
 ```bash
-pip install "recusal-openai-agents @ git+https://github.com/philpaz/recusal#subdirectory=adapters/openai-agents"
-pip install "recusal-openai-agents-mcp @ git+https://github.com/philpaz/recusal#subdirectory=adapters/openai-agents-mcp"
+pip install recusal-openai-agents-mcp
 ```
 
 Requires Python 3.10+, `recusal>=0.14.0`, `recusal-openai-agents>=0.1.0`,

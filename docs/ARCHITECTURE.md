@@ -123,7 +123,7 @@ An adapter has its own version and its own release, by its own tag and its own
 workflows (`release-adapter.yml`, which delegates the build to
 `build-adapter-dist.yml`); the kernel's release workflow ignores an adapter's tag and
 the adapter's ignores the kernel's. The steps are in
-[`adapters/README.md`](../adapters/README.md). None has been published yet.
+[`adapters/README.md`](../adapters/README.md). Each is published to PyPI.
 
 ## Public compatibility perimeter
 

@@ -13,12 +13,10 @@ adds no decision logic of its own. It wraps the gate of
 [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) as
 LangChain middleware and depends on that package.
 
-**Status: not yet published to PyPI.** Until it is, install both from the repository,
-`recusal-langgraph` first since this package requires it:
+Install it from PyPI. `recusal-langgraph`, which this package requires, comes with it:
 
 ```bash
-pip install "recusal-langgraph @ git+https://github.com/philpaz/recusal#subdirectory=adapters/langgraph"
-pip install "recusal-langchain @ git+https://github.com/philpaz/recusal#subdirectory=adapters/langchain"
+pip install recusal-langchain
 ```
 
 Requires Python 3.10+, `recusal>=0.14.0`, `recusal-langgraph>=0.1.0` and

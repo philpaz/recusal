@@ -8,10 +8,10 @@ This is a separate distribution from `recusal`. The kernel has zero runtime depe
 and a frozen compatibility perimeter; this package carries the Pydantic AI dependency and
 its own version, so a Pydantic AI release never forces a release of the kernel.
 
-**Status: not yet published to PyPI.** Until it is, install it from the repository:
+Install it from PyPI:
 
 ```bash
-pip install "recusal-pydantic-ai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/pydantic-ai"
+pip install recusal-pydantic-ai
 ```
 
 Requires Python 3.11+ (Pydantic AI's minimum), `recusal>=0.14.0` and

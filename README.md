@@ -44,7 +44,7 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 >   how it would be built, and nothing in it is built yet:
 >   [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md).
 >
-> The adapters are not on PyPI yet and install from this repository. `recusal` 0.14.0 on
+> Each adapter is on PyPI under its own name and version. `recusal` 0.14.0 on
 > PyPI is unchanged by any of this: nothing in the kernel package has changed since it.
 > The full list is in the
 > [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#unreleased).
@@ -172,11 +172,10 @@ a pinned version of its framework and weekly against the newest release. How the
 packages are built, signed and released is in
 [`adapters/README.md`](https://github.com/philpaz/recusal/blob/main/adapters/README.md).
 
-None is on PyPI yet, so install from the repository, naming the package and its
-directory:
+Each is on PyPI under its own name. Install the one for your framework:
 
 ```bash
-pip install "recusal-pydantic-ai @ git+https://github.com/philpaz/recusal#subdirectory=adapters/pydantic-ai"
+pip install recusal-pydantic-ai
 ```
 
 ## The problem

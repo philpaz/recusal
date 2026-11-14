@@ -8,10 +8,10 @@ This is a separate distribution from `recusal`. The kernel has zero runtime depe
 and a frozen compatibility perimeter; this package carries the ADK dependency and its own
 version, so an ADK release never forces a release of the kernel.
 
-**Status: not yet published to PyPI.** Until it is, install it from the repository:
+Install it from PyPI:
 
 ```bash
-pip install "recusal-google-adk @ git+https://github.com/philpaz/recusal#subdirectory=adapters/google-adk"
+pip install recusal-google-adk
 ```
 
 Requires Python 3.11+ (the ADK's minimum), `recusal>=0.14.0` and `google-adk>=2.13.0`. It

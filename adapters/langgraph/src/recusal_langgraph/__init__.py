@@ -18,7 +18,7 @@ where the hook attaches, how the invocation is completed, and how a refusal is a
 from ._audit import SURFACE, recusal_audited_agate, recusal_audited_gate
 from ._gate import Policy, RecusalRefusal, recusal_agate, recusal_gate
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "SURFACE",

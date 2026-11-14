@@ -8,10 +8,10 @@ This is a separate distribution from `recusal`. The kernel has zero runtime depe
 and a frozen compatibility perimeter; this package carries the LangGraph dependency and
 its own version, so a LangGraph release never forces a release of the kernel.
 
-**Status: not yet published to PyPI.** Until it is, install it from the repository:
+Install it from PyPI:
 
 ```bash
-pip install "recusal-langgraph @ git+https://github.com/philpaz/recusal#subdirectory=adapters/langgraph"
+pip install recusal-langgraph
 ```
 
 Requires Python 3.10+, `recusal>=0.14.0`, `langgraph>=1.2.12` and `langchain-core>=1.6.5`.

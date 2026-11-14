@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- All eight adapter packages are on PyPI, each published by `release-adapter.yml` through
+  trusted publishing on 2026-11-14 and each checked afterwards by *Verify a published
+  adapter release* from the published artifacts alone. Every package was published as
+  0.1.0 and then as 0.1.1. The only difference in 0.1.1 is the README, which is the page
+  PyPI shows: 0.1.0's said the package was not on PyPI and gave an install-from-repository
+  line, and 0.1.1's gives `pip install <package>`. No code changed between them. The
+  main README, `adapters/README.md`, `docs/ARCHITECTURE.md` and `docs/COOKBOOK.md` say the
+  same, and `tests/test_readme_front_page.py` now fails if any of those places, or any
+  adapter's README, goes back to an install-from-repository line or stops naming the
+  package's own `pip install`. `adapters/README.md` also records what the first releases
+  showed: PyPI accepts one pending publisher at a time for a given repository, workflow
+  and environment, so new adapters are registered and released one after another.
+
 - `examples/pydantic_ai_audit.py`: the Pydantic AI audit trail, the second framework gate
   with an audited route (LangGraph was the first). `RecusalAuditedGate(policy, log=log)`
   and `recusal_audited_before_tool_execute(policy, log)` call the plain gate's own
@@ -101,8 +114,7 @@ All notable changes to this project are documented here. The format follows
   `recusal-pydantic-ai` 0.1.0 (`from recusal_pydantic_ai import RecusalGate,
   RecusalAuditedGate, recusal_before_tool_execute, recusal_audited_before_tool_execute,
   is_gated, SURFACE`). It depends on `recusal>=0.14.0,<1` and
-  `pydantic-ai-slim>=2.64.0,<3`, needs Python 3.11+, and is not published to PyPI yet;
-  its README has the install-from-repository line. The gate's code moved out of
+  `pydantic-ai-slim>=2.64.0,<3`, needs Python 3.11+, and was published to PyPI on 2026-11-14. The gate's code moved out of
   `examples/pydantic_ai_gate.py` and `examples/pydantic_ai_audit.py` unchanged, and
   those files now import the package and keep the offline demonstration. One
   difference from the example: `RecusalGate(policy)` requires its policy, where the
@@ -115,7 +127,7 @@ All notable changes to this project are documented here. The format follows
   distribution, `recusal-openai` 0.1.0 (`from recusal_openai import gate_function_calls,
   gate_tool_calls, judge_and_run, audited_function_calls, audited_tool_calls,
   SURFACE_RESPONSES, SURFACE_CHAT`). It depends on `recusal>=0.14.0,<1` and
-  `openai>=3.34.0,<4`, needs Python 3.10+, and is not published to PyPI yet. The gate's
+  `openai>=3.34.0,<4`, needs Python 3.10+, and was published to PyPI on 2026-11-14. The gate's
   code moved out of `examples/openai_responses_gate.py` and
   `examples/openai_responses_audit.py` unchanged; those files import the package and
   keep the offline demonstration. Nothing under `recusal/` changed. The same locks and
@@ -124,8 +136,8 @@ All notable changes to this project are documented here. The format follows
 - `adapters/google-adk`: the Google ADK gate as its own distribution, `recusal-google-adk`
   0.1.0 (`from recusal_google_adk import gated_agent, RecusalPlugin, recusal_before_tool,
   is_gated, audited_agent, audited_plugin, recording, SURFACE`). It depends on
-  `recusal>=0.14.0,<1` and `google-adk>=2.13.0,<3`, needs Python 3.11+, and is not
-  published to PyPI yet. The gate's code moved out of `examples/google_adk_gate.py` and
+  `recusal>=0.14.0,<1` and `google-adk>=2.13.0,<3`, needs Python 3.11+, and was
+  published to PyPI on 2026-11-14. The gate's code moved out of `examples/google_adk_gate.py` and
   `examples/google_adk_audit.py` unchanged; those files import the package and keep the
   offline demonstration. Nothing under `recusal/` changed. The package tables in
   `README.md` and `docs/ARCHITECTURE.md` now list every adapter package, and
@@ -134,7 +146,7 @@ All notable changes to this project are documented here. The format follows
   distribution, `recusal-openai-agents` 0.1.0 (`from recusal_openai_agents import
   gated_agent, gate_tools, recusal_guardrail, is_gated, audited_agent, audited_tools,
   recording, SURFACE, GUARDRAIL_NAME`). It depends on `recusal>=0.14.0,<1` and
-  `openai-agents>=0.24.0,<1`, needs Python 3.10+, and is not published to PyPI yet. The
+  `openai-agents>=0.24.0,<1`, needs Python 3.10+, and was published to PyPI on 2026-11-14. The
   gate's code moved out of `examples/openai_agents_gate.py` and
   `examples/openai_agents_audit.py` unchanged; those files import the package and keep
   the offline demonstration. `examples/openai_agents_mcp_gate.py`, still an example,
@@ -144,7 +156,7 @@ All notable changes to this project are documented here. The format follows
   `recusal-langgraph` 0.1.0 (`from recusal_langgraph import recusal_gate, recusal_agate,
   recusal_audited_gate, recusal_audited_agate, RecusalRefusal, SURFACE`). It depends on
   `recusal>=0.14.0,<1`, `langgraph>=1.2.12,<2` and `langchain-core>=1.6.5,<2`, needs
-  Python 3.10+, and is not published to PyPI yet. The gate's code moved out of
+  Python 3.10+, and was published to PyPI on 2026-11-14. The gate's code moved out of
   `examples/langgraph_gate.py` and `examples/langgraph_audit.py` unchanged; those files
   import the package and keep the offline demonstration. The LangChain `create_agent`
   examples, which wrap the same hooks, are unchanged and reach the package through those
@@ -153,7 +165,7 @@ All notable changes to this project are documented here. The format follows
   `recusal-langchain` 0.1.0 (`from recusal_langchain import gate_middleware,
   agate_middleware, audited_gate_middleware, audited_agate_middleware, SURFACE`). It
   depends on `recusal>=0.14.0,<1`, `recusal-langgraph>=0.1.0,<1` and `langchain>=1.4.3,<2`,
-  needs Python 3.10+, and is not published to PyPI yet. It adds no decision logic: it
+  needs Python 3.10+, and was published to PyPI on 2026-11-14. It adds no decision logic: it
   wraps the public hooks of `recusal-langgraph` as middleware and names its own surface on
   the record. The packaged `gate_middleware(policy)` requires its policy; the example
   keeps the demonstration SQL policy as its default. `tests/test_adapter_packages.py` now
@@ -163,7 +175,7 @@ All notable changes to this project are documented here. The format follows
   `recusal-crewai` 0.1.0 (`from recusal_crewai import install_recusal_hooks,
   recusal_before_tool_call, recusal_after_tool_call, install_audited_hooks, recording,
   SURFACE, BLOCKED_PREFIX, PENDING_LIMIT`). It depends on `recusal>=0.14.0,<1` and
-  `crewai>=1.15.34,<2`, needs Python 3.10+, and is not published to PyPI yet. The gate's
+  `crewai>=1.15.34,<2`, needs Python 3.10+, and was published to PyPI on 2026-11-14. The gate's
   code moved out of `examples/crewai_gate.py` and `examples/crewai_audit.py` unchanged;
   those files import the package and keep the offline demonstration. The package sets no
   environment variables; turning CrewAI's telemetry off stays in the examples. Nothing
@@ -173,8 +185,8 @@ All notable changes to this project are documented here. The format follows
   gate_mcp_server, gate_hosted_mcp, recusal_approval, claude_named, is_gated,
   is_gated_mcp_server, is_gated_hosted_mcp, audited_agent, recording, SURFACES`). It
   depends on `recusal>=0.14.0,<1`, `recusal-openai-agents>=0.1.0,<1`,
-  `openai-agents>=0.24.0,<1` and `mcp>=2.3.0,<3`, needs Python 3.10+, and is not published
-  to PyPI yet. The gate's code moved out of `examples/openai_agents_mcp_gate.py` and
+  `openai-agents>=0.24.0,<1` and `mcp>=2.3.0,<3`, needs Python 3.10+, and was published
+  to PyPI on 2026-11-14. The gate's code moved out of `examples/openai_agents_mcp_gate.py` and
   `examples/openai_agents_mcp_audit.py` unchanged. `recusal-openai-agents` gains three
   public names the MCP gate builds on, `refusal`, `unjudgeable` and `duplicate_names`, so
   no adapter imports another's private module. With this every framework gate under
@@ -245,7 +257,7 @@ All notable changes to this project are documented here. The format follows
   `adapters/README.md` carries the same dependencies as a Mermaid diagram, held to the
   packages by a test, and `docs/README.md` links the packages.
 - `README.md`: a contents line under the badges, and a short note of what is new on
-  `main` since the last release, which says the adapters are not on PyPI and that the
+  `main` since the last release, which said the adapters were not on PyPI (they are now) and that the
   kernel package is unchanged. `tests/test_readme_front_page.py` fails when the note's
   version stops being the released one, when its adapter count is wrong, or when the
   places that say the adapters are unpublished stop agreeing. Cutting a release

@@ -9,10 +9,10 @@ This is a separate distribution from `recusal`. The kernel has zero runtime depe
 and a frozen compatibility perimeter; this package carries the SDK dependency and its own
 version, so an SDK release never forces a release of the kernel.
 
-**Status: not yet published to PyPI.** Until it is, install it from the repository:
+Install it from PyPI:
 
 ```bash
-pip install "recusal-openai-agents @ git+https://github.com/philpaz/recusal#subdirectory=adapters/openai-agents"
+pip install recusal-openai-agents
 ```
 
 Requires Python 3.10+ (the SDK's minimum), `recusal>=0.14.0` and `openai-agents>=0.24.0`.
