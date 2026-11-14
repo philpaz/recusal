@@ -85,6 +85,7 @@ They are the same for every contribution, large or small:
 | `Pydantic AI example (Python 3.11)` | the pinned Pydantic AI adapter works on its minimum supported Python |
 | `Pydantic AI example (Python 3.12)` | the pinned Pydantic AI adapter works on the current cross-platform smoke Python |
 | `recusal-google-adk wheel (build, install, smoke)` | the `recusal-google-adk` package builds with the hash-locked toolchain, and its installed wheel gates and records a Google ADK agent, by callback and by runner plugin, from outside the checkout |
+| `recusal-openai-agents wheel (build, install, smoke)` | the `recusal-openai-agents` package builds with the hash-locked toolchain, and its installed wheel gates and records an OpenAI Agents SDK agent from outside the checkout |
 | `recusal-openai wheel (build, install, smoke)` | the `recusal-openai` package builds with the hash-locked toolchain, and its installed wheel gates and records SDK-validated Responses and Chat Completions objects from outside the checkout |
 | `recusal-pydantic-ai wheel (build, install, smoke)` | the `recusal-pydantic-ai` package builds with the hash-locked toolchain, and its installed wheel gates and records a Pydantic AI agent from outside the checkout |
 | `Cookbook with the MCP SDK (Python 3.12)` | cookbook recipe 14 runs with the real MCP SDK, not skipped |

@@ -69,7 +69,19 @@ if sys.version_info < (3, 10):
     )
     raise SystemExit(2)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-openai-agents` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai-agents", "src"))
+
+# The function-tool gate's shared pieces. They are private to recusal-openai-agents
+# today; when this MCP gate becomes its own package they need a public name there.
+from recusal_openai_agents._gate import (  # noqa: E402
+    _duplicate_names,
+    _refusal,
+    _unjudgeable,
+)
 
 from examples.openai_agents_gate import (  # noqa: E402
     OPENAI_AGENTS_VERSION,
@@ -78,9 +90,6 @@ from examples.openai_agents_gate import (  # noqa: E402
     RunConfig,
     Runner,
     ScriptedModel,
-    _duplicate_names,
-    _refusal,
-    _unjudgeable,
     assistant_message,
     gate_tools,
     scripted_model,

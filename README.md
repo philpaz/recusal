@@ -857,6 +857,7 @@ file:
 | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
 | [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | a Pydantic AI `Agent` | `from recusal_pydantic_ai import RecusalGate` |
 | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
 <!-- adapter-packages:end -->
 
 Each is a separate distribution with its own version and its framework's dependency;

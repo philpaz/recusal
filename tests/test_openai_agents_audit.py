@@ -32,6 +32,18 @@ DELETE = "DELETE FROM audit_log"
 ROUTES = pytest.mark.parametrize("streamed", [False, True], ids=["run", "streamed"])
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_openai_agents._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_python_version_refusal_is_clear_on_every_python():
     code = (
         "import runpy, sys; "
@@ -396,7 +408,7 @@ class TestOpenAIAgentsAudit:
 
     def test_a_guardrail_bound_to_another_tool_is_one_recorded_deny(self, example, gate, log):
         holder = [gate.echo]
-        guardrail = gate._guardrail_for(gate.sql_scope_policy, holder, example.recording(log))
+        guardrail = _adapter()._guardrail_for(gate.sql_scope_policy, holder, example.recording(log))
         tool = copy.copy(gate.run_sql)
         tool.tool_input_guardrails = [guardrail]
         model = gate.scripted_model([("run_sql", {"sql": SELECT}, "c1")])

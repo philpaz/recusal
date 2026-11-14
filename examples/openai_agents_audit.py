@@ -8,7 +8,8 @@ hash-chained entry on a Recusal AuditLog, labeled with the surface
 reordering, or a dropped entry is detectable with ``recusal audit verify``. The log holds a
 SHA-256 fingerprint of each call's arguments, never the arguments themselves.
 
-The decision logic is the one in openai_agents_gate.py: ``audited_agent(agent, policy,
+The audited gate is the ``recusal-openai-agents`` package (``adapters/openai-agents`` in
+this repository), imported here: ``audited_agent(agent, policy,
 log)`` is ``gated_agent`` and ``audited_tools(tools, policy, log)`` is ``gate_tools``, each
 with a ``recording`` that passes the recording arguments through to ``recusal.decide``,
 which writes the entry before returning. If the log cannot be written the decision becomes
@@ -63,22 +64,30 @@ if sys.version_info < (3, 10):
     raise SystemExit(2)
 
 try:
-    from agents import Agent, FunctionTool
+    from agents import Agent
 except ImportError as exc:
     raise SystemExit(
         "Install the example dependencies first: "
         f"openai-agents=={OPENAI_AGENTS_VERSION} openai=={OPENAI_VERSION}"
     ) from exc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# In a checkout the adapter is read from the tree; installed, `pip install
+# recusal-openai-agents` provides the same package and this path does not exist.
+sys.path.insert(0, os.path.join(_ROOT, "adapters", "openai-agents", "src"))
+
+from recusal_openai_agents import (  # noqa: E402
+    SURFACE,
+    Policy,
+    audited_agent,
+    audited_tools,
+    recording,
+)
 
 from examples.openai_agents_gate import (  # noqa: E402
     EXECUTED,
-    Policy,
-    Recording,
     echo,
-    gate_tools,
-    gated_agent,
     run_agent,
     run_sql,
     scripted_model,
@@ -87,52 +96,7 @@ from examples.openai_agents_gate import (  # noqa: E402
 )
 from recusal.audit import AuditLog  # noqa: E402
 
-#: The surface label every entry carries: the SDK hook that adjudicated.
-SURFACE = "openai_agents.tool_input_guardrail"
-
-
-def recording(
-    log: AuditLog, *, actor: Optional[str] = None, control: Optional[dict[str, Any]] = None
-) -> Recording:
-    """The recording arguments for each call, built in one place.
-
-    A blank tool call id is recorded as no id rather than refused."""
-
-    def for_call(ctx: Any) -> dict[str, Any]:
-        ident = getattr(ctx, "tool_call_id", None)
-        return {
-            "audit": log,
-            "surface": SURFACE,
-            "tool_use_id": ident if isinstance(ident, str) and ident else None,
-            "actor": actor,
-            "control": control,
-        }
-
-    return for_call
-
-
-def audited_tools(
-    tools: list[Any],
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> list[FunctionTool]:
-    """``gate_tools`` with every decision of every guardrail on ``log``."""
-    return gate_tools(tools, policy, recording(log, actor=actor, control=control))
-
-
-def audited_agent(
-    agent: Agent,
-    policy: Policy,
-    log: AuditLog,
-    *,
-    actor: Optional[str] = None,
-    control: Optional[dict[str, Any]] = None,
-) -> Agent:
-    """``gated_agent`` with every decision on ``log``."""
-    return gated_agent(agent, policy, recording(log, actor=actor, control=control))
+__all__ = ["SURFACE", "audited_agent", "audited_tools", "recording"]
 
 
 def run_calls(

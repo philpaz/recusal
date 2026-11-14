@@ -93,6 +93,7 @@ A framework gate starts as a tested example and can become its own distribution 
 | `recusal-openai` | `adapters/openai` | `recusal_openai` | `openai>=3.34.0,<4` | 3.10+ |
 | `recusal-pydantic-ai` | `adapters/pydantic-ai` | `recusal_pydantic_ai` | `pydantic-ai-slim>=2.64.0,<3` | 3.11+ |
 | `recusal-google-adk` | `adapters/google-adk` | `recusal_google_adk` | `google-adk>=2.13.0,<3` | 3.11+ |
+| `recusal-openai-agents` | `adapters/openai-agents` | `recusal_openai_agents` | `openai-agents>=0.24.0,<1` | 3.10+ |
 <!-- adapter-packages:end -->
 
 The dependency points one way:

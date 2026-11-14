@@ -66,6 +66,18 @@ class Seen:
         return self.policy(name, args)
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_openai_agents._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def _agent(oa, calls, tools, model=None):
     return oa.Agent(name="a", model=model or oa.scripted_model(calls), tools=tools)
 
@@ -132,9 +144,9 @@ def test_the_guardrail_sees_the_arguments_the_tool_runs_with(oa, arguments):
 
 
 def test_a_rejection_anywhere_in_the_guardrail_list_stops_the_call(oa):
-    @oa.tool_input_guardrail
+    @_adapter().tool_input_guardrail
     def allows(data):
-        return oa.ToolGuardrailFunctionOutput.allow()
+        return _adapter().ToolGuardrailFunctionOutput.allow()
 
     for position in ("after", "before"):
         tool = copy.copy(oa.run_sql)
@@ -148,7 +160,7 @@ def test_a_rejection_anywhere_in_the_guardrail_list_stops_the_call(oa):
 
 
 def test_a_guardrail_that_raises_stops_the_call(oa):
-    @oa.tool_input_guardrail
+    @_adapter().tool_input_guardrail
     def crashes(data):
         raise RuntimeError("guardrail crashed")
 

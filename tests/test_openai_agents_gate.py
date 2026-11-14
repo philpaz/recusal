@@ -16,6 +16,18 @@ SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"
 
 
+def _adapter():
+    """The package module the gate's code lives in. Every test that calls this has loaded
+    the example first, which puts the in-tree adapter on the path, so this is the code
+    under review and not an installed copy."""
+    import importlib
+    from pathlib import Path
+
+    module = importlib.import_module("recusal_openai_agents._gate")
+    assert "adapters" in Path(module.__file__).parts, module.__file__
+    return module
+
+
 def test_python_version_refusal_is_clear_on_every_python():
     code = (
         "import runpy, sys; "
@@ -46,9 +58,10 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text, f"{path.name}: {pin}"
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs pin both; the recusal-openai wheel job pins the SDK a third time
-    assert ci.count("openai-agents==0.24.0") == 2
-    assert ci.count("openai==3.34.0") == 3
+    # the two example jobs pin both; so does the recusal-openai-agents wheel job, and the
+    # recusal-openai wheel job pins the SDK once more
+    assert ci.count("openai-agents==0.24.0") == 3
+    assert ci.count("openai==3.34.0") == 4
 
 
 @pytest.mark.skipif(
@@ -113,7 +126,7 @@ class TestOpenAIAgentsGate:
         def crashing_decide(*args, **kwargs):
             raise RuntimeError("decide crashed")
 
-        monkeypatch.setattr(example, "decide", crashing_decide)
+        monkeypatch.setattr(_adapter(), "decide", crashing_decide)
         outputs, executed = example.run_calls([("echo", {"text": "unsafe"}, "c1")])
         assert executed == []
         assert (
@@ -163,9 +176,9 @@ class TestOpenAIAgentsGate:
                 example.gate_tools([cls.__new__(cls)], example.sql_scope_policy)
 
     def test_gate_tools_leaves_the_originals_unchanged_and_keeps_their_guardrails(self, example):
-        @example.tool_input_guardrail
+        @_adapter().tool_input_guardrail
         def existing(data):
-            return example.ToolGuardrailFunctionOutput.allow()
+            return _adapter().ToolGuardrailFunctionOutput.allow()
 
         tool = copy.copy(example.run_sql)
         tool.tool_input_guardrails = [existing]
@@ -234,7 +247,7 @@ class TestOpenAIAgentsGate:
         _, parent = self._parent_and_sub(example, gate_sub=False)
         (tool,) = parent.tools
         holder = [tool]
-        tool.tool_input_guardrails = [example._guardrail_for(example.sql_scope_policy, holder)]
+        tool.tool_input_guardrails = [_adapter()._guardrail_for(example.sql_scope_policy, holder)]
         example.EXECUTED.clear()
         asyncio.run(example.run_agent(parent))
         assert example.EXECUTED == [("run_sql", {"sql": DELETE})]
@@ -364,7 +377,7 @@ class TestEffectiveArguments:
         ran = []
 
         @example.function_tool
-        def ctx_sql(ctx: example.RunContextWrapper, sql: str) -> str:
+        def ctx_sql(ctx: _adapter().RunContextWrapper, sql: str) -> str:
             """Record SQL with a context parameter the SDK fills."""
             ran.append(sql)
             return "recorded"
@@ -510,6 +523,42 @@ class TestCapabilityIdentity:
         output = guardrail.guardrail_function(SimpleNamespace(context=ctx, agent=misleading_agent))
         text = str(output.output_info) + str(getattr(output, "output", "")) + str(output)
         assert "cannot be judged" in text, text
+        assert not getattr(ctx, "_function_tool_arguments", None)
+
+    def test_an_allowed_call_pins_the_invocation_that_was_judged(self, example):
+        """The gate judges the invocation the SDK prepared and pins that same object on the
+        tool context, so the SDK executes it without preparing a second time. A refused
+        call pins nothing."""
+        import json
+        from types import SimpleNamespace
+
+        from recusal import Finding
+
+        judged = []
+
+        def recording_policy(name, tool_input):
+            judged.append(dict(tool_input))
+            return example.sql_scope_policy(name, tool_input)
+
+        (gated,) = example.gate_tools([example.charge_tool()], recording_policy)
+        guardrail = gated.tool_input_guardrails[-1]
+        prepare = gated.on_invoke_tool.prepare_arguments
+
+        ctx = SimpleNamespace(tool_name="charge", tool_arguments=json.dumps({}))
+        guardrail.guardrail_function(SimpleNamespace(context=ctx, agent=None))
+        assert judged == [{"amount": 100}], "the omitted default is judged at its value"
+        pinned = ctx._function_tool_arguments
+        assert pinned is not None
+        assert pinned.kwargs == prepare(json.dumps({}), "charge").kwargs
+
+        def refuse(name, tool_input):
+            return [Finding.fail("no", severity="CRITICAL", message="no")]
+
+        (refusing,) = example.gate_tools([example.charge_tool()], refuse)
+        ctx = SimpleNamespace(tool_name="charge", tool_arguments=json.dumps({}))
+        refusing.tool_input_guardrails[-1].guardrail_function(
+            SimpleNamespace(context=ctx, agent=None)
+        )
         assert not getattr(ctx, "_function_tool_arguments", None)
 
     def test_a_bound_guardrail_refuses_a_call_for_another_name(self, example):

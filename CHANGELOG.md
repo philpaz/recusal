@@ -130,6 +130,16 @@ All notable changes to this project are documented here. The format follows
   offline demonstration. Nothing under `recusal/` changed. The package tables in
   `README.md` and `docs/ARCHITECTURE.md` now list every adapter package, and
   `tests/test_adapter_packages.py` fails if a table and the packages disagree.
+- `adapters/openai-agents`: the OpenAI Agents SDK function-tool gate as its own
+  distribution, `recusal-openai-agents` 0.1.0 (`from recusal_openai_agents import
+  gated_agent, gate_tools, recusal_guardrail, is_gated, audited_agent, audited_tools,
+  recording, SURFACE, GUARDRAIL_NAME`). It depends on `recusal>=0.14.0,<1` and
+  `openai-agents>=0.24.0,<1`, needs Python 3.10+, and is not published to PyPI yet. The
+  gate's code moved out of `examples/openai_agents_gate.py` and
+  `examples/openai_agents_audit.py` unchanged; those files import the package and keep
+  the offline demonstration. `examples/openai_agents_mcp_gate.py`, still an example,
+  imports the three helpers it shares with the function-tool gate from the package.
+  Nothing under `recusal/` changed.
 
 ### Changed
 
