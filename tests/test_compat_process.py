@@ -63,6 +63,18 @@ def latest_lane():
     return lane
 
 
+def latest_wheel_matrix():
+    """Adapter directory and unpinned framework packages in the wheel smoke matrix."""
+    job = _jobs(COMPAT).get("wheel-smoke-latest")
+    assert job, "compat.yml: missing the latest adapter wheel smoke job"
+    include = re.search(r"(?ms)^        include:\n(.*?)(?=^    steps:)", job)
+    assert include, "wheel-smoke-latest: missing its adapter matrix"
+    return re.findall(
+        r'(?m)^          - directory: ([\w-]+)\n            packages: "([^\"]+)"$',
+        include.group(1),
+    )
+
+
 def test_the_parsers_find_the_known_runtime():
     # guards the parsers: an empty parse must not pass by accident
     assert "langgraph" in pinned_lane()
@@ -97,6 +109,26 @@ def test_the_latest_lane_never_gates_a_pull_request():
     assert "workflow_dispatch:" in triggers
     assert "pull_request" not in triggers
     assert "push:" not in triggers
+
+
+def test_latest_wheel_matrix_matches_every_adapter_directory_once():
+    rows = latest_wheel_matrix()
+    assert rows, "wheel-smoke-latest: parsed no adapter rows"
+    directories = [directory for directory, _ in rows]
+    on_disk = sorted(path.parent.name for path in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert directories == sorted(directories), "wheel-smoke-latest: adapter rows are not sorted"
+    assert len(directories) == len(set(directories)), "wheel-smoke-latest: duplicate adapter row"
+    assert directories == on_disk, (
+        "wheel-smoke-latest: matrix and adapters/*/pyproject.toml disagree"
+    )
+    assert all(
+        packages
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", package)
+            for package in packages.split()
+        )
+        for _, packages in rows
+    ), "wheel-smoke-latest: framework package lists must contain bare distribution names"
 
 
 def test_the_process_is_written_down_where_contributors_look():

@@ -147,6 +147,14 @@ calls public (`tests/test_adapter_packages.py` holds that), and `recusal` declar
 dependency on, and imports nothing from, any adapter. The same two lanes test it, and
 a third job builds its wheel and runs it from an install outside the checkout.
 
+The weekly `compat.yml` workflow also runs `wheel-smoke-latest`, a Python 3.12 matrix
+with one row per adapter. It builds the kernel, adapter, and required sibling wheels from
+the same checkout with the hash-locked release toolchain, then smokes the installed
+wheels outside the checkout. Before installation it resolves the unpinned newest
+framework packages and constrains their resolved versions, so an adapter's upper bound
+cannot silently lower the framework version under test. This is upstream drift detection;
+it does not extend the **Tested** support versions named in the README.
+
 Adding a runtime follows the checklist in
 [`CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-runtime). Where to ask for help is in
 [`SUPPORT.md`](SUPPORT.md).

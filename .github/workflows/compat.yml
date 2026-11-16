@@ -98,6 +98,163 @@ jobs:
           # shellcheck disable=SC2086  # TESTS is a space-separated list by design
           pytest -q $TESTS
 
+  # Smoke each adapter wheel from this checkout against the newest compatible
+  # framework releases. This is drift detection; the pinned CI lane defines support.
+  wheel-smoke-latest:
+    name: ${{ matrix.directory }} wheel latest (Python 3.12)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - directory: crewai
+            packages: "crewai"
+          - directory: google-adk
+            packages: "google-adk google-genai"
+          - directory: langchain
+            packages: "langgraph langchain-core langchain"
+          - directory: langgraph
+            packages: "langgraph langchain-core"
+          - directory: openai
+            packages: "openai"
+          - directory: openai-agents
+            packages: "openai-agents openai"
+          - directory: openai-agents-mcp
+            packages: "openai-agents openai mcp"
+          - directory: pydantic-ai
+            packages: "pydantic-ai-slim"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false  # no job here pushes; the default keeps a live token in .git
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling (hash-locked)
+        run: python -m pip install --require-hashes -r release-requirements.txt
+
+      - name: Resolve the adapter from this checkout
+        id: adapter
+        env:
+          DIRECTORY: ${{ matrix.directory }}
+        run: |
+          python tools/adapter_meta.py "$DIRECTORY" > "$RUNNER_TEMP/adapter.txt"
+          cat "$RUNNER_TEMP/adapter.txt"
+          cat "$RUNNER_TEMP/adapter.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Build the kernel, adapter, and required sibling wheels
+        env:
+          DIRECTORY: ${{ matrix.directory }}
+          SIBLINGS: ${{ steps.adapter.outputs.siblings }}
+        run: |
+          SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
+          mkdir -p "$SMOKE_ROOT/wheels"
+          python -m build --no-isolation --wheel --outdir "$SMOKE_ROOT/wheels" .
+          python -m build --no-isolation --wheel --outdir "$SMOKE_ROOT/wheels" "adapters/$DIRECTORY"
+          for sibling in $SIBLINGS; do
+            python -m build --no-isolation --wheel --outdir "$SMOKE_ROOT/wheels" "adapters/$sibling"
+          done
+
+      # Resolve the framework list without pins before installing any local wheels.
+      # The full report becomes constraints so an adapter's upper bound cannot silently
+      # replace a newer framework version with an older compatible one.
+      - name: Resolve the newest framework releases and write constraints
+        env:
+          FRAMEWORK_PACKAGES: ${{ matrix.packages }}
+        run: |
+          SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
+          # shellcheck disable=SC2086  # FRAMEWORK_PACKAGES is a space-separated list by design
+          python -m pip install --dry-run --ignore-installed --upgrade \
+            --report "$SMOKE_ROOT/framework-report.json" $FRAMEWORK_PACKAGES
+          python - "$SMOKE_ROOT/framework-report.json" "$SMOKE_ROOT/framework-constraints.txt" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as report_file:
+              report = json.load(report_file)
+          resolved = sorted(
+              (
+                  item["metadata"]["name"],
+                  item["metadata"]["version"],
+              )
+              for item in report["install"]
+          )
+          if not resolved:
+              raise SystemExit("framework resolver returned no packages")
+          with open(sys.argv[2], "w", encoding="utf-8") as constraints_file:
+              for name, version in resolved:
+                  constraints_file.write(f"{name}=={version}\n")
+          PY
+
+      - name: Install the local wheels into a clean smoke environment
+        run: |
+          SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
+          python -m venv "$SMOKE_ROOT/venv"
+          "$SMOKE_ROOT/venv/bin/python" -m pip install \
+            --constraint "$SMOKE_ROOT/framework-constraints.txt" \
+            "$SMOKE_ROOT/wheels/"*.whl
+
+      - name: Verify and record framework and local versions
+        env:
+          DISTRIBUTION: ${{ steps.adapter.outputs.distribution }}
+          VERSION: ${{ steps.adapter.outputs.version }}
+          SIBLINGS: ${{ steps.adapter.outputs.siblings }}
+          FRAMEWORK_PACKAGES: ${{ matrix.packages }}
+        run: |
+          SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
+          "$SMOKE_ROOT/venv/bin/python" - "$SMOKE_ROOT/framework-report.json" <<'PY'
+          import importlib.metadata
+          import json
+          import os
+          import re
+          import sys
+
+          def normalized(name):
+              return re.sub(r"[-_.]+", "-", name).lower()
+
+          with open(sys.argv[1], encoding="utf-8") as report_file:
+              report = json.load(report_file)
+          resolved = {
+              normalized(item["metadata"]["name"]): item["metadata"]["version"]
+              for item in report["install"]
+          }
+          lines = []
+          for package in os.environ["FRAMEWORK_PACKAGES"].split():
+              expected = resolved[normalized(package)]
+              actual = importlib.metadata.version(package)
+              if actual != expected:
+                  raise SystemExit(f"{package}: installed {actual}, resolved {expected}")
+              lines.append(f"{package}=={actual}")
+
+          distribution = os.environ["DISTRIBUTION"]
+          local_distributions = ["recusal", distribution]
+          local_distributions.extend(
+              f"recusal-{sibling}" for sibling in os.environ["SIBLINGS"].split()
+          )
+          for name in sorted(set(local_distributions)):
+              actual = importlib.metadata.version(name)
+              if name == distribution and actual != os.environ["VERSION"]:
+                  raise SystemExit(
+                      f"{distribution}: installed {actual}, checkout declares {os.environ['VERSION']}"
+                  )
+              lines.append(f"{name}=={actual} (built from this checkout)")
+          for line in lines:
+              print(line)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(f"- `{line}`" for line in lines) + "\n")
+          PY
+
+      - name: Smoke the installed wheel outside the checkout
+        env:
+          DIRECTORY: ${{ matrix.directory }}
+        run: |
+          SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
+          (
+            cd "$SMOKE_ROOT"
+            "$SMOKE_ROOT/venv/bin/python" "$GITHUB_WORKSPACE/adapters/$DIRECTORY/smoke_test.py"
+          )
+
   # The newest MCP SDK against cookbook recipe 14, which says "version 2.2 or later".
   # ci.yml's "Cookbook with the MCP SDK" job runs the same test at the pinned version.
   cookbook-mcp-sdk:
