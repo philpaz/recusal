@@ -11,7 +11,9 @@ All notable changes to this project are documented here. The format follows
 - `recusal-pydantic-ai` now declares complete, framework-compatible function annotations
   and is checked by CI with strict missing-annotation flags, contributed by
   [@hananbahi527](https://github.com/hananbahi527) in
-  [#270](https://github.com/philpaz/recusal/pull/270).
+  [#270](https://github.com/philpaz/recusal/pull/270). The package's version is now 0.1.2
+  for this change: annotations only, with the same behaviour and the same requirements
+  as 0.1.1.
 - The weekly latest-framework workflow (`compat.yml`) now also builds each adapter's
   wheel, installs it beside the newest release of its framework and runs its
   `smoke_test.py` from outside the checkout, one row per adapter, with a test that holds

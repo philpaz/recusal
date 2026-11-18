@@ -17,7 +17,7 @@ where the hook attaches, what it is handed, and how a refusal is answered.
 from ._audit import SURFACE, RecusalAuditedGate, recusal_audited_before_tool_execute
 from ._gate import Policy, RecusalGate, is_gated, recusal_before_tool_execute
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "SURFACE",
