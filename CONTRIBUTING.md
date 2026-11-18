@@ -107,6 +107,14 @@ about it: `Contributor credit` points it out as a heads-up, and the maintainer r
 line when merging, keeping you as the author. A person who worked on the change with you
 is credited as a co-author as usual.
 
+**Please leave "Allow edits by maintainers" ticked** when you open the pull request
+(GitHub ticks it by default). Your pull request is merged by moving `main` to your own
+commits, so it shows as Merged and the commits stay yours. If `main` has moved since you
+branched, that needs a rebase, and with the box ticked the maintainer can do it for you,
+keeping you as the author. If you would rather rebase yourself, or your fork belongs to
+an organization (GitHub does not offer the box there), that works too: the maintainer
+will ask.
+
 What else a reviewer will check before merging:
 
 - **The change is proven, not just passing.** New behavior comes with a test that fails
