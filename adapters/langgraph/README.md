@@ -4,6 +4,14 @@ The [Recusal](https://github.com/philpaz/recusal) gate for
 [LangGraph](https://langchain-ai.github.io/langgraph/): every tool call a `ToolNode` is
 about to execute is judged by your policy first, and a refused call never runs.
 
+**New to Recusal?** It checks each tool call an AI agent proposes against your policy and
+refuses the unsafe or unapproved ones before the tool runs. No model makes that decision.
+A policy is a plain Python function: it is given the tool's name and its arguments and
+returns a list of findings. An empty list lets the call run; a failing finding refuses it
+and gives the reason.
+[Writing a policy](https://github.com/philpaz/recusal#write-the-policy-two-postures-one-principle)
+covers the two postures, allowlist and deny-list.
+
 This is a separate distribution from `recusal`. The kernel has zero runtime dependencies
 and a frozen compatibility perimeter; this package carries the LangGraph dependency and
 its own version, so a LangGraph release never forces a release of the kernel.
@@ -17,6 +25,8 @@ pip install recusal-langgraph
 Requires Python 3.10+, `recusal>=0.14.0`, `langgraph>=1.2.12` and `langchain-core>=1.6.5`.
 It is tested on every pull request against exactly `langgraph==1.2.12` with
 `langchain-core==1.6.5`, and weekly against the newest releases.
+
+The package ships inline types (`py.typed`) for your editor and type checker.
 
 ## Use
 
@@ -96,3 +106,19 @@ A runnable offline demonstration, with a scripted graph and no API key, is
 [`examples/langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py)
 and
 [`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py).
+
+## More
+
+- [Framework notes for LangGraph](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph):
+  the detail behind this page.
+- [All eight adapter packages](https://github.com/philpaz/recusal/tree/main/adapters) and
+  [the kernel](https://github.com/philpaz/recusal), which has zero runtime dependencies.
+- [Verifying a release](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md#adapter-packages):
+  each release is built in CI, signed with Sigstore and published to PyPI by trusted
+  publishing.
+- [Changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md),
+  [issues](https://github.com/philpaz/recusal/issues),
+  [security policy](https://github.com/philpaz/recusal/blob/main/SECURITY.md) and
+  [support](https://github.com/philpaz/recusal/blob/main/SUPPORT.md).
+
+Licensed under Apache-2.0.

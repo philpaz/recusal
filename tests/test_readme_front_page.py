@@ -129,3 +129,29 @@ def test_a_readme_that_pypi_renders_has_no_relative_link_or_image():
         assert targets, page
         relative = [t for t in targets if not t.startswith(("https://", "#", "mailto:"))]
         assert relative == [], (page.relative_to(ROOT).as_posix(), relative)
+
+
+def test_each_adapter_readme_stands_on_its_own_as_a_pypi_page():
+    """A reader can land on an adapter's PyPI page without having seen the kernel's. Each
+    adapter README therefore says what Recusal is and what a policy is, says the package
+    ships inline types (and the package does), and closes with where to go next."""
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert len(directories) == 8
+    for directory in directories:
+        text = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
+        flat = " ".join(text.split())
+        assert "**New to Recusal?**" in text, directory
+        assert "No model makes that decision." in flat, directory
+        assert "A policy is a plain Python function" in flat, directory
+        assert "#write-the-policy-two-postures-one-principle)" in text, directory
+        assert "ships inline types (`py.typed`)" in flat, directory
+        module = "recusal_" + directory.replace("-", "_")
+        assert (ROOT / "adapters" / directory / "src" / module / "py.typed").is_file(), directory
+        more = text.split("\n## More\n", 1)
+        assert len(more) == 2, directory
+        for target in ("docs/FRAMEWORKS.md#", "docs/VERIFY.md#adapter-packages", "CHANGELOG.md"):
+            assert target in more[1], (directory, target)
+        assert more[1].rstrip().endswith("Licensed under Apache-2.0."), directory
+        project = (ROOT / "adapters" / directory / "pyproject.toml").read_text(encoding="utf-8")
+        assert re.search(r'^license = "Apache-2\.0"$', project, re.M), directory
+    assert "## Write the policy: two postures, one principle" in README

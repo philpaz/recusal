@@ -4,6 +4,14 @@ The [Recusal](https://github.com/philpaz/recusal) gate for
 [Google ADK](https://google.github.io/adk-docs/): every tool call an agent proposes is
 judged by your policy before the tool runs, and a refused call never runs.
 
+**New to Recusal?** It checks each tool call an AI agent proposes against your policy and
+refuses the unsafe or unapproved ones before the tool runs. No model makes that decision.
+A policy is a plain Python function: it is given the tool's name and its arguments and
+returns a list of findings. An empty list lets the call run; a failing finding refuses it
+and gives the reason.
+[Writing a policy](https://github.com/philpaz/recusal#write-the-policy-two-postures-one-principle)
+covers the two postures, allowlist and deny-list.
+
 This is a separate distribution from `recusal`. The kernel has zero runtime dependencies
 and a frozen compatibility perimeter; this package carries the ADK dependency and its own
 version, so an ADK release never forces a release of the kernel.
@@ -17,6 +25,8 @@ pip install recusal-google-adk
 Requires Python 3.11+ (the ADK's minimum), `recusal>=0.14.0` and `google-adk>=2.13.0`. It
 is tested on every pull request against exactly `google-adk==2.13.0` with
 `google-genai==2.34.0`, and weekly against the newest releases.
+
+The package ships inline types (`py.typed`) for your editor and type checker.
 
 ## Use
 
@@ -90,3 +100,19 @@ A runnable offline demonstration, with a scripted model and no API key, is
 [`examples/google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py)
 and
 [`examples/google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py).
+
+## More
+
+- [Framework notes for Google ADK](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#google-adk):
+  the detail behind this page.
+- [All eight adapter packages](https://github.com/philpaz/recusal/tree/main/adapters) and
+  [the kernel](https://github.com/philpaz/recusal), which has zero runtime dependencies.
+- [Verifying a release](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md#adapter-packages):
+  each release is built in CI, signed with Sigstore and published to PyPI by trusted
+  publishing.
+- [Changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md),
+  [issues](https://github.com/philpaz/recusal/issues),
+  [security policy](https://github.com/philpaz/recusal/blob/main/SECURITY.md) and
+  [support](https://github.com/philpaz/recusal/blob/main/SUPPORT.md).
+
+Licensed under Apache-2.0.
