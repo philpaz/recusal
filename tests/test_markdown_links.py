@@ -44,7 +44,7 @@ def _slug(heading: str) -> str:
     """GitHub's anchor for a heading: lower case, punctuation dropped, spaces to hyphens.
     Inline code keeps its text and links keep their label."""
     heading = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    heading = re.sub(r"[`*_]", "", heading).strip().lower()
+    heading = re.sub(r"[`*]", "", heading).strip().lower()
     heading = re.sub(r"[^\w\- ]", "", heading)
     return heading.replace(" ", "-")
 

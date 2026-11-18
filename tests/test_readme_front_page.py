@@ -110,7 +110,7 @@ def test_the_contents_line_links_sections_that_exist_in_this_order():
     assert len(anchors) == 11 and len(set(anchors)) == 11
     headings = re.findall(r"^## (.+)$", README, re.M)
     slugs = [
-        re.sub(r"[^\w\- ]", "", re.sub(r"[`*_]", "", h).lower()).replace(" ", "-") for h in headings
+        re.sub(r"[^\w\- ]", "", re.sub(r"[`*]", "", h).lower()).replace(" ", "-") for h in headings
     ]
     positions = [slugs.index(anchor) for anchor in anchors]
     assert positions == sorted(positions), "the contents line follows the page's own order"

@@ -57,11 +57,11 @@ def test_each_row_links_its_own_section_of_the_detail_page():
     headings = re.findall(r"^## (.+)$", DETAIL, re.M)
     assert len(headings) == len(ADAPTERS)
     slugs = [
-        re.sub(r"[^\w\- ]", "", re.sub(r"[`*_]", "", h).lower()).replace(" ", "-") for h in headings
+        re.sub(r"[^\w\- ]", "", re.sub(r"[`*]", "", h).lower()).replace(" ", "-") for h in headings
     ]
     linked = []
     for directory, cells in _rows().items():
-        anchor = re.search(rf"\({re.escape(BLOB)}docs/FRAMEWORKS\.md#([a-z0-9-]+)\)", cells[4])
+        anchor = re.search(rf"\({re.escape(BLOB)}docs/FRAMEWORKS\.md#([a-z0-9_-]+)\)", cells[4])
         assert anchor is not None, directory
         linked.append(anchor.group(1))
         # the row's first cell is that section's heading
