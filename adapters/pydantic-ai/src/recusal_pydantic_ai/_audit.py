@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
@@ -70,14 +72,20 @@ def recusal_audited_before_tool_execute(
     *,
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
-):
+) -> BeforeToolExecuteHookFunc:
     """Return a ``before_tool_execute`` hook that records, then gates, each call.
 
     For ``Hooks(before_tool_execute=...)``, which declares no ordering: list it last, as
     with the plain hook, or a later hook can change the arguments after they were recorded.
     """
 
-    async def gate(ctx: Any, *, call: ToolCallPart, tool_def: ToolDefinition, args: dict) -> dict:
+    async def gate(
+        ctx: RunContext[Any],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
         reason = _refusal(
             call.tool_name,
             args,

@@ -32,8 +32,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, CombinedCapability
+from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
@@ -57,7 +58,7 @@ def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> st
         return f"Recusal refused `{tool_name}`: {detail}"
     bound = proposal if isinstance(proposal, dict) else {"input": proposal}
 
-    def unjudgeable(_name, _input):
+    def unjudgeable(_name: str, _input: dict[str, Any]) -> list[Finding]:
         return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
 
     try:
@@ -108,7 +109,7 @@ def _refusal(
     return reason if decision == "deny" else None
 
 
-def recusal_before_tool_execute(policy: Policy):
+def recusal_before_tool_execute(policy: Policy) -> BeforeToolExecuteHookFunc:
     """Return a ``before_tool_execute`` hook that judges each tool call before it runs.
 
     For ``Hooks(before_tool_execute=...)``. A refusal is raised as ``ToolFailed(reason)``,
@@ -119,7 +120,13 @@ def recusal_before_tool_execute(policy: Policy):
     a hook that runs after it can change the arguments it judged.
     """
 
-    async def gate(ctx: Any, *, call: ToolCallPart, tool_def: ToolDefinition, args: dict) -> dict:
+    async def gate(
+        ctx: RunContext[Any],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
         reason = _refusal(call.tool_name, args, policy)
         if reason is not None:
             raise ToolFailed(reason)
@@ -156,7 +163,7 @@ class RecusalGate(AbstractCapability[Any]):
         return args
 
 
-def _leaves(capability: Any) -> list:
+def _leaves(capability: AbstractCapability[Any]) -> list[AbstractCapability[Any]]:
     if isinstance(capability, CombinedCapability):
         return [leaf for child in capability.capabilities for leaf in _leaves(child)]
     return [capability]

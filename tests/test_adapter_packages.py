@@ -226,10 +226,16 @@ def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(director
     dev = kernel["project"]["optional-dependencies"]["dev"]
     pin = next(spec for spec in dev if spec.startswith("mypy"))
     flags = "--check-untyped-defs --warn-unused-ignores --warn-redundant-casts"
+    ci_flags = flags
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     job = ci.split(f"  adapter-{directory}-wheel:\n", 1)[1].split("\n  # ", 1)[0]
+    if directory == "pydantic-ai":
+        ci_flags = (
+            "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
+            "--warn-unused-ignores --warn-redundant-casts"
+        )
     assert f'/tmp/adapter/bin/pip install --quiet "{pin}"' in job
-    assert f"cd /tmp && /tmp/adapter/bin/python -m mypy {flags} -p {module}\n" in job
+    assert f"cd /tmp && /tmp/adapter/bin/python -m mypy {ci_flags} -p {module}\n" in job
     build = (ROOT / ".github" / "workflows" / "build-adapter-dist.yml").read_text("utf-8")
     assert f'/tmp/wheelcheck/bin/pip install --quiet "{pin}"' in build
     assert f'-m mypy {flags} -p "$MODULE"' in build

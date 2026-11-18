@@ -420,7 +420,7 @@ jobs:
       - name: Type-check the installed package
         run: |
           /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
 
   # The same proof for recusal-openai, the gate for a Responses or Chat Completions loop.
   adapter-openai-wheel:
