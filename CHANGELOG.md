@@ -12,6 +12,12 @@ All notable changes to this project are documented here. The format follows
   and is checked by CI with strict missing-annotation flags, contributed by
   [@hananbahi527](https://github.com/hananbahi527) in
   [#270](https://github.com/philpaz/recusal/pull/270).
+- The weekly latest-framework workflow (`compat.yml`) now also builds each adapter's
+  wheel, installs it beside the newest release of its framework and runs its
+  `smoke_test.py` from outside the checkout, one row per adapter, with a test that holds
+  the rows to the adapter directories on disk. Contributed by
+  [@noqt](https://github.com/noqt) in
+  [#268](https://github.com/philpaz/recusal/pull/268).
 
 ### Removed
 

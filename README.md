@@ -914,6 +914,9 @@ Thank you to the people who have made Recusal better:
 - [@hananbahi527](https://github.com/hananbahi527): complete type annotations and strict
   mypy checks for the `recusal-pydantic-ai` adapter, in
   [#270](https://github.com/philpaz/recusal/pull/270).
+- [@noqt](https://github.com/noqt): the weekly lane that smoke-tests each installed adapter
+  wheel against the newest framework release, in
+  [#268](https://github.com/philpaz/recusal/pull/268).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).
