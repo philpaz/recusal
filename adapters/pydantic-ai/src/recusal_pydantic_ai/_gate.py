@@ -30,7 +30,7 @@ What the hook cannot see:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Optional
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, CombinedCapability
@@ -43,10 +43,10 @@ from recusal import Finding, decide
 from recusal.invocation import detached as _detached
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
-Policy = Callable[[str, dict], List[Any]]
+Policy = Callable[[str, dict[str, Any]], list[Finding]]
 
 
-def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
+def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict[str, Any]) -> str:
     """The reason for a call the gate refuses before any policy runs.
 
     Without recording arguments it is the plain text. With them (the audited gate) the
@@ -155,8 +155,13 @@ class RecusalGate(AbstractCapability[Any]):
         return CapabilityOrdering(position="innermost")
 
     async def before_tool_execute(
-        self, ctx: Any, *, call: ToolCallPart, tool_def: ToolDefinition, args: dict
-    ) -> dict:
+        self,
+        ctx: RunContext[Any],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
         reason = _refusal(call.tool_name, args, self.policy)
         if reason is not None:
             raise ToolFailed(reason)
@@ -169,7 +174,7 @@ def _leaves(capability: AbstractCapability[Any]) -> list[AbstractCapability[Any]
     return [capability]
 
 
-def is_gated(agent: Agent) -> bool:
+def is_gated(agent: Agent[Any, Any]) -> bool:
     """True if a ``RecusalGate`` is among the agent's own capabilities.
 
     Reads only this agent: an agent it calls from inside a tool function runs under its own

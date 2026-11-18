@@ -911,6 +911,9 @@ Thank you to the people who have made Recusal better:
   [#178](https://github.com/philpaz/recusal/pull/178).
 - [@ZYZ666-RGB](https://github.com/ZYZ666-RGB) (yuzhou): Hypothesis property tests for
   the MCP name helpers, in [#183](https://github.com/philpaz/recusal/pull/183).
+- [@hananbahi527](https://github.com/hananbahi527): complete type annotations and strict
+  mypy checks for the `recusal-pydantic-ai` adapter, in
+  [#270](https://github.com/philpaz/recusal/pull/270).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).

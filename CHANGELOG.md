@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `recusal-pydantic-ai` now declares complete, framework-compatible function annotations
+  and is checked by CI with strict missing-annotation flags, contributed by
+  [@hananbahi527](https://github.com/hananbahi527) in
+  [#270](https://github.com/philpaz/recusal/pull/270).
+
 ### Removed
 
 - `assets/banner-gate.png`, `assets/banner-ledger.png` and `assets/banner-seal-light.png`:

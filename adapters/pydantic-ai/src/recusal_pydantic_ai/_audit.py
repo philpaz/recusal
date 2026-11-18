@@ -57,7 +57,7 @@ def _recording(
     }
 
 
-def _proposal(call: ToolCallPart) -> Any:
+def _proposal(call: ToolCallPart) -> dict[str, Any] | str | None:
     """The call's arguments as the model sent them, for the entry of a call refused before
     judgment. Never raises: an argument string that is not a JSON object is kept as text."""
     try:
@@ -114,8 +114,13 @@ class RecusalAuditedGate(RecusalGate):
     control: Optional[dict[str, Any]] = None
 
     async def before_tool_execute(
-        self, ctx: Any, *, call: ToolCallPart, tool_def: ToolDefinition, args: dict
-    ) -> dict:
+        self,
+        ctx: RunContext[Any],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
         reason = _refusal(
             call.tool_name,
             args,
