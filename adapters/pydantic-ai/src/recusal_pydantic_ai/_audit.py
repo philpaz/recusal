@@ -24,10 +24,8 @@ audited gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from pydantic_ai import RunContext
-from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
@@ -35,6 +33,10 @@ from pydantic_ai.tools import ToolDefinition
 from recusal.audit import AuditLog
 
 from ._gate import Policy, RecusalGate, _refusal
+
+if TYPE_CHECKING:
+    from pydantic_ai import RunContext
+    from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 
 #: The surface label every entry carries: the runtime hook that adjudicated.
 SURFACE = "pydantic_ai.before_tool_execute"

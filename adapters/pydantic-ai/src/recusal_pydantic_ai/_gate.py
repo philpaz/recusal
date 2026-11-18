@@ -30,17 +30,20 @@ What the hook cannot see:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, CombinedCapability
-from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
 
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
+
+if TYPE_CHECKING:
+    from pydantic_ai import RunContext
+    from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict[str, Any]], list[Finding]]
