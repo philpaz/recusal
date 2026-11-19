@@ -155,3 +155,55 @@ def test_each_adapter_readme_stands_on_its_own_as_a_pypi_page():
         project = (ROOT / "adapters" / directory / "pyproject.toml").read_text(encoding="utf-8")
         assert re.search(r'^license = "Apache-2\.0"$', project, re.M), directory
     assert "## Write the policy: two postures, one principle" in README
+
+
+def _kernel_picture(asset):
+    """The kernel README's centered <picture> block for one asset, byte for byte."""
+    found = re.findall(
+        r'<p align="center">\n  <picture>\n    <source [^\n]*/assets/'
+        + re.escape(asset)
+        + r'\.(?:png|svg)">\n    <img [^\n]*>\n  </picture>\n</p>\n',
+        README,
+    )
+    assert len(found) == 1, asset
+    return found[0]
+
+
+def test_each_adapter_readme_shows_the_kernels_pictures_where_its_reader_needs_them():
+    """An adapter's PyPI page opens like the kernel's: the same banner, then the package's
+    own badges, the gate diagram beside "New to Recusal?", and the adapter map in More.
+    Each picture is the kernel's block byte for byte, alternative text included, so a
+    changed diagram or its description cannot leave one page behind. The python badge is
+    the package's own minimum, read from its pyproject."""
+    banner = _kernel_picture("banner-gate-strip")
+    gate = _kernel_picture("gate-position")
+    adapter_map = _kernel_picture("adapter-map")
+    for asset in ("banner-gate-strip", "banner-gate-strip-light"):
+        assert (ROOT / "assets" / f"{asset}.png").is_file()
+    for asset in ("gate-position", "gate-position-light", "adapter-map", "adapter-map-light"):
+        assert (ROOT / "assets" / f"{asset}.svg").is_file()
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert len(directories) == 8
+    for directory in directories:
+        package = "recusal-" + directory
+        text = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
+        assert text.startswith(banner + "\n# " + package + "\n"), directory
+        project = (ROOT / "adapters" / directory / "pyproject.toml").read_text(encoding="utf-8")
+        minimum = re.search(r'^requires-python = ">=(3\.\d+)"$', project, re.M).group(1)
+        head = text.split("\n## ", 1)[0]
+        for badge in (
+            f"(https://img.shields.io/pypi/v/{package})](https://pypi.org/project/{package}/)",
+            "(https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)",
+            f"(https://img.shields.io/badge/python-{minimum}%2B-blue)",
+            "(https://img.shields.io/badge/license-Apache--2.0-green)",
+        ):
+            assert badge in head, (directory, badge)
+        assert text.count(gate) == 1, directory
+        assert text.index("**New to Recusal?**") < text.index(gate) < text.index("pip install"), (
+            directory
+        )
+        more = text.split("\n## More\n", 1)[1]
+        assert more.startswith("\n" + adapter_map), directory
+        assert 'An arrow means "depends on". No arrow leaves the kernel' in " ".join(
+            more.split()
+        ), directory

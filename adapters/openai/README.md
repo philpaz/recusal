@@ -1,4 +1,16 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/philpaz/recusal/main/assets/banner-gate-strip.png">
+    <img alt="recusal, deterministic governance for AI agents" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/banner-gate-strip-light.png" width="880">
+  </picture>
+</p>
+
 # recusal-openai
+
+[![PyPI](https://img.shields.io/pypi/v/recusal-openai)](https://pypi.org/project/recusal-openai/)
+[![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
+![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
 The [Recusal](https://github.com/philpaz/recusal) gate for a loop you own on the
 [OpenAI API](https://platform.openai.com/docs/api-reference): every function call the
@@ -12,6 +24,13 @@ returns a list of findings. An empty list lets the call run; a failing finding r
 and gives the reason.
 [Writing a policy](https://github.com/philpaz/recusal#write-the-policy-two-postures-one-principle)
 covers the two postures, allowlist and deny-list.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/philpaz/recusal/main/assets/gate-position.svg">
+    <img alt="Before the tool runs. An agent proposes a tool call. Recusal, your policy with no model in it, decides. With no objection the tool runs. On a failing finding, or when the policy itself raises, the call is refused: the tool never runs and the reason goes back to the model. Every decision can be written to a hash-chained audit log, if you pass one." src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/gate-position-light.svg" width="880">
+  </picture>
+</p>
 
 This is a separate distribution from `recusal`. The kernel has zero runtime dependencies
 and a frozen compatibility perimeter; this package carries the OpenAI SDK dependency and
@@ -108,6 +127,17 @@ and
 [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py).
 
 ## More
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/philpaz/recusal/main/assets/adapter-map.svg">
+    <img alt="One kernel, eight adapters. Each adapter package depends on recusal: recusal-crewai, recusal-google-adk, recusal-langchain, recusal-langgraph, recusal-openai, recusal-openai-agents, recusal-openai-agents-mcp and recusal-pydantic-ai. recusal-langchain also depends on recusal-langgraph, and recusal-openai-agents-mcp on recusal-openai-agents. The kernel depends on nothing." src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/adapter-map-light.svg" width="880">
+  </picture>
+</p>
+
+An arrow means "depends on". No arrow leaves the kernel, so a framework's breaking
+change is answered by a release of that framework's adapter, not by a release of the
+kernel.
 
 - [Framework notes for the OpenAI API](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-api-your-own-loop):
   the detail behind this page.
