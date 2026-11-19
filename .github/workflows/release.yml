@@ -101,6 +101,18 @@ jobs:
         with:
           inputs: dist/*
           release-signing-artifacts: true
+      # The build's provenance bundle, attached beside the artifacts it describes. This is
+      # the builder's attestation, made in the build job; this job only publishes the file.
+      - name: Download the provenance bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: provenance
+          path: provenance/
+      - name: Attach the provenance bundle to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" provenance/*.intoto.jsonl --repo "$GITHUB_REPOSITORY"
 
   publish:
     name: Publish to PyPI

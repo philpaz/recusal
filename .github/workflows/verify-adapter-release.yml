@@ -88,6 +88,21 @@ jobs:
               --signer-workflow "${REPO}/.github/workflows/build-adapter-dist.yml"
           done
 
+      # The same provenance, from the file attached to the release, with no call to the
+      # attestation API. A release made before the bundle was attached carries no such
+      # file; the check above, which asks GitHub for the attestation, covers it.
+      - name: The provenance bundle attached to the release verifies the same files
+        run: |
+          BUNDLE="${SDIST%.tar.gz}.intoto.jsonl"
+          if [ ! -f "$BUNDLE" ]; then
+            echo "no provenance bundle is attached to this release"
+            exit 0
+          fi
+          for f in "$WHEEL" "$SDIST"; do
+            gh attestation verify "$f" --repo "$REPO" --bundle "$BUNDLE" \
+              --signer-workflow "${REPO}/.github/workflows/build-adapter-dist.yml"
+          done
+
       # The kernel's builder is a real workflow in this repository that did NOT build
       # this artifact: the sharpest wrong answer available.
       - name: NEGATIVE CONTROL, the kernel's builder must not be accepted as the signer

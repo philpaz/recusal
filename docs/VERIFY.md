@@ -42,6 +42,20 @@ gh attestation verify recusal-0.14.0-py3-none-any.whl --repo philpaz/recusal \
 # Error: verifying with issuer "sigstore.dev"   (exit 1)
 ```
 
+**The same check from a file.** The command above asks GitHub's attestation API for the
+provenance. A release made after `v0.14.2` also carries that provenance as a release
+asset, `recusal-<version>.intoto.jsonl`: the signed bundle the builder produced, kept as a
+file and attached beside the artifacts. With it downloaded, the check needs no call to
+the attestation API:
+
+```bash
+gh attestation verify recusal-<version>-py3-none-any.whl --repo philpaz/recusal \
+  --bundle recusal-<version>.intoto.jsonl \
+  --signer-workflow philpaz/recusal/.github/workflows/build-dist.yml
+```
+
+`v0.14.2` and earlier releases carry no such file; the first command covers them.
+
 ## 2. Signatures: the release-boundary Sigstore bundles
 
 Each release attaches a `.sigstore.json` bundle next to each distribution. The bundle
@@ -132,8 +146,7 @@ issue and it will be attached to releases going forward.
 
 The packages under `adapters/` (`recusal-langgraph` and the others) are released
 separately from `recusal`, each by its own tag of the form `<package>-v<version>`,
-through their own workflows. **None has been released yet**, so there is nothing to
-verify today; this section says what will be true of one when it is.
+through their own workflows. All eight are on PyPI.
 
 The same three checks apply, with different names:
 
@@ -143,6 +156,10 @@ The same three checks apply, with different names:
 | Builder, for `--signer-workflow` | `build-dist.yml` | `build-adapter-dist.yml` |
 | Signer, in the certificate identity | `release.yml` at the tag | `release-adapter.yml` at the tag |
 | Publisher in PyPI's PEP 740 provenance | `release.yml` | `release-adapter.yml` |
+| Provenance bundle attached to the release | `recusal-X.Y.Z.intoto.jsonl` | `<module>-X.Y.Z.intoto.jsonl`, for example `recusal_langgraph-X.Y.Z.intoto.jsonl` |
+
+The provenance bundle is attached to an adapter release made after 2026-11-19; an
+earlier one carries none, and `gh attestation verify` without `--bundle` covers it.
 
 An adapter's artifact that verified against `build-dist.yml` or `release.yml` would be
 wrong: those built and signed the kernel. The workflow

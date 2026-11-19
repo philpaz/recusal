@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Each release now carries its build provenance as a file. The builder's signed
+  attestation bundle, which until now lived only in GitHub's attestation store, is also
+  attached to the GitHub Release as `<distribution>-<version>.intoto.jsonl`, for the
+  kernel and for every adapter. A verifier can check an artifact against it with
+  `gh attestation verify --bundle`, without the attestation API; `docs/VERIFY.md` has the
+  command, and both verify workflows run it when the file is present. Releases up to
+  `v0.14.2`, and adapter releases up to 2026-11-19, carry no such file and verify as
+  before.
+
+### Fixed
+
+- `docs/VERIFY.md` still said of the adapter packages that "none has been released yet".
+  All eight are on PyPI; the section now says so.
+
 ## [0.14.2] - 2026-11-19
 
 A PATCH release of the kernel under `STABILITY.md`, with one fix: the audit log's tolerant

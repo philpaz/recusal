@@ -100,9 +100,37 @@ jobs:
           upload-release-assets: false
 
       - name: Attest build provenance for the distributions
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*
+
+      # The attestation above is stored by GitHub. The same signed bundle is also kept as
+      # a file, named for the distribution, so the release job can attach it to the GitHub
+      # Release: a verifier then has the provenance next to the artifacts and can check it
+      # with `gh attestation verify --bundle`, without the attestation API. It is a
+      # separate artifact, not part of dist/, because dist/ is what gets signed and
+      # published to PyPI.
+      - name: Keep the provenance bundle as a file
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -- dist/*.tar.gz
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "::error::expected exactly one sdist in dist/ to name the provenance bundle"
+            exit 1
+          fi
+          test -s "$BUNDLE"
+          mkdir provenance
+          cp "$BUNDLE" "provenance/$(basename "$1" .tar.gz).intoto.jsonl"
+          ls -l provenance
+
+      - name: Upload the provenance bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: provenance
+          path: provenance/
+          if-no-files-found: error
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

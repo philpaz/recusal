@@ -57,6 +57,21 @@ jobs:
               --signer-workflow "${REPO}/.github/workflows/build-dist.yml"
           done
 
+      # The same provenance, from the file attached to the release, with no call to the
+      # attestation API. Releases before 0.14.3 carry no such file; the check above, which
+      # asks GitHub for the attestation, covers them.
+      - name: The provenance bundle attached to the release verifies the same files
+        run: |
+          BUNDLE="dist/recusal-${VERSION}.intoto.jsonl"
+          if [ ! -f "$BUNDLE" ]; then
+            echo "no provenance bundle is attached to this release (attached from 0.14.3 on)"
+            exit 0
+          fi
+          for f in "dist/recusal-${VERSION}-py3-none-any.whl" "dist/recusal-${VERSION}.tar.gz"; do
+            gh attestation verify "$f" --repo "$REPO" --bundle "$BUNDLE" \
+              --signer-workflow "${REPO}/.github/workflows/build-dist.yml"
+          done
+
       - name: NEGATIVE CONTROL, a wrong signer workflow must fail
         run: |
           if gh attestation verify "dist/recusal-${VERSION}-py3-none-any.whl" --repo "$REPO" \
