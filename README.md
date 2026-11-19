@@ -31,23 +31,24 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 [How it works](#how-it-works) · [CI](#gate-your-ci) ·
 [Built to be checked](#built-to-be-checked) · [Documentation](#documentation)
 
-> **New with 0.14.1**
+> **New with 0.14.2**
 >
-> - **Eight adapter packages**, one per agent framework, each a separate package with its
->   own version: [the kernel and its adapters](#the-kernel-and-its-adapters).
-> - **Every framework gate can put its decisions on a hash-chained audit log**, through the
->   same code path as the plain gate:
->   [how a gate puts its decision on the record](https://github.com/philpaz/recusal/blob/main/docs/ARCHITECTURE.md#how-a-gate-puts-its-decision-on-the-record).
-> - **A signed, verifiable release path for each adapter**, separate from the kernel's:
->   [releasing an adapter](https://github.com/philpaz/recusal/blob/main/adapters/README.md#releasing-an-adapter-maintainer).
-> - **A reference architecture for an isolated enterprise deployment.** It is a position on
->   how it would be built, and nothing in it is built yet:
->   [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md).
+> - **One fix in the kernel.** The audit log's tolerant reader skips a line that is not
+>   valid UTF-8, as its contract says, where it used to raise. It failed safe, and the
+>   strict verifier is unchanged:
+>   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0142---2026-11-19).
+> - **Coverage-guided fuzzing of the kernel**, which is what found it. Five harnesses, each
+>   stating the contract it holds its target to:
+>   [`fuzz/README.md`](https://github.com/philpaz/recusal/blob/main/fuzz/README.md).
+> - **Security releases of three adapter packages.** If you gate a LangGraph `ToolNode`,
+>   upgrade `recusal-langgraph` to 0.2.0 and build the node with `gated_tool_node`; with
+>   it come `recusal-langchain` 0.1.2 and `recusal-openai` 0.2.0:
+>   [what changed and why](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#security).
 >
-> Each adapter is on PyPI under its own name and version. `recusal` 0.14.1 is the
-> same kernel code as 0.14.0: no behaviour changed, and the adapters are not part of its
-> wheel. The full list is in the
-> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0141---2026-11-14).
+> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.14.2
+> differs from 0.14.1 in the audit reader, the read check in `recusal audit verify`, and
+> the version string; the adapters are not part of its wheel. The full list is in the
+> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0142---2026-11-19).
 
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
@@ -753,7 +754,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.14.1   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.14.2   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

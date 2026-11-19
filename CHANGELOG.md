@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-11-19
+
+A PATCH release of the kernel under `STABILITY.md`, with one fix: the audit log's tolerant
+reader skips a line that is not valid UTF-8 where it used to raise (under Fixed, below).
+Under `recusal/`, the only other lines that differ from 0.14.1 are the read check in
+`recusal audit verify`, which keeps that command's exit code as it was, and the version
+string. No verdict, decision path, reason string or import path changed.
+
+Everything else listed here was added to the repository since 0.14.1 and is not part of the
+`recusal` wheel: coverage-guided fuzzing of the kernel, and the releases of three adapter
+packages, each a separate distribution on PyPI under its own version and tag
+(`recusal-langgraph` 0.2.0, `recusal-langchain` 0.1.2, `recusal-openai` 0.2.0 and, before
+them, `recusal-pydantic-ai` 0.1.2). The Security section is about `recusal-langgraph`: if
+you gate a LangGraph `ToolNode`, read it and upgrade that package.
+
 ### Security
 
 - `recusal-langgraph` 0.2.0 closes a way to run a LangGraph `ToolNode` with the gate
@@ -74,7 +89,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- `recusal` (the kernel, not yet released): the audit log's tolerant reader no longer
+- `recusal` (the kernel): the audit log's tolerant reader no longer
   raises on a line that is not valid UTF-8. `recusal.audit.load`, resuming an `AuditLog`
   from an existing file, and every `append` after it raised `UnicodeDecodeError` when the
   file held one such byte, although the reader's own contract is that a corrupt line is

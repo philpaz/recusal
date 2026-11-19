@@ -41,7 +41,7 @@ def test_the_note_names_the_released_version_of_the_kernel():
     version = _version()
     note = _callout()
     assert f"> **New with {version}**" in note
-    assert f"`recusal` {version} is the\n> same kernel code as" in note
+    assert f"Under `recusal/`, {version}\n> differs from " in note
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     heading = re.search(r"^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$", changelog, re.M)
     assert heading.group(1) == version, "the newest released section is the packaged version"
@@ -51,25 +51,41 @@ def test_the_note_names_the_released_version_of_the_kernel():
     assert "### Added" in section, "the section the note links has entries"
 
 
-def test_the_note_counts_the_adapters_that_exist():
+def test_the_opening_counts_the_adapters_that_exist():
     adapters = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
-    assert f"**{WORDS[len(adapters)]} adapter packages**" in _callout()
+    opening = README.split("\n## ", 1)[0]
+    assert f"[{WORDS[len(adapters)].lower()} adapter packages]" in opening
 
 
 def test_each_thing_the_note_calls_new_is_in_the_repository():
     note = _callout()
     for claim, evidence in (
-        ("adapter packages", ROOT / "adapters" / "README.md"),
-        ("hash-chained audit log", ROOT / "tests" / "test_audited_routes.py"),
-        ("release path for each adapter", ROOT / ".github" / "workflows" / "release-adapter.yml"),
-        ("reference architecture", ROOT / "docs" / "ENTERPRISE.md"),
+        ("audit log's tolerant reader", ROOT / "tests" / "test_audit_hardening.py"),
+        ("Coverage-guided fuzzing of the kernel", ROOT / "fuzz" / "README.md"),
+        ("Five harnesses", ROOT / ".github" / "workflows" / "fuzz.yml"),
+        ("three adapter packages", ROOT / "adapters" / "langgraph" / "README.md"),
     ):
         assert claim in note, claim
         assert evidence.is_file(), evidence
-    # the enterprise document is described as what it is
-    assert "nothing in it is built yet" in note
-    enterprise = (ROOT / "docs" / "ENTERPRISE.md").read_text(encoding="utf-8")
-    assert "Nothing in\nit is built, deployed or independently validated today" in enterprise
+    assert len(list((ROOT / "fuzz").glob("fuzz_*.py"))) == 5
+    # the versions the note names are the ones in the tree, and the function it tells a
+    # LangGraph user to build the node with is one the package exports
+    for directory, version in (("langgraph", "0.2.0"), ("langchain", "0.1.2"), ("openai", "0.2.0")):
+        package = "recusal_" + directory
+        init = (ROOT / "adapters" / directory / "src" / package / "__init__.py").read_text("utf-8")
+        assert f'__version__ = "{version}"' in init, directory
+        assert (
+            f"`recusal-{directory}` to {version}" in note
+            or f"`recusal-{directory}` {version}" in note
+        )
+    langgraph = (
+        ROOT / "adapters" / "langgraph" / "src" / "recusal_langgraph" / "__init__.py"
+    ).read_text("utf-8")
+    assert "`gated_tool_node`" in note and '"gated_tool_node",' in langgraph
+    # what the note says of the kernel diff is what the kernel diff is
+    assert "the audit reader, the read check in `recusal audit verify`, and" in " ".join(
+        line.lstrip("> ") for line in note.splitlines()
+    )
 
 
 def test_every_place_says_the_adapters_are_on_pypi_and_installs_them_by_name():
