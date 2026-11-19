@@ -74,6 +74,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `recusal` (the kernel, not yet released): the audit log's tolerant reader no longer
+  raises on a line that is not valid UTF-8. `recusal.audit.load`, resuming an `AuditLog`
+  from an existing file, and every `append` after it raised `UnicodeDecodeError` when the
+  file held one such byte, although the reader's own contract is that a corrupt line is
+  skipped so that a damaged tail cannot brick the log. The backward tail reader already
+  skipped such a line; the forward one opened the file as text and did not. It now reads
+  bytes and decodes each line on its own, so the damage costs that line only. Found by
+  the fuzzing below, in its first few thousand inputs. Unchanged: `verify_file` and
+  `recusal audit verify` still report such a file as unreadable (exit 2), an append still
+  refuses an unterminated damaged tail with `AuditFramingError`, and a file of valid
+  UTF-8 reads exactly as before. It failed safe (a gate with an unwritable log refuses
+  the call), so no decision was ever allowed by it.
 - `recusal-openai` 0.2.0: an `async def` tool is refused with a reason before the policy
   runs. The gate for a loop you own on the OpenAI API calls tools synchronously; before,
   it allowed an async tool, recorded the call as allowed, and answered the model with the

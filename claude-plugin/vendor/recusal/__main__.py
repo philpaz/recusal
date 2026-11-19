@@ -823,6 +823,11 @@ def audit_verify_command(
             out,
         )
     try:
+        # the tolerant reader skips a line that is not UTF-8; here such a file is still
+        # one this command cannot read, so the strict pass comes first
+        with open(log_path, encoding="utf-8") as strict:
+            for _ in strict:
+                pass
         entries = _load_audit_entries(log_path)
     except (OSError, UnicodeDecodeError) as exc:
         # operational inability to read is exit 2, not a "broken chain" exit 1

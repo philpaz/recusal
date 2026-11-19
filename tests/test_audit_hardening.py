@@ -185,3 +185,98 @@ def test_negative_control_an_edit_to_an_integer_keyed_entry_is_still_caught(tmp_
     intact, problems = verify_file(p)
     assert intact is False
     assert problems == ["entry 0 (seq 0): content tampered - hash does not match"]
+
+
+# --- the tolerant reader survives a line that is not UTF-8 (found by fuzzing) --------------
+#
+# ``_scan`` promised that a corrupt line is skipped "so a half-written tail can never brick
+# the log", and ``_tail_state`` already treated a line that is not UTF-8 that way. ``_scan``
+# opened the file in text mode, so one such byte raised ``UnicodeDecodeError`` out of
+# ``load``, out of a resume, and out of every append after it.
+
+
+def _two_entries(tmp_path):
+    path = str(tmp_path / "audit.jsonl")
+    log = AuditLog(path=path)
+    verdict = compute_verdict([{"severity": "CRITICAL", "status": "fail", "check": "c"}])
+    log.append(verdict, action={"tool": "t"})
+    log.append(verdict, action={"tool": "t"})
+    return path, verdict
+
+
+@pytest.mark.parametrize(
+    "damage, readable",
+    [
+        (lambda good: good + b"\xf9\n", 2),
+        (lambda good: good + b"\xff\xfe", 2),
+        (lambda good: b"\x80\n" + good, 2),
+        (lambda good: good.replace(b'"tool"', b'"to\xffl"', 1), 1),
+    ],
+    ids=["bad line appended", "bad unterminated tail", "bad first line", "bad byte in entry 1"],
+)
+def test_a_line_that_is_not_utf8_is_skipped_by_every_tolerant_reader(tmp_path, damage, readable):
+    path, verdict = _two_entries(tmp_path)
+    with open(path, "rb") as fh:
+        good = fh.read()
+    with open(path, "wb") as fh:
+        fh.write(damage(good))
+
+    assert len(load(path)) == readable
+    assert len(AuditLog(path=path).entries) == readable
+    # the strict reader does not share the tolerance: the file is reported, not blessed
+    intact, problems = verify_file(path)
+    assert intact is False and any("cannot read" in problem for problem in problems)
+
+
+def test_an_append_after_a_line_that_is_not_utf8_chains_onto_the_last_good_entry(tmp_path):
+    path, verdict = _two_entries(tmp_path)
+    head = load(path)[-1]["hash"]
+    with open(path, "ab") as fh:
+        fh.write(b"\xf9\xf9\n")
+    AuditLog(path=path).append(verdict, action={"tool": "t"})
+    entries = load(path)
+    assert len(entries) == 3 and entries[-1]["prev_hash"] == head and entries[-1]["seq"] == 2
+    assert verify(entries) == (True, [])
+
+
+def test_an_undecodable_unterminated_tail_still_refuses_the_append(tmp_path):
+    """Skipping a bad line when reading is not licence to write after a torn one."""
+    path, verdict = _two_entries(tmp_path)
+    with open(path, "rb") as fh:
+        before = fh.read()
+    with open(path, "ab") as fh:
+        fh.write(b"\xff\xfe")
+    with pytest.raises(AuditFramingError):
+        AuditLog(path=path).append(verdict, action={"tool": "t"})
+    with open(path, "rb") as fh:
+        assert fh.read() == before + b"\xff\xfe"
+
+
+def test_reading_as_bytes_keeps_every_line_ending_the_text_reader_accepted(tmp_path):
+    path, _ = _two_entries(tmp_path)
+    with open(path, "rb") as fh:
+        first, second = fh.read().splitlines()
+    for joined in (
+        first + b"\n" + second + b"\n",
+        first + b"\r\n" + second + b"\r\n",
+        first + b"\r" + second + b"\r",
+        b"\n\n  " + first + b"  \n\t\n" + second,
+    ):
+        with open(path, "wb") as fh:
+            fh.write(joined)
+        assert [entry["seq"] for entry in load(path)] == [0, 1], joined[:20]
+
+
+def test_the_cli_still_calls_a_file_that_is_not_utf8_an_operational_error(tmp_path, capsys):
+    """``recusal audit verify`` exits 2 when it cannot read the log and 1 when the chain is
+    broken. A file that is not UTF-8 stays the first kind, as it was before the tolerant
+    reader learned to skip such a line."""
+    from recusal.__main__ import main
+
+    path, _ = _two_entries(tmp_path)
+    assert main(["audit", "verify", path]) == 0
+    capsys.readouterr()
+    with open(path, "ab") as fh:
+        fh.write(b"\xf9\n")
+    assert main(["audit", "verify", path]) == 2
+    assert "cannot read audit log" in capsys.readouterr().out

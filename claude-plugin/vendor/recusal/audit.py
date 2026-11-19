@@ -545,18 +545,29 @@ def _scan(path: str) -> Iterator[Dict[str, Any]]:
 
     A line that is not valid JSON (e.g. a partial final line left by a process killed
     mid-append) is skipped rather than crashing the read, so a half-written tail can never
-    brick the log. ``verify`` still surfaces any resulting chain break.
+    brick the log. A line that is not valid UTF-8 is skipped the same way, which is what
+    ``_tail_state`` already does: the file is read as bytes and each line decoded on its
+    own, so one damaged byte costs that line and not every read, resume and append after
+    it. ``verify`` still surfaces any resulting chain break, and ``verify_file``, the
+    strict reader, reports such a file as unreadable.
     """
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
+        with open(path, "rb") as fh:
+            for raw in fh:
                 try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # skip a corrupt/partial line instead of bricking the log
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue  # skip a line that is not UTF-8 instead of bricking the log
+                # a lone carriage return ends a line too, as it did when this file was
+                # opened in text mode
+                for line in text.split("\r"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # skip a corrupt/partial line instead of bricking the log
     except FileNotFoundError:
         return
 
