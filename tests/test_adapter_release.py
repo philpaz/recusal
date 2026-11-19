@@ -147,8 +147,17 @@ def test_tested_with_names_the_pins_the_pull_request_lane_installs(directory):
     assert pins and all(re.fullmatch(r"[a-z0-9-]+==[0-9.]+", pin) for pin in pins), pins
     ci = _workflow("ci.yml")
     job = ci.split(f"  adapter-{directory}-wheel:\n", 1)[1].split("\n  # ", 1)[0]
-    install = next(line for line in job.splitlines() if "/tmp/adapter/bin/pip install" in line)
-    assert re.findall(r"[a-z0-9-]+==[0-9.]+", install) == pins
+    # the job installs the adapter's hash-locked file, whose roots end with these pins
+    assert (
+        f"/tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-{directory}.txt"
+        in job
+    )
+    lock = (ROOT / "requirements" / f"adapter-{directory}.txt").read_text(encoding="utf-8")
+    roots = lock.splitlines()[0].split(" | ")[0].split()
+    assert roots[-len(pins) :] == pins
+    # and the wheels themselves go in without their dependencies, which the lock supplied
+    assert "/tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/" in job
+    assert "/tmp/adapter/bin/pip check" in job
 
 
 @needs_tomllib
@@ -252,7 +261,7 @@ def test_the_adapter_release_delegates_the_build_to_its_own_reusable_builder():
     assert "twine check dist/*" in build
     assert "anchore/sbom-action@" in build and "upload-release-assets: false" in build
     assert "actions/attest-build-provenance@" in build and "subject-path: dist/*" in build
-    assert "smoke_test.py" in build and "tested-with.txt" in build
+    assert "smoke_test.py" in build and '"requirements/adapter-$DIRECTORY.txt"' in build
 
 
 def test_what_is_built_beside_the_adapter_is_never_attested_or_published():
@@ -282,7 +291,7 @@ def test_the_release_gate_runs_the_whole_suite_and_then_the_adapter_with_its_fra
     test = release.split("\n  test:\n", 1)[1].split("\n  build:\n", 1)[0]
     for step in ("ruff check .", "ruff format --check .", "run: mypy", "run: pytest -q\n"):
         assert step in test, step
-    assert 'pip install -r "adapters/$DIRECTORY/tested-with.txt"' in test
+    assert 'pip install --require-hashes -r "requirements/adapter-$DIRECTORY.txt"' in test
     assert "pytest -q $TESTS" in test and "pytest -q -rs $OWN_TESTS" in test
     assert 'grep -q "^SKIPPED"' in test
     build = release.split("\n  build:\n", 1)[1].split("\n  sign:\n", 1)[0]
@@ -314,8 +323,8 @@ def test_the_verifiers_negative_controls_are_the_kernels_own_workflows():
 
 
 def test_both_verifiers_pin_the_same_sigstore_client():
-    pins = {
-        name: re.search(r'pip install "sigstore==([0-9.]+)"', _workflow(name)).group(1)
-        for name in ("verify-release.yml", "verify-adapter-release.yml")
-    }
-    assert len(set(pins.values())) == 1, pins
+    # both install the one hash-locked client, so they cannot disagree
+    for name in ("verify-release.yml", "verify-adapter-release.yml"):
+        assert "pip install --require-hashes -r requirements/sigstore.txt" in _workflow(name), name
+    lock = (ROOT / "requirements" / "sigstore.txt").read_text(encoding="utf-8")
+    assert re.search(r"^# roots: sigstore==[0-9.]+ \|", lock), lock.splitlines()[0]

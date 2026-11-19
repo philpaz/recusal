@@ -76,8 +76,13 @@ def test_the_number_of_framework_gates_and_both_test_lanes_are_real():
     assert "pull_request" in ci and "pull_request" not in compat.split("jobs:", 1)[0]
     assert "schedule:" in compat, "the newest-release lane runs on a schedule"
     for directory in adapters:
+        lock = f"requirements/adapter-{directory}.txt"
+        roots = (ROOT / lock).read_text(encoding="utf-8").splitlines()[0].split()
+        assert f"--require-hashes -r {lock}" in ci, (
+            f"{lock} is not installed on the pull request lane"
+        )
         for pin in (ROOT / "adapters" / directory / "tested-with.txt").read_text("utf-8").split():
-            assert pin in ci, f"{pin} is not pinned on the pull request lane"
+            assert pin in roots, f"{pin} is not pinned on the pull request lane"
             assert pin.split("==")[0] in compat, f"{pin.split('==')[0]} is not on the weekly lane"
 
 

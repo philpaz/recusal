@@ -58,11 +58,21 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text, f"{path.name}: {pin}"
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs pin both; so do the recusal-openai-agents and
-    # recusal-openai-agents-mcp wheel jobs, and the recusal-openai wheel job pins the
-    # SDK once more
-    assert ci.count("openai-agents==0.24.0") == 4
-    assert ci.count("openai==3.34.0") == 5
+    # both are roots of the hash-locked files the pull request lanes install: the two
+    # example jobs and the recusal-openai-agents wheel job install one, the
+    # recusal-openai-agents-mcp wheel job another, and the recusal-openai wheel job's
+    # carries the SDK alone
+    for lock, pins in (
+        ("adapter-openai-agents", expected),
+        ("adapter-openai-agents-mcp", expected),
+        ("adapter-openai", ("openai==3.34.0",)),
+    ):
+        roots = (ROOT / "requirements" / f"{lock}.txt").read_text(encoding="utf-8").splitlines()[0]
+        for pin in pins:
+            assert pin in roots.split(), (lock, pin)
+    assert ci.count("requirements/adapter-openai-agents.txt") == 3
+    assert ci.count("requirements/adapter-openai-agents-mcp.txt") == 1
+    assert ci.count("requirements/adapter-openai.txt") == 1
 
 
 @pytest.mark.skipif(

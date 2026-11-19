@@ -47,7 +47,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --no-deps -e .
       - name: Assert the Python 3.9-compatible mypy line
         run: |
           python -c "from importlib.metadata import version; installed=version('mypy'); major=int(installed.split('.', 1)[0]); assert major < 2, 'mypy '+installed+' cannot validate the declared Python 3.9 floor'"
@@ -75,7 +77,7 @@ jobs:
       # files as a BLOCKING check. Version-pinned so a new zizmor release cannot
       # change what green means without a reviewed bump.
       - name: Install zizmor (version-pinned)
-        run: pip install zizmor==1.30.0
+        run: python -m pip install --require-hashes -r requirements/zizmor.txt
       - name: Audit every workflow, blocking
         run: zizmor --no-progress .github/workflows
 
@@ -116,7 +118,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install this checkout (the action must gate with THIS code, not PyPI)
-        run: pip install -e .
+        run: python -m pip install --no-deps -e .
       - name: Scaffold the gate (settings.json is deliberately not committed)
         run: python -m recusal init --dir .
       - name: Produce evidence to adjudicate
@@ -189,7 +191,7 @@ jobs:
       # Adversarial: a DIFFERENT recusal is already importable; without use-installed
       # the action must replace it, or the action ref no longer names the adjudicator.
       - name: Preinstall a conflicting older recusal
-        run: python -m pip install --quiet --force-reinstall recusal==0.3.0
+        run: python -m pip install --quiet --force-reinstall --require-hashes -r requirements/recusal-0.3.0.txt
       - name: Gate must replace the conflicting package
         uses: $/
         with:
@@ -246,7 +248,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install Recusal and pinned LangGraph example dependencies
-        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-langchain.txt
+          python -m pip install --no-deps -e .
       - name: Test LangGraph example and its surface probe
         run: pytest -q tests/test_langgraph_gate.py tests/test_langgraph_audit.py tests/test_langgraph_interrupt.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_langchain_agent_audit.py tests/test_compat_langchain.py tests/test_adapter_conformance.py
 
@@ -261,7 +265,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and pinned LangGraph example dependencies
-        run: pip install -e ".[dev]" langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-langchain.txt
+          python -m pip install --no-deps -e .
       - name: Test LangGraph example and its surface probe
         run: pytest -q tests/test_langgraph_gate.py tests/test_langgraph_audit.py tests/test_langgraph_interrupt.py tests/test_compat_langgraph.py tests/test_langchain_agent_gate.py tests/test_langchain_agent_audit.py tests/test_compat_langchain.py tests/test_adapter_conformance.py
 
@@ -276,7 +282,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install Recusal and pinned OpenAI Agents SDK example dependencies
-        run: pip install -e ".[dev]" openai-agents==0.24.0 openai==3.34.0
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
+          python -m pip install --no-deps -e .
       - name: Test OpenAI Agents SDK example and its surface probe
         run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
@@ -291,7 +299,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and pinned OpenAI Agents SDK example dependencies
-        run: pip install -e ".[dev]" openai-agents==0.24.0 openai==3.34.0
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
+          python -m pip install --no-deps -e .
       - name: Test OpenAI Agents SDK example and its surface probe
         run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
@@ -306,7 +316,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install Recusal and pinned Google ADK example dependencies
-        run: pip install -e ".[dev]" google-adk==2.13.0 google-genai==2.34.0
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-google-adk.txt
+          python -m pip install --no-deps -e .
       - name: Test Google ADK example and its surface probe
         run: pytest -q tests/test_google_adk_gate.py tests/test_google_adk_audit.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py
 
@@ -321,7 +333,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and pinned Google ADK example dependencies
-        run: pip install -e ".[dev]" google-adk==2.13.0 google-genai==2.34.0
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-google-adk.txt
+          python -m pip install --no-deps -e .
       - name: Test Google ADK example and its surface probe
         run: pytest -q tests/test_google_adk_gate.py tests/test_google_adk_audit.py tests/test_compat_google_adk.py tests/test_adapter_conformance.py
 
@@ -336,7 +350,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install Recusal and the pinned CrewAI example dependency
-        run: pip install -e ".[dev]" crewai==1.15.34
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-crewai.txt
+          python -m pip install --no-deps -e .
       - name: Test CrewAI example and its surface probe
         run: pytest -q tests/test_crewai_gate.py tests/test_crewai_audit.py tests/test_compat_crewai.py tests/test_adapter_conformance.py
 
@@ -351,7 +367,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and the pinned CrewAI example dependency
-        run: pip install -e ".[dev]" crewai==1.15.34
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-crewai.txt
+          python -m pip install --no-deps -e .
       - name: Test CrewAI example and its surface probe
         run: pytest -q tests/test_crewai_gate.py tests/test_crewai_audit.py tests/test_compat_crewai.py tests/test_adapter_conformance.py
 
@@ -366,7 +384,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install Recusal and the pinned Pydantic AI example dependency
-        run: pip install -e ".[dev]" pydantic-ai-slim==2.64.0
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-pydantic-ai.txt
+          python -m pip install --no-deps -e .
       - name: Test Pydantic AI example and its surface probe
         run: pytest -q tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
 
@@ -381,7 +401,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and the pinned Pydantic AI example dependency
-        run: pip install -e ".[dev]" pydantic-ai-slim==2.64.0
+        run: |
+          python -m pip install --require-hashes -r requirements/adapter-pydantic-ai.txt
+          python -m pip install --no-deps -e .
       - name: Test Pydantic AI example and its surface probe
         run: pytest -q tests/test_pydantic_ai_gate.py tests/test_pydantic_ai_audit.py tests/test_compat_pydantic_ai.py tests/test_adapter_conformance.py
 
@@ -412,14 +434,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_pydantic_ai-*.whl pydantic-ai-slim==2.64.0
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-pydantic-ai.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_pydantic_ai-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/pydantic-ai/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
 
   # The same proof for recusal-openai, the gate for a Responses or Chat Completions loop.
@@ -444,14 +467,15 @@ jobs:
       - name: Install both wheels and the pinned SDK into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai-*.whl openai==3.34.0
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-openai.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_openai-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai
 
   # The same proof for recusal-google-adk.
@@ -476,14 +500,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_google_adk-*.whl google-adk==2.13.0 google-genai==2.34.0
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-google-adk.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_google_adk-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/google-adk/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
 
   # The same proof for recusal-openai-agents.
@@ -508,14 +533,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl openai-agents==0.24.0 openai==3.34.0
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-openai-agents.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai-agents/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents
 
   # The same proof for recusal-langgraph.
@@ -540,14 +566,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl langgraph==1.2.12 langchain-core==1.6.5
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-langgraph.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/langgraph/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langgraph
 
   # The same proof for recusal-langchain.
@@ -573,14 +600,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl dist-adapters/recusal_langchain-*.whl langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-langchain.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl dist-adapters/recusal_langchain-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/langchain/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langchain
 
   # The same proof for recusal-crewai.
@@ -605,14 +633,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_crewai-*.whl crewai==1.15.34
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-crewai.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_crewai-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/crewai/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
 
   # The same proof for recusal-openai-agents-mcp.
@@ -638,14 +667,15 @@ jobs:
       - name: Install both wheels and the pinned framework into a clean environment
         run: |
           python -m venv /tmp/adapter
-          /tmp/adapter/bin/pip install --quiet dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl dist-adapters/recusal_openai_agents_mcp-*.whl openai-agents==0.24.0 openai==3.34.0
+          /tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-openai-agents-mcp.txt
+          /tmp/adapter/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl dist-adapters/recusal_openai_agents_mcp-*.whl
+          /tmp/adapter/bin/pip check
       - name: Smoke test the installed wheel from outside the checkout
         run: cd /tmp && /tmp/adapter/bin/python "$GITHUB_WORKSPACE/adapters/openai-agents-mcp/smoke_test.py"
       # The package ships py.typed, so the claim is checked on what was installed,
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          /tmp/adapter/bin/pip install --quiet "mypy>=1.8,<2"
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents_mcp
 
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
@@ -663,7 +693,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Recusal and the pinned MCP SDK
-        run: pip install -e ".[dev]" mcp==2.3.0
+        run: |
+          python -m pip install --require-hashes -r requirements/cookbook-mcp.txt
+          python -m pip install --no-deps -e .
       - name: Run every cookbook block; recipe 14 must run, not skip
         env:
           RECUSAL_REQUIRE_MCP_SDK: "1"

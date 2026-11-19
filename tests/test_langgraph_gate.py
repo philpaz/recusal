@@ -56,10 +56,15 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs, the recusal-langgraph wheel job and the recusal-langchain
-    # wheel job, which installs the gate it wraps
-    for pin in expected:
-        assert ci.count(pin) == 4
+    # both are roots of the two hash-locked files the pull request lanes install: the
+    # recusal-langgraph wheel job installs its own, and the two example jobs and the
+    # recusal-langchain wheel job install the one for the gate that wraps it
+    for lock in ("adapter-langgraph", "adapter-langchain"):
+        roots = (ROOT / "requirements" / f"{lock}.txt").read_text(encoding="utf-8").splitlines()[0]
+        for pin in expected:
+            assert pin in roots.split(), (lock, pin)
+    assert ci.count("requirements/adapter-langgraph.txt") == 1
+    assert ci.count("requirements/adapter-langchain.txt") == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")

@@ -57,9 +57,17 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         for pin in expected:
             assert pin in text, f"{path.name}: {pin}"
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs pin both; the recusal-google-adk wheel job pins both again
+    # both are roots of the hash-locked file the pull request lanes install: the two
+    # example jobs and the recusal-google-adk wheel job
+    roots = (
+        (ROOT / "requirements" / "adapter-google-adk.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+        .split()
+    )
     for pin in expected:
-        assert ci.count(pin) == 3, pin
+        assert pin in roots, pin
+    assert ci.count("requirements/adapter-google-adk.txt") == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="the Google ADK requires Python 3.11+")

@@ -234,10 +234,19 @@ def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(director
             "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
             "--warn-unused-ignores --warn-redundant-casts"
         )
-    assert f'/tmp/adapter/bin/pip install --quiet "{pin}"' in job
+    # the checker is a root of the hash-locked file the job installs, at the kernel's pin
+    lock = (ROOT / "requirements" / f"adapter-{directory}.txt").read_text(encoding="utf-8")
+    assert pin in lock.splitlines()[0].split()
+    assert (
+        f"/tmp/adapter/bin/pip install --quiet --require-hashes -r requirements/adapter-{directory}.txt"
+        in job
+    )
     assert f"cd /tmp && /tmp/adapter/bin/python -m mypy {ci_flags} -p {module}\n" in job
     build = (ROOT / ".github" / "workflows" / "build-adapter-dist.yml").read_text("utf-8")
-    assert f'/tmp/wheelcheck/bin/pip install --quiet "{pin}"' in build
+    assert (
+        '/tmp/wheelcheck/bin/pip install --quiet --require-hashes -r "requirements/adapter-$DIRECTORY.txt"'
+        in build
+    )
     assert f'-m mypy {flags} -p "$MODULE"' in build
 
 

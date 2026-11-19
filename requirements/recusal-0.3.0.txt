@@ -1,0 +1,6 @@
+# roots: recusal==0.3.0 | python>=3.12
+# Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-12T00:00:00Z were
+# not considered. Install: python -m pip install --require-hashes -r requirements/recusal-0.3.0.txt
+recusal==0.3.0 \
+    --hash=sha256:4e2f2e6a4ffd3c20c34b1d06026614c7d8aaf38eabcc28a09e2985b63b4db620 \
+    --hash=sha256:ce5519f5cc475910c8a599895b57850b686a00085c3847b86781310f66ecdd48

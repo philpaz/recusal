@@ -30,10 +30,17 @@ def _version(text):
     return tuple(int(part) for part in text.split("."))
 
 
+def _lock_roots() -> str:
+    lock = (ROOT / "requirements" / "cookbook-mcp.txt").read_text(encoding="utf-8")
+    return lock.splitlines()[0]
+
+
 def test_the_pinned_lane_runs_recipe_14_on_every_pull_request():
     job = _job("ci.yml")
-    install = re.search(r'pip install -e "\.\[dev\]" mcp==([\d.]+)$', job, re.M)
-    assert install, "ci.yml: the MCP SDK must be installed at an exact version"
+    assert "pip install --require-hashes -r requirements/cookbook-mcp.txt" in job, (
+        "ci.yml: the MCP SDK must be installed from its hash-locked file"
+    )
+    assert re.search(r" mcp==[\d.]+ \|", _lock_roots()), "the lock must pin the MCP SDK exactly"
     assert REQUIRE in job, "ci.yml: a skipped recipe 14 must fail this job"
     assert f"pytest -q {TEST}" in job
 
@@ -42,7 +49,7 @@ def test_the_pin_meets_the_version_the_cookbook_promises():
     cookbook = (ROOT / "docs" / "COOKBOOK.md").read_text(encoding="utf-8")
     promised = re.search(r'pip install "mcp>=([\d.]+)"', cookbook)
     assert promised, "recipe 14 no longer names its minimum SDK version"
-    pinned = re.search(r"mcp==([\d.]+)", _job("ci.yml"))
+    pinned = re.search(r" mcp==([\d.]+) \|", _lock_roots())
     assert pinned
     assert _version(pinned.group(1)) >= _version(promised.group(1))
 

@@ -36,8 +36,16 @@ def test_langchain_pins_are_documented_and_in_existing_ci_jobs():
     for path in paths:
         assert "langchain==1.4.3" in path.read_text(encoding="utf-8")
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs and the recusal-langchain wheel job
-    assert ci.count("langchain==1.4.3") == 3
+    # the pin is a root of the hash-locked file the pull request lanes install: the two
+    # example jobs and the recusal-langchain wheel job
+    assert (
+        "langchain==1.4.3"
+        in (ROOT / "requirements" / "adapter-langchain.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+        .split()
+    )
+    assert ci.count("requirements/adapter-langchain.txt") == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="LangChain requires Python 3.10+")

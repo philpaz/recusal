@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Every install a workflow makes from the network is hash-locked. `requirements/` holds
+  one lock per purpose (the dev tools, each adapter's tested framework versions, the
+  workflow auditor, the Sigstore client), written by the new `tools/lock.py` and
+  installed with `pip install --require-hashes`, so a job installs the exact files that
+  were reviewed. The roots are read from where they already live, `pyproject.toml`'s dev
+  extra and each adapter's `tested-with.txt`, and a test fails, naming the command, when
+  a pin changes without its lock. One file covers every Python version and platform it
+  is used on. `recusal` has no runtime dependencies and is installed beside a lock with
+  `--no-deps`; a wheel installed that way is then checked against the lock with
+  `pip check`. A release less than seven days old is not taken into a lock. The weekly
+  newest-release lane stays unpinned on purpose. `requirements/README.md` says how to
+  change a pin.
 - Each release now carries its build provenance as a file. The builder's signed
   attestation bundle, which until now lived only in GitHub's attestation store, is also
   attached to the GitHub Release as `<distribution>-<version>.intoto.jsonl`, for the

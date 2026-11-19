@@ -26,7 +26,12 @@ def _workflow_files():
 def test_zizmor_runs_as_a_blocking_versioned_ci_job():
     ci = _read("ci.yml")
     assert "zizmor" in ci, "the zizmor workflow-audit job left ci.yml"
-    m = re.search(r"pip install zizmor==([\d.]+)", ci)
+    assert "pip install --require-hashes -r requirements/zizmor.txt" in ci, (
+        "zizmor must be installed from its hash-locked file"
+    )
+    lock = os.path.join(os.path.dirname(WORKFLOWS), os.pardir, "requirements", "zizmor.txt")
+    with open(lock, encoding="utf-8") as fh:
+        m = re.search(r"^# roots: zizmor==([\d.]+) \|", fh.read())
     assert m, "zizmor must be version-pinned; an unpinned auditor can change what green means"
     assert re.search(r"run: zizmor .*\.github/workflows", ci), (
         "the zizmor job must audit the workflow files themselves"

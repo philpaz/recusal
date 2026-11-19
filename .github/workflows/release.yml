@@ -38,7 +38,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --no-deps -e .
       - name: Assert the Python 3.9-compatible mypy line
         run: |
           python -c "from importlib.metadata import version; installed=version('mypy'); major=int(installed.split('.', 1)[0]); assert major < 2, 'mypy '+installed+' cannot validate the declared Python 3.9 floor'"

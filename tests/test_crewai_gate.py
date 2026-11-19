@@ -51,8 +51,16 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
         assert "crewai==1.15.34" in path.read_text(encoding="utf-8"), path.name
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # the two example jobs and the recusal-crewai wheel job
-    assert ci.count("crewai==1.15.34") == 3
+    # the pin is a root of the hash-locked file the pull request lanes install: the two
+    # example jobs and the recusal-crewai wheel job
+    assert (
+        "crewai==1.15.34"
+        in (ROOT / "requirements" / "adapter-crewai.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+        .split()
+    )
+    assert ci.count("requirements/adapter-crewai.txt") == 3
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")

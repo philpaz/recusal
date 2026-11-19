@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 CI = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
 COMPAT = (WORKFLOWS / "compat.yml").read_text(encoding="utf-8")
+#: The dev tools every lane's lock starts with, as pyproject.toml lists them.
+DEV = re.search(r"^dev = \[(.+)\]$", (ROOT / "pyproject.toml").read_text("utf-8"), re.M)
+DEV = re.findall(r'"([^"]+)"', DEV.group(1))
 
 
 def _jobs(workflow: str):
@@ -35,9 +38,14 @@ def pinned_lane():
         name = re.search(r"^    name: (.+) example \(Python [\d.]+\)$", body, re.M)
         if not name:
             continue
-        install = re.search(r'pip install -e "\.\[dev\]" (.+)$', body, re.M)
+        install = re.search(
+            r"pip install --require-hashes -r (requirements/adapter-[\w-]+\.txt)$", body, re.M
+        )
         assert install, f"{name.group(1)}: no install line"
-        pins = install.group(1).split()
+        # the lane's packages are the roots of its hash-locked file, after the dev tools
+        roots = (ROOT / install.group(1)).read_text(encoding="utf-8").splitlines()[0]
+        pins = [p for p in roots.split(": ", 1)[1].split(" | ")[0].split() if p not in DEV]
+        assert pins, f"{name.group(1)}: the lock names no framework"
         assert all("==" in p for p in pins), f"{name.group(1)}: every package must be pinned"
         tests = set(re.findall(r"tests/test_\w+\.py", body))
         slug = _slug(name.group(1))

@@ -99,7 +99,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --no-deps -e .
       - name: Lint
         run: ruff check .
       - name: Format
@@ -109,7 +111,7 @@ jobs:
       - name: Test
         run: pytest -q
       - name: Install the adapter's pinned framework
-        run: pip install -r "adapters/$DIRECTORY/tested-with.txt"
+        run: python -m pip install --require-hashes -r "requirements/adapter-$DIRECTORY.txt"
       # Word splitting is intended: both are space-separated lists of test files from
       # tools/adapter_meta.py. No pipe, so a failing run fails the step.
       - name: Test the adapter with its framework

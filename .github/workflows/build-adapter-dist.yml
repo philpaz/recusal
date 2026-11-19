@@ -104,8 +104,9 @@ jobs:
           VERSION: ${{ steps.adapter.outputs.version }}
         run: |
           python -m venv /tmp/wheelcheck
-          /tmp/wheelcheck/bin/pip install --quiet support/*.whl "dist/$WHEEL" \
-            -r "adapters/$DIRECTORY/tested-with.txt"
+          /tmp/wheelcheck/bin/pip install --quiet --require-hashes -r "requirements/adapter-$DIRECTORY.txt"
+          /tmp/wheelcheck/bin/pip install --quiet --no-deps support/*.whl dist/*.whl
+          /tmp/wheelcheck/bin/pip check
           GOT="$(cd /tmp && /tmp/wheelcheck/bin/python -c 'import sys; from importlib.metadata import version; print(version(sys.argv[1]))' "$DISTRIBUTION")"
           if [ "$GOT" != "$VERSION" ]; then
             echo "::error::built wheel reports $GOT but the version source says $VERSION"
@@ -119,7 +120,6 @@ jobs:
         env:
           MODULE: ${{ steps.adapter.outputs.module }}
         run: |
-          /tmp/wheelcheck/bin/pip install --quiet "mypy>=1.8,<2"
           (cd /tmp && /tmp/wheelcheck/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p "$MODULE")
 
       # Supply-chain records for the exact bytes that ship (stated narrowly: the SBOM

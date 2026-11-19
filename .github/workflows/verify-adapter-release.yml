@@ -53,7 +53,7 @@ jobs:
       # Pinned exactly, for the reason ruff is: an unpinned verifier defines what
       # "verified" means by whatever released last.
       - name: Install the Sigstore client
-        run: pip install "sigstore==4.4.0"
+        run: python -m pip install --require-hashes -r requirements/sigstore.txt
 
       # The names follow from the adapter: the distribution is recusal-<adapter>, its
       # files use the normalized name (underscores), and its tag is

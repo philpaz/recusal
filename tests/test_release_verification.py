@@ -88,9 +88,16 @@ def test_the_documented_procedure_is_executable():
 
 def test_the_verifier_client_is_pinned_exactly():
     """An unpinned verifier defines 'verified' by whatever released last (the ruff lesson)."""
-    assert re.search(r'pip install "sigstore==\d+\.\d+\.\d+"', _workflow("verify-release.yml")), (
-        "the Sigstore client must be pinned exactly in the verification workflow"
+    assert "pip install --require-hashes -r requirements/sigstore.txt" in _workflow(
+        "verify-release.yml"
+    ), "the verification workflow must install the hash-locked Sigstore client"
+    lock = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "requirements")
+    with open(os.path.join(lock, "sigstore.txt"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert re.search(r"^# roots: sigstore==\d+\.\d+\.\d+ \|", text), (
+        "the Sigstore client must be pinned exactly"
     )
+    assert re.search(r"^sigstore==\d+\.\d+\.\d+ \\\n    --hash=sha256:", text, re.M)
 
 
 def test_the_docs_state_what_verification_does_not_establish():
