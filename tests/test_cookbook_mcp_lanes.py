@@ -56,7 +56,8 @@ def test_the_pin_meets_the_version_the_cookbook_promises():
 
 def test_the_latest_lane_runs_recipe_14_on_the_newest_sdk():
     job = _job("compat.yml")
-    assert re.search(r'pip install -e "\.\[dev\]" --upgrade mcp$', job, re.M)
+    assert 'python tools/lock.py --resolve "$RUNNER_TEMP/newest.txt" --with-dev mcp' in job
+    assert 'pip install --require-hashes -r "$RUNNER_TEMP/newest.txt"' in job
     assert "mcp==" not in job, "compat.yml: the latest lane must not pin"
     assert REQUIRE in job, "compat.yml: a skipped recipe 14 must fail this job"
     assert f"pytest -q {TEST}" in job

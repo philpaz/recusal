@@ -3,25 +3,36 @@
     python tools/lock.py                 # rewrite every lock
     python tools/lock.py dev crewai      # rewrite the named ones
     python tools/lock.py --check         # exit 1 if a lock's recorded inputs are stale
+    python tools/lock.py --resolve OUT [--with-dev] PACKAGE...
+                                         # the newest releases, hash-locked, for this Python
 
 Every ``pip install`` in a workflow that reaches the network installs from one of these
 files with ``--require-hashes``, so what a job installs is the exact set of files that was
-reviewed, whatever a package index serves that day. Each lock is the full resolution of a
-few named roots, with the sha256 of every file PyPI serves for each pinned release, for
-every Python and platform the lock is used on (one file, with environment markers).
+resolved and listed, whatever a package index serves a moment later. Each lock is the full
+resolution of a few named roots, with the sha256 of every file PyPI serves for each pinned
+release.
 
-The roots are not written here twice. A lock's roots are read from where they already
-live: the ``dev`` extra in ``pyproject.toml``, and each adapter's ``tested-with.txt``. The
-first line of each lock records the roots it was resolved from, and ``--check`` (and
-``tests/test_requirement_locks.py``) compares that line with the sources, so a pin changed
-in one place and not relocked fails.
+**The committed locks** (``requirements/*.txt``) cover every Python and platform they are
+used on, in one file with environment markers. Their roots are not written here twice:
+they are read from where they already live, the ``dev`` extra in ``pyproject.toml`` and
+each adapter's ``tested-with.txt``. The first line of each lock records the roots it was
+resolved from, and ``--check`` (and ``tests/test_requirement_locks.py``) compares that line
+with the sources, so a pin changed in one place and not relocked fails. A release less
+than seven days old is not taken into a committed lock, the cooling-off the Dependabot
+configuration uses: one that is pulled or found compromised in its first days never
+enters.
 
-Resolution uses ``uv pip compile --universal``. ``uv`` is a tool for whoever runs this
-script; nothing at install time needs it. ``--exclude-newer`` is set to seven days before
-the run, the same cooling-off the Dependabot configuration uses: a release that is pulled
-or found compromised in its first days never enters a lock.
+**``--resolve``** is for the newest-release lane, whose purpose is to find out what the
+newest releases do. It resolves the named packages with no upper pin and no cooling-off,
+for the interpreter that runs it, and writes a lock to ``OUT``. The lane then installs
+that file with ``--require-hashes``: what it installs is exactly what was resolved, and
+the versions are on the page.
 
-Standard library only, Python 3.11+ (``tomllib``).
+Resolution uses ``uv pip compile``. ``uv`` is installed from its own lock
+(``requirements/uv.txt``) where a workflow needs it.
+
+Standard library only. The committed locks need Python 3.11+ (``tomllib``); ``--resolve``
+runs on any Python a lane uses.
 """
 
 from __future__ import annotations
@@ -32,15 +43,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCKS = ROOT / "requirements"
 ADAPTERS = ROOT / "adapters"
 
-#: Days a release must have been public before a lock may take it.
+#: Days a release must have been public before a committed lock may take it.
 COOLING_OFF_DAYS = 7
 
 #: Locks with fixed roots: a tool a job installs on its own. The value is the roots and
@@ -48,19 +58,31 @@ COOLING_OFF_DAYS = 7
 TOOLS = {
     "zizmor": (["zizmor==1.30.0"], "3.12"),
     "sigstore": (["sigstore==4.4.0"], "3.12"),
+    # the resolver --resolve runs, in the newest-release lane
+    "uv": (["uv==0.13.7"], "3.10"),
     # the deliberately old release the GitHub Action's dogfood job preinstalls, to prove
     # the action replaces a conflicting package
     "recusal-0.3.0": (["recusal==0.3.0"], "3.12"),
 }
 
 
+def _pyproject(path: Path) -> dict:
+    import tomllib  # Python 3.11+; only the committed locks need it
+
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
 def dev_roots() -> list[str]:
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return list(project["project"]["optional-dependencies"]["dev"])
+    """The ``dev`` extra, read as text so that every Python a lane runs on can read it."""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    line = re.search(r"^dev = \[(.+)\]$", text, re.M)
+    if line is None:
+        raise SystemExit("pyproject.toml: the dev extra is not on one line as `dev = [...]`")
+    return re.findall(r'"([^"]+)"', line.group(1))
 
 
 def kernel_python() -> str:
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = _pyproject(ROOT / "pyproject.toml")
     return re.fullmatch(r">=(3\.\d+)", project["project"]["requires-python"]).group(1)
 
 
@@ -69,7 +91,7 @@ def adapter_directories() -> list[str]:
 
 
 def adapter_python(directory: str) -> str:
-    project = tomllib.loads((ADAPTERS / directory / "pyproject.toml").read_text(encoding="utf-8"))
+    project = _pyproject(ADAPTERS / directory / "pyproject.toml")
     return re.fullmatch(r">=(3\.\d+)", project["project"]["requires-python"]).group(1)
 
 
@@ -117,55 +139,77 @@ def stale(names: list[str]) -> list[str]:
     return problems
 
 
-def write(name: str, roots: list[str], python: str, cutoff: str) -> None:
+def resolve(roots: list[str], options: list[str], what: str) -> str:
+    """The hash-locked resolution of ``roots``, as requirements text."""
     uv = shutil.which("uv")
     if uv is None:
-        raise SystemExit("uv is not on PATH; install it to regenerate a lock (pip install uv)")
-    LOCKS.mkdir(exist_ok=True)
-    source = LOCKS / f".{name}.in"
-    source.write_text("\n".join(roots) + "\n", encoding="utf-8")
-    try:
+        raise SystemExit("uv is not on PATH; install it first (pip install uv)")
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "roots.in"
+        source.write_text("\n".join(roots) + "\n", encoding="utf-8")
+        command = [uv, "pip", "compile", str(source), "--generate-hashes", "--no-header"]
         result = subprocess.run(
-            [
-                uv,
-                "pip",
-                "compile",
-                str(source),
-                "--universal",
-                "--python-version",
-                python,
-                "--generate-hashes",
-                "--no-header",
-                "--no-annotate",
-                "--exclude-newer",
-                cutoff,
-                "--quiet",
-            ],
+            command + ["--no-annotate", "--quiet"] + options,
             capture_output=True,
             text=True,
             check=False,
         )
-    finally:
-        source.unlink()
     if result.returncode != 0:
-        raise SystemExit(f"{name}: uv could not resolve {roots}\n{result.stderr}")
-    body = result.stdout.replace("\r\n", "\n")
+        raise SystemExit(f"{what}: uv could not resolve {roots}\n{result.stderr}")
+    return result.stdout.replace("\r\n", "\n")
+
+
+def pins(body: str) -> list[tuple[str, str]]:
+    return re.findall(r"^([A-Za-z0-9_.\-]+)==([^\s;\\]+)", body, re.M)
+
+
+def write(name: str, roots: list[str], python: str, cutoff: str) -> None:
+    body = resolve(
+        roots, ["--universal", "--python-version", python, "--exclude-newer", cutoff], name
+    )
     note = (
         f"# Hash-locked by tools/lock.py; do not edit. Releases newer than {cutoff} were\n"
         f"# not considered. Install: python -m pip install --require-hashes -r "
         f"requirements/{name}.txt\n"
     )
+    LOCKS.mkdir(exist_ok=True)
     path = LOCKS / f"{name}.txt"
     path.write_text(header(name, roots, python) + note + body, encoding="utf-8", newline="\n")
-    pins = len(re.findall(r"^[A-Za-z0-9_.\-]+==", body, re.M))
-    print(f"wrote requirements/{name}.txt: {pins} pins")
+    print(f"wrote requirements/{name}.txt: {len(pins(body))} pins")
+
+
+def resolve_newest(out: Path, packages: list[str], with_dev: bool) -> None:
+    """Lock the newest release of each package for the running interpreter."""
+    for package in packages:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.\-]*", package):
+            raise SystemExit(f"--resolve takes bare distribution names, not {package!r}")
+    python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    roots = (dev_roots() if with_dev else []) + packages
+    body = resolve(roots, ["--python-version", python], "--resolve")
+    out.write_text(
+        f"# roots: {' '.join(roots)} | python=={python}, newest releases\n" + body,
+        encoding="utf-8",
+        newline="\n",
+    )
+    resolved = dict((name.lower().replace("_", "-"), version) for name, version in pins(body))
+    for package in packages:
+        print(f"{package}=={resolved[package.lower().replace('_', '-')]}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("names", nargs="*", help="locks to rewrite (default: all)")
+    parser.add_argument("names", nargs="*", help="locks to rewrite, or packages with --resolve")
     parser.add_argument("--check", action="store_true", help="report stale locks and exit")
+    parser.add_argument("--resolve", metavar="OUT", help="lock the newest releases to OUT")
+    parser.add_argument("--with-dev", action="store_true", help="with --resolve: add the dev tools")
     args = parser.parse_args(argv)
+    if args.resolve:
+        if not args.names:
+            parser.error("--resolve needs at least one package")
+        resolve_newest(Path(args.resolve), args.names, args.with_dev)
+        return 0
+    if args.with_dev:
+        parser.error("--with-dev is for --resolve")
     locks = definitions()
     unknown = [name for name in args.names if name not in locks]
     if unknown:

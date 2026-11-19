@@ -17,9 +17,16 @@ All notable changes to this project are documented here. The format follows
   a pin changes without its lock. One file covers every Python version and platform it
   is used on. `recusal` has no runtime dependencies and is installed beside a lock with
   `--no-deps`; a wheel installed that way is then checked against the lock with
-  `pip check`. A release less than seven days old is not taken into a lock. The weekly
-  newest-release lane stays unpinned on purpose. `requirements/README.md` says how to
-  change a pin.
+  `pip check`. A release less than seven days old is not taken into a lock.
+  `requirements/README.md` says how to change a pin.
+- The weekly newest-release lane installs by hash too. It still resolves the newest
+  release of each framework, with no pin and no cooling-off, since that is its purpose;
+  it now does so with `python tools/lock.py --resolve`, which writes a lock with the hash
+  of every file, and installs that lock with `--require-hashes`. The adapter wheel smoke
+  job installs its frameworks the same way, then the local wheels without their
+  dependencies, and `pip check` fails the job if an adapter does not accept what was
+  resolved. No install in any workflow now lets a package index choose a file at install
+  time.
 - Each release now carries its build provenance as a file. The builder's signed
   attestation bundle, which until now lived only in GitHub's attestation store, is also
   attached to the GitHub Release as `<distribution>-<version>.intoto.jsonl`, for the

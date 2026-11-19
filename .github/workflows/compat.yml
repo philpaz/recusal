@@ -81,9 +81,15 @@ jobs:
       - name: Install the newest release of each framework package
         env:
           PACKAGES: ${{ matrix.packages }}
+        # Resolve the newest releases now, with no pin and no cooling-off (that is what
+        # this lane is for), into a lock with the hash of every file; then install that
+        # lock with --require-hashes, so what is installed is exactly what was resolved.
         run: |
+          python -m pip install --require-hashes -r requirements/uv.txt
           # shellcheck disable=SC2086  # PACKAGES is a space-separated list by design
-          pip install -e ".[dev]" --upgrade $PACKAGES
+          python tools/lock.py --resolve "$RUNNER_TEMP/newest.txt" --with-dev $PACKAGES
+          python -m pip install --require-hashes -r "$RUNNER_TEMP/newest.txt"
+          python -m pip install --no-deps -e .
       - name: Record the versions under test
         env:
           PACKAGES: ${{ matrix.packages }}
@@ -156,44 +162,27 @@ jobs:
             python -m build --no-isolation --wheel --outdir "$SMOKE_ROOT/wheels" "adapters/$sibling"
           done
 
-      # Resolve the framework list without pins before installing any local wheels.
-      # The full report becomes constraints so an adapter's upper bound cannot silently
-      # replace a newer framework version with an older compatible one.
-      - name: Resolve the newest framework releases and write constraints
+      # Resolve the framework list without pins, before any local wheel is involved, into
+      # a lock with the hash of every file. The frameworks are installed from that lock,
+      # and the local wheels then go in without their dependencies, so an adapter's upper
+      # bound cannot silently replace a newer framework version with an older compatible
+      # one: `pip check` fails the job if the adapter does not accept what was resolved.
+      - name: Resolve the newest framework releases into a hash lock
         env:
           FRAMEWORK_PACKAGES: ${{ matrix.packages }}
         run: |
           SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
+          python -m pip install --require-hashes -r requirements/uv.txt
           # shellcheck disable=SC2086  # FRAMEWORK_PACKAGES is a space-separated list by design
-          python -m pip install --dry-run --ignore-installed --upgrade \
-            --report "$SMOKE_ROOT/framework-report.json" $FRAMEWORK_PACKAGES
-          python - "$SMOKE_ROOT/framework-report.json" "$SMOKE_ROOT/framework-constraints.txt" <<'PY'
-          import json
-          import sys
+          python tools/lock.py --resolve "$SMOKE_ROOT/framework-lock.txt" $FRAMEWORK_PACKAGES
 
-          with open(sys.argv[1], encoding="utf-8") as report_file:
-              report = json.load(report_file)
-          resolved = sorted(
-              (
-                  item["metadata"]["name"],
-                  item["metadata"]["version"],
-              )
-              for item in report["install"]
-          )
-          if not resolved:
-              raise SystemExit("framework resolver returned no packages")
-          with open(sys.argv[2], "w", encoding="utf-8") as constraints_file:
-              for name, version in resolved:
-                  constraints_file.write(f"{name}=={version}\n")
-          PY
-
-      - name: Install the local wheels into a clean smoke environment
+      - name: Install the frameworks by hash, then the local wheels, into a clean environment
         run: |
           SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
           python -m venv "$SMOKE_ROOT/venv"
-          "$SMOKE_ROOT/venv/bin/python" -m pip install \
-            --constraint "$SMOKE_ROOT/framework-constraints.txt" \
-            "$SMOKE_ROOT/wheels/"*.whl
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --require-hashes -r "$SMOKE_ROOT/framework-lock.txt"
+          "$SMOKE_ROOT/venv/bin/python" -m pip install --no-deps "$SMOKE_ROOT/wheels/"*.whl
+          "$SMOKE_ROOT/venv/bin/python" -m pip check
 
       - name: Verify and record framework and local versions
         env:
@@ -203,9 +192,8 @@ jobs:
           FRAMEWORK_PACKAGES: ${{ matrix.packages }}
         run: |
           SMOKE_ROOT="$RUNNER_TEMP/adapter-wheel-smoke"
-          "$SMOKE_ROOT/venv/bin/python" - "$SMOKE_ROOT/framework-report.json" <<'PY'
+          "$SMOKE_ROOT/venv/bin/python" - "$SMOKE_ROOT/framework-lock.txt" <<'PY'
           import importlib.metadata
-          import json
           import os
           import re
           import sys
@@ -213,12 +201,11 @@ jobs:
           def normalized(name):
               return re.sub(r"[-_.]+", "-", name).lower()
 
-          with open(sys.argv[1], encoding="utf-8") as report_file:
-              report = json.load(report_file)
-          resolved = {
-              normalized(item["metadata"]["name"]): item["metadata"]["version"]
-              for item in report["install"]
-          }
+          with open(sys.argv[1], encoding="utf-8") as lock_file:
+              pins = re.findall(r"^([A-Za-z0-9_.\-]+)==([^\s;\\]+)", lock_file.read(), re.M)
+          if not pins:
+              raise SystemExit("the framework lock names no packages")
+          resolved = {normalized(name): version for name, version in pins}
           lines = []
           for package in os.environ["FRAMEWORK_PACKAGES"].split():
               expected = resolved[normalized(package)]
@@ -268,7 +255,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install the newest MCP SDK release
-        run: pip install -e ".[dev]" --upgrade mcp
+        run: |
+          python -m pip install --require-hashes -r requirements/uv.txt
+          python tools/lock.py --resolve "$RUNNER_TEMP/newest.txt" --with-dev mcp
+          python -m pip install --require-hashes -r "$RUNNER_TEMP/newest.txt"
+          python -m pip install --no-deps -e .
       - name: Record the version under test
         run: |
           echo "mcp $(python -c "import importlib.metadata as m; print(m.version('mcp'))")" | tee -a "$GITHUB_STEP_SUMMARY"

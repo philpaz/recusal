@@ -6,9 +6,9 @@ reviewed. This file holds three things:
 
 - each lock is complete (every pin carries a hash) and was resolved from the roots its
   sources name today (``pyproject.toml``'s dev extra, each adapter's ``tested-with.txt``);
-- every ``pip install`` in every workflow is one of the three forms that cannot fetch an
-  unreviewed file, apart from the newest-release lane, which is unpinned on purpose and is
-  listed here line by line;
+- every ``pip install`` in every workflow is one of the three forms that cannot fetch a
+  file whose hash was not listed first. The newest-release lane resolves the newest
+  versions on purpose, and it too installs what it resolved by hash;
 - the forms are the ones OpenSSF Scorecard's Pinned-Dependencies check accepts, so the
   check and this test agree about what "pinned" means.
 """
@@ -47,7 +47,7 @@ def test_there_is_a_lock_for_the_dev_tools_each_tool_and_each_adapter():
     adapters = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
     assert len(adapters) == 8
     assert names == sorted(
-        ["dev", "cookbook-mcp", "recusal-0.3.0", "sigstore", "zizmor"]
+        ["dev", "cookbook-mcp", "recusal-0.3.0", "sigstore", "uv", "zizmor"]
         + [f"adapter-{directory}" for directory in adapters]
     )
     assert sorted(path.stem for path in _locks()) == names
@@ -72,7 +72,7 @@ def test_the_staleness_check_notices_a_changed_root(monkeypatch):
 
 def test_every_pin_in_every_lock_is_exact_and_carries_a_hash():
     locks = _locks()
-    assert len(locks) == 13
+    assert len(locks) == 14
     for path in locks:
         lines = path.read_text(encoding="utf-8").splitlines()
         assert re.fullmatch(r"# roots: .+ \| python>=3\.\d+", lines[0]), path.name
@@ -118,14 +118,11 @@ def _pinned(words):
     return bool(packages) and all(package.endswith(".whl") for package in packages)
 
 
-#: The newest-release lane resolves the newest versions on purpose: that is what it is for.
-#: These are its install lines, and the only ones in any workflow that are not pinned.
-UNPINNED_ON_PURPOSE = {
-    "compat.yml": 4,
-}
+#: Workflows allowed an install that is not in a pinned form: none.
+UNPINNED_ON_PURPOSE: dict = {}
 
 
-def test_every_workflow_install_is_hash_locked_except_the_newest_release_lane():
+def test_every_workflow_install_is_hash_locked():
     unpinned = {}
     commands = _install_commands()
     assert len(commands) >= 50, "the parser found too few installs to be reading the workflows"
@@ -170,3 +167,44 @@ def test_a_wheel_installed_without_its_dependencies_is_checked_against_the_lock(
     build = (WORKFLOWS / "build-adapter-dist.yml").read_text(encoding="utf-8")
     assert "/tmp/wheelcheck/bin/pip install --quiet --no-deps support/*.whl dist/*.whl" in build
     assert "/tmp/wheelcheck/bin/pip check" in build
+
+
+# --- the newest-release lane: resolved now, installed by hash ------------------------------
+
+
+def test_the_newest_release_lane_resolves_without_pins_and_installs_what_it_resolved():
+    """The lane exists to learn what the newest releases do, so it does not pin a version.
+    It does pin the files: the resolver writes a lock with every hash, and that lock is what
+    gets installed."""
+    compat = (WORKFLOWS / "compat.yml").read_text(encoding="utf-8")
+    assert compat.count("python -m pip install --require-hashes -r requirements/uv.txt") == 3
+    assert compat.count("python tools/lock.py --resolve ") == 3
+    assert compat.count('--require-hashes -r "$RUNNER_TEMP/newest.txt"') == 2
+    assert '--require-hashes -r "$SMOKE_ROOT/framework-lock.txt"' in compat
+    assert '-m pip install --no-deps "$SMOKE_ROOT/wheels/"*.whl' in compat
+    assert '"$SMOKE_ROOT/venv/bin/python" -m pip check' in compat
+    # and nothing in it asks the index to choose at install time
+    for line in compat.splitlines():
+        if "pip install" in line and not line.lstrip().startswith("#"):
+            assert "--upgrade" not in line and "--constraint" not in line, line
+
+
+@needs_tomllib
+def test_resolve_takes_bare_names_only_so_the_lane_cannot_be_handed_a_pin():
+    tool = _tool()
+    for bad in ("openai==3.34.0", "openai>=3", "-r", "git+https://example.org/x.git", "a b"):
+        with pytest.raises(SystemExit, match="bare distribution names"):
+            tool.resolve_newest(Path("unused.txt"), [bad], with_dev=False)
+
+
+def test_the_dev_roots_are_read_the_same_way_with_and_without_tomllib():
+    """``--resolve --with-dev`` runs on Python 3.10, which has no tomllib, so the dev extra
+    is read as text. On a Python that has tomllib, the two readings agree."""
+    tool = _tool()
+    roots = tool.dev_roots()
+    assert roots and all(isinstance(root, str) for root in roots)
+    if sys.version_info >= (3, 11):
+        import tomllib
+
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert roots == project["project"]["optional-dependencies"]["dev"]
