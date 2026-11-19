@@ -2,7 +2,7 @@
 Offline LangGraph example: gate @tool calls with Recusal at ToolNode execution time.
 
 The gate is the ``recusal-langgraph`` package (``adapters/langgraph`` in this
-repository): ``recusal_gate`` and ``recusal_agate`` are imported from it. This file is
+repository): ``recusal_gate`` and ``recusal_gates`` are imported from it. This file is
 the offline demonstration around it: a scripted graph, tools that only record, and the
 SQL scope policy.
 
@@ -12,8 +12,10 @@ langchain-core==1.6.5. Recusal itself remains Python 3.9+ and has no LangGraph d
 The hook is LangGraph-native: a user's existing @tool list goes unchanged into ToolNode and
 recusal_gate(policy) is attached with wrap_tool_call. Every call in a model message crosses
 the gate separately immediately before execution. Denials become error ToolMessages carrying
-Recusal's reason; allow/defer execute normally. Async graphs attach recusal_agate(policy)
-through awrap_tool_call and run with ainvoke, using the same decision logic.
+Recusal's reason; allow/defer execute normally. A ToolNode's sync route consults only
+wrap_tool_call, so a graph that may run either way attaches both hooks with
+``ToolNode(tools, **recusal_gates(policy))`` (or ``gated_tool_node(tools, policy)``): the
+same decision logic on ``invoke``, ``stream``, ``ainvoke`` and ``astream``.
 
 The policy judges the invocation the tool executes, not the dict the model wrote: the hook
 hands execution a per-call copy of the tool whose parse step (``_to_args_and_kwargs``, run by
@@ -76,13 +78,24 @@ sys.path.insert(0, os.path.join(_ROOT, "adapters", "langgraph", "src"))
 from recusal_langgraph import (  # noqa: E402
     Policy,
     RecusalRefusal,
+    gated_tool_node,
+    is_gated,
     recusal_agate,
     recusal_gate,
+    recusal_gates,
 )
 
 from examples.sql_scope_policy import policy as sql_scope_policy  # noqa: E402
 
-__all__ = ["Policy", "RecusalRefusal", "recusal_agate", "recusal_gate"]
+__all__ = [
+    "Policy",
+    "RecusalRefusal",
+    "gated_tool_node",
+    "is_gated",
+    "recusal_agate",
+    "recusal_gate",
+    "recusal_gates",
+]
 
 EXECUTED: list[tuple[str, dict[str, Any]]] = []
 
@@ -208,7 +221,7 @@ async def run_calls_async(
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
     EXECUTED.clear()
     tools = [echo, run_sql] if tools is None else tools
-    node = ToolNode(tools, awrap_tool_call=recusal_agate(policy)) if gated else ToolNode(tools)
+    node = ToolNode(tools, **recusal_gates(policy)) if gated else ToolNode(tools)
     return await run_in_graph_async(node, calls), list(EXECUTED)
 
 

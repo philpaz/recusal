@@ -4,8 +4,18 @@ The hook is LangGraph-native: a user's existing ``@tool`` list goes unchanged in
 ``ToolNode`` and ``recusal_gate(policy)`` is attached with ``wrap_tool_call``. Every call in
 a model message crosses the gate separately immediately before execution. Denials become
 error ``ToolMessage`` objects carrying Recusal's reason; allow and defer execute normally.
-Async graphs attach ``recusal_agate(policy)`` through ``awrap_tool_call`` and run with
-``ainvoke``, using the same decision logic.
+
+A ``ToolNode`` has two hook slots and consults them by route. Its sync route (``invoke``,
+``stream``) looks only at ``wrap_tool_call``: a node given only ``awrap_tool_call`` runs
+every tool there with no hook at all. So the gate is attached to BOTH slots, by
+``gated_tool_node(tools, policy)`` or ``ToolNode(tools, **recusal_gates(policy))``, and the
+async hook cannot be built on its own except for a host that refuses a sync run itself
+(``recusal_agate(policy, host_refuses_sync_runs=True)``). ``is_gated(node)`` reads a node
+and says whether every route through it crosses the gate.
+
+The copy's callable is guarded as well: it runs only for an invocation the parse step just
+judged and allowed, so a route that reached the tool body without the parse step (a
+framework release that changes the lifecycle) is refused instead of run unjudged.
 
 The policy judges the invocation the tool executes, not the dict the model wrote: the hook
 hands execution a per-call copy of the tool whose parse step (``_to_args_and_kwargs``, run by
@@ -18,8 +28,9 @@ the framework's parse dropped (``_parse_input`` selects the kwargs it returns th
 argument model's own ``model_dump``, so a field with ``exclude=True`` or a root serializer can
 vanish) from that callable's default, projects every model-controlled argument through a
 projection that runs no serializer of its own, decides, and on allow passes those same
-completed objects to the function. Host arguments are excluded from judgment and can never be
-supplied by the model; a tool whose class or instance overrides the standard lifecycle is
+completed objects to the function. Host arguments are excluded from judgment, and an argument
+counts as the host's only when ToolNode replaced it for this call: a value the model sent that
+arrives unchanged is judged, whatever the tool's annotations say. A tool whose class or instance overrides the standard lifecycle is
 refused rather than judged in the wrong place.
 """
 
@@ -29,14 +40,17 @@ import dataclasses
 import datetime
 import decimal
 import enum
+import functools
 import inspect
 import math
 import uuid
+import weakref
 from typing import Any, Callable, List
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, Tool, ToolException
 from langchain_core.tools.base import FILTERED_ARGS, _get_runnable_config_param
+from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from pydantic import BaseModel, ValidationError
 
@@ -65,6 +79,18 @@ _STANDARD = {
 }
 
 
+# A ``StructuredTool`` or ``Tool`` runs the function it holds (``func``/``coroutine``)
+# from its own ``_run``/``_arun``, and the gate holds the invocation to that function's
+# signature. A subclass that replaces ``_run`` or ``_arun`` executes something else, which
+# the policy's view of the invocation was never checked against, so it is refused. (A
+# direct ``BaseTool`` subclass has no such function: its ``_run`` is the tool, and is the
+# callable the gate inspects.)
+_HOLDER_BODIES = {
+    name: {vars(cls)[name] for cls in (StructuredTool, Tool) if name in vars(cls)}
+    for name in ("_run", "_arun")
+}
+
+
 def _lifecycle_refusal(tool) -> str | None:
     """Why this tool's execution path cannot be judged at the parse seam, or None."""
     for name in _LIFECYCLE:
@@ -72,6 +98,12 @@ def _lifecycle_refusal(tool) -> str | None:
             return f"`{name}` is overridden on the tool instance"
         if getattr(type(tool), name, None) not in _STANDARD[name]:
             return f"{type(tool).__name__} overrides `{name}`"
+    if isinstance(tool, (StructuredTool, Tool)):
+        for name, standard in _HOLDER_BODIES.items():
+            if name in vars(tool):
+                return f"`{name}` is overridden on the tool instance"
+            if getattr(type(tool), name, None) not in standard:
+                return f"{type(tool).__name__} overrides `{name}`"
     return None
 
 
@@ -282,6 +314,16 @@ def _sanitized(exc: Exception, host_keys: frozenset[str]) -> str:
     return type(exc).__name__
 
 
+def _unchanged(arrived: Any, sent: Any) -> bool:
+    """Whether the value that reached the tool is the one the model sent."""
+    if arrived is sent:
+        return True
+    try:
+        return bool(arrived == sent)
+    except Exception:  # noqa: BLE001, a value that cannot be compared was not shown to be replaced
+        return True
+
+
 def _unjudgeable(name: str, detail: str, bound: dict, policy: Policy, record: dict) -> str:
     """The reason for a call that cannot be judged, recorded through ``decide`` like every
     other refusal (so an audited gate logs it)."""
@@ -317,6 +359,10 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
     """
     name, call_id, fallback = call["name"], call.get("id"), call.get("args")
     copy = tool.model_copy()
+    #: Holds the keyword arguments the parse step just judged and allowed, from that moment
+    #: until the tool body takes them. The body runs only by spending this, and only with
+    #: those very objects.
+    allowed: list[dict[str, Any]] = []
     parse = type(tool)._to_args_and_kwargs
     host_keys = _host_keys(tool)
     original_handler = tool.handle_tool_error
@@ -330,6 +376,25 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
                 pass
         return fallback if isinstance(fallback, dict) else {"input": fallback}
 
+    def from_the_host(tool_input) -> frozenset[str]:
+        """The host keys the host really filled for this call.
+
+        A key counts as the host's only because ToolNode strips it from the model's
+        arguments and puts its own value there. The tool's annotations say which keys those
+        should be, and they can disagree with what ToolNode does: it reads the argument
+        schema, and a function can mark a parameter injected that the schema declares as an
+        ordinary one. So the annotations are not trusted alone. A key the model sent whose
+        value arrives here unchanged was not replaced by the host: it is the model's, and it
+        is judged like every other argument.
+        """
+        if not isinstance(tool_input, dict) or not isinstance(fallback, dict):
+            return host_keys
+        return host_keys - {
+            key
+            for key in host_keys & fallback.keys() & tool_input.keys()
+            if _unchanged(tool_input[key], fallback[key])
+        }
+
     def seam(tool_input, tool_call_id):
         if tool_call_id != call_id:
             raise RuntimeError("Recusal: a judging copy of a tool was used for a different call")
@@ -342,8 +407,9 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
             detail = "a positional tool input cannot be judged by name"
             raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
         try:
-            kwargs = _completed(kwargs, tool, host_keys, is_async)
-            judged = {k: _faithful(v) for k, v in kwargs.items() if k not in host_keys}
+            hosts = from_the_host(tool_input)
+            kwargs = _completed(kwargs, tool, hosts, is_async)
+            judged = {k: _faithful(v) for k, v in kwargs.items() if k not in hosts}
         except TypeError as exc:
             raise RecusalRefusal(_unjudgeable(name, str(exc), proposal(tool_input), policy, record))
         try:
@@ -355,7 +421,47 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
             )
         if decision == "deny":
             raise RecusalRefusal(reason)
+        # a copy: the framework adds its own call-time names to the dict it is handed back
+        allowed[:] = [dict(kwargs)]
         return args, kwargs
+
+    def spend(func, args, kwargs):
+        """Refuse a tool body unless it is entered with the invocation the parse step just
+        judged and allowed: the same objects under the same names, and beyond them only the
+        names the framework fills at call time."""
+        if not allowed:
+            detail = (
+                "the tool was reached without passing the gate's judging step, so the "
+                "invocation was never judged"
+            )
+            raise RecusalRefusal(_unjudgeable(name, detail, proposal(fallback), policy, record))
+        judged = allowed.pop()
+        same = not args and all(k in kwargs and kwargs[k] is v for k, v in judged.items())
+        if not same or not set(kwargs) - set(judged) <= _framework_keys(func):
+            detail = (
+                "the tool was reached with arguments other than the ones the gate judged, "
+                "so this invocation was never judged"
+            )
+            raise RecusalRefusal(_unjudgeable(name, detail, proposal(fallback), policy, record))
+
+    def guarded(func):
+        if func is None:
+            return None
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def abody(*args, **kwargs):
+                spend(func, args, kwargs)
+                return await func(*args, **kwargs)
+
+            return abody
+
+        @functools.wraps(func)
+        def body(*args, **kwargs):
+            spend(func, args, kwargs)
+            return func(*args, **kwargs)
+
+        return body
 
     def handle(exc):
         if isinstance(exc, RecusalRefusal):
@@ -370,6 +476,13 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
 
     object.__setattr__(copy, "_to_args_and_kwargs", seam)
     object.__setattr__(copy, "handle_tool_error", handle)
+    if isinstance(tool, (StructuredTool, Tool)):
+        object.__setattr__(copy, "func", guarded(tool.func))
+        object.__setattr__(copy, "coroutine", guarded(tool.coroutine))
+    else:
+        object.__setattr__(copy, "_run", guarded(tool._run))
+        if type(tool)._arun is not BaseTool._arun:
+            object.__setattr__(copy, "_arun", guarded(tool._arun))
     return copy
 
 
@@ -403,21 +516,167 @@ def _judge(request, policy: Policy, *, is_async: bool = False, **record: Any):
     return None, request.override(tool=_judging(tool, call, policy, record, is_async))
 
 
+#: Every hook this package has built, by ``id``: a weak reference to it, the ToolNode slot
+#: it belongs in, and the policy and audit log it was built for. ``is_gated`` recognises a
+#: hook by being the very object in here, which an attribute copied onto another function
+#: (``functools.wraps`` copies them) or an object that compares equal cannot imitate.
+_HOOKS: dict[int, tuple[Any, str, Any, Any]] = {}
+
+_SYNC_IN_ASYNC_SLOT = (
+    "{name} is in a ToolNode's async slot (awrap_tool_call). That leaves the sync slot "
+    "empty, and a ToolNode's sync route (invoke, stream) then runs every tool with no hook. "
+    "Attach both hooks with gated_tool_node(tools, policy) or "
+    "ToolNode(tools, **recusal_gates(policy)), or this one with wrap_tool_call."
+)
+
+_ASYNC_ALONE = (
+    "{name} on its own gates only the async route: a ToolNode given only awrap_tool_call "
+    "runs every tool with no hook on invoke and stream. Attach both hooks with "
+    "gated_tool_node(tools, policy) or ToolNode(tools, **recusal_gates(policy)). Pass "
+    "host_refuses_sync_runs=True only for a host that refuses a sync run when it is given "
+    "an async hook, as LangChain's create_agent middleware does; if this came from "
+    "recusal-langchain, upgrade it to 0.1.2 or later."
+)
+
+
+def _marked(hook, slot: str, policy: Any, log: Any = None):
+    key = id(hook)
+    _HOOKS[key] = (weakref.ref(hook, lambda _: _HOOKS.pop(key, None)), slot, policy, log)
+    return hook
+
+
+def _require_sync_slot(name: str, execute) -> None:
+    """Raise if a sync hook is running from the async slot. ToolNode hands the async slot
+    an ``async def`` executor and the sync slot a plain one, on every route."""
+    if inspect.iscoroutinefunction(execute):
+        raise TypeError(_SYNC_IN_ASYNC_SLOT.format(name=name))
+
+
+def _require_sync_refusal(name: str, host_refuses_sync_runs: bool) -> None:
+    if host_refuses_sync_runs is not True:
+        raise TypeError(_ASYNC_ALONE.format(name=name))
+
+
 def recusal_gate(policy: Policy):
-    """Return a synchronous ToolNode hook that gates each call before execution."""
+    """Return a synchronous ToolNode hook that gates each call before execution.
+
+    Attached alone (``wrap_tool_call=``) it covers every route: a ToolNode with no async
+    hook runs this one on ``ainvoke`` too. A tool that has only a coroutine is then refused
+    there, since this hook judges the sync callable; ``recusal_gates`` attaches both.
+
+    It belongs in the sync slot only. In the async slot (``awrap_tool_call=``) it would
+    leave the sync slot empty, so there it raises ``TypeError`` instead of gating one route
+    and leaving the other open.
+    """
 
     def gate(request, execute):
+        _require_sync_slot("recusal_gate", execute)
         refusal, judged = _judge(request, policy)
         return refusal if refusal is not None else execute(judged)
 
-    return gate
+    return _marked(gate, "sync", policy)
 
 
-def recusal_agate(policy: Policy):
-    """Return an asynchronous ToolNode hook for awrap_tool_call."""
-
+def _agate(policy: Policy):
     async def gate(request, execute):
         refusal, judged = _judge(request, policy, is_async=True)
         return refusal if refusal is not None else await execute(judged)
 
-    return gate
+    return _marked(gate, "async", policy)
+
+
+def recusal_agate(policy: Policy, *, host_refuses_sync_runs: bool = False):
+    """Return the asynchronous hook on its own, for a host that refuses a sync run itself.
+
+    A ``ToolNode`` is not such a host: given only ``awrap_tool_call`` it runs every tool
+    with no hook on ``invoke`` and ``stream``. So this raises ``TypeError`` unless the
+    caller states ``host_refuses_sync_runs=True``. For a ToolNode use ``recusal_gates`` or
+    ``gated_tool_node``.
+    """
+    _require_sync_refusal("recusal_agate", host_refuses_sync_runs)
+    return _agate(policy)
+
+
+def recusal_gates(policy: Policy) -> dict[str, Any]:
+    """Both hooks, keyed by the ToolNode parameter each one fills.
+
+        node = ToolNode(tools, **recusal_gates(policy))
+
+    The sync route runs the sync hook and the async route the async one, with the same
+    decision logic, so every way of running the node crosses the gate.
+    """
+    return {"wrap_tool_call": recusal_gate(policy), "awrap_tool_call": _agate(policy)}
+
+
+def _no_hooks_among(options: dict[str, Any]) -> None:
+    for name in ("wrap_tool_call", "awrap_tool_call"):
+        if name in options:
+            raise TypeError(
+                f"{name} is the gate's own slot; a ToolNode has one of each, so another "
+                "hook there would replace the gate on that route"
+            )
+
+
+def gated_tool_node(tools, policy: Policy, **options: Any) -> ToolNode:
+    """A ``ToolNode`` over ``tools`` with the gate on both of its hook slots.
+
+    ``options`` are ToolNode's own (``name``, ``tags``, ``handle_tool_errors``,
+    ``messages_key``). Passing either hook slot raises ``TypeError``.
+    """
+    _no_hooks_among(options)
+    return ToolNode(tools, **recusal_gates(policy), **options)
+
+
+def is_gated(node: Any) -> bool:
+    """True only for a ``ToolNode`` this function can vouch for on every route.
+
+    It requires all of:
+
+    - the node is exactly a ``ToolNode``, not a subclass, and nothing on the instance
+      replaces one of the class's methods or the two functions it runs;
+    - the sync slot holds a sync hook this package built, which the sync route always uses
+      and the async route uses when the async slot is empty;
+    - the async slot is empty, or holds the async hook this package built for the same
+      policy and the same audit log.
+
+    Anything else is answered False: a hook only in the async slot (the sync route then
+    runs tools with no hook), a hook wrapped in another function, a hook from elsewhere, two
+    hooks with different policies or logs, a subclass. Some of those may be fine; this
+    cannot tell, so it does not say True. It reads the node as it is when called and says
+    nothing about a later change to it, another node in the graph, or a tool called from
+    outside a ToolNode.
+    """
+    if type(node) is not ToolNode:
+        return False
+    try:
+        held = vars(node)
+        sync_hook, async_hook = held["_wrap_tool_call"], held["_awrap_tool_call"]
+        runs = (held["func"], ToolNode._func), (held["afunc"], ToolNode._afunc)
+    except (TypeError, KeyError, AttributeError):  # not laid out as the ToolNode this knows
+        return False
+    for bound, function in runs:
+        if getattr(bound, "__func__", None) is not function or bound.__self__ is not node:
+            return False
+    if any(callable(getattr(ToolNode, name, None)) for name in held):
+        return False
+    sync_info = _built(sync_hook)
+    if sync_info is None or sync_info[0] != "sync":
+        return False
+    if async_hook is None:
+        return True
+    async_info = _built(async_hook)
+    return (
+        async_info is not None
+        and async_info[0] == "async"
+        and async_info[1] is sync_info[1]
+        and async_info[2] is sync_info[2]
+    )
+
+
+def _built(hook: Any):
+    """``(slot, policy, log)`` if ``hook`` is the very object this package built, else None.
+    The lookup is by identity, so an object that only compares equal to a hook is not one."""
+    entry = _HOOKS.get(id(hook))
+    if entry is None or entry[0]() is not hook:
+        return None
+    return entry[1:]

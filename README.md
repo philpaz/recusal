@@ -158,7 +158,7 @@ kernel.
 | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | every agent, task and crew in a CrewAI process | `from recusal_crewai import install_recusal_hooks` |
 | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
 | [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | a LangChain `create_agent` agent | `from recusal_langchain import gate_middleware, agate_middleware` |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | a LangGraph `ToolNode` | `from recusal_langgraph import recusal_gate, recusal_agate` |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | a LangGraph `ToolNode` | `from recusal_langgraph import gated_tool_node, recusal_gates` |
 | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
 | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
 | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | MCP tools on an OpenAI Agents SDK `Agent`: local servers and hosted MCP | `from recusal_openai_agents_mcp import gated_agent, gate_mcp_server` |

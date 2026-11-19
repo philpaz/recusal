@@ -36,7 +36,7 @@ dependencies = [
     # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
     "recusal>=0.14.0,<1",
     # The gate itself. This package wraps its public hooks and nothing private.
-    "recusal-langgraph>=0.1.0,<1",
+    "recusal-langgraph>=0.2.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "langchain>=1.4.3,<2",

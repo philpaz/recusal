@@ -27,16 +27,19 @@ judgment and the policy would never see the value that runs), completes any sche
 parameter the framework's parse dropped (an `exclude=True` field, a root serializer)
 from that callable's default, projects every model-controlled argument field by field
 through a projection that runs no serializer of its own, decides, and passes those same
-completed objects to the function. Host arguments are never judged and never the model's
-to supply; a suppressed parameter with no default, a value the
+completed objects to the function. Host arguments are not judged, and an argument counts as
+the host's only when ToolNode replaced it for this call: a value the model sent that arrives
+unchanged is judged, whatever the tool's annotations say. A suppressed parameter with no default, a value the
 projection does not support, and a tool whose class or instance overrides the standard
-`invoke`/`run` lifecycle, are refused. Async graphs use `recusal_agate(policy)` with `awrap_tool_call`
-and `ainvoke`. It is offline and deterministic (no model or API key), requires
+`invoke`/`run` lifecycle, are refused. A ToolNode's sync route consults only its sync hook slot,
+so the gate goes on both slots: `gated_tool_node(tools, policy)`, or `ToolNode(tools,
+**recusal_gates(policy))`, refuses the same way on `invoke`, `stream`, `ainvoke` and `astream`,
+and `is_gated(node)` checks a node. The async hook cannot be built on its own unless the caller states `host_refuses_sync_runs=True`. It is offline and deterministic (no model or API key), requires
 **Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
 `langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
 and its Python 3.9+ support are unchanged. To put every one of those calls on the record,
 [`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) swaps in
-`recusal_audited_gate(policy, log)` (or `recusal_audited_agate` for `awrap_tool_call`): the
+`recusal_audited_gate(policy, log)` (or both hooks with `recusal_audited_gates(policy, log)`): the
 same decision, written as a hash-chained `AuditLog` entry labeled `langgraph.toolnode` with
 LangGraph's tool call id and a fingerprint of the arguments, before the call runs or is
 refused, and an unwritable log refuses the call.
@@ -67,7 +70,8 @@ rewriter or a human-in-the-loop edit listed there still reaches the gate's judgi
 so the rewritten call is judged as rewritten; but a middleware that swaps the tool object
 for another, or answers in the tool's place (`LLMToolEmulator`), removes that copy and
 the call is never judged. Listed last, the gate judges whatever the others produced. For `agent.ainvoke`, use
-`wrap_tool_call(recusal_agate(policy))`; the sync gate alone raises there and runs nothing.
+`agate_middleware(policy)`; the sync gate alone raises there and runs nothing, and so does
+the async one under `agent.invoke`.
 To put every one of those calls on the record,
 [`examples/langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py)
 swaps in `audited_gate_middleware(policy, log)` (or `audited_agate_middleware` for

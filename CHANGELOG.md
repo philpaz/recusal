@@ -6,6 +6,72 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- `recusal-langgraph` 0.2.0 closes a way to run a LangGraph `ToolNode` with the gate
+  attached and never consulted. A `ToolNode` has a sync hook slot and an async one, and
+  its sync route (`invoke`, `stream`) looks only at the sync slot. A node built as this
+  package's README described for async graphs,
+  `ToolNode(tools, awrap_tool_call=recusal_agate(policy))`, and then run with `invoke` or
+  `stream`, executed every tool call with no policy call and no audit entry. The same
+  node refused correctly under `ainvoke` and `astream`, and a node with the sync gate, or
+  both, was never affected. `recusal-langchain` was not affected: `create_agent` refuses
+  a sync run when given an async hook. **If you attached only the async gate to a
+  ToolNode, upgrade and switch to one of the forms below.**
+  - `gated_tool_node(tools, policy)` and `audited_tool_node(tools, policy, log)` return a
+    `ToolNode` with the gate on both slots. `recusal_gates(policy)` and
+    `recusal_audited_gates(policy, log)` return the same pair for a node you build:
+    `ToolNode(tools, **recusal_gates(policy))`.
+  - `recusal_agate(policy)` and `recusal_audited_agate(policy, log)` now raise
+    `TypeError` unless called with `host_refuses_sync_runs=True`. **This breaks code that
+    built the async hook on its own**, which is the shape that was unsafe.
+  - `recusal_gate` and `recusal_audited_gate` raise `TypeError` when they run from a
+    ToolNode's async slot, where they would leave the sync slot empty. A ToolNode calls no
+    hook on the sync route of such a node, so nothing can raise there; the error comes on
+    the async route.
+  - `is_gated(node)` is True only for a node it can vouch for: exactly a `ToolNode`, with
+    nothing on the instance replacing how it runs calls, a sync gate from this package in
+    the sync slot, and in the async slot nothing or this package's async gate for the same
+    policy and audit log. A hook is recognised by being the object built here, not by an
+    attribute, so a wrapper around a gate, a hook from elsewhere, two hooks for different
+    policies and any subclass are answered False.
+  - What remains outside any hook's reach, stated in the README: a node whose sync slot
+    is empty, built by passing `host_refuses_sync_runs=True` for a ToolNode or by putting
+    the sync gate in the async slot, and only ever run with `invoke` or `stream`. A
+    ToolNode calls no hook there, so nothing can raise. `gated_tool_node` builds the node
+    correctly and `is_gated` answers False for that one.
+  - A test runs every supported shape on `invoke`, `stream`, `ainvoke` and `astream`, as
+    a node and inside a subgraph, and another pins the framework behaviour that made the
+    old shape unsafe.
+- `recusal-langgraph` 0.2.0 judges every argument the model sent. Arguments the host
+  supplies (state, store, runtime) are left out of judgment, and the gate decided which
+  those were from the tool's annotations. ToolNode decides which model arguments to
+  strip from the argument schema alone, so the two could disagree: a tool whose function
+  marked a parameter `InjectedToolArg` while its explicit `args_schema` declared it an
+  ordinary argument received the model's value for it, and the policy was never shown
+  that value. `@tool` builds the schema from the function, so tools made that way were
+  not affected; a `StructuredTool` given its own `args_schema` could be. An argument now
+  counts as the host's only when ToolNode really replaced it for this call, and a value
+  the model sent that arrives unchanged is judged. `recusal-langchain` uses this gate
+  and gets the fix with `recusal-langgraph` 0.2.0.
+- `recusal-langgraph` 0.2.0: the tool's function now runs only for an invocation the
+  gate's judging step just allowed, once, and only with the argument objects that step
+  judged. The gate judges inside the tool's parse step, a private part of LangChain's
+  tool lifecycle; if a framework release reached the function without that step, the
+  call would have run unjudged. It is now refused, and recorded as a deny in the audited
+  gate. The versions this package is tested with (`langchain-core` 1.6.5 and 1.8.3) both
+  go through the parse step.
+- `recusal-langgraph` 0.2.0 refuses a `StructuredTool` or `Tool` subclass that replaces
+  `_run` or `_arun`. Such a tool executes its own method while the gate held the
+  invocation to the function the tool carries, so the policy could be shown an
+  invocation other than the one that ran. **A tool built this way was judged and run
+  before; it is now refused with the reason.** Build the tool with `@tool` or
+  `StructuredTool.from_function`, or subclass `BaseTool` directly.
+- `recusal-langchain` 0.1.2 requires `recusal-langgraph>=0.2.0` and states
+  `host_refuses_sync_runs=True` for its async middleware. `recusal-langchain` 0.1.1
+  installed beside `recusal-langgraph` 0.2.0 raises that `TypeError` from
+  `agate_middleware`; upgrade both together.
+
 ### Fixed
 
 - `recusal-openai` 0.2.0: an `async def` tool is refused with a reason before the policy

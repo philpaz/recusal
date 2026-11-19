@@ -358,7 +358,7 @@ class TestLangGraphAudit:
         else:
             node = example.ToolNode(
                 [self.serializer_tool(ran)],
-                awrap_tool_call=example.recusal_audited_agate(self.select_only, log),
+                **example.recusal_audited_gates(self.select_only, log),
             )
             messages = asyncio.run(gate.run_in_graph_async(node, calls))
         assert ran == []
@@ -399,9 +399,7 @@ class TestLangGraphAudit:
             )
             messages = gate.run_in_graph(node, calls)
         else:
-            node = example.ToolNode(
-                [charge], awrap_tool_call=example.recusal_audited_agate(budget, log)
-            )
+            node = example.ToolNode([charge], **example.recusal_audited_gates(budget, log))
             messages = asyncio.run(gate.run_in_graph_async(node, calls))
         assert seen == [{"amount": 100}] and ran == []
         assert "over 10" in messages[0].content
@@ -426,7 +424,7 @@ class TestLangGraphAudit:
                 [tool], wrap_tool_call=example.recusal_audited_gate(policy, log)
             )
             return gate.run_in_graph(node, calls)
-        node = example.ToolNode([tool], awrap_tool_call=example.recusal_audited_agate(policy, log))
+        node = example.ToolNode([tool], **example.recusal_audited_gates(policy, log))
         return asyncio.run(gate.run_in_graph_async(node, calls))
 
     @pytest.mark.parametrize("route", ["sync", "async"])
@@ -573,9 +571,7 @@ class TestLangGraphAudit:
                 {"messages": [HumanMessage(content="HOST_SECRET_SENTINEL")]}
             )
         else:
-            node = example.ToolNode(
-                [query], awrap_tool_call=example.recusal_audited_agate(lambda n, a: [], log)
-            )
+            node = example.ToolNode([query], **example.recusal_audited_gates(lambda n, a: [], log))
             result = asyncio.run(
                 gate._graph(node, calls).ainvoke(
                     {"messages": [HumanMessage(content="HOST_SECRET_SENTINEL")]}

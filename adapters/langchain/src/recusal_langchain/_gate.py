@@ -25,4 +25,4 @@ def gate_middleware(policy: Policy):
 
 def agate_middleware(policy: Policy):
     """The async gate, for ``agent.ainvoke``; the sync gate alone raises there. List it LAST."""
-    return wrap_tool_call(recusal_agate(policy))
+    return wrap_tool_call(recusal_agate(policy, host_refuses_sync_runs=True))

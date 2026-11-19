@@ -53,5 +53,12 @@ def audited_agate_middleware(
 ):
     """The audited async gate for ``agent.ainvoke``. List it LAST."""
     return wrap_tool_call(
-        recusal_audited_agate(policy, log, actor=actor, control=control, surface=SURFACE)
+        recusal_audited_agate(
+            policy,
+            log,
+            actor=actor,
+            control=control,
+            surface=SURFACE,
+            host_refuses_sync_runs=True,
+        )
     )

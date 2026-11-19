@@ -32,9 +32,12 @@ from langgraph.graph import START, MessagesState, StateGraph  # noqa: E402
 from langgraph.prebuilt import ToolNode, tools_condition  # noqa: E402
 from recusal_langgraph import (  # noqa: E402
     SURFACE,
+    gated_tool_node,
+    is_gated,
     recusal_agate,
     recusal_audited_gate,
     recusal_gate,
+    recusal_gates,
 )
 
 import recusal  # noqa: E402
@@ -109,9 +112,22 @@ def main() -> None:
     assert got["c1"] == ("success", "recorded: SELECT 1"), got
     assert got["c2"][0] == "error" and "DELETE is not allowed" in got["c2"][1], got
 
-    got = asyncio.run(arun(ToolNode([run_sql], awrap_tool_call=recusal_agate(policy))))
-    assert EXECUTED == ["SELECT 1"], EXECUTED
-    assert got["c2"][0] == "error" and "DELETE is not allowed" in got["c2"][1], got
+    # Both hooks: the same node refuses the DELETE on the sync route and the async one.
+    for node in (gated_tool_node([run_sql], policy), ToolNode([run_sql], **recusal_gates(policy))):
+        assert is_gated(node)
+        for got in (run(node), asyncio.run(arun(node))):
+            assert EXECUTED == ["SELECT 1"], EXECUTED
+            assert got["c2"][0] == "error" and "DELETE is not allowed" in got["c2"][1], got
+
+    # The async hook is not built on its own without a stated reason: given only that
+    # one, a ToolNode's sync route runs tools with no hook at all.
+    try:
+        recusal_agate(policy)
+    except TypeError as exc:
+        assert "recusal_gates" in str(exc), exc
+    else:
+        raise AssertionError("recusal_agate was built alone without host_refuses_sync_runs")
+    assert not is_gated(ToolNode([run_sql]))
 
     with tempfile.TemporaryDirectory() as folder:
         log = AuditLog(path=os.path.join(folder, "audit.jsonl"))

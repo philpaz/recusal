@@ -184,9 +184,7 @@ class TestLangGraphGate:
             executed.append(sql)
             return sql
 
-        node = example.ToolNode(
-            [query], awrap_tool_call=example.recusal_agate(example.sql_scope_policy)
-        )
+        node = example.ToolNode([query], **example.recusal_gates(example.sql_scope_policy))
         messages = asyncio.run(
             example.run_in_graph_async(
                 node,

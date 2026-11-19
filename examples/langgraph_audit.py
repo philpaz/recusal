@@ -9,7 +9,7 @@ own tool call id, so a quiet edit, a reordering, or a dropped entry is detectabl
 never the arguments themselves.
 
 The audited gate is the ``recusal-langgraph`` package (``adapters/langgraph`` in this
-repository): ``recusal_audited_gate(policy, log)`` and ``recusal_audited_agate(policy,
+repository): ``recusal_audited_gate(policy, log)`` and ``recusal_audited_gates(policy,
 log)`` are imported from it. They call the plain gate's own judging function with the
 recording arguments passed through to ``recusal.decide``, which writes the entry before
 returning. If the log cannot be written the decision becomes a deny, so nothing runs
@@ -63,8 +63,10 @@ sys.path.insert(0, os.path.join(_ROOT, "adapters", "langgraph", "src"))
 from recusal_langgraph import (  # noqa: E402
     SURFACE,
     Policy,
+    audited_tool_node,
     recusal_audited_agate,
     recusal_audited_gate,
+    recusal_audited_gates,
 )
 
 from examples.langgraph_gate import (  # noqa: E402
@@ -77,7 +79,13 @@ from examples.langgraph_gate import (  # noqa: E402
 )
 from recusal.audit import AuditLog  # noqa: E402
 
-__all__ = ["SURFACE", "recusal_audited_agate", "recusal_audited_gate"]
+__all__ = [
+    "SURFACE",
+    "audited_tool_node",
+    "recusal_audited_agate",
+    "recusal_audited_gate",
+    "recusal_audited_gates",
+]
 
 
 def run_calls(
@@ -109,7 +117,7 @@ async def run_calls_async(
     EXECUTED.clear()
     node = ToolNode(
         [echo, run_sql],
-        awrap_tool_call=recusal_audited_agate(policy, log, actor=actor, control=control),
+        **recusal_audited_gates(policy, log, actor=actor, control=control),
     )
     return await run_in_graph_async(node, calls), list(EXECUTED)
 

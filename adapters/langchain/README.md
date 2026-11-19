@@ -46,7 +46,7 @@ Install it from PyPI. `recusal-langgraph`, which this package requires, comes wi
 pip install recusal-langchain
 ```
 
-Requires Python 3.10+, `recusal>=0.14.0`, `recusal-langgraph>=0.1.0` and
+Requires Python 3.10+, `recusal>=0.14.0`, `recusal-langgraph>=0.2.0` and
 `langchain>=1.4.3`. It is tested on every pull request against exactly
 `langchain==1.4.3` with `langgraph==1.2.12` and `langchain-core==1.6.5`, and weekly
 against the newest releases.
@@ -80,7 +80,8 @@ agent = create_agent(model=model, tools=[run_sql], middleware=[gate_middleware(p
 
 A refused call is answered with an error `ToolMessage` carrying Recusal's reason, and its
 tool does not run. A policy that raises refuses the call (fail closed). For
-`agent.ainvoke`, use `agate_middleware(policy)`; the sync gate alone raises there.
+`agent.ainvoke`, use `agate_middleware(policy)`; the sync gate alone raises there, and
+the async gate alone raises under `agent.invoke`, so neither runs a tool ungated.
 
 **List the middleware last.** The first middleware in the list is the outermost, so
 anything listed after the gate runs between the gate and the tool.

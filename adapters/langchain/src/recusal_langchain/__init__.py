@@ -19,7 +19,7 @@ the surface label on the record.
 from ._audit import SURFACE, audited_agate_middleware, audited_gate_middleware
 from ._gate import agate_middleware, gate_middleware
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "SURFACE",

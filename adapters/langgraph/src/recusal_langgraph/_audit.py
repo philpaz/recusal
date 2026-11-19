@@ -1,7 +1,7 @@
 """The audited gate: the same decision, with every call on a hash-chained ``AuditLog``.
 
-``recusal_audited_gate(policy, log)`` and ``recusal_audited_agate(policy, log)`` call the
-plain gate's own judging function with the recording arguments passed through to
+``recusal_audited_gate(policy, log)`` and the pair ``recusal_audited_gates(policy, log)``
+call the plain gate's own judging function with the recording arguments passed through to
 ``recusal.decide``, which writes the entry before returning. There is no second decision
 path. If the log cannot be written the decision becomes a deny, so nothing runs unrecorded.
 
@@ -23,9 +23,18 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from langgraph.prebuilt import ToolNode
+
 from recusal.audit import AuditLog
 
-from ._gate import Policy, _judge
+from ._gate import (
+    Policy,
+    _judge,
+    _marked,
+    _no_hooks_among,
+    _require_sync_refusal,
+    _require_sync_slot,
+)
 
 #: The surface label every entry carries: the runtime that adjudicated, LangGraph's ToolNode.
 SURFACE = "langgraph.toolnode"
@@ -62,12 +71,23 @@ def recusal_audited_gate(
     (LangChain's ``create_agent`` middleware) passes its own."""
 
     def gate(request, execute):
+        _require_sync_slot("recusal_audited_gate", execute)
         refusal, judged = _judge(
             request, policy, **_recording(request, actor, control, log, surface)
         )
         return refusal if refusal is not None else execute(judged)
 
-    return gate
+    return _marked(gate, "sync", policy, log)
+
+
+def _audited_agate(policy, log, actor, control, surface):
+    async def gate(request, execute):
+        refusal, judged = _judge(
+            request, policy, is_async=True, **_recording(request, actor, control, log, surface)
+        )
+        return refusal if refusal is not None else await execute(judged)
+
+    return _marked(gate, "async", policy, log)
 
 
 def recusal_audited_agate(
@@ -77,13 +97,48 @@ def recusal_audited_agate(
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
     surface: str = SURFACE,
+    host_refuses_sync_runs: bool = False,
 ):
-    """Return an asynchronous ToolNode hook for awrap_tool_call, same logic as the sync one."""
+    """Return the asynchronous recording hook on its own, for a host that refuses a sync
+    run itself. A ToolNode is not one (see ``recusal_agate``), so this raises ``TypeError``
+    unless ``host_refuses_sync_runs=True``. For a ToolNode use ``recusal_audited_gates`` or
+    ``audited_tool_node``."""
+    _require_sync_refusal("recusal_audited_agate", host_refuses_sync_runs)
+    return _audited_agate(policy, log, actor, control, surface)
 
-    async def gate(request, execute):
-        refusal, judged = _judge(
-            request, policy, is_async=True, **_recording(request, actor, control, log, surface)
-        )
-        return refusal if refusal is not None else await execute(judged)
 
-    return gate
+def recusal_audited_gates(
+    policy: Policy,
+    log: AuditLog,
+    *,
+    actor: Optional[str] = None,
+    control: Optional[dict[str, Any]] = None,
+    surface: str = SURFACE,
+) -> dict[str, Any]:
+    """Both recording hooks, keyed by the ToolNode parameter each one fills.
+
+    node = ToolNode(tools, **recusal_audited_gates(policy, log))
+    """
+    return {
+        "wrap_tool_call": recusal_audited_gate(
+            policy, log, actor=actor, control=control, surface=surface
+        ),
+        "awrap_tool_call": _audited_agate(policy, log, actor, control, surface),
+    }
+
+
+def audited_tool_node(
+    tools,
+    policy: Policy,
+    log: AuditLog,
+    *,
+    actor: Optional[str] = None,
+    control: Optional[dict[str, Any]] = None,
+    **options: Any,
+) -> ToolNode:
+    """A ``ToolNode`` over ``tools`` with the recording gate on both of its hook slots.
+    ``options`` are ToolNode's own; passing either hook slot raises ``TypeError``."""
+    _no_hooks_among(options)
+    return ToolNode(
+        tools, **recusal_audited_gates(policy, log, actor=actor, control=control), **options
+    )
