@@ -27,7 +27,7 @@ What each entry is bound to:
 What is not on the log: a turn refused as a whole. An output item of a type the adapter
 does not handle, a call without an id and a duplicate id all raise to the application
 before any call is judged, so nothing in that turn runs and no entry is written. Hosted
-tools run on the provider's side and never reach this loop.
+tools run on the provider's side: the record of one is never an entry.
 
 Requires Python 3.10+ (the SDK's minimum) and is tested with exactly openai==3.34.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency. No API key or network is

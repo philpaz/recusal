@@ -30,7 +30,8 @@ answer types do not require ``call_id`` (checked on openai==3.34.0: every key of
 refuses a call without an id and checks that every call got exactly one answer.
 
 Hosted tools (web search, file search, code interpreter, image generation, remote MCP) run
-on the provider's side and never reach this loop, so nothing here can gate them.
+on the provider's side, so nothing here can gate them. The provider's record of one raises
+by default and, when finished, passes unjudged with ``allow_hosted_records=True``.
 
 Requires Python 3.10+ (the SDK's minimum) and is tested with exactly openai==3.34.0. The
 Response and ChatCompletion objects are built with the SDK's own ``model_validate``, so they

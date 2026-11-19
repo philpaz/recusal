@@ -80,6 +80,20 @@ before anything runs.
 Each proposed call gets exactly one answer under its own id: the tool's result, or
 Recusal's reason. A policy that raises refuses the call (fail closed).
 
+The gate calls your tools synchronously, so each tool is an ordinary function. An
+`async def` tool is refused with a reason before the policy runs, so the policy is not
+consulted for it. An ordinary function that returns a coroutine is answered as not run.
+
+A tool that raises: by default the exception reaches your loop, as it always has. Calls
+earlier in the turn have already run and their answers are lost with it; calls later in
+the turn do not run. Pass `answer_tool_errors=True` to answer the failed call instead,
+with `` Tool `name` raised <ExceptionClass> `` under its own id. The class named is the
+exception's nearest built-in one (`TimeoutError`, `ValueError`, `Exception` at worst):
+never the message, and never a class name your application or a library chose. The rest
+of the turn is then judged and run as usual, **including the calls after the failed
+one**, and the traceback goes to the `recusal_openai` logger (to stderr, if your
+application configures no logging), not to the model.
+
 The gate binds the decoded arguments to the tool's signature with its defaults applied,
 judges that invocation, and calls the tool with exactly those arguments. A default the
 model omitted is therefore judged at the value the function would use.
@@ -106,14 +120,30 @@ The audited functions call the plain ones, so there is one decision path.
 
 - **Refused with a reason, never run:** arguments that are not valid JSON or not a JSON
   object, a tool the application does not have, arguments that do not bind to the tool,
-  and a tool whose signature cannot be judged by name (variadic or positional-only
-  parameters, an unsupported annotation, a default that is not JSON data).
+  a tool whose signature cannot be judged by name (variadic or positional-only
+  parameters, an unsupported annotation, a default that is not JSON data), and an
+  `async def` tool.
 - **Refused by raising, before anything in the turn runs:** an output item or tool call
-  of a type the gate does not handle (`custom_tool_call`, a hosted tool call, a type a
-  later SDK adds), a call without an id, and a duplicate id. A turn refused this way
-  writes no audit entry.
-- **Not seen at all:** hosted tools (web search, file search, code interpreter, image
-  generation, remote MCP) run on the provider's side and never reach your loop.
+  of a type the gate does not handle (`custom_tool_call`, the provider's record of a
+  hosted tool call, a type a later SDK adds), a call without an id, and a duplicate id. A
+  turn refused this way writes no audit entry.
+- **Never judged: hosted tools.** Web search, file search, code interpreter, image
+  generation and remote MCP run on the provider's side. What arrives in your loop is the
+  provider's record of the call (`web_search_call`, `mcp_call` and the others in
+  `HOSTED_RECORD_TYPES`, which also holds `compaction`, the provider's summary of earlier
+  context). By default such an item raises like any other unhandled one. Pass
+  `allow_hosted_records=True` to let finished records through: they are not judged, not
+  answered and not on the audit log, and the function calls beside them are judged as
+  usual. A record whose `status` says it is still in progress raises either way.
+- **Not gated yet: remote MCP approvals.** A remote MCP server set to require approval
+  sends an `mcp_approval_request` for your loop to answer. This gate does not judge it:
+  it raises, with or without `allow_hosted_records`, so the call is never approved
+  through this gate.
+- **After the decision.** An audit entry records the gate's decision, not what the tool
+  then did. A call the gate allowed whose tool raised, or returned a coroutine that
+  nothing ran, is on the log as allowed. The async check reads how a tool is declared; a
+  wrapper that hides an `async def` behind an ordinary function is caught only by what
+  it returns, after the policy has allowed the call.
 
 ## Compatibility
 

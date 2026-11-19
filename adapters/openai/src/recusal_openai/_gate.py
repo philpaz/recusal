@@ -15,6 +15,16 @@ denied, and returns exactly one answer carrying that call's own id. Arguments th
 valid JSON or not a JSON object, a tool the application does not have, and a policy that
 raises are all refused with a reason, never run.
 
+The gate calls tools synchronously. An ``async def`` tool is refused with a reason before
+the policy runs, because calling it would only create a coroutine that nothing awaits.
+
+A tool that raises: by default the exception leaves the gate, as it always has. Calls
+earlier in the turn have run and their answers are lost with it, and calls later in the
+turn do not run. ``answer_tool_errors=True`` answers the failed call with its exception's
+class name under its own call id instead, and the rest of the turn is judged and run as
+usual; the traceback goes to the ``recusal_openai`` logger, never to the model. The class
+named is the exception's nearest built-in one, so no name an application chose is sent.
+
 Default-deny on what the loop does not understand: an output item or tool call of a type
 this gate does not handle (``custom_tool_call``, a hosted tool call, a type added in a later
 SDK release) raises, naming the type, instead of being skipped. The SDK's answer types do
@@ -22,14 +32,21 @@ not require a call id, so the gate refuses a call without one and checks that ev
 got exactly one answer.
 
 Hosted tools (web search, file search, code interpreter, image generation, remote MCP) run
-on the provider's side and never reach this loop, so nothing here can gate them.
+on the provider's side, so nothing here can gate them. What reaches this loop is the
+provider's record of the call (``web_search_call``, ``mcp_call``, ...). By default such a
+record raises like any other unhandled item; ``allow_hosted_records=True`` lets a finished
+record of a type in ``HOSTED_RECORD_TYPES`` pass, unjudged and unrecorded. A remote MCP
+server configured to ask for approval sends an ``mcp_approval_request`` item, which this
+gate does not judge: it raises, so the call is never approved by this loop.
 """
 
 from __future__ import annotations
 
 import copy
+import functools
 import inspect
 import json
+import logging
 from typing import Any, Callable, List, Optional
 
 from openai.types.chat import ChatCompletion
@@ -43,9 +60,86 @@ Policy = Callable[[str, dict], List[Any]]
 #: The application's tools by the name the model calls them.
 Tools = dict[str, Callable[..., Any]]
 
-#: Response output items that cannot run anything, so the gate lets them pass. Everything
-#: else (custom_tool_call, hosted tool calls, a type a later SDK adds) raises.
+#: Response output items that cannot run anything, so the gate lets them pass. A
+#: ``function_call`` is judged. Everything else raises (custom_tool_call, a type a later SDK
+#: adds, and the provider's own records unless ``allow_hosted_records=True`` admits them).
 PASSIVE_OUTPUT_TYPES = frozenset({"message", "reasoning"})
+
+#: Items the provider produced on its own side: the record of a hosted tool call it ran,
+#: and ``compaction``, its summary of earlier context. Nothing in the loop can stop or
+#: judge them. They raise by default; ``gate_function_calls(..., allow_hosted_records=True)``
+#: lets exactly these pass, and only when finished (``HOSTED_RECORD_FINISHED``).
+#: ``mcp_approval_request`` is not here: it asks the loop for a decision, and this gate
+#: does not make that one.
+HOSTED_RECORD_TYPES = frozenset(
+    {
+        "web_search_call",
+        "file_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+        "mcp_call",
+        "mcp_list_tools",
+        "compaction",
+    }
+)
+
+#: The ``status`` values of a hosted record that is over. ``None`` is an item that carries
+#: no status (``compaction`` and ``mcp_list_tools`` never do; an ``mcp_call`` may not). A
+#: record still ``in_progress`` (or ``searching``, ``calling``, ...) is not a finished
+#: record and raises even with ``allow_hosted_records=True``.
+HOSTED_RECORD_FINISHED = frozenset({None, "completed", "failed", "incomplete"})
+
+_LOG = logging.getLogger("recusal_openai")
+
+
+def _is_async(func: Callable[..., Any]) -> bool:
+    """Whether ``func`` is declared async, so calling it would run nothing.
+
+    This reads the declaration (``async def``, or a function marked with
+    ``inspect.markcoroutinefunction``) through a partial, a staticmethod, a bound method
+    and a callable object. A wrapper that hides the declaration is not seen here; what it
+    returns is (``_answer``).
+    """
+    target: Any = func
+    while isinstance(target, (functools.partial, staticmethod)):
+        target = target.func if isinstance(target, functools.partial) else target.__func__
+    if inspect.iscoroutinefunction(target) or inspect.isasyncgenfunction(target):
+        return True
+    call = getattr(type(target), "__call__", None)
+    return inspect.iscoroutinefunction(call) or inspect.isasyncgenfunction(call)
+
+
+def _answer(name: str, result: Any) -> str:
+    """The text for what an allowed tool returned.
+
+    A coroutine or an async generator is not a result: the gate did not run it, and says
+    so instead of answering with the object's ``repr``. One that was never started is
+    closed, which runs none of its code and only spares the "never awaited" warning. One
+    that has started belongs to whoever is running it and is left alone. Any other value,
+    a future or another awaitable included, is answered as its ``str``, as before.
+    """
+    if inspect.iscoroutine(result) or inspect.isasyncgen(result):
+        if inspect.iscoroutine(result) and inspect.getcoroutinestate(result) == "CORO_CREATED":
+            result.close()
+        return (
+            f"Tool `{name}` returned a coroutine, not a result: "
+            "this gate calls tools synchronously and did not run it"
+        )
+    return str(result)
+
+
+def _raised(exc: Exception) -> str:
+    """The name the model reads for a tool's exception: its nearest built-in class.
+
+    A class defined by an application or a library is named by text someone chose, which
+    could carry anything to the model. The built-in it derives from says what kind of
+    failure it was from a fixed vocabulary (``TimeoutError``, ``ValueError``, ...,
+    ``Exception`` at worst).
+    """
+    for cls in type(exc).__mro__:
+        if cls.__module__ == "builtins":
+            return cls.__name__
+    return "Exception"
 
 
 def _unjudgeable(name: str, plain: str, detail: str, proposal: Any, record: dict) -> str:
@@ -71,7 +165,13 @@ def _unjudgeable(name: str, plain: str, detail: str, proposal: Any, record: dict
 
 
 def judge_and_run(
-    name: str, arguments: str | None, tools: Tools, policy: Policy, **record: Any
+    name: str,
+    arguments: str | None,
+    tools: Tools,
+    policy: Policy,
+    *,
+    answer_tool_errors: bool = False,
+    **record: Any,
 ) -> str:
     """Decide one proposed call and run it if allowed; return the text the model gets back.
 
@@ -84,6 +184,14 @@ def judge_and_run(
     (variadic or positional-only parameters, an unsupported annotation, a default outside
     the JSON domain) is refused, as is a call that does not bind (an unknown or missing
     parameter; the refusal names the parameter, never a value).
+
+    The tool is called synchronously. An async tool is refused before the policy runs,
+    and a coroutine returned by an ordinary function is answered as not run. A tool that
+    raises propagates by default. With ``answer_tool_errors=True`` it is answered with
+    ``Tool `name` raised <ExceptionClass>``, where the class is the exception's nearest
+    built-in one: never its message, and never a name an application chose. The traceback
+    goes to the ``recusal_openai`` logger; a logging handler that fails does not change
+    the answer. Only ``Exception`` is caught, so a keyboard interrupt still propagates.
 
     ``record`` goes straight to ``decide`` (``audit=``, ``surface=``, ``tool_use_id=``, ...),
     so a loop that puts the decision on a log (``audited_function_calls``) decides,
@@ -104,6 +212,9 @@ def judge_and_run(
             name, f"Recusal refused: unknown tool {name!r}", "unknown tool", args, record
         )
     func = tools[name]
+    if _is_async(func):
+        detail = "it is declared async, and this gate calls tools synchronously"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
     why = _unsupported_signature(func)
     if why is not None:
         detail = f"its signature cannot be judged ({why})"
@@ -123,7 +234,16 @@ def judge_and_run(
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     if decision == "deny":
         return reason
-    return str(func(**invocation))
+    if not answer_tool_errors:
+        return _answer(name, func(**invocation))
+    try:
+        return _answer(name, func(**invocation))
+    except Exception as exc:  # noqa: BLE001, the caller asked for a failed tool to be answered
+        try:
+            _LOG.exception("tool %r raised after the gate allowed the call", name)
+        except Exception:  # noqa: BLE001, a broken log handler must not unanswer the call
+            pass
+        return f"Tool `{name}` raised {_raised(exc)}"
 
 
 def _require_id(call_id: Any, what: str) -> str:
@@ -157,12 +277,23 @@ def _check_answered_once(call_ids: list[str], answered: list[str]) -> None:
 
 
 def gate_function_calls(
-    response: Response, tools: Tools, policy: Policy, **record: Any
+    response: Response,
+    tools: Tools,
+    policy: Policy,
+    *,
+    allow_hosted_records: bool = False,
+    answer_tool_errors: bool = False,
+    **record: Any,
 ) -> list[dict[str, Any]]:
     """Responses API: judge every ``function_call`` item; return ``function_call_output`` items.
 
     Raises TypeError for an output item type this adapter does not handle, and ValueError for
     a call without an id. Pass the returned list as the next request's ``input``.
+    ``allow_hosted_records=True`` lets a finished item of a type in ``HOSTED_RECORD_TYPES``
+    pass: the provider produced it on its own side, this loop can neither judge nor stop
+    it, so it is not answered and not put on the record. ``answer_tool_errors=True``
+    answers a tool that raises instead of letting the exception leave the gate; see
+    ``judge_and_run``.
     ``record`` is the recording arguments for the turn (``audit=``, ``surface=``, ...);
     each call is recorded under its own ``call_id``. A turn refused as a whole raises
     before anything is judged, so it runs nothing and writes no entry.
@@ -173,6 +304,20 @@ def gate_function_calls(
     for item in response.output:
         item_type = getattr(item, "type", None)
         if item_type in PASSIVE_OUTPUT_TYPES:
+            continue
+        if item_type in HOSTED_RECORD_TYPES:
+            status = getattr(item, "status", None)
+            if not allow_hosted_records:
+                raise TypeError(
+                    f"Recusal refused output item of type {item_type!r}: the provider "
+                    "produced it on its own side, where this gate cannot judge it; pass "
+                    "allow_hosted_records=True to let finished records through"
+                )
+            if status not in HOSTED_RECORD_FINISHED:
+                raise TypeError(
+                    f"Recusal refused output item of type {item_type!r}: its status is "
+                    f"{status!r}, so it is not a finished record"
+                )
             continue
         if item_type != "function_call":
             raise TypeError(
@@ -191,7 +336,14 @@ def gate_function_calls(
         {
             "type": "function_call_output",
             "call_id": call_id,
-            "output": judge_and_run(name, arguments, tools, policy, **_for_call(record, call_id)),
+            "output": judge_and_run(
+                name,
+                arguments,
+                tools,
+                policy,
+                answer_tool_errors=answer_tool_errors,
+                **_for_call(record, call_id),
+            ),
         }
         for call_id, name, arguments in calls
     ]
@@ -236,6 +388,7 @@ def gate_tool_calls(
     policy: Policy,
     *,
     choice: Optional[int] = None,
+    answer_tool_errors: bool = False,
     **record: Any,
 ) -> list[dict[str, Any]]:
     """Chat Completions: judge every ``tool_calls`` entry of ONE chosen assistant message;
@@ -248,7 +401,8 @@ def gate_tool_calls(
     a tool call type this adapter does not handle (``custom``) or a non-int ``choice``, and
     ValueError for a call without an id, no choices, or an out-of-range ``choice``. Append
     the returned messages after the chosen assistant message in the next request.
-    ``record`` is the recording arguments for the turn, as in ``gate_function_calls``.
+    ``record`` is the recording arguments for the turn, and ``answer_tool_errors`` the
+    same keyword, as in ``gate_function_calls``.
     """
     chosen = _chosen(completion, choice)
     calls: list[tuple[str, str, Any]] = []
@@ -266,7 +420,14 @@ def gate_tool_calls(
         {
             "role": "tool",
             "tool_call_id": call_id,
-            "content": judge_and_run(name, arguments, tools, policy, **_for_call(record, call_id)),
+            "content": judge_and_run(
+                name,
+                arguments,
+                tools,
+                policy,
+                answer_tool_errors=answer_tool_errors,
+                **_for_call(record, call_id),
+            ),
         }
         for call_id, name, arguments in calls
     ]

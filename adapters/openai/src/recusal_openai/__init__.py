@@ -18,6 +18,8 @@ API's: where the calls are in a response, how each is answered, and its call id.
 
 from ._audit import SURFACE_CHAT, SURFACE_RESPONSES, audited_function_calls, audited_tool_calls
 from ._gate import (
+    HOSTED_RECORD_FINISHED,
+    HOSTED_RECORD_TYPES,
     PASSIVE_OUTPUT_TYPES,
     Policy,
     Tools,
@@ -26,9 +28,11 @@ from ._gate import (
     judge_and_run,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
+    "HOSTED_RECORD_FINISHED",
+    "HOSTED_RECORD_TYPES",
     "PASSIVE_OUTPUT_TYPES",
     "SURFACE_CHAT",
     "SURFACE_RESPONSES",

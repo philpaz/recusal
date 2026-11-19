@@ -16,7 +16,11 @@ What each entry is bound to:
 
 What is not on the log: a turn the gate refuses as a whole by raising (an item type it does
 not handle, a call without an id, a duplicate id). It raises before anything is judged, so
-it runs nothing and writes no entry. A hosted tool never reaches the loop at all.
+it runs nothing and writes no entry. A hosted tool runs on the provider's side: its record
+is never an entry, whether it raises or passes with ``allow_hosted_records=True``.
+
+An entry records the gate's decision, not what the tool then did. A call the gate allowed
+whose tool raised, or returned a coroutine nothing ran, is on the log as allowed.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ def audited_function_calls(
     policy: Policy,
     log: AuditLog,
     *,
+    allow_hosted_records: bool = False,
+    answer_tool_errors: bool = False,
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
@@ -49,6 +55,8 @@ def audited_function_calls(
         response,
         tools,
         policy,
+        allow_hosted_records=allow_hosted_records,
+        answer_tool_errors=answer_tool_errors,
         audit=log,
         surface=SURFACE_RESPONSES,
         actor=actor,
@@ -63,6 +71,7 @@ def audited_tool_calls(
     log: AuditLog,
     *,
     choice: Optional[int] = None,
+    answer_tool_errors: bool = False,
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
@@ -72,6 +81,7 @@ def audited_tool_calls(
         tools,
         policy,
         choice=choice,
+        answer_tool_errors=answer_tool_errors,
         audit=log,
         surface=SURFACE_CHAT,
         actor=actor,

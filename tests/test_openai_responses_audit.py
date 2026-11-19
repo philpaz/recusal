@@ -513,3 +513,117 @@ class TestOpenAIResponsesAudit:
         before = set(tmp_path.iterdir())
         example.main()
         assert set(tmp_path.iterdir()) == before
+
+    # --- synchronous dispatch and hosted records on the record (0.2.0) ---------------------
+
+    @SHAPES
+    def test_an_async_tool_is_one_recorded_deny_and_never_runs(self, example, gate, log, chat):
+        ran = []
+
+        async def fetch(text: str) -> str:
+            ran.append(text)
+            return text
+
+        answers, _ = example.run_calls(
+            [("fetch", {"text": "x"}, "c1")],
+            log,
+            policy=lambda n, a: [],
+            tools={"fetch": fetch},
+            chat=chat,
+        )
+        answer = answers["c1"]
+        entry = self.by_id(log)["c1"]
+        assert entry["decision"] == "FAIL" and entry["action"]["decision"] == "deny"
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert "declared async" in answer and entry["action"]["reason"] == answer
+        assert ran == [] and len(log.entries) == 1
+
+    def test_by_default_a_tool_that_raises_propagates_after_its_own_entry_and_no_later_one(
+        self, example, gate, log
+    ):
+        def boom(text: str) -> str:
+            raise RuntimeError("SECRET-MARKER")
+
+        response = gate.response_with(
+            [
+                gate.function_call("boom", {"text": "x"}, "c1"),
+                gate.function_call("echo", {"text": "after"}, "c2"),
+            ]
+        )
+        gate.EXECUTED.clear()
+        with pytest.raises(RuntimeError):
+            example.audited_function_calls(
+                response, {"boom": boom, "echo": gate.echo}, lambda n, a: [], log
+            )
+        assert [e["action"]["tool_use_id"] for e in log.entries] == ["c1"]
+        assert gate.EXECUTED == []
+
+    @SHAPES
+    def test_an_answered_tool_error_is_recorded_as_allowed_and_the_next_call_still_runs(
+        self, example, gate, log, log_path, chat
+    ):
+        def boom(text: str) -> str:
+            raise RuntimeError("SECRET-MARKER")
+
+        calls = [("boom", {"text": "x"}, "c1"), ("echo", {"text": "after"}, "c2")]
+        tools = {"boom": boom, "echo": gate.echo}
+        gate.EXECUTED.clear()
+        if chat:
+            outs = example.audited_tool_calls(
+                gate.completion_with([gate.tool_call(*c) for c in calls]),
+                tools,
+                lambda n, a: [],
+                log,
+                answer_tool_errors=True,
+            )
+            answers = [o["content"] for o in outs]
+        else:
+            outs = example.audited_function_calls(
+                gate.response_with([gate.function_call(*c) for c in calls]),
+                tools,
+                lambda n, a: [],
+                log,
+                answer_tool_errors=True,
+            )
+            answers = [o["output"] for o in outs]
+        assert answers == ["Tool `boom` raised RuntimeError", "after"]
+        entries = self.by_id(log)
+        # the gate's decision was to allow; what the tool then did is the tool's
+        assert entries["c1"]["decision"] == "PASS" and entries["c2"]["decision"] == "PASS"
+        assert gate.EXECUTED == [("echo", {"text": "after"})]
+        assert "SECRET-MARKER" not in log_path.read_text(encoding="utf-8")
+
+    def test_a_returned_coroutine_is_on_the_log_as_allowed_and_answered_as_not_waited_for(
+        self, example, gate, log
+    ):
+        async def inner(text: str) -> str:
+            return text
+
+        def outer(text: str) -> str:
+            return inner(text)  # type: ignore[return-value]
+
+        response = gate.response_with([gate.function_call("outer", {"text": "x"}, "c1")])
+        outs = example.audited_function_calls(response, {"outer": outer}, lambda n, a: [], log)
+        assert "returned a coroutine, not a result" in outs[0]["output"]
+        assert self.by_id(log)["c1"]["decision"] == "PASS"
+
+    def test_a_hosted_record_is_never_an_entry(self, example, gate, log):
+        response = gate.response_with(
+            [
+                {
+                    "type": "web_search_call",
+                    "id": "ws",
+                    "status": "completed",
+                    "action": {"type": "search"},
+                },
+                gate.function_call("echo", {"text": "x"}, "c1"),
+            ]
+        )
+        with pytest.raises(TypeError, match="allow_hosted_records=True"):
+            example.audited_function_calls(response, gate.TOOLS, lambda n, a: [], log)
+        assert log.entries == []
+        outs = example.audited_function_calls(
+            response, gate.TOOLS, lambda n, a: [], log, allow_hosted_records=True
+        )
+        assert [o["call_id"] for o in outs] == ["c1"]
+        assert [e["action"]["tool_use_id"] for e in log.entries] == ["c1"]

@@ -13,6 +13,7 @@ with the SDK's own ``model_validate``; no API key or network is used.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -156,6 +157,71 @@ def main() -> None:
             assert by_id["c1"]["decision"] != "deny", by_id
             intact, problems = verify(log.entries)
             assert intact, problems
+
+    # The gate calls tools synchronously: an async tool is refused, never half-run. A tool
+    # that raises reaches the loop and nothing after it runs, unless the loop asks for
+    # failed tools to be answered: then it is answered by class name and the turn goes on.
+    async def fetch(sql: str) -> str:
+        EXECUTED.append(sql)
+        return sql
+
+    def boom(sql: str) -> str:
+        raise RuntimeError("not for the model")
+
+    EXECUTED.clear()
+    refused = gate_function_calls(response(), {"run_sql": fetch}, lambda *_: [])
+    assert EXECUTED == [] and all("declared async" in a["output"] for a in refused), refused
+    two = Response.model_validate(
+        {
+            **response().model_dump(),
+            "output": [
+                {**response().output[0].model_dump(), "name": "boom"},
+                response().output[0].model_dump() | {"id": "fc_c9", "call_id": "c9"},
+            ],
+        }
+    )
+    with_boom = {**TOOLS, "boom": boom}
+    EXECUTED.clear()
+    try:
+        gate_function_calls(two, with_boom, lambda *_: [])
+    except RuntimeError:
+        assert EXECUTED == [], EXECUTED
+    else:
+        raise AssertionError("a tool's exception was answered without answer_tool_errors")
+    logging.disable(logging.CRITICAL)  # the traceback goes to the operator; keep this run quiet
+    kept = [
+        a["output"]
+        for a in gate_function_calls(two, with_boom, lambda *_: [], answer_tool_errors=True)
+    ]
+    logging.disable(logging.NOTSET)
+    assert kept == ["Tool `boom` raised RuntimeError", "recorded: SELECT 1"], kept
+
+    # The provider's record of a hosted call raises unless the loop says
+    # such records may pass; the function call beside it is judged either way.
+    hosted = Response.model_validate(
+        {
+            **response().model_dump(),
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "q"},
+                },
+                response().output[1].model_dump(),
+            ],
+        }
+    )
+    try:
+        gate_function_calls(hosted, TOOLS, policy)
+    except TypeError as exc:
+        assert "allow_hosted_records=True" in str(exc), exc
+    else:
+        raise AssertionError("a hosted record passed without allow_hosted_records")
+    EXECUTED.clear()
+    passed = gate_function_calls(hosted, TOOLS, policy, allow_hosted_records=True)
+    assert EXECUTED == [] and [a["call_id"] for a in passed] == ["c2"], passed
+    assert "DELETE is not allowed" in passed[0]["output"], passed
 
     print(
         f"recusal-openai {recusal_openai.__version__} with recusal "

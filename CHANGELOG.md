@@ -6,8 +6,49 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `recusal-openai` 0.2.0: an `async def` tool is refused with a reason before the policy
+  runs. The gate for a loop you own on the OpenAI API calls tools synchronously; before,
+  it allowed an async tool, recorded the call as allowed, and answered the model with the
+  text of a coroutine that was never awaited, so the tool did not run. A tool declared
+  async behind a `functools.partial`, a `staticmethod`, a bound method, an object with an
+  async `__call__` or an async generator is refused the same way, and so is a function
+  marked with `inspect.markcoroutinefunction`. The policy is no longer consulted for such
+  a call, and in the audited loop its entry is one deny for `recusal_unjudgeable_input`,
+  where it used to be whatever the policy decided. An ordinary function that returns a
+  coroutine or an async generator is now answered as not run, where it used to be
+  answered with the object's `repr`; a coroutine that was never started is closed, and
+  one that has started is left alone.
+- `recusal-openai`: the README and `docs/FRAMEWORKS.md` said a hosted tool call both
+  raises in the loop and never reaches it. The provider's record of the call does reach
+  the loop, and it raises. They now say so, and say that a remote MCP
+  `mcp_approval_request` is not gated: it raises, so it is never approved through the
+  gate.
+
 ### Added
 
+- `recusal-openai` 0.2.0: two keywords, both off by default. A loop that passes neither
+  gets the outcome 0.1.1 gave, with three exceptions: the async tool and the returned
+  coroutine above, and the text of the `TypeError` for a provider's record, which now
+  names the keyword below.
+  - `answer_tool_errors=True` (on `gate_function_calls`, `gate_tool_calls`, their audited
+    forms and `judge_and_run`). By default a tool that raises still reaches the
+    application, after earlier calls in the turn have run, and no later call runs. With
+    the keyword the failed call is answered with `` Tool `name` raised <ExceptionClass> ``
+    under its own id, the earlier answers are kept, **the calls after it are judged and
+    run**, and the traceback goes to the `recusal_openai` logger. The class named is the
+    exception's nearest built-in one: never the message, and never a class name an
+    application or a library chose.
+  - `allow_hosted_records=True` (on `gate_function_calls` and `audited_function_calls`),
+    with the public `HOSTED_RECORD_TYPES` and `HOSTED_RECORD_FINISHED`. By default the
+    provider's record of a hosted tool call still raises, now with a message that names
+    the keyword. With it, a finished `web_search_call`, `file_search_call`,
+    `code_interpreter_call`, `image_generation_call`, `mcp_call`, `mcp_list_tools` or
+    `compaction` item passes, unjudged, unanswered and off the audit log. A record whose
+    status is not finished still raises, and so does every other item type the SDK
+    defines, held by a test that reads the SDK's own union.
+  - The package's smoke test proves each of these on the installed wheel.
 - `recusal-pydantic-ai` now declares complete, framework-compatible function annotations
   and is checked by CI with strict missing-annotation flags, contributed by
   [@hananbahi527](https://github.com/hananbahi527) in

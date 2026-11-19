@@ -166,8 +166,15 @@ JSON domain, is refused, as is a call that does not bind.
 Invalid JSON, non-object arguments, an unknown tool and a raising policy are refused, never
 run; an output item or tool call of a type the adapter does not handle raises, naming it,
 and a call without an id is refused because the SDK's answer types do not require one.
-Hosted tools (web search, file search, code interpreter, remote MCP) run on the provider's
-side and never reach this loop. Offline (`model_validate` builds real SDK objects, no key),
+The gate calls tools synchronously: an `async def` tool is refused before the policy
+runs. A tool that raises reaches the application by default, and with
+`answer_tool_errors=True` is answered with its exception's class name under its own id
+while the rest of the turn is judged and run. Hosted tools (web search, file search, code
+interpreter, image generation, remote MCP) run on the provider's side, so the gate never
+judges them; the provider's record of one (`web_search_call`, `mcp_call`, ...) raises by
+default and, when finished, passes unjudged and unrecorded with
+`allow_hosted_records=True`. A remote MCP `mcp_approval_request` always raises: this gate
+does not answer it. Offline (`model_validate` builds real SDK objects, no key),
 Python 3.10+, tested with exactly `openai==3.34.0`. To put every one of those calls on the
 record, [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py)
 swaps in `audited_function_calls(response, tools, policy, log)` and
