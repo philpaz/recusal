@@ -1,0 +1,28 @@
+{
+  "manifest_version": 8,
+  "observation_scope": null,
+  "servers": {
+    "db": {
+      "resolved_executable": null,
+      "runtime": {
+        "mode": "standard_mcp"
+      },
+      "server_instructions": {
+        "observed": false
+      },
+      "source": {
+        "transport": "external"
+      },
+      "source_fingerprint": "sha256:6febf0ee178f487e6e183b7e9e6be22f42b8b74333556aec6a31e1cfb3ad6234",
+      "tools": {
+        "query": {
+          "fields": {
+            "description": "sha256:730b1bd01474137f5641cc7ca841950116589ec9b5eb76a5307cab828e7e224e",
+            "inputSchema": "sha256:3ebb862b8ec5e1d9f2b25c650229632f2eed77de4c71c41dbec37b12e99fc6a0"
+          },
+          "fingerprint": "sha256:0ffee8359d82e5774d6ee73c7a575163fa960bd99f163c31445f982212cb3066"
+        }
+      }
+    }
+  }
+}

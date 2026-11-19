@@ -1,0 +1,8 @@
+
+
+{"seq": 0, "timestamp": "2026-11-19T20:13:18.621615+00:00", "actor": null, "action": {"tool": "run_sql", "tool_use_id": "c1"}, "decision": "FAIL", "highest_severity": "CRITICAL", "reasons": "seed", "failures": [{"check": "seed", "severity": "CRITICAL", "message": ""}], "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000", "hash": "e7b71b4cd6a6133ec84d42d4eecf4bd3db1d09948dd0bac3063e6c56e350ef8b"}
+
+{"seq": 1, "timestamp": "2026-11-19T20:13:18.622662+00:00", "actor": null, "action": {"tool": "run_sql", "tool_use_id": "c1"}, "decision": "PASS", "highest_severity": "INFO", "reasons": "Passed with 0 warning(s) and 1 metric(s).", "failures": [], "prev_hash": "e7b71b4cd6a6133ec84d42d4eecf4bd3db1d09948dd0bac3063e6c56e350ef8b", "hash": "ed818d6c909602dc718a4d88a0c63c847a8fe27541f5a4c96e26a67a7ec9c80c"}
+
+{"seq": 2, "timestamp": "2026-11-19T20:13:18.630538+00:00", "actor": null, "action": {"tool": "run_sql", "tool_use_id": "c1"}, "decision": "RETRY", "highest_severity": "ERROR", "reasons": "seed", "failures": [{"check": "seed", "severity": "ERROR", "message": ""}], "prev_hash": "ed818d6c909602dc718a4d88a0c63c847a8fe27541f5a4c96e26a67a7ec9c80c", "hash": "d411f20c2f4c441acc3fad0eafde37ac8396ca6ebf08d16cd8925d10cfa631ab"}
+

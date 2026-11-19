@@ -106,6 +106,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Coverage-guided fuzzing of the kernel's untrusted-input seams, with
+  [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) (libFuzzer through
+  atheris). Five harnesses under `fuzz/`, each stating the contract it holds its target
+  to: the audit log readers, the Claude Code `PreToolUse` hook's event parser, the MCP
+  manifest loader, `compute_verdict`, and the reference deny-list. `.github/workflows/fuzz.yml`
+  runs them briefly on every pull request that touches the kernel or a harness and for
+  longer each week against `main`; the build image is pinned by digest and the build
+  downloads nothing. `tests/test_fuzz_harnesses.py` runs the same harnesses on their seeds
+  and on deterministic mutations in the ordinary suite, on every supported Python, with a
+  negative control showing a harness fails when its target misbehaves. `fuzz/README.md`
+  says how to run one locally.
 - `recusal-openai` 0.2.0: two keywords, both off by default. A loop that passes neither
   gets the outcome 0.1.1 gave, with three exceptions: the async tool and the returned
   coroutine above, and the text of the `TypeError` for a provider's record, which now
