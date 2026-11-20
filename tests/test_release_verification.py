@@ -78,9 +78,16 @@ def test_the_documented_procedure_is_executable():
     assert workflow.count("NEGATIVE CONTROL") >= 2, (
         "both negative controls must run, or a passing verification proves nothing"
     )
-    assert "actions/checkout@" not in workflow, (
-        "verification must work from the published artifacts alone, without the checkout"
+    # the one thing taken from the repository is the verifier's own hash lock, checked out
+    # by itself into its own directory; nothing under verification is read from there
+    assert workflow.count("actions/checkout@") == 1, (
+        "verification must work from the published artifacts alone: one sparse checkout, "
+        "of the verifier's lock"
     )
+    assert "sparse-checkout: requirements/sigstore.txt" in workflow and "path: verifier" in workflow
+    assert [line for line in workflow.splitlines() if "verifier/" in line] == [
+        "        run: python -m pip install --require-hashes -r verifier/requirements/sigstore.txt"
+    ]
     assert VERIFY_DOC.endswith("VERIFY.md") and "verify-release.yml" in _doc(), (
         "docs/VERIFY.md must point at the workflow that executes it"
     )
@@ -88,7 +95,7 @@ def test_the_documented_procedure_is_executable():
 
 def test_the_verifier_client_is_pinned_exactly():
     """An unpinned verifier defines 'verified' by whatever released last (the ruff lesson)."""
-    assert "pip install --require-hashes -r requirements/sigstore.txt" in _workflow(
+    assert "pip install --require-hashes -r verifier/requirements/sigstore.txt" in _workflow(
         "verify-release.yml"
     ), "the verification workflow must install the hash-locked Sigstore client"
     lock = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "requirements")

@@ -308,8 +308,14 @@ def test_the_verifier_names_the_workflows_that_really_build_and_sign():
     assert ".github/workflows/release-adapter.yml@refs/tags/${TAG}" in verify
     assert 'echo "TAG=${DISTRIBUTION}-v${VERSION}"' in verify
     assert 'publisher.get("workflow") != "release-adapter.yml"' in verify
-    # verification works from the published artifacts alone
-    assert "actions/checkout@" not in verify
+    # verification works from the published artifacts alone: the one thing taken from the
+    # repository is the verifier's own hash lock, checked out by itself into its own
+    # directory, where nothing under verification is read from
+    assert verify.count("actions/checkout@") == 1
+    assert "sparse-checkout: requirements/sigstore.txt" in verify and "path: verifier" in verify
+    assert [line for line in verify.splitlines() if "verifier/" in line] == [
+        "        run: python -m pip install --require-hashes -r verifier/requirements/sigstore.txt"
+    ]
 
 
 def test_the_verifiers_negative_controls_are_the_kernels_own_workflows():
@@ -325,6 +331,8 @@ def test_the_verifiers_negative_controls_are_the_kernels_own_workflows():
 def test_both_verifiers_pin_the_same_sigstore_client():
     # both install the one hash-locked client, so they cannot disagree
     for name in ("verify-release.yml", "verify-adapter-release.yml"):
-        assert "pip install --require-hashes -r requirements/sigstore.txt" in _workflow(name), name
+        assert "pip install --require-hashes -r verifier/requirements/sigstore.txt" in _workflow(
+            name
+        ), name
     lock = (ROOT / "requirements" / "sigstore.txt").read_text(encoding="utf-8")
     assert re.search(r"^# roots: sigstore==[0-9.]+ \|", lock), lock.splitlines()[0]

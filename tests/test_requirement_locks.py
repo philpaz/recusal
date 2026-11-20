@@ -208,3 +208,49 @@ def test_the_dev_roots_are_read_the_same_way_with_and_without_tomllib():
 
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         assert roots == project["project"]["optional-dependencies"]["dev"]
+
+
+# --- a lock can only be installed where the repository is checked out ----------------------
+
+
+def _jobs(workflow: str):
+    body = workflow.split("\njobs:\n", 1)[1]
+    parts = re.split(r"^  ([\w-]+):\n", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def test_every_job_that_installs_a_lock_or_runs_the_lock_tool_checks_the_file_out_first():
+    """The two verify workflows check nothing out, on purpose: they verify published
+    artifacts. Pointed at ``requirements/sigstore.txt`` they failed on a missing file, after
+    a release. A job that reads a lock or a tool from the repository has a checkout before
+    that step, and the path it reads is the path the checkout put it at."""
+    checked = 0
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for name, body in _jobs(path.read_text(encoding="utf-8")).items():
+            effective = "\n".join(
+                line for line in body.splitlines() if not line.lstrip().startswith("#")
+            )
+            uses = re.search(r"requirements/[\w.$-]+\.txt|tools/lock\.py", effective)
+            if not uses:
+                continue
+            checked += 1
+            checkout = effective.find("uses: actions/checkout@")
+            where = f"{path.name}: {name}"
+            assert 0 <= checkout < uses.start(), (
+                f"{where} reads {uses.group(0)} with no checkout before it"
+            )
+            prefix = re.search(r"^\s+path: (\S+)$", effective[checkout : uses.start()], re.M)
+            if prefix:
+                for found in re.finditer(r"(\S*)requirements/[\w.$-]+\.txt", effective):
+                    assert found.group(1).endswith(f"{prefix.group(1)}/"), (where, found.group(0))
+    assert checked >= 30, "the parser found too few jobs to be reading the workflows"
+
+
+def test_the_verify_workflows_check_out_one_file_and_nothing_else():
+    for name in ("verify-release.yml", "verify-adapter-release.yml"):
+        workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
+        assert workflow.count("uses: actions/checkout@") == 1, name
+        step = workflow.split("uses: actions/checkout@", 1)[1].split("\n      - name:", 1)[0]
+        assert "sparse-checkout: requirements/sigstore.txt" in step, name
+        assert "sparse-checkout-cone-mode: false" in step and "path: verifier" in step, name
+        assert "persist-credentials: false" in step, name

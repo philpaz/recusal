@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The two verify workflows could not install their Sigstore client. They check nothing
+  out, since they verify published artifacts, and the hash lock they were pointed at
+  when workflow installs were locked is a file in the repository. They now check out that
+  one file, into its own directory, and nothing else. Found when the verification of
+  `recusal-langgraph` 0.2.1 failed on a missing file; the release itself was unaffected.
+  A test now requires a checkout before any job reads a lock or the lock tool.
+
 ### Security
 
 - Every adapter is now tested against, and requires, a recent release of its framework.
