@@ -52,7 +52,9 @@ All notable changes to this project are documented here. The format follows
     `Task.execute_sync` and `Agent.kickoff`, the plan-and-execute route and the
     hierarchical process; negative controls pin what CrewAI does without the gate, and a
     test pins each local variable and attribute the gate reads in CrewAI's functions.
-    A tracing wrapper around CrewAI's hook entry (`functools.wraps`) is walked past.
+    A tracing wrapper around CrewAI's hook entry is walked past, whether it is a
+    `functools.wraps` wrapper or a `wrapt` one as OpenTelemetry instrumentors install;
+    before, a `wrapt` wrapper there made the gate refuse every call.
   - Three more gaps in how the arguments are judged, older than this release and found
     by the same reviews, are closed. On the text route a call with no arguments was
     invoked with nothing, so what the gate prepared, and what an earlier hook had
@@ -74,9 +76,19 @@ All notable changes to this project are documented here. The format follows
     CrewAI's own spreadsheet query tool, which CrewAI adds to an agent given spreadsheet
     inputs. The gate completes the empty container, judges it and hands that value to
     the tool. Any other factory is still refused.
-  - Changed by this release: on the text route an empty call to a tool that raises is
-    now retried by CrewAI as a call with arguments is, up to six runs in all instead of
-    three, because the gate gives it the dict it judged.
+  - No longer refused: a field whose default is not a valid value of its own type, such
+    as the `limit: int = None` CrewAI generates for `def f(limit: int = None)`. Pydantic
+    does not validate a default, so CrewAI runs `limit=None`; the gate wrote the default
+    into the call as an explicit value, which failed validation, and refused the call.
+    It now leaves such a default for the schema to supply, as CrewAI does, and judges
+    `limit=None`. A call that would carry nothing else is still refused, because the text
+    route runs an empty call with no arguments at all.
+  - A test now pins that a policy which edits a nested argument (appends to a list)
+    changes only its own copy, never the call that runs.
+  - Changed by this release: on the text route an empty call to a tool that raises, when
+    the tool's schema has a default the gate writes into the call, is now retried by
+    CrewAI as a call with arguments is, up to six runs in all instead of three, because
+    the gate gives it the dict it judged. A tool with no fields runs as before.
   - The README now says which name the policy is given (the normalised one), which tools
     CrewAI runs without its hooks and the gate therefore never sees
     (`LLM.call(available_functions=...)`, a Flow's tool action, CrewAI's agent adapters,

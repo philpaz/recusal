@@ -144,7 +144,11 @@ order of a turn's entries on the chain is not always the order the model propose
   wrapper), and a call the gate cannot tie to the tool that
   will run (see "Give each tool a distinct name" above).
 - **Not judged:** what a tool does once it runs. A tool that executes code or shell it is
-  handed needs a policy that names it.
+  handed needs a policy that names it. That includes a decorator on the tool's function
+  that does not use `functools.wraps`: the gate reads the decorator's own parameters, and
+  a function it calls with values of its own, or with that function's defaults, is the
+  tool's code. Use `functools.wraps`, and the wrapped function's parameters are held to
+  the schema too.
 - **Not seen: tools CrewAI runs without its hooks.** The gate is CrewAI's own
   `before_tool_call` hook, so it sees what CrewAI sends through that hook: an agent's
   tool calls in a crew, a coworker's, and CrewAI's own agent tools. It does not see a

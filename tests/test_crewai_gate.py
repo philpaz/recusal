@@ -2531,6 +2531,58 @@ class TestBothRoutes:
         assert error is None and collided == [] and decisions == ["FAIL"]
 
     @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_wrapt_style_instrumentor_on_the_hook_entry_is_walked_past(
+        self, kit, native, monkeypatch
+    ):
+        """OpenTelemetry instrumentors wrap with ``wrapt``: a C ``FunctionWrapper`` with no
+        frame of its own, holding the wrapped function in ``__wrapped__`` and the
+        instrumentor's wrapper function in ``_self_wrapper``, whose frame does stand
+        between the entry and the function running the call. Without walking past it,
+        every call was refused. The shape is reproduced here with a ``partial`` (C, no
+        frame), so the test needs no ``wrapt``; the gate still judges, and still refuses."""
+        import functools
+
+        from crewai.hooks import tool_hooks
+        from crewai.utilities import tool_utils
+
+        entry = tool_hooks.run_before_tool_call_hooks
+
+        def instrumentor(wrapped, context):
+            return wrapped(context)
+
+        wrapper = functools.partial(instrumentor, entry)
+        wrapper._self_wrapper = instrumentor
+        wrapper.__wrapped__ = entry
+
+        for module in (tool_utils, sys.modules[kit.executor_module]):
+            if hasattr(module, "run_before_tool_call_hooks"):
+                monkeypatch.setattr(module, "run_before_tool_call_hooks", wrapper)
+
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": SELECT})],
+            [run_sql],
+            kit.no_deletes,
+            native=native,
+        )
+        assert error is None and ran == [SELECT] and decisions == ["PASS"]
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": DELETE})],
+            [run_sql],
+            kit.no_deletes,
+            native=native,
+        )
+        assert error is None and ran == [SELECT] and decisions == ["FAIL"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
     def test_a_nested_execution_is_tied_to_its_own_call(self, kit, native):
         """A tool that runs a crew of its own: the inner call is judged against the inner
         function running it, not the outer one further up the stack."""
@@ -2753,3 +2805,97 @@ class TestBothRoutes:
             columns: list[str] = Field(default_factory=lambda: ["*"])
 
         assert "carries a setting beyond" in gate._unsupported_schema(Other)
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_none_default_on_a_plain_annotation_runs_and_is_judged_as_none(self, kit, native):
+        """``def f(sql: str, limit: int = None)``: CrewAI generates ``limit: int = None``,
+        and Pydantic does not validate a default, so CrewAI runs ``limit=None``. Written
+        into the dict as an explicit value it would fail validation; the gate leaves it for
+        the schema to supply and judges what CrewAI's own validation produces."""
+        from crewai.tools import BaseTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        @kit.tool("lookup")
+        def lookup(sql: str, limit: int = None) -> str:  # noqa: RUF013, the idiom under test
+            """Look up."""
+            ran.append(("lookup", sql, limit))
+            return "ok"
+
+        class Query(BaseModel):
+            sql: str
+            limit: int = None  # type: ignore[assignment]
+
+        class Lookup(BaseTool):
+            name: str = "lookup"
+            description: str = "Look up."
+            args_schema: type[BaseModel] = Query
+
+            def _run(self, sql: str, limit: int) -> str:
+                ran.append(("Lookup", sql, limit))
+                return "ok"
+
+        for tool in (lookup, Lookup()):
+            ran.clear(), seen.clear()
+            _, decisions, error = kit.run(
+                [self.proposal(native, "lookup", {"sql": SELECT})],
+                [tool],
+                lambda name, args: seen.append(dict(args)) or [],
+                native=native,
+            )
+            assert error is None and decisions == ["PASS"]
+            assert seen == [{"sql": SELECT, "limit": None}]
+            assert len(ran) == 1 and ran[0][1:] == (SELECT, None)
+
+    def test_an_empty_call_that_cannot_carry_an_invalid_default_is_refused(self, kit):
+        """With no other argument the dict stays empty, and the text route invokes an empty
+        call with nothing, so the schema's default would not be the value that runs."""
+        gate = _adapter()
+
+        @kit.tool("page")
+        def page(limit: int = None) -> str:  # noqa: RUF013, the idiom under test
+            """Page."""
+            return "ok"
+
+        structured = page.to_structured_tool()
+        judged, why = gate._prepared(structured, {})
+        assert judged is None and "is not a valid value of its own field" in why
+        # given, it is validated like any argument
+        judged, why = gate._prepared(structured, {"limit": "5"})
+        assert why is None and judged == {"limit": 5}
+
+        # and a default that is valid is still written into the dict CrewAI runs
+        @kit.tool("page")
+        def valid(limit: int = 10) -> str:
+            """Page."""
+            return "ok"
+
+        hooked: dict = {}
+        judged, why = gate._prepared(valid.to_structured_tool(), hooked)
+        assert why is None and judged == {"limit": 10} and hooked == {"limit": 10}
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_policy_that_edits_a_nested_value_cannot_change_what_runs(self, kit, native):
+        """``decide`` hands the policy the object it is given. The gate judges a deep copy,
+        so a policy that appends to a list argument edits only its own copy."""
+        ran = []
+
+        @kit.tool("send")
+        def send(to: list[str]) -> str:
+            """Send."""
+            ran.append(list(to))
+            return "sent"
+
+        def meddling(name, args):
+            args["to"].append("attacker@example.com")
+            return []
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "send", {"to": ["alice@example.com"]})],
+            [send],
+            meddling,
+            native=native,
+        )
+        assert error is None and decisions == ["PASS"]
+        assert ran == [["alice@example.com"]]

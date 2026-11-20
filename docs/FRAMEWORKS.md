@@ -237,6 +237,8 @@ reads why. The policy judges the invocation the tool receives, not the proposal:
 completes omitted fields from the schema's defaults, runs the tool's own `args_schema`
 validation once, writes the validated values back into the dict CrewAI executes and judges
 a copy, so `charge(amount: int = 100)` proposed with `{}` is judged as `{"amount": 100}`.
+A default that is not a valid value of its field (`limit: int = None`) is left for the
+schema to supply, as CrewAI's own validation supplies it, and judged as `None`.
 CrewAI does not always execute the dict a hook is handed, nor always the tool: on the text
 route an empty call is invoked with nothing, a hook may replace the dict or point the
 context at another tool (CrewAI runs the tool it selected itself), and when two

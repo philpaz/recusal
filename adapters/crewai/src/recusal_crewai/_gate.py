@@ -408,8 +408,10 @@ def _prepared(
     validates once (the same ``model_validate`` CrewAI runs at execution, which coerces an
     explicit ``"100"`` to 100 for an ``int`` field), and the validated values replace the
     dict's contents, so the dict CrewAI executes is the prepared invocation and the policy
-    judges a copy of it. A field the schema requires and the input omits is refused, as is
-    an unknown parameter and a validation failure (named by field, without Pydantic's text).
+    judges a copy of it. A default that is not a valid value of its own field is left for
+    the schema to supply, as CrewAI's own validation supplies it. A field the schema
+    requires and the input omits is refused, as is an unknown parameter and a validation
+    failure (named by field, without Pydantic's text).
     """
     why = _unsupported_tool(tool)
     if why is not None:
@@ -426,16 +428,43 @@ def _prepared(
             raw[name] = _field_default(field)
         else:
             return None, f"required parameter `{name}` is missing"
-    try:
-        prepared = tool.args_schema.model_validate(raw).model_dump()
-    except ValidationError as exc:
-        named = sorted({str(e["loc"][0]) for e in exc.errors() if e.get("loc")})
+    prepared, failed = _validated(tool.args_schema, raw)
+    left_out = sorted(failed & {name for name in fields if name not in tool_input})
+    if prepared is None and failed and len(left_out) == len(failed):
+        # Only defaults failed: a default that is not a valid value of its own field
+        # (``limit: int = None``, as CrewAI generates for ``def f(limit: int = None)``).
+        # Pydantic does not validate a default, so CrewAI runs it as it stands. Leave it
+        # out of the dict CrewAI executes, for the schema to supply exactly as CrewAI's own
+        # validation does, and judge what that validation produces.
+        for name in left_out:
+            del raw[name]
+        if not raw:
+            # the text route invokes an empty call with no arguments at all, so the
+            # schema's default would not be the one that runs
+            return None, (
+                f"the default of `{left_out[0]}` is not a valid value of its own field, and "
+                "a call with no other arguments cannot carry it; declare the field Optional"
+            )
+        prepared, failed = _validated(tool.args_schema, raw)
+    if prepared is None:
+        named = sorted(failed)
         return None, f"validation failed for `{named[0]}`" if named else "validation failed"
-    except Exception:  # noqa: BLE001, a schema that fails otherwise cannot be judged
-        return None, "validation failed"
     tool_input.clear()
-    tool_input.update(prepared)
+    tool_input.update({name: prepared[name] for name in raw})
+    # the policy gets its own copy, nested values included: ``decide`` hands the policy the
+    # object it is given, and a policy that edits it must not edit the call that runs
     return copy.deepcopy(prepared), None
+
+
+def _validated(schema: Any, raw: dict[str, Any]) -> tuple[Optional[dict[str, Any]], set]:
+    """``schema.model_validate(raw).model_dump()``, the validation CrewAI runs before the
+    tool, or ``(None, the fields that failed)``."""
+    try:
+        return schema.model_validate(raw).model_dump(), set()
+    except ValidationError as exc:
+        return None, {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
+    except Exception:  # noqa: BLE001, a schema that fails otherwise cannot be judged
+        return None, set()
 
 
 def _code(function: Any) -> Any:
@@ -461,11 +490,14 @@ _UNKNOWN_SITE = "unknown"
 
 
 def _entry_wrappers() -> frozenset:
-    """The code of every ``functools.wraps`` wrapper that now stands, in one of the modules
-    CrewAI calls its hook entry from, between that module and the entry. Tracing and
-    instrumentation replace the module's name with such a wrapper; its frame then sits
-    between the entry and the function running the call, and is walked past. Nothing else
-    is: a frame of any other code between the two is a caller the gate does not know."""
+    """The code of every wrapper that now stands, in one of the modules CrewAI calls its
+    hook entry from, between that module and the entry. Tracing and instrumentation
+    replace the module's name with such a wrapper; its frame then sits between the entry
+    and the function running the call, and is walked past. Two kinds are read: a
+    ``functools.wraps`` wrapper, whose own code runs, and a ``wrapt`` function wrapper (as
+    OpenTelemetry instrumentors install), which is C and leaves no frame of its own but
+    calls the instrumentor's wrapper function, whose code runs. Nothing else is walked
+    past: a frame of any other code between the two is a caller the gate does not know."""
     codes = set()
     for module in (
         _tool_utils,
@@ -475,12 +507,20 @@ def _entry_wrappers() -> frozenset:
     ):
         current = getattr(module, "run_before_tool_call_hooks", None)
         for _ in range(8):
-            if current is None or not hasattr(current, "__wrapped__"):
+            if current is None:
                 break
-            code = getattr(current, "__code__", None)
+            # read wrapt's own attribute first: a wrapt proxy forwards ``__code__`` to the
+            # function it wraps, which is not the code that stands between
+            instrumentor = getattr(current, "_self_wrapper", None)
+            if instrumentor is not None:
+                code = getattr(getattr(instrumentor, "__func__", instrumentor), "__code__", None)
+            elif hasattr(current, "__wrapped__"):
+                code = getattr(current, "__code__", None)
+            else:
+                break
             if code is not None:
                 codes.add(code)
-            current = current.__wrapped__
+            current = getattr(current, "__wrapped__", None)
     return frozenset(codes)
 
 
