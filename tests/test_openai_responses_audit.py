@@ -43,7 +43,7 @@ def test_python_version_refusal_is_clear_on_every_python():
 
 
 def test_pinned_version_is_explicit_in_the_example():
-    assert "openai==3.34.0" in EXAMPLE.read_text(encoding="utf-8")
+    assert "openai==3.49.0" in EXAMPLE.read_text(encoding="utf-8")
 
 
 def test_both_openai_lanes_run_this_file():

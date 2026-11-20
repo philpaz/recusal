@@ -41,7 +41,7 @@ def test_python_version_refusal_is_clear_on_every_python():
 
 def test_pinned_versions_are_explicit_in_the_example():
     text = EXAMPLE.read_text(encoding="utf-8")
-    for pin in ("langgraph==1.2.12", "langchain-core==1.6.5"):
+    for pin in ("langgraph==1.2.20", "langchain-core==1.7.7"):
         assert pin in text
 
 

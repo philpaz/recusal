@@ -11,7 +11,7 @@ EXAMPLE = ROOT / "examples" / "pydantic_ai_gate.py"
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"
-PIN = "pydantic-ai-slim==2.64.0"
+PIN = "pydantic-ai-slim==2.67.0"
 
 
 @pytest.mark.parametrize("minor", [9, 10])

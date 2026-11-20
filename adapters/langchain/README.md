@@ -47,8 +47,8 @@ pip install recusal-langchain
 ```
 
 Requires Python 3.10+, `recusal>=0.14.0`, `recusal-langgraph>=0.2.0` and
-`langchain>=1.4.3`. It is tested on every pull request against exactly
-`langchain==1.4.3` with `langgraph==1.2.12` and `langchain-core==1.6.5`, and weekly
+`langchain>=1.4.10`. It is tested on every pull request against exactly
+`langchain==1.4.10` with `langgraph==1.2.20` and `langchain-core==1.7.7`, and weekly
 against the newest releases.
 
 The package ships inline types (`py.typed`) for your editor and type checker.

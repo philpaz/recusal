@@ -42,8 +42,8 @@ Install it from PyPI:
 pip install recusal-openai
 ```
 
-Requires Python 3.10+ (the SDK's minimum), `recusal>=0.14.0` and `openai>=3.34.0`. It is
-tested on every pull request against exactly `openai==3.34.0`, and weekly against the
+Requires Python 3.10+ (the SDK's minimum), `recusal>=0.14.0` and `openai>=3.49.0`. It is
+tested on every pull request against exactly `openai==3.49.0`, and weekly against the
 newest release.
 
 The package ships inline types (`py.typed`) for your editor and type checker.

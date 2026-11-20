@@ -23,12 +23,12 @@ judged and recorded as rewritten; but a middleware listed after it that swaps th
 object, or answers in the tool's place, removes the judging copy, and that call is neither
 judged nor recorded.
 
-Requires Python 3.10+, langgraph==1.2.12, langchain-core==1.6.5 and langchain==1.4.3.
+Requires Python 3.10+, langgraph==1.2.20, langchain-core==1.7.7 and langchain==1.4.10.
 Recusal itself remains Python 3.9+ and has no LangChain dependency. No model, credential
 or database is contacted.
 
 Run after installing:
-    pip install langgraph==1.2.12 langchain-core==1.6.5 langchain==1.4.3
+    pip install langgraph==1.2.20 langchain-core==1.7.7 langchain==1.4.10
     python examples/langchain_agent_audit.py
 """
 
@@ -39,9 +39,9 @@ import sys
 import tempfile
 from typing import Any, Optional
 
-LANGGRAPH_VERSION = "1.2.12"
-LANGCHAIN_CORE_VERSION = "1.6.5"
-LANGCHAIN_VERSION = "1.4.3"
+LANGGRAPH_VERSION = "1.2.20"
+LANGCHAIN_CORE_VERSION = "1.7.7"
+LANGCHAIN_VERSION = "1.4.10"
 
 if sys.version_info < (3, 10):
     print(

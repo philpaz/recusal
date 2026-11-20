@@ -28,13 +28,13 @@ the tool calls of an agent another agent delegates to, unless that agent has its
 audited gate.
 
 Requires Python 3.11+ (Pydantic AI's minimum) and is tested with exactly
-pydantic-ai-slim==2.64.0. Recusal itself remains Python 3.9+ and has no Pydantic AI
+pydantic-ai-slim==2.67.0. Recusal itself remains Python 3.9+ and has no Pydantic AI
 dependency.
 
 No model, API key or database is used. run_sql only records SQL text.
 
 Run after installing:
-    pip install pydantic-ai-slim==2.64.0
+    pip install pydantic-ai-slim==2.67.0
     python examples/pydantic_ai_audit.py
 """
 
@@ -47,7 +47,7 @@ import sys
 import tempfile
 from typing import Any, Optional
 
-PYDANTIC_AI_VERSION = "2.64.0"
+PYDANTIC_AI_VERSION = "2.67.0"
 
 if sys.version_info < (3, 11):
     print(

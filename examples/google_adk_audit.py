@@ -29,13 +29,13 @@ What is not on the log: a call another before-tool callback answered before the 
 (the tool did not run, and the gate never saw the call), and anything ``gated_agent``
 refuses to gate at construction, which raises before any agent runs.
 
-Requires Python 3.11+ (the ADK's minimum) and is tested with exactly google-adk==2.13.0 and
+Requires Python 3.11+ (the ADK's minimum) and is tested with exactly google-adk==2.14.0 and
 google-genai==2.34.0. Recusal itself remains Python 3.9+ and has no ADK dependency.
 
 No model, API key or database is used. run_sql only records SQL text.
 
 Run after installing:
-    pip install google-adk==2.13.0 google-genai==2.34.0
+    pip install google-adk==2.14.0 google-genai==2.34.0
     python examples/google_adk_audit.py
 """
 
@@ -49,7 +49,7 @@ import sys
 import tempfile
 from typing import Any, Optional
 
-GOOGLE_ADK_VERSION = "2.13.0"
+GOOGLE_ADK_VERSION = "2.14.0"
 GOOGLE_GENAI_VERSION = "2.34.0"
 
 if sys.version_info < (3, 11):

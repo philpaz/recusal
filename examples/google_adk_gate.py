@@ -6,7 +6,7 @@ repository): ``gated_agent``, ``RecusalPlugin``, ``recusal_before_tool`` and ``i
 are imported from it. This file is the offline demonstration around it: a scripted
 model, three tools that only record, and the SQL scope policy.
 
-Requires Python 3.11+ (the ADK's minimum) and is tested with exactly google-adk==2.13.0 and
+Requires Python 3.11+ (the ADK's minimum) and is tested with exactly google-adk==2.14.0 and
 google-genai==2.34.0. Recusal itself remains Python 3.9+ and has no ADK dependency.
 
 The hook is the ADK's own. An ``LlmAgent`` runs its ``before_tool_callback`` immediately
@@ -48,7 +48,7 @@ No model, API key or network is used: ``ScriptedLlm`` proposes the calls from a 
 and run_sql only records SQL text.
 
 Run after installing:
-    pip install google-adk==2.13.0 google-genai==2.34.0
+    pip install google-adk==2.14.0 google-genai==2.34.0
     python examples/google_adk_gate.py
 """
 
@@ -59,7 +59,7 @@ import os
 import sys
 from typing import Any, AsyncGenerator, Optional
 
-GOOGLE_ADK_VERSION = "2.13.0"
+GOOGLE_ADK_VERSION = "2.14.0"
 GOOGLE_GENAI_VERSION = "2.34.0"
 
 if sys.version_info < (3, 11):

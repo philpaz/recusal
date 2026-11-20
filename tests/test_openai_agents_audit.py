@@ -24,7 +24,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "openai_agents_audit.py"
 SURFACE = "openai_agents.tool_input_guardrail"
-PINS = ("openai-agents==0.24.0", "openai==3.34.0")
+PINS = ("openai-agents==0.24.0", "openai==3.49.0")
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"

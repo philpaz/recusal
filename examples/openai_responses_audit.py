@@ -29,12 +29,12 @@ does not handle, a call without an id and a duplicate id all raise to the applic
 before any call is judged, so nothing in that turn runs and no entry is written. Hosted
 tools run on the provider's side: the record of one is never an entry.
 
-Requires Python 3.10+ (the SDK's minimum) and is tested with exactly openai==3.34.0.
+Requires Python 3.10+ (the SDK's minimum) and is tested with exactly openai==3.49.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency. No API key or network is
 used, and run_sql only records SQL text.
 
 Run after installing:
-    pip install openai==3.34.0
+    pip install openai==3.49.0
     python examples/openai_responses_audit.py
 """
 
@@ -47,7 +47,7 @@ import sys
 import tempfile
 from typing import Any, Optional
 
-OPENAI_VERSION = "3.34.0"
+OPENAI_VERSION = "3.49.0"
 
 if sys.version_info < (3, 10):
     print(

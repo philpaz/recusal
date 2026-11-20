@@ -52,7 +52,7 @@ def test_the_sdk_stays_out_of_the_recusal_package_and_dependencies():
 
 
 def test_pinned_versions_are_explicit_in_example_docs_and_ci():
-    expected = ("openai-agents==0.24.0", "openai==3.34.0")
+    expected = ("openai-agents==0.24.0", "openai==3.49.0")
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
         text = path.read_text(encoding="utf-8")
         for pin in expected:
@@ -65,7 +65,7 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
     for lock, pins in (
         ("adapter-openai-agents", expected),
         ("adapter-openai-agents-mcp", expected),
-        ("adapter-openai", ("openai==3.34.0",)),
+        ("adapter-openai", ("openai==3.49.0",)),
     ):
         roots = (ROOT / "requirements" / f"{lock}.txt").read_text(encoding="utf-8").splitlines()[0]
         for pin in pins:

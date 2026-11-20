@@ -58,22 +58,22 @@ in its module docstring before running it; the Recusal core itself has no SDK de
 
 | Example | Tested dependencies | What it shows |
 |---|---|---|
-| [`langgraph_gate.py`](langgraph_gate.py) | `langgraph==1.2.12`, `langchain-core==1.6.5` | A LangGraph `ToolNode` gate refuses unsafe sync and async tool calls before execution. |
-| [`langgraph_audit.py`](langgraph_audit.py) | `langgraph==1.2.12`, `langchain-core==1.6.5` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
-| [`langchain_agent_gate.py`](langchain_agent_gate.py) | `langchain==1.4.3`, `langgraph==1.2.12`, `langchain-core==1.6.5` | A LangChain `create_agent` middleware gates calls from a scripted model without a provider connection. |
-| [`langchain_agent_audit.py`](langchain_agent_audit.py) | `langchain==1.4.3`, `langgraph==1.2.12`, `langchain-core==1.6.5` | The same middleware writes an audit record for allowed and refused calls, and denies a call if recording fails. |
-| [`openai_agents_gate.py`](openai_agents_gate.py) | `openai-agents==0.24.0`, `openai==3.34.0` | An Agents SDK input guardrail refuses unsafe function tools and unsupported tool surfaces. |
-| [`openai_agents_audit.py`](openai_agents_audit.py) | `openai-agents==0.24.0`, `openai==3.34.0` | The same gate writes an audit record for allowed and refused function tool calls, and denies a call if recording fails. |
-| [`openai_agents_mcp_gate.py`](openai_agents_mcp_gate.py) | `openai-agents==0.24.0`, `openai==3.34.0` | A gate on a local MCP server's own `call_tool`, judging the tool name and arguments the server runs, and the approval callback as the gate for hosted MCP. |
-| [`openai_agents_mcp_audit.py`](openai_agents_mcp_audit.py) | `openai-agents==0.24.0`, `openai==3.34.0` | The same gate writes an audit record for allowed and refused local MCP calls and hosted approvals, and denies a call if recording fails. |
-| [`openai_responses_gate.py`](openai_responses_gate.py) | `openai==3.34.0` | An application-controlled Responses or Chat Completions loop refuses malformed, unknown or unsafe function calls. |
-| [`openai_responses_audit.py`](openai_responses_audit.py) | `openai==3.34.0` | The same loop writes an audit record for run and refused calls, and denies a call if recording fails. |
-| [`google_adk_gate.py`](google_adk_gate.py) | `google-adk==2.13.0`, `google-genai==2.34.0` | A Google ADK before-tool callback denies calls judged unsafe, including those in nested agents. |
-| [`google_adk_audit.py`](google_adk_audit.py) | `google-adk==2.13.0`, `google-genai==2.34.0` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
-| [`crewai_gate.py`](crewai_gate.py) | `crewai==1.15.34` | CrewAI before/after hooks stop refused tool calls and return the gate's reason to the scripted model. |
-| [`crewai_audit.py`](crewai_audit.py) | `crewai==1.15.34` | The same hooks write an audit record for allowed and refused calls, and block a call if recording fails. |
-| [`pydantic_ai_gate.py`](pydantic_ai_gate.py) | `pydantic-ai-slim==2.64.0` | A Pydantic AI capability judges each call in `before_tool_execute` and answers a refusal as a failed tool result; a delegated agent needs its own gate. The gate is the [`recusal-pydantic-ai`](../adapters/pydantic-ai) package; this file is the offline demonstration around it. |
-| [`pydantic_ai_audit.py`](pydantic_ai_audit.py) | `pydantic-ai-slim==2.64.0` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
+| [`langgraph_gate.py`](langgraph_gate.py) | `langgraph==1.2.20`, `langchain-core==1.7.7` | A LangGraph `ToolNode` gate refuses unsafe sync and async tool calls before execution. |
+| [`langgraph_audit.py`](langgraph_audit.py) | `langgraph==1.2.20`, `langchain-core==1.7.7` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
+| [`langchain_agent_gate.py`](langchain_agent_gate.py) | `langchain==1.4.10`, `langgraph==1.2.20`, `langchain-core==1.7.7` | A LangChain `create_agent` middleware gates calls from a scripted model without a provider connection. |
+| [`langchain_agent_audit.py`](langchain_agent_audit.py) | `langchain==1.4.10`, `langgraph==1.2.20`, `langchain-core==1.7.7` | The same middleware writes an audit record for allowed and refused calls, and denies a call if recording fails. |
+| [`openai_agents_gate.py`](openai_agents_gate.py) | `openai-agents==0.24.0`, `openai==3.49.0` | An Agents SDK input guardrail refuses unsafe function tools and unsupported tool surfaces. |
+| [`openai_agents_audit.py`](openai_agents_audit.py) | `openai-agents==0.24.0`, `openai==3.49.0` | The same gate writes an audit record for allowed and refused function tool calls, and denies a call if recording fails. |
+| [`openai_agents_mcp_gate.py`](openai_agents_mcp_gate.py) | `openai-agents==0.24.0`, `openai==3.49.0` | A gate on a local MCP server's own `call_tool`, judging the tool name and arguments the server runs, and the approval callback as the gate for hosted MCP. |
+| [`openai_agents_mcp_audit.py`](openai_agents_mcp_audit.py) | `openai-agents==0.24.0`, `openai==3.49.0` | The same gate writes an audit record for allowed and refused local MCP calls and hosted approvals, and denies a call if recording fails. |
+| [`openai_responses_gate.py`](openai_responses_gate.py) | `openai==3.49.0` | An application-controlled Responses or Chat Completions loop refuses malformed, unknown or unsafe function calls. |
+| [`openai_responses_audit.py`](openai_responses_audit.py) | `openai==3.49.0` | The same loop writes an audit record for run and refused calls, and denies a call if recording fails. |
+| [`google_adk_gate.py`](google_adk_gate.py) | `google-adk==2.14.0`, `google-genai==2.34.0` | A Google ADK before-tool callback denies calls judged unsafe, including those in nested agents. |
+| [`google_adk_audit.py`](google_adk_audit.py) | `google-adk==2.14.0`, `google-genai==2.34.0` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
+| [`crewai_gate.py`](crewai_gate.py) | `crewai==1.15.40` | CrewAI before/after hooks stop refused tool calls and return the gate's reason to the scripted model. |
+| [`crewai_audit.py`](crewai_audit.py) | `crewai==1.15.40` | The same hooks write an audit record for allowed and refused calls, and block a call if recording fails. |
+| [`pydantic_ai_gate.py`](pydantic_ai_gate.py) | `pydantic-ai-slim==2.67.0` | A Pydantic AI capability judges each call in `before_tool_execute` and answers a refusal as a failed tool result; a delegated agent needs its own gate. The gate is the [`recusal-pydantic-ai`](../adapters/pydantic-ai) package; this file is the offline demonstration around it. |
+| [`pydantic_ai_audit.py`](pydantic_ai_audit.py) | `pydantic-ai-slim==2.67.0` | The same gate writes an audit record for allowed and refused calls, and denies a call if recording fails. |
 
 ## The other surfaces (offline, no key)
 

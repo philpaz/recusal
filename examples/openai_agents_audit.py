@@ -31,13 +31,13 @@ approval rejected (the guardrail runs after approval, when the tool is about to 
 and the tool calls of a sub-agent behind ``agent.as_tool(...)`` unless that sub-agent was
 built with ``audited_agent`` itself.
 
-Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.34.0.
+Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.49.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency.
 
 No model, API key or database is used. run_sql only records SQL text.
 
 Run after installing:
-    pip install openai-agents==0.24.0 openai==3.34.0
+    pip install openai-agents==0.24.0 openai==3.49.0
     python examples/openai_agents_audit.py
 """
 
@@ -52,7 +52,7 @@ import tempfile
 from typing import Any, Optional
 
 OPENAI_AGENTS_VERSION = "0.24.0"
-OPENAI_VERSION = "3.34.0"
+OPENAI_VERSION = "3.49.0"
 
 if sys.version_info < (3, 10):
     print(

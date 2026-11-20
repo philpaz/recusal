@@ -35,8 +35,8 @@ projection does not support, and a tool whose class or instance overrides the st
 so the gate goes on both slots: `gated_tool_node(tools, policy)`, or `ToolNode(tools,
 **recusal_gates(policy))`, refuses the same way on `invoke`, `stream`, `ainvoke` and `astream`,
 and `is_gated(node)` checks a node. The async hook cannot be built on its own unless the caller states `host_refuses_sync_runs=True`. It is offline and deterministic (no model or API key), requires
-**Python 3.10+**, and is tested with exactly `langgraph==1.2.12` and
-`langchain-core==1.6.5`. LangGraph remains an example-only dependency; the Recusal package
+**Python 3.10+**, and is tested with exactly `langgraph==1.2.20` and
+`langchain-core==1.7.7`. LangGraph remains an example-only dependency; the Recusal package
 and its Python 3.9+ support are unchanged. To put every one of those calls on the record,
 [`examples/langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) swaps in
 `recusal_audited_gate(policy, log)` (or both hooks with `recusal_audited_gates(policy, log)`): the
@@ -62,8 +62,8 @@ Package: [`recusal-langchain`](../adapters/langchain/README.md).
 
 For LangChain's `create_agent` middleware, [`examples/langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py)
 reuses the **same** `recusal_gate(policy)` through `wrap_tool_call` without a second policy
-implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.12`,
-`langchain-core==1.6.5` and `langchain==1.4.3` (example-only pins). List the gate **last**
+implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.20`,
+`langchain-core==1.7.7` and `langchain==1.4.10` (example-only pins). List the gate **last**
 in `middleware=`, so it judges the call exactly as it will run: the first middleware is the
 outermost, and one listed after the gate acts between the gate and the tool. An argument
 rewriter or a human-in-the-loop edit listed there still reaches the gate's judging copy,
@@ -104,7 +104,7 @@ tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
 `SandboxAgent`. `Runner.run`, `Runner.run_streamed` and calls a person approved through
 `needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
 `ScriptedModel`, no API key) and needs Python 3.10+ with `openai-agents==0.24.0` and
-`openai==3.34.0` (example-only pins). To put every one of those calls on the record,
+`openai==3.49.0` (example-only pins). To put every one of those calls on the record,
 [`examples/openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py)
 swaps in `audited_agent(agent, policy, log)` (or `audited_tools(tools, policy, log)`):
 the same decision, written as a hash-chained `AuditLog` entry labeled
@@ -179,7 +179,7 @@ judges them; the provider's record of one (`web_search_call`, `mcp_call`, ...) r
 default and, when finished, passes unjudged and unrecorded with
 `allow_hosted_records=True`. A remote MCP `mcp_approval_request` always raises: this gate
 does not answer it. Offline (`model_validate` builds real SDK objects, no key),
-Python 3.10+, tested with exactly `openai==3.34.0`. To put every one of those calls on the
+Python 3.10+, tested with exactly `openai==3.49.0`. To put every one of those calls on the
 record, [`examples/openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py)
 swaps in `audited_function_calls(response, tools, policy, log)` and
 `audited_tool_calls(completion, tools, policy, log)`: the same decision, written as a
@@ -215,7 +215,7 @@ it cannot see runs after it, and refuses the call, naming the fix, when the exec
 carries a `before_tool_callback` that is not a Recusal gate (use `gated_agent` for that
 agent) or a plugin listed after it overrides `before_tool_callback` (list `RecusalPlugin`
 last). Offline (a scripted model, no key), Python 3.11+,
-tested with exactly `google-adk==2.13.0` and `google-genai==2.34.0`. To put every one of
+tested with exactly `google-adk==2.14.0` and `google-genai==2.34.0`. To put every one of
 those calls on the record, [`examples/google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py)
 swaps in `audited_agent(agent, policy, log)` (or `audited_plugin(policy, log)` for the
 runner): the same decision, written as a hash-chained `AuditLog` entry labeled
@@ -252,7 +252,7 @@ process-global: one install covers every agent, task and crew in the process, an
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
 that runs after the gate can change the argument dict the gate judged; the tests show the
 bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.10+, tested with
-exactly `crewai==1.15.34`. To put every one of those calls on the record,
+exactly `crewai==1.15.40`. To put every one of those calls on the record,
 [`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py)
 swaps in `install_audited_hooks(policy, log)`: the same decision, written as a hash-chained
 `AuditLog` entry labeled `crewai.before_tool_call` with a fingerprint of the prepared
@@ -279,7 +279,7 @@ runs after it, so list the gate last. `Hooks(before_tool_execute=recusal_before_
 is the same gate as a plain hook function with no ordering of its own. An agent called from
 inside a tool function runs under its own capabilities and needs its own gate; the tests show
 the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
-with exactly `pydantic-ai-slim==2.64.0`. To put every one of those calls on the record,
+with exactly `pydantic-ai-slim==2.67.0`. To put every one of those calls on the record,
 [`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) swaps in
 `RecusalAuditedGate(policy, log=log)` (or `recusal_audited_before_tool_execute(policy, log)`
 for `Hooks`): the same decision, written as a hash-chained `AuditLog` entry labeled

@@ -48,7 +48,7 @@ def test_missing_sdk_is_an_install_message_not_a_traceback():
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
     )
     assert result.returncode == 1
-    assert "Install the example dependency first: openai==3.34.0" in result.stderr
+    assert "Install the example dependency first: openai==3.49.0" in result.stderr
     assert "Traceback" not in result.stderr.split("Install the example dependency")[-1]
 
 
@@ -61,7 +61,7 @@ def test_the_sdk_stays_out_of_the_recusal_package_and_dependencies():
 
 def test_pinned_version_is_explicit_in_the_example_and_docs():
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
-        assert "openai==3.34.0" in path.read_text(encoding="utf-8"), path.name
+        assert "openai==3.49.0" in path.read_text(encoding="utf-8"), path.name
 
 
 def test_both_openai_lanes_run_this_file():

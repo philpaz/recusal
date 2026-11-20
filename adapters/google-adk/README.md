@@ -41,8 +41,8 @@ Install it from PyPI:
 pip install recusal-google-adk
 ```
 
-Requires Python 3.11+ (the ADK's minimum), `recusal>=0.14.0` and `google-adk>=2.13.0`. It
-is tested on every pull request against exactly `google-adk==2.13.0` with
+Requires Python 3.11+ (the ADK's minimum), `recusal>=0.14.0` and `google-adk>=2.14.0`. It
+is tested on every pull request against exactly `google-adk==2.14.0` with
 `google-genai==2.34.0`, and weekly against the newest releases.
 
 The package ships inline types (`py.typed`) for your editor and type checker.

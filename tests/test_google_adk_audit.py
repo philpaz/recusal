@@ -23,7 +23,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "google_adk_audit.py"
 SURFACE = "google_adk.before_tool_callback"
-PINS = ("google-adk==2.13.0", "google-genai==2.34.0")
+PINS = ("google-adk==2.14.0", "google-genai==2.34.0")
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"

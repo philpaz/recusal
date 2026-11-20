@@ -1,4 +1,4 @@
-# roots: pytest>=8 ruff==0.17.4 mypy>=1.8,<2 hypothesis>=6 pydantic-ai-slim==2.64.0 | python>=3.11
+# roots: pytest>=8 ruff==0.17.4 mypy>=1.8,<2 hypothesis>=6 pydantic-ai-slim==2.67.0 | python>=3.11
 # Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-12T00:00:00Z were
 # not considered. Install: python -m pip install --require-hashes -r requirements/adapter-pydantic-ai.txt
 annotated-types==0.8.0 \
@@ -322,9 +322,9 @@ pluggy==1.7.0 \
 pydantic==2.14.3 \
     --hash=sha256:1054f237f4d4733e5a30e1e2333bd33a2004ab9ab1510bd053a9a31bb48e232d \
     --hash=sha256:3f7b347782ab7e4cf4c798496ae3a82787d9f21ec12676a9c564355eeef8daa8
-pydantic-ai-slim==2.64.0 \
-    --hash=sha256:63ccfe3f66beefb0a2fb3843d471f9d5b74a432f4436ed5ceb7e0d6bb06cb1e4 \
-    --hash=sha256:bf7019bd8083a8a44b6ab891923cf3ec95c4713c04437d5f1d21206d485b2ace
+pydantic-ai-slim==2.67.0 \
+    --hash=sha256:1c73f35a90b42a1f31b2d5237d4b57a4eddc8cdb78bc2536ac4030986e4c17fc \
+    --hash=sha256:ee0fc3e74c921c8b27c20f6fd0b12e4d30e07f86fe41a803244e615873000a08
 pydantic-core==2.50.4 \
     --hash=sha256:0001d6920e3a5d92758cda460d6dc9f918a78ad6d5d092f1c8b5395e6b775356 \
     --hash=sha256:0574866e05f6adeecc520d87e87dd06210c0a51706341f6ef8421572f5a64444 \
@@ -466,9 +466,9 @@ pydantic-core==2.50.4 \
     --hash=sha256:fb2bb5b557080da398b866408117d98fe9731a12334afd0cdff221b458cdc5dc \
     --hash=sha256:fc04affef30be98c1f36f0c422a4061ef618fdc1dde79f5ad5458dd496fecffa \
     --hash=sha256:ffb616d8d55965839670301dc3bae3abacff560a7e137a89056058a8a9da4d96
-pydantic-graph==2.64.0 \
-    --hash=sha256:5034949fd78899001b31b819e3fd9357019766d48245f788712bb3a91ccf75a2 \
-    --hash=sha256:823bc45c953e2c58b9bb89dbd8b79e9a31f90e55264078d492fe2de19269592a
+pydantic-graph==2.67.0 \
+    --hash=sha256:a36e738849db3bf72af0405e4734b4cc2932825bf93a62d6a99812e93e08cf58 \
+    --hash=sha256:b39fa3b3634ba7b9451504b1c4f088eef078f3507d9168334806a16b13199bb6
 pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
     --hash=sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c

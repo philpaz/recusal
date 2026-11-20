@@ -50,7 +50,7 @@ def test_langgraph_stays_out_of_the_recusal_package_and_dependencies():
 
 
 def test_pinned_versions_are_explicit_in_example_docs_and_ci():
-    expected = ("langgraph==1.2.12", "langchain-core==1.6.5")
+    expected = ("langgraph==1.2.20", "langchain-core==1.7.7")
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
         text = path.read_text(encoding="utf-8")
         for pin in expected:

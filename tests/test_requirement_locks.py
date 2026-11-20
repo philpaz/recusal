@@ -192,7 +192,7 @@ def test_the_newest_release_lane_resolves_without_pins_and_installs_what_it_reso
 @needs_tomllib
 def test_resolve_takes_bare_names_only_so_the_lane_cannot_be_handed_a_pin():
     tool = _tool()
-    for bad in ("openai==3.34.0", "openai>=3", "-r", "git+https://example.org/x.git", "a b"):
+    for bad in ("openai==3.49.0", "openai>=3", "-r", "git+https://example.org/x.git", "a b"):
         with pytest.raises(SystemExit, match="bare distribution names"):
             tool.resolve_newest(Path("unused.txt"), [bad], with_dev=False)
 

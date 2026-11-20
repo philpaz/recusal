@@ -22,7 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "pydantic_ai_audit.py"
 SURFACE = "pydantic_ai.before_tool_execute"
-PIN = "pydantic-ai-slim==2.64.0"
+PIN = "pydantic-ai-slim==2.67.0"
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"

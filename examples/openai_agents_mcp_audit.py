@@ -32,12 +32,12 @@ Recusal's decision, not that callback's.
 A local server is a shared connection and carries one policy and one recording: gating it
 again with a different log is refused, as a different policy is.
 
-Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.34.0.
+Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.49.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency. No model, API key, process
 or network is used.
 
 Run after installing:
-    pip install openai-agents==0.24.0 openai==3.34.0
+    pip install openai-agents==0.24.0 openai==3.49.0
     python examples/openai_agents_mcp_audit.py
 """
 

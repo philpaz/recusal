@@ -41,9 +41,9 @@ Install it from PyPI:
 pip install recusal-langgraph
 ```
 
-Requires Python 3.10+, `recusal>=0.14.0`, `langgraph>=1.2.12` and `langchain-core>=1.6.5`.
-It is tested on every pull request against exactly `langgraph==1.2.12` with
-`langchain-core==1.6.5`, and weekly against the newest releases.
+Requires Python 3.10+, `recusal>=0.14.0`, `langgraph>=1.2.20` and `langchain-core>=1.7.7`.
+It is tested on every pull request against exactly `langgraph==1.2.20` with
+`langchain-core==1.7.7`, and weekly against the newest releases.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 

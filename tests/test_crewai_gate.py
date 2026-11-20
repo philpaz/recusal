@@ -36,7 +36,7 @@ def test_python_version_refusal_is_clear_on_every_python():
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
     )
     assert result.returncode == 2
-    assert "crewai_gate.py requires Python 3.10+" in result.stderr
+    assert "crewai_gate.py requires Python 3.11+" in result.stderr
     assert "this is Python 3.9." in result.stderr
 
 
@@ -49,12 +49,12 @@ def test_crewai_stays_out_of_the_recusal_package_and_dependencies():
 
 def test_pinned_version_is_explicit_in_example_docs_and_ci():
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
-        assert "crewai==1.15.34" in path.read_text(encoding="utf-8"), path.name
+        assert "crewai==1.15.40" in path.read_text(encoding="utf-8"), path.name
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     # the pin is a root of the hash-locked file the pull request lanes install: the two
     # example jobs and the recusal-crewai wheel job
     assert (
-        "crewai==1.15.34"
+        "crewai==1.15.40"
         in (ROOT / "requirements" / "adapter-crewai.txt")
         .read_text(encoding="utf-8")
         .splitlines()[0]
@@ -63,7 +63,7 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
     assert ci.count("requirements/adapter-crewai.txt") == 3
 
 
-@pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+")
 class TestCrewAIGate:
     @pytest.fixture
     def example(self):
@@ -241,7 +241,7 @@ class TestCrewAIGate:
         assert "Execution Traces" not in result.stdout
 
 
-@pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+")
 class TestDenialReasonLifecycle:
     """Adapters review: the after hook re-judged a blocked call to explain it, so a stateful
     policy was invoked twice and the model lost the original reason. The reason is kept per
@@ -447,7 +447,7 @@ def test_the_exact_comparator_refuses_look_alikes():
     assert not _same(0, False) and _same({"a": [1, 2.0]}, {"a": [1, 2.0]})
 
 
-@pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+")
 class TestPreparedInvocation:
     """Adapters review, finding 3 (CrewAI): the before hook judged the dict the model
     proposed; CrewAI then validated it against the tool's ``args_schema`` at execution,

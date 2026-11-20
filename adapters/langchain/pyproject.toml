@@ -39,7 +39,7 @@ dependencies = [
     "recusal-langgraph>=0.2.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
-    "langchain>=1.4.3,<2",
+    "langchain>=1.4.10,<2",
 ]
 
 [project.urls]

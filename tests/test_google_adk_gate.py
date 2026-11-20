@@ -51,7 +51,7 @@ def _adapter():
 
 
 def test_pinned_versions_are_explicit_in_example_docs_and_ci():
-    expected = ("google-adk==2.13.0", "google-genai==2.34.0")
+    expected = ("google-adk==2.14.0", "google-genai==2.34.0")
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
         text = path.read_text(encoding="utf-8")
         for pin in expected:

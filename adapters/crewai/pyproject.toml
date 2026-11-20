@@ -17,7 +17,7 @@ dynamic = ["version"]
 description = "Recusal gate for CrewAI: judge every tool call in CrewAI's own tool-call hooks, block a refusal before it runs, and optionally put each decision on a hash-chained audit log."
 readme = "README.md"
 # CrewAI's own minimum.
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
@@ -37,7 +37,7 @@ dependencies = [
     "recusal>=0.14.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
-    "crewai>=1.15.34,<2",
+    "crewai>=1.15.40,<2",
 ]
 
 [project.urls]

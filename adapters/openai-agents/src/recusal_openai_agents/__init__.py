@@ -33,7 +33,7 @@ from ._gate import _duplicate_names as duplicate_names
 from ._gate import _refusal as refusal
 from ._gate import _unjudgeable as unjudgeable
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "GUARDRAIL_NAME",

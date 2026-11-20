@@ -5,8 +5,8 @@ repository), which wraps the ``recusal-langgraph`` gate. This file is the offlin
 demonstration around it: a scripted model, tools that only record, and the SQL scope
 policy as the default the package itself does not have.
 
-Requires Python 3.10+, langgraph==1.2.12, langchain-core==1.6.5,
-and langchain==1.4.3. No model, credential, or database is contacted.
+Requires Python 3.10+, langgraph==1.2.20, langchain-core==1.7.7,
+and langchain==1.4.10. No model, credential, or database is contacted.
 Install pins as in README and run: python examples/langchain_agent_gate.py
 """
 
@@ -16,9 +16,9 @@ import os
 import sys
 from typing import Any
 
-LANGGRAPH_VERSION = "1.2.12"
-LANGCHAIN_CORE_VERSION = "1.6.5"
-LANGCHAIN_VERSION = "1.4.3"
+LANGGRAPH_VERSION = "1.2.20"
+LANGCHAIN_CORE_VERSION = "1.7.7"
+LANGCHAIN_VERSION = "1.4.10"
 
 if sys.version_info < (3, 10):
     print(

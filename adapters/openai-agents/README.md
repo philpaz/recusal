@@ -44,7 +44,7 @@ pip install recusal-openai-agents
 
 Requires Python 3.10+ (the SDK's minimum), `recusal>=0.14.0` and `openai-agents>=0.24.0`.
 It is tested on every pull request against exactly `openai-agents==0.24.0` with
-`openai==3.34.0`, and weekly against the newest releases.
+`openai==3.49.0`, and weekly against the newest releases.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 

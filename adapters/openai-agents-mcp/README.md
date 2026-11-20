@@ -48,7 +48,7 @@ pip install recusal-openai-agents-mcp
 
 Requires Python 3.10+, `recusal>=0.14.0`, `recusal-openai-agents>=0.1.0`,
 `openai-agents>=0.24.0` and `mcp>=2.3.0`. It is tested on every pull request against
-exactly `openai-agents==0.24.0` with `openai==3.34.0`, and weekly against the newest
+exactly `openai-agents==0.24.0` with `openai==3.49.0`, and weekly against the newest
 releases.
 
 The package ships inline types (`py.typed`) for your editor and type checker.

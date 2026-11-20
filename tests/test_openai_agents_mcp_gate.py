@@ -49,7 +49,7 @@ def test_the_example_shares_the_function_tool_examples_pins_and_jobs():
     source = EXAMPLE.read_text(encoding="utf-8")
     assert "from examples.openai_agents_gate import" in source
     base = (ROOT / "examples" / "openai_agents_gate.py").read_text(encoding="utf-8")
-    for pin in ("openai-agents==0.24.0", "openai==3.34.0"):
+    for pin in ("openai-agents==0.24.0", "openai==3.49.0"):
         assert pin in source and pin in base, pin
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert ci.count("tests/test_openai_agents_mcp_gate.py") == 2

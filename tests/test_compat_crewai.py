@@ -25,7 +25,9 @@ EXAMPLE = ROOT / "examples" / "crewai_gate.py"
 SELECT = "SELECT * FROM t"
 DELETE = "DELETE FROM t"
 
-pytestmark = pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+"
+)
 
 
 @pytest.fixture

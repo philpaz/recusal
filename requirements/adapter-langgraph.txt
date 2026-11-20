@@ -1,4 +1,4 @@
-# roots: pytest>=8 ruff==0.17.4 mypy>=1.8,<2 hypothesis>=6 langgraph==1.2.12 langchain-core==1.6.5 | python>=3.10
+# roots: pytest>=8 ruff==0.17.4 mypy>=1.8,<2 hypothesis>=6 langgraph==1.2.20 langchain-core==1.7.7 | python>=3.10
 # Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-12T00:00:00Z were
 # not considered. Install: python -m pip install --require-hashes -r requirements/adapter-langgraph.txt
 annotated-types==0.8.0 \
@@ -401,15 +401,15 @@ jsonpatch==1.47 ; python_full_version >= '3.11' \
 jsonpointer==3.12 \
     --hash=sha256:7a3dcc11b64053eaa9c549e85e413f8d40a075215f793a331bed9182a14251ae \
     --hash=sha256:89f391335ee2719ae72149e1bf30a4d4c7c5d92f15a3f53faa8d20cc7c6c7f19
-langchain-core==1.6.5 \
-    --hash=sha256:54c7b0e9314b9084fb04405bb33dc5d32986d512d92b7b8863899cd5f6267556 \
-    --hash=sha256:bdb059fef65473fd444558dbb18f50901657402c43ceed9dc0fdc7b76a393c6b
+langchain-core==1.7.7 \
+    --hash=sha256:acc4205b5617f36cc0495ee77af7b3eedf8714941c7c14a40220be52770d4536 \
+    --hash=sha256:d69535f817e9ea949dabc85079dccc28b0cde04a579ec5c2273be2f7b09b859c
 langchain-protocol==0.0.21 \
     --hash=sha256:04b3e80852233a8db39b39d3ad2438d892531dc0ecd41459e857a139ee0e601c \
     --hash=sha256:7f42f9eae7c08bb9d74850057da50b5483970a3df91b7a8a5aadec6a3dfa4d12
-langgraph==1.2.12 \
-    --hash=sha256:5fae9fa4ce771e90f10ff19ce0d5aaef4b41d7632c713d769e89cbce1241a4b9 \
-    --hash=sha256:95403af7b510de8d79164742f71daaf866c69ca804a8cb72bef2cc1fa1ab9813
+langgraph==1.2.20 \
+    --hash=sha256:2b9fd01c3d5e0652e6c9b436dc0341413788010eb279ac8c46a733cf485d848b \
+    --hash=sha256:79f86df92f2dd17d5ec464cab68dbb685439ab102ca39f0b1b7b198025a2414c
 langgraph-checkpoint==4.3.1 \
     --hash=sha256:215a826935c8db4d9676e79fd95943e5b3847d78604390898e1d98581cc594e5 \
     --hash=sha256:625e7c78a72b33e7c47f7e87ca051060fb90aa66f5fd551c472c08376fb669cb

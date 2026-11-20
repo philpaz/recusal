@@ -6,8 +6,47 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Every adapter is now tested against, and requires, a recent release of its framework.
+  With the workflow installs hash-locked, GitHub could see the full dependency tree of
+  each test environment for the first time, and it reported known vulnerabilities in
+  several: none in anything Recusal ships (`recusal` has no runtime dependencies, and an
+  adapter depends only on the kernel and its framework), but in the framework versions
+  the adapters named as their minimum and in what those pull in. An adapter's tested
+  version is also the minimum it declares, so the minimums rise with it:
+
+  | Package | Now requires | Was |
+  |---|---|---|
+  | `recusal-langgraph` 0.2.1 | `langgraph>=1.2.20`, `langchain-core>=1.7.7` | 1.2.12, 1.6.5 |
+  | `recusal-langchain` 0.1.3 | `langchain>=1.4.10` | 1.4.3 |
+  | `recusal-openai` 0.2.1 | `openai>=3.49.0` | 3.34.0 |
+  | `recusal-google-adk` 0.1.2 | `google-adk>=2.14.0` | 2.13.0 |
+  | `recusal-pydantic-ai` 0.1.3 | `pydantic-ai-slim>=2.67.0` | 2.64.0 |
+  | `recusal-crewai` 0.2.0 | `crewai>=1.15.40`, **Python 3.11+** | 1.15.34, Python 3.10+ |
+
+  `recusal-openai-agents` and `recusal-openai-agents-mcp` 0.1.2 keep
+  `openai-agents>=0.24.0`, the newest release that is a week old, and are tested with
+  `openai==3.49.0`.
+  - `langgraph` before 1.2.14 has a published advisory (GHSA-3fx2-cqw9-xr3c), and
+    `google-adk` 2.13.0 held `opentelemetry-api` below the release that fixes two.
+  - **`recusal-crewai` no longer supports Python 3.10.** On 3.10, CrewAI requires a Pillow
+    and a filelock release with published advisories, and the fixed releases of both
+    need Python 3.11. The package's version is 0.2.0 for that.
+  - Still open, and why: `crewai` up to 1.15.43 requires `chromadb`, every release of
+    which has published advisories with no fix; `crewai` 1.15.44 makes it optional, and
+    the pin moves to it once that release is a week old. `pytest` on Python 3.9 stays on
+    the last release that supports 3.9; it is a test tool, and the kernel still supports
+    Python 3.9.
+
 ### Added
 
+- `tools/raise_tested.py` raises the framework versions the adapters are tested with,
+  everywhere they are written: each `tested-with.txt` and declared minimum, the READMEs,
+  the examples, the documentation and the tests that hold those to each other, then the
+  locks. It takes the newest release that is a week old and that installs on the oldest
+  Python the adapter declares, so a framework release that has dropped that Python is
+  passed over. A raise is one command and one reviewed diff.
 - Every install a workflow makes from the network is hash-locked. `requirements/` holds
   one lock per purpose (the dev tools, each adapter's tested framework versions, the
   workflow auditor, the Sigstore client), written by the new `tools/lock.py` and

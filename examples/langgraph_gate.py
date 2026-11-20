@@ -6,8 +6,8 @@ repository): ``recusal_gate`` and ``recusal_gates`` are imported from it. This f
 the offline demonstration around it: a scripted graph, tools that only record, and the
 SQL scope policy.
 
-Requires Python 3.10+ and is tested with exactly langgraph==1.2.12 and
-langchain-core==1.6.5. Recusal itself remains Python 3.9+ and has no LangGraph dependency.
+Requires Python 3.10+ and is tested with exactly langgraph==1.2.20 and
+langchain-core==1.7.7. Recusal itself remains Python 3.9+ and has no LangGraph dependency.
 
 The hook is LangGraph-native: a user's existing @tool list goes unchanged into ToolNode and
 recusal_gate(policy) is attached with wrap_tool_call. Every call in a model message crosses
@@ -35,7 +35,7 @@ refused rather than judged in the wrong place.
 No LLM, API key or database is used. run_sql only records SQL text.
 
 Run after installing:
-    pip install langgraph==1.2.12 langchain-core==1.6.5
+    pip install langgraph==1.2.20 langchain-core==1.7.7
     python examples/langgraph_gate.py
 """
 
@@ -45,8 +45,8 @@ import os
 import sys
 from typing import Any
 
-LANGGRAPH_VERSION = "1.2.12"
-LANGCHAIN_CORE_VERSION = "1.6.5"
+LANGGRAPH_VERSION = "1.2.20"
+LANGCHAIN_CORE_VERSION = "1.7.7"
 
 if sys.version_info < (3, 10):
     print(

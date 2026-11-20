@@ -58,7 +58,7 @@ def test_python_version_refusal_is_clear_on_every_python():
 
 def test_pinned_versions_are_explicit_in_the_example():
     text = EXAMPLE.read_text(encoding="utf-8")
-    for pin in ("openai-agents==0.24.0", "openai==3.34.0"):
+    for pin in ("openai-agents==0.24.0", "openai==3.49.0"):
         assert pin in text
 
 

@@ -9,7 +9,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/recusal-crewai)](https://pypi.org/project/recusal-crewai/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
-![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
 The [Recusal](https://github.com/philpaz/recusal) gate for
@@ -41,8 +41,8 @@ Install it from PyPI:
 pip install recusal-crewai
 ```
 
-Requires Python 3.10+ (CrewAI's minimum), `recusal>=0.14.0` and `crewai>=1.15.34`. It is
-tested on every pull request against exactly `crewai==1.15.34`, and weekly against the
+Requires Python 3.11+, `recusal>=0.14.0` and `crewai>=1.15.40`. It is
+tested on every pull request against exactly `crewai==1.15.40`, and weekly against the
 newest release.
 
 The package ships inline types (`py.typed`) for your editor and type checker.

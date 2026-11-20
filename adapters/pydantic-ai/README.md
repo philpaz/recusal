@@ -42,8 +42,8 @@ pip install recusal-pydantic-ai
 ```
 
 Requires Python 3.11+ (Pydantic AI's minimum), `recusal>=0.14.0` and
-`pydantic-ai-slim>=2.64.0`. It is tested on every pull request against exactly
-`pydantic-ai-slim==2.64.0`, and weekly against the newest release.
+`pydantic-ai-slim>=2.67.0`. It is tested on every pull request against exactly
+`pydantic-ai-slim==2.67.0`, and weekly against the newest release.
 
 The package ships inline types (`py.typed`) for your editor and type checker. From 0.1.2
 every function signature in it is annotated.

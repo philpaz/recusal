@@ -6,7 +6,7 @@ this repository): ``gated_agent``, ``gate_mcp_server``, ``gate_hosted_mcp`` and 
 are imported from it. This file is the offline demonstration around it: an MCP server
 that lives in this process, a scripted model and a scripted approval request.
 
-Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.34.0.
+Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.49.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency. The function-tool gate it
 builds on is examples/openai_agents_gate.py; this example covers the two MCP paths that one
 names as out of its sight.
@@ -52,7 +52,7 @@ the calls, ``InProcessMCPServer`` is an MCP server that lives in this process an
 what it was asked to run, and a scripted approval request stands in for OpenAI's.
 
 Run after installing:
-    pip install openai-agents==0.24.0 openai==3.34.0
+    pip install openai-agents==0.24.0 openai==3.49.0
     python examples/openai_agents_mcp_gate.py
 """
 

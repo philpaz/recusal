@@ -7,7 +7,7 @@ imported from it. This file is the offline demonstration around it: a scripted m
 two tools that only record, and the SQL scope policy.
 
 Requires Python 3.11+ (Pydantic AI's minimum) and is tested with exactly
-pydantic-ai-slim==2.64.0. Recusal itself remains Python 3.9+ and has no Pydantic AI
+pydantic-ai-slim==2.67.0. Recusal itself remains Python 3.9+ and has no Pydantic AI
 dependency.
 
 The hook is Pydantic AI's own. An ``Agent`` runs each capability's ``before_tool_execute``
@@ -53,7 +53,7 @@ No model, API key or network is used: ``scripted_model`` proposes the calls from
 and run_sql only records SQL text.
 
 Run after installing:
-    pip install pydantic-ai-slim==2.64.0
+    pip install pydantic-ai-slim==2.67.0
     python examples/pydantic_ai_gate.py
 """
 
@@ -63,7 +63,7 @@ import os
 import sys
 from typing import Any, Optional
 
-PYDANTIC_AI_VERSION = "2.64.0"
+PYDANTIC_AI_VERSION = "2.67.0"
 
 if sys.version_info < (3, 11):
     print(

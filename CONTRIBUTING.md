@@ -80,7 +80,7 @@ They are the same for every contribution, large or small:
 | `OpenAI Agents example (Python 3.12)` | the pinned OpenAI Agents SDK adapter works on the current cross-platform smoke Python |
 | `Google ADK example (Python 3.11)` | the pinned Google ADK adapter works on its minimum supported Python |
 | `Google ADK example (Python 3.12)` | the pinned Google ADK adapter works on the current cross-platform smoke Python |
-| `CrewAI example (Python 3.10)` | the pinned CrewAI adapter works on its minimum supported Python |
+| `CrewAI example (Python 3.11)` | the pinned CrewAI adapter works on its minimum supported Python |
 | `CrewAI example (Python 3.12)` | the pinned CrewAI adapter works on the current cross-platform smoke Python |
 | `Pydantic AI example (Python 3.11)` | the pinned Pydantic AI adapter works on its minimum supported Python |
 | `Pydantic AI example (Python 3.12)` | the pinned Pydantic AI adapter works on the current cross-platform smoke Python |

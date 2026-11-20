@@ -37,7 +37,7 @@ dependencies = [
     "recusal>=0.14.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
-    "openai>=3.34.0,<4",
+    "openai>=3.49.0,<4",
 ]
 
 [project.urls]

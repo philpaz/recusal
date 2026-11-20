@@ -25,7 +25,7 @@ raises are all refused with a reason, never run.
 Default-deny on what the loop does not understand: an output item or tool call of a type
 this adapter does not handle (``custom_tool_call``, a hosted tool call, a type added in a
 later SDK release) raises, naming the type, instead of being skipped. And because the SDK's
-answer types do not require ``call_id`` (checked on openai==3.34.0: every key of
+answer types do not require ``call_id`` (checked on openai==3.49.0: every key of
 ``FunctionCallOutput`` and ``ChatCompletionToolMessageParam`` is optional), the adapter
 refuses a call without an id and checks that every call got exactly one answer.
 
@@ -33,13 +33,13 @@ Hosted tools (web search, file search, code interpreter, image generation, remot
 on the provider's side, so nothing here can gate them. The provider's record of one raises
 by default and, when finished, passes unjudged with ``allow_hosted_records=True``.
 
-Requires Python 3.10+ (the SDK's minimum) and is tested with exactly openai==3.34.0. The
+Requires Python 3.10+ (the SDK's minimum) and is tested with exactly openai==3.49.0. The
 Response and ChatCompletion objects are built with the SDK's own ``model_validate``, so they
 are real SDK types; no API key or network is used, and run_sql only records SQL text.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency.
 
 Run after installing:
-    pip install openai==3.34.0
+    pip install openai==3.49.0
     python examples/openai_responses_gate.py
 """
 
@@ -50,7 +50,7 @@ import os
 import sys
 from typing import Any
 
-OPENAI_VERSION = "3.34.0"
+OPENAI_VERSION = "3.49.0"
 
 if sys.version_info < (3, 10):
     print(

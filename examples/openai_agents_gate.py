@@ -6,7 +6,7 @@ repository): ``gated_agent``, ``gate_tools``, ``recusal_guardrail`` and ``is_gat
 imported from it. This file is the offline demonstration around it: a scripted model,
 tools that only record, and the SQL scope policy.
 
-Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.34.0.
+Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.49.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency.
 
 The hook is the SDK's own: a tool input guardrail runs immediately before a function tool
@@ -38,7 +38,7 @@ No model, API key or database is used: agents.testing.ScriptedModel proposes the
 and run_sql only records SQL text.
 
 Run after installing:
-    pip install openai-agents==0.24.0 openai==3.34.0
+    pip install openai-agents==0.24.0 openai==3.49.0
     python examples/openai_agents_gate.py
 """
 
@@ -50,7 +50,7 @@ import sys
 from typing import Annotated, Any, Optional
 
 OPENAI_AGENTS_VERSION = "0.24.0"
-OPENAI_VERSION = "3.34.0"
+OPENAI_VERSION = "3.49.0"
 
 if sys.version_info < (3, 10):
     print(

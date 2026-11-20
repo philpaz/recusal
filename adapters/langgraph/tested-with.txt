@@ -1,2 +1,2 @@
-langgraph==1.2.12
-langchain-core==1.6.5
+langgraph==1.2.20
+langchain-core==1.7.7

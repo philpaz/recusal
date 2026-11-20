@@ -48,7 +48,7 @@ if verdict.refused or verdict.retryable:
 Runnable LangGraph adapter: [`../examples/langgraph_gate.py`](../examples/langgraph_gate.py)
 uses LangGraph's `ToolNode(..., wrap_tool_call=recusal_gate(policy))` to gate each tool call
 immediately before execution and return a refusal as an error `ToolMessage`. It is offline, requires **Python 3.10+**, and is tested with exactly
-`langgraph==1.2.12` and `langchain-core==1.6.5`; neither package is a Recusal dependency.
+`langgraph==1.2.20` and `langchain-core==1.7.7`; neither package is a Recusal dependency.
 [`../examples/langgraph_audit.py`](../examples/langgraph_audit.py) is the same gate with a
 record: `recusal_audited_gate(policy, log)` writes each decision, allowed or refused, to a
 hash-chained `AuditLog` entry labeled `langgraph.toolnode` under LangGraph's tool call id,
@@ -64,7 +64,7 @@ review node before the `ToolNode`. Pinned, with zero executions on every refusal
 
 LangChain's [`create_agent` middleware example](../examples/langchain_agent_gate.py)
 imports the same `recusal_gate` and uses `wrap_tool_call` with scripted model messages.
-It also requires Python 3.10+ and exactly `langchain==1.4.3` on top of the LangGraph pins;
+It also requires Python 3.10+ and exactly `langchain==1.4.10` on top of the LangGraph pins;
 no model key or database is used and the Recusal package has no new dependency. List the
 gate last in `middleware=`, so it judges the call exactly as it will run, and use
 `agate_middleware` for `agent.ainvoke`.
@@ -76,7 +76,7 @@ The [OpenAI Agents SDK example](../examples/openai_agents_gate.py) judges each f
 tool call in a tool input guardrail, and `gated_agent(agent, policy)` refuses an agent
 that could run something the guardrail never sees: a non-function tool, `mcp_servers`,
 handoffs, an ungated sub-agent behind `as_tool`, or an `Agent` subclass. It requires
-Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.34.0`; neither package is
+Python 3.10+ and exactly `openai-agents==0.24.0` and `openai==3.49.0`; neither package is
 a Recusal dependency, and no API key is used.
 [`../examples/openai_agents_audit.py`](../examples/openai_agents_audit.py) is the same gate
 with a record: `audited_agent(agent, policy, log)` writes each decision, allowed or
@@ -99,7 +99,7 @@ judges each `function_call` item (Responses API) or `tool_calls` entry (Chat Com
 in your own loop before you run it and answers every call once under its own id; an item
 type it does not handle raises rather than slipping past. Hosted tools (web search, file
 search, code interpreter, remote MCP) run on the provider's side and never reach this
-loop. Offline, Python 3.10+, tested with exactly `openai==3.34.0`.
+loop. Offline, Python 3.10+, tested with exactly `openai==3.49.0`.
 [`../examples/openai_responses_audit.py`](../examples/openai_responses_audit.py) is the
 same loop with a record: `audited_function_calls` and `audited_tool_calls` write each
 decision, run or refused, to a hash-chained `AuditLog` entry under the API's call id, and
@@ -113,7 +113,7 @@ gate as the last callback, and refuses a `code_executor` or an `LlmAgent` subcla
 when an agent callback or a later plugin that is not a Recusal gate would run after it
 (plugin callbacks run before agent callbacks; gate such an agent with `gated_agent`, list
 the plugin last). Python 3.11+, tested
-with exactly `google-adk==2.13.0` and `google-genai==2.34.0`; neither is a Recusal dependency.
+with exactly `google-adk==2.14.0` and `google-genai==2.34.0`; neither is a Recusal dependency.
 [`../examples/google_adk_audit.py`](../examples/google_adk_audit.py) is the same gate with
 a record: `audited_agent(agent, policy, log)` and `audited_plugin(policy, log)` write each
 decision, allowed or refused, to a hash-chained `AuditLog` entry under the ADK's function
@@ -126,7 +126,7 @@ every crew in the process and returns the uninstall. The hook judges the invocat
 tool receives (defaults completed, the tool's own schema validation run once, the values
 written back) and supports CrewAI's stock tools and generated schemas; a customised schema
 or an unsupported annotation is refused. Install it after your other hooks.
-Python 3.10+, tested with exactly `crewai==1.15.34`; not a Recusal dependency.
+Python 3.11+, tested with exactly `crewai==1.15.40`; not a Recusal dependency.
 [`../examples/crewai_audit.py`](../examples/crewai_audit.py) is the same gate with a
 record: `install_audited_hooks(policy, log)` writes each decision, allowed or refused, to
 a hash-chained `AuditLog` entry labeled `crewai.before_tool_call`, and
@@ -142,7 +142,7 @@ Enum member or other object is refused before policy evaluation; declare data-on
 parameters (a `str` or `int` in place of an Enum) and resolve application types inside the
 tool body. No application copy method or serializer is invoked.
 An agent called from inside a tool needs its own gate. Python 3.11+, tested with exactly
-`pydantic-ai-slim==2.64.0`; not a Recusal dependency.
+`pydantic-ai-slim==2.67.0`; not a Recusal dependency.
 [`../examples/pydantic_ai_audit.py`](../examples/pydantic_ai_audit.py) is the same gate with
 a record: `RecusalAuditedGate(policy, log=log)` writes each decision, allowed or refused, to
 a hash-chained `AuditLog` entry labeled `pydantic_ai.before_tool_execute` under Pydantic

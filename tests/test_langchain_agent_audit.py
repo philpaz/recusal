@@ -22,7 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "langchain_agent_audit.py"
 SURFACE = "langchain.create_agent"
-PINS = ("langgraph==1.2.12", "langchain-core==1.6.5", "langchain==1.4.3")
+PINS = ("langgraph==1.2.20", "langchain-core==1.7.7", "langchain==1.4.10")
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"

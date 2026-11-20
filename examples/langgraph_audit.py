@@ -15,13 +15,13 @@ recording arguments passed through to ``recusal.decide``, which writes the entry
 returning. If the log cannot be written the decision becomes a deny, so nothing runs
 unrecorded.
 
-Requires Python 3.10+ and is tested with exactly langgraph==1.2.12 and
-langchain-core==1.6.5. Recusal itself remains Python 3.9+ and has no LangGraph dependency.
+Requires Python 3.10+ and is tested with exactly langgraph==1.2.20 and
+langchain-core==1.7.7. Recusal itself remains Python 3.9+ and has no LangGraph dependency.
 
 No LLM, API key or database is used. run_sql only records SQL text.
 
 Run after installing:
-    pip install langgraph==1.2.12 langchain-core==1.6.5
+    pip install langgraph==1.2.20 langchain-core==1.7.7
     python examples/langgraph_audit.py
 """
 
@@ -34,8 +34,8 @@ import sys
 import tempfile
 from typing import Any, Optional
 
-LANGGRAPH_VERSION = "1.2.12"
-LANGCHAIN_CORE_VERSION = "1.6.5"
+LANGGRAPH_VERSION = "1.2.20"
+LANGCHAIN_CORE_VERSION = "1.7.7"
 
 if sys.version_info < (3, 10):
     print(

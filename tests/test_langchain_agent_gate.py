@@ -34,12 +34,12 @@ def test_langchain_stays_out_of_runtime_package():
 def test_langchain_pins_are_documented_and_in_existing_ci_jobs():
     paths = (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md")
     for path in paths:
-        assert "langchain==1.4.3" in path.read_text(encoding="utf-8")
+        assert "langchain==1.4.10" in path.read_text(encoding="utf-8")
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     # the pin is a root of the hash-locked file the pull request lanes install: the two
     # example jobs and the recusal-langchain wheel job
     assert (
-        "langchain==1.4.3"
+        "langchain==1.4.10"
         in (ROOT / "requirements" / "adapter-langchain.txt")
         .read_text(encoding="utf-8")
         .splitlines()[0]

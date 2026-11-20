@@ -21,7 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "crewai_audit.py"
 SURFACE = "crewai.before_tool_call"
-PIN = "crewai==1.15.34"
+PIN = "crewai==1.15.40"
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"
@@ -49,7 +49,7 @@ def test_python_version_refusal_is_clear_on_every_python():
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
     )
     assert result.returncode == 2
-    assert "crewai_audit.py requires Python 3.10+" in result.stderr
+    assert "crewai_audit.py requires Python 3.11+" in result.stderr
     assert "this is Python 3.9." in result.stderr
 
 
@@ -108,7 +108,7 @@ def _corpus():
     }
 
 
-@pytest.mark.skipif(sys.version_info < (3, 10), reason="CrewAI requires Python 3.10+")
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+")
 class TestCrewAiAudit:
     @pytest.fixture
     def example(self):

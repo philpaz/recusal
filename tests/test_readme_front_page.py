@@ -68,12 +68,14 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
         assert claim in note, claim
         assert evidence.is_file(), evidence
     assert len(list((ROOT / "fuzz").glob("fuzz_*.py"))) == 5
-    # the versions the note names are the ones in the tree, and the function it tells a
+    # the versions the note names are releases the tree is at or past (each is where a
+    # fix landed, so a later release still carries it), and the function it tells a
     # LangGraph user to build the node with is one the package exports
     for directory, version in (("langgraph", "0.2.0"), ("langchain", "0.1.2"), ("openai", "0.2.0")):
         package = "recusal_" + directory
         init = (ROOT / "adapters" / directory / "src" / package / "__init__.py").read_text("utf-8")
-        assert f'__version__ = "{version}"' in init, directory
+        current = re.search(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', init, re.M).groups()
+        assert tuple(map(int, current)) >= tuple(map(int, version.split("."))), directory
         assert (
             f"`recusal-{directory}` to {version}" in note
             or f"`recusal-{directory}` {version}" in note
