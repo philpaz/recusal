@@ -886,3 +886,139 @@ def test_the_guard_holds_through_a_real_node_for_a_basetool_subclass(lg):
             )
         )
         assert ran == [SELECT], route[0]
+
+# --- the two private helpers the gate imports, each named by its own probe ----------------
+#
+# `recusal_langgraph._gate` imports `_get_runnable_config_param`
+# (`langchain_core.tools.base`, used by `_framework_keys`) and `_get_all_injected_args`
+# (`langgraph.prebuilt.tool_node`, used by `_host_keys`) to find the arguments the host
+# injects. Both are private: a release may rename, move or change them without notice, and
+# the adapter's framework requirements carry an upper bound because of it. Each probe below
+# imports its helper from its exact private path and pins only what the gate reads from it,
+# so a release that changes either fails on a test that says which helper and how, instead
+# of on a gate test somewhere downstream or on none. `FILTERED_ARGS`, the other name the
+# gate imports from `langchain_core.tools.base`, is not private and is already pinned
+# against the gate's `_RESERVED` in `tests/test_langgraph_gate.py`.
+
+
+def _private_helper(module_path, name):
+    """The private helper at ``module_path.name``, or a failure that names it.
+
+    Whether the framework is installed at all is the caller's ``importorskip``; once it
+    is, a helper that was renamed, moved or removed must fail here, not skip.
+    """
+    import importlib
+
+    where = f"{module_path}.{name}"
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise AssertionError(
+            f"{where} changed: the module the gate imports it from can no longer "
+            f"be imported ({exc})"
+        ) from exc
+    helper = getattr(module, name, None)
+    assert callable(helper), (
+        f"{where} changed: it no longer exists at that path as a callable; "
+        "the gate imports it from there"
+    )
+    return helper
+
+
+def _accepts_one_positional(helper, where):
+    """The helper still accepts the one positional argument the gate passes it."""
+    params = list(inspect.signature(helper).parameters.values())
+    assert len(params) == 1 and params[0].kind in (
+        params[0].POSITIONAL_ONLY,
+        params[0].POSITIONAL_OR_KEYWORD,
+    ), f"{where} changed: it no longer accepts the one positional argument the gate passes it"
+
+
+def test_private_helper_get_runnable_config_param_still_names_the_config_parameter():
+    """``_framework_keys`` passes the gate a tool's execution callable and trusts the
+    name this helper returns for its ``RunnableConfig`` parameter (or ``None``). The
+    callable with no such parameter is the negative control: a helper that had stopped
+    inspecting its argument and answered a name anyway would fail it, not pass."""
+    pytest.importorskip("langchain_core")
+    from langchain_core.runnables import RunnableConfig
+
+    where = "langchain_core.tools.base._get_runnable_config_param"
+    helper = _private_helper("langchain_core.tools.base", "_get_runnable_config_param")
+    _accepts_one_positional(helper, where)
+
+    def with_config(sql: str, config: RunnableConfig) -> str:
+        return sql
+
+    def with_renamed_config(sql: str, cfg: RunnableConfig) -> str:
+        return sql
+
+    def without_config(sql: str) -> str:
+        return sql
+
+    assert helper(with_config) == "config", (
+        f"{where} changed: a callable with a `RunnableConfig` parameter no longer "
+        "gives that parameter's name, so `_framework_keys` would judge it as the model's"
+    )
+    assert helper(with_renamed_config) == "cfg", (
+        f"{where} changed: it no longer gives the parameter's own name (`cfg`), so a "
+        "tool that renames its `RunnableConfig` parameter would be misjudged"
+    )
+    assert helper(without_config) is None, (
+        f"{where} changed (negative control): a callable with no `RunnableConfig` "
+        "parameter no longer gives `None`, so a name the model controls would be "
+        "treated as filled by the framework"
+    )
+
+
+def test_private_helper_get_all_injected_args_still_names_every_injected_argument():
+    """``_host_keys`` passes the gate a tool and trusts ``all_injected_keys`` on what
+    this helper returns to leave host-supplied arguments out of judgment. The tool
+    with no injected arguments is the negative control: a helper that had stopped
+    observing anything and answered a key anyway would fail it, not pass. Only
+    ``all_injected_keys`` is pinned, because that is all the gate reads."""
+    pytest.importorskip("langgraph")
+    from typing import Annotated
+
+    from langchain_core.tools import InjectedToolArg, tool
+    from langgraph.prebuilt import InjectedState, InjectedStore, ToolRuntime
+
+    where = "langgraph.prebuilt.tool_node._get_all_injected_args"
+    helper = _private_helper("langgraph.prebuilt.tool_node", "_get_all_injected_args")
+    _accepts_one_positional(helper, where)
+
+    @tool
+    def with_injected(
+        sql: str,
+        state: Annotated[dict, InjectedState],
+        store: Annotated[object, InjectedStore],
+        runtime: ToolRuntime,
+        override: Annotated[str, InjectedToolArg] = "",
+    ) -> str:
+        """Run SQL with state, store, runtime and a generic injected argument."""
+        return sql
+
+    @tool
+    def without_injected(sql: str) -> str:
+        """Run SQL with no host-injected arguments."""
+        return sql
+
+    injected = helper(with_injected)
+    assert hasattr(injected, "all_injected_keys"), (
+        f"{where} changed: what it returns no longer has `all_injected_keys`, "
+        "which is what `_host_keys` reads"
+    )
+    assert set(injected.all_injected_keys) == {"state", "store", "runtime", "override"}, (
+        f"{where} changed: a tool with state, store, runtime and a generic injected "
+        f"argument no longer gives all of their names, got {injected.all_injected_keys!r}; "
+        "an argument it misses would be judged as the model's"
+    )
+    plain = helper(without_injected)
+    assert hasattr(plain, "all_injected_keys"), (
+        f"{where} changed: what it returns no longer has `all_injected_keys`, "
+        "which is what `_host_keys` reads"
+    )
+    assert set(plain.all_injected_keys) == set(), (
+        f"{where} changed (negative control): a tool with no injected arguments no "
+        f"longer gives the empty answer, got {plain.all_injected_keys!r}; a probe "
+        "that stopped observing anything would fail here, not pass"
+    )
