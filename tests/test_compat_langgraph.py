@@ -887,6 +887,7 @@ def test_the_guard_holds_through_a_real_node_for_a_basetool_subclass(lg):
         )
         assert ran == [SELECT], route[0]
 
+
 # --- the two private helpers the gate imports, each named by its own probe ----------------
 #
 # `recusal_langgraph._gate` imports `_get_runnable_config_param`
