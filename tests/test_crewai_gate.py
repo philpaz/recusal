@@ -1241,6 +1241,7 @@ class TestBothRoutes:
             tool_call=example._tool_call,
             before=example.recusal_before_tool_call,
             scripted=lambda turns, native: TurnLLM(turns, native),
+            executor_module="crewai.agents.agent_executor",
         )
         logging.disable(logging.NOTSET)
         clear_before_tool_call_hooks()
@@ -1530,6 +1531,12 @@ class TestBothRoutes:
             assert "func_name" in code.co_varnames, code.co_name
         assert "self" in gate._NATIVE_EXECUTOR_SITE.co_varnames
         assert "available_functions" in gate._NATIVE_STEP_SITE.co_varnames
+        # the arguments each route runs with
+        assert "tool_calling" in gate._TEXT_SITE.co_varnames
+        for code in (gate._NATIVE_EXECUTOR_SITE, gate._NATIVE_STEP_SITE):
+            assert "args_dict" in code.co_varnames, code.co_name
+        # and the attribute the executor keeps its functions in, read by the site itself
+        assert "_available_functions" in gate._NATIVE_EXECUTOR_SITE.co_names
 
     def _handed(self, kit, name="run_sql"):
         @kit.tool(name)
@@ -1894,10 +1901,7 @@ class TestBothRoutes:
 
         awaited = Awaited(name="charge", description="Charge.", func=charge, args_schema=Amount)
         why = gate._unsupported_tool(awaited.to_structured_tool())
-        assert why in (
-            "its tool class overrides `_arun`",
-            "its callable's parameter `force` is absent from the argument schema",
-        )
+        assert why == "its tool class overrides `_arun`"
 
     def test_a_method_set_on_the_tool_object_is_refused(self, kit):
         """The stock checks compare the class's methods; one set on the object itself would
@@ -2226,3 +2230,326 @@ class TestBothRoutes:
         # ``_unsupported_tool`` reads this to hold the original tool to CrewAI's own methods;
         # were it renamed, that check would be skipped without a sound
         assert structured._original_tool is probe
+
+    # --- round five: what the gate judges must be what runs ------------------------------
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_hook_that_replaces_the_argument_dict_is_not_judged_in_its_place(self, kit, native):
+        """A hook registered before the gate that assigns a new dict to ``tool_input``
+        (``context.tool_input = {...}``) leaves CrewAI running its own dict. Judging the new
+        one would pass a call the policy never saw; the gate refuses it."""
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+
+        ran, seen = [], []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        def normalise(context):
+            context.tool_input = {"sql": "SELECT 1"}
+            return None
+
+        register_before_tool_call_hook(normalise)
+        try:
+            _, decisions, error = kit.run(
+                [self.proposal(native, "run_sql", {"sql": DELETE})],
+                [run_sql],
+                lambda name, args: seen.append(dict(args)) or kit.no_deletes(name, args),
+                native=native,
+            )
+        finally:
+            unregister_before_tool_call_hook(normalise)
+        assert error is None and ran == [] and seen == [] and decisions == ["FAIL"]
+
+    def test_a_hook_that_replaces_the_dict_on_the_planning_route_is_refused(self, kit):
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+
+        ran, seen = [], []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        def normalise(context):
+            context.tool_input = {"sql": "SELECT 1"}
+            return None
+
+        register_before_tool_call_hook(normalise)
+        try:
+            _, decisions, error = kit.run(
+                [],
+                [run_sql],
+                lambda name, args: seen.append(dict(args)) or [],
+                native=True,
+                agent_options={"planning": True},
+                llm=self._planning_model(kit, "run_sql"),
+            )
+        finally:
+            unregister_before_tool_call_hook(normalise)
+        assert error is None and ran == [] and seen == [] and decisions == ["FAIL"]
+
+    def test_the_text_route_binds_only_an_empty_call_and_refuses_anything_else(self, kit):
+        gate = _adapter()
+
+        class Calling:
+            def __init__(self, arguments):
+                self.arguments = arguments
+
+        def text(calling):
+            return ("text", {"tool_calling": calling})
+
+        # the hook's own dict: nothing to do
+        same = {"sql": "x"}
+        assert gate._unbound_arguments(text(Calling(same)), same) is None
+        # an empty call: the hook's dict becomes the one CrewAI runs
+        for empty in ({}, None):
+            calling, hooked = Calling(empty), {}
+            assert gate._unbound_arguments(text(calling), hooked) is None
+            assert calling.arguments is hooked
+        # a different dict, even an equal one, is not bound over arguments CrewAI holds
+        held = {"sql": "x"}
+        calling = Calling(held)
+        why = gate._unbound_arguments(text(calling), {"sql": "x"})
+        assert "not the ones CrewAI would run" in why and calling.arguments is held
+        # not a dict, or nothing to read, or an object that will not take the dict
+        assert "not the ones" in gate._unbound_arguments(text(Calling({})), ["x"])
+        assert "cannot read the arguments" in gate._unbound_arguments(("text", {}), {})
+
+        class Stubborn:
+            arguments = property(lambda self: {}, lambda self, value: None)
+
+        assert "not the ones" in gate._unbound_arguments(text(Stubborn()), {})
+
+    @pytest.mark.parametrize("kind", ["native-executor", "native-step"])
+    def test_the_native_routes_require_the_hooks_dict_to_be_the_one_run(self, kit, kind):
+        gate = _adapter()
+        hooked = {"sql": "x"}
+        assert gate._unbound_arguments((kind, {"args_dict": hooked}), hooked) is None
+        why = gate._unbound_arguments((kind, {"args_dict": {"sql": "x"}}), hooked)
+        assert "not the ones CrewAI would run" in why
+        assert "not the ones" in gate._unbound_arguments((kind, {}), hooked)
+
+    def test_a_signature_declared_one_level_in_is_refused_too(self, kit):
+        """``inspect.signature`` honours a ``__signature__`` on a callable object's
+        ``__call__``, on a ``partial``'s function and on a method's function; each could
+        show the gate parameters other than those Python binds."""
+        import functools
+
+        gate = _adapter()
+
+        def shown(table: str) -> str:
+            return "x"
+
+        def purge(table: str, force: bool = True) -> str:
+            return "x"
+
+        forged = inspect_signature = __import__("inspect").signature(shown)
+
+        purge.__signature__ = forged
+        with pytest.raises(gate._DeclaredSignature):
+            gate._own_parameters(purge)
+        with pytest.raises(gate._DeclaredSignature):
+            gate._own_parameters(functools.partial(purge))
+
+        class Callable:
+            def __call__(self, table: str, force: bool = True) -> str:
+                return "x"
+
+        Callable.__call__.__signature__ = inspect_signature
+        with pytest.raises(gate._DeclaredSignature):
+            gate._own_parameters(Callable())
+
+        class Holder:
+            def method(self, table: str, force: bool = True) -> str:
+                return "x"
+
+        Holder.method.__signature__ = inspect_signature
+        with pytest.raises(gate._DeclaredSignature):
+            gate._own_parameters(Holder().method)
+
+        # and an honest callable object is read as itself
+        class Honest:
+            def __call__(self, table: str, force: bool = True) -> str:
+                return "x"
+
+        assert list(gate._own_parameters(Honest())) == ["table", "force"]
+
+    def test_an_honest_method_and_a_c_callable_are_read_not_refused(self, kit):
+        """A bound method is read through its function. Read as a callable object instead,
+        its ``__call__`` is a C slot wrapper whose own ``__call__`` is another, and the walk
+        ran out of depth: every ordinary tool method was refused as uninspectable. A C
+        ``__call__`` is where the walk stops."""
+        import operator
+
+        gate = _adapter()
+
+        class Holder:
+            def method(self, table: str, force: bool = True) -> str:
+                return "x"
+
+        assert list(gate._own_parameters(Holder().method)) == ["table", "force"]
+        gate._refuse_declared_signature(Holder().method, 0)
+        gate._refuse_declared_signature(operator.attrgetter("name"), 0)
+
+    def test_pass_through_wrappers_are_looked_through(self, kit):
+        """``lru_cache``, ``cache`` and ``staticmethod`` pass every argument through and
+        declare nothing of their own: the parameters are the wrapped function's, so a
+        default it declares beyond the schema is still found."""
+        import functools
+
+        gate = _adapter()
+
+        def lookup(sql: str, limit: int = 10) -> str:
+            return "x"
+
+        for wrapped in (
+            functools.lru_cache(maxsize=None)(lookup),
+            functools.cache(lookup),
+            staticmethod(lookup),
+        ):
+            assert list(gate._own_parameters(wrapped)) == ["sql", "limit"]
+
+        @kit.tool("lookup")
+        @functools.lru_cache(maxsize=None)
+        def cached(sql: str) -> str:
+            """Look up."""
+            return "x"
+
+        assert gate._unsupported_tool(cached.to_structured_tool()) is None
+
+    def test_a_stock_method_in_the_place_of_another_is_not_stock(self, kit):
+        from crewai.tools import BaseTool
+
+        gate = _adapter()
+
+        class Swapped(BaseTool):
+            name: str = "run_sql"
+            description: str = "Record SQL."
+            run = BaseTool.arun
+
+            def _run(self, sql: str) -> str:
+                return "x"
+
+        why = gate._unsupported_tool(Swapped().to_structured_tool())
+        assert why == "its tool class overrides `run`"
+
+    def test_a_class_level_patch_of_crewais_own_method_is_still_stock(self, kit, monkeypatch):
+        """Tracing patches CrewAI's own classes, often after the adapter is imported. The
+        stock check compares against the class as it is now, so a patched ``BaseTool.run``
+        is the run every tool has and is not refused."""
+        import functools
+
+        from crewai.tools import BaseTool
+
+        gate = _adapter()
+        original = BaseTool.run
+
+        @functools.wraps(original)
+        def traced(self, *args, **kwargs):
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(BaseTool, "run", traced)
+        _, structured, _ = self._handed(kit)
+        assert gate._unsupported_tool(structured) is None
+
+    def test_code_looks_through_a_wraps_wrapper(self, kit):
+        import functools
+
+        gate = _adapter()
+
+        def site():
+            return None
+
+        @functools.wraps(site)
+        def traced():
+            return site()
+
+        assert gate._code(traced) is site.__code__
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_an_instrumentor_wrapping_crewais_hook_entry_is_walked_past(
+        self, kit, native, monkeypatch
+    ):
+        """Tracing replaces ``run_before_tool_call_hooks`` in CrewAI's modules with a
+        ``functools.wraps`` wrapper; its frame stands between the entry and the function
+        running the call. The gate walks past it and still ties the call to that function:
+        a shared name stays refused."""
+        import functools
+
+        from crewai.hooks import tool_hooks
+        from crewai.utilities import tool_utils
+
+        entry = tool_hooks.run_before_tool_call_hooks
+
+        @functools.wraps(entry)
+        def traced(context):
+            return entry(context)
+
+        for module in (tool_hooks, tool_utils, sys.modules[kit.executor_module]):
+            if hasattr(module, "run_before_tool_call_hooks"):
+                monkeypatch.setattr(module, "run_before_tool_call_hooks", traced)
+
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": SELECT})],
+            [run_sql],
+            kit.no_deletes,
+            native=native,
+        )
+        assert error is None and ran == [SELECT] and decisions == ["PASS"]
+
+        collided = []
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql_2" if native else "run_sql", {"sql": "x"})],
+            self._two_tools_named_alike(kit, collided),
+            lambda name, args: [],
+            native=native,
+        )
+        assert error is None and collided == [] and decisions == ["FAIL"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_nested_execution_is_tied_to_its_own_call(self, kit, native):
+        """A tool that runs a crew of its own: the inner call is judged against the inner
+        function running it, not the outer one further up the stack."""
+        ran, seen = [], []
+
+        @kit.tool("inner_sql")
+        def inner_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(("inner", sql))
+            return "inner ok"
+
+        @kit.tool("outer")
+        def outer(task: str) -> str:
+            """Run an inner crew."""
+            ran.append(("outer", task))
+            kit.run(
+                [self.proposal(native, "inner_sql", {"sql": SELECT})],
+                [inner_sql],
+                None,
+                native=native,
+                gated=False,
+            )
+            return "outer ok"
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "outer", {"task": "go"})],
+            [outer],
+            lambda name, args: seen.append(name) or [],
+            native=native,
+        )
+        assert error is None
+        assert ran == [("outer", "go"), ("inner", SELECT)]
+        assert seen == ["outer", "inner_sql"]

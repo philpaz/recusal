@@ -51,15 +51,23 @@ All notable changes to this project are documented here. The format follows
   - The tests drive the native and text routes on `kickoff`, `akickoff`,
     `Task.execute_sync` and `Agent.kickoff`, the plan-and-execute route and the
     hierarchical process; negative controls pin what CrewAI does without the gate, and a
-    test pins each local variable the gate reads in CrewAI's functions.
+    test pins each local variable and attribute the gate reads in CrewAI's functions.
+    A tracing wrapper around CrewAI's hook entry (`functools.wraps`) is walked past.
   - Three more gaps in how the arguments are judged, older than this release and found
     by the same reviews, are closed. On the text route a call with no arguments was
     invoked with nothing, so what the gate prepared, and what an earlier hook had
-    written, was judged and thrown away; the gate now makes the dict it judges the one
-    CrewAI executes. A function behind `functools.wraps`, or with `__signature__` set,
-    showed the gate another function's parameters while its own defaults ran; the gate
-    now reads the callable's own and refuses a declared signature. And a hook that runs
-    the gate on another thread is refused, since the gate cannot find the call there.
+    written, was judged and thrown away; the gate now makes that dict the one CrewAI
+    executes. A hook that replaces the argument dict outright, rather than editing it,
+    had the replacement judged while CrewAI ran its own on the native routes; that is
+    now refused on every route. A function behind `functools.wraps`, or showing a
+    `__signature__` on itself, its `__call__`, a `partial`'s function or a method's
+    function, showed the gate other parameters than those Python binds; the gate now
+    reads the callable's own, looking through pass-through wrappers (`lru_cache`,
+    `cache`, `staticmethod`), and refuses a declared signature. A hook that runs the
+    gate on another thread is refused, since the gate cannot find the call there.
+  - Changed by this release: on the text route an empty call to a tool that raises is
+    now retried by CrewAI as a call with arguments is, up to six runs in all instead of
+    three, because the gate gives it the dict it judged.
   - The README now says which name the policy is given (the normalised one), which tools
     CrewAI runs without its hooks and the gate therefore never sees
     (`LLM.call(available_functions=...)`, a Flow's tool action, CrewAI's agent adapters,

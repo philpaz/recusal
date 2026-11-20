@@ -84,11 +84,12 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import functools
 import inspect
 import re
 import sys
 import threading
-from types import FrameType
+from types import FrameType, MethodWrapperType, WrapperDescriptorType
 from typing import Any, Callable, List, Optional
 
 from crewai.agents.agent_executor import AgentExecutor
@@ -222,8 +223,10 @@ def _unsupported_tool(tool: Any) -> Optional[str]:
             return f"its tool object replaces `{name}`"
     original = getattr(tool, "_original_tool", None)
     if original is not None:
-        stock = {getattr(cls, name) for cls in (BaseTool, Tool) for name in _STOCK_ORIGINAL}
         for name in _STOCK_ORIGINAL:
+            # CrewAI's own method of that very name: another stock method in its place
+            # (``run = BaseTool.arun``) is not stock for this one
+            stock = {getattr(BaseTool, name), getattr(Tool, name)}
             if getattr(type(original), name, None) not in stock:
                 return f"its tool class overrides `{name}`"
         # a stock ``Tool`` runs its ``func`` directly on the native routes and through
@@ -267,6 +270,59 @@ def _execution_callable(tool: Any) -> Any:
     return func
 
 
+class _DeclaredSignature(Exception):
+    """A callable on the way to the code that runs carries a ``__signature__`` of its own."""
+
+
+#: Wrappers that pass every argument through unchanged and declare no parameters of their
+#: own, so the code that runs is the function they wrap: ``functools.lru_cache`` and
+#: ``functools.cache``.
+_PASS_THROUGH = (type(functools.lru_cache(maxsize=None)(lambda: None)),)
+
+#: A ``__call__`` implemented in C (a slot wrapper or a bound one): it carries no
+#: ``__signature__`` of its own and has nothing further in to read. A bound method is one
+#: such callable: its own ``__dict__`` shows its function's attributes, so a signature
+#: declared there is found above, and its ``__call__`` is where the walk stops. Walking
+#: into C slot wrappers instead ran out of depth and refused every ordinary tool method.
+_C_CALL = (WrapperDescriptorType, MethodWrapperType)
+
+
+def _own_parameters(func: Any, depth: int = 0) -> Any:
+    """The parameters Python binds when ``func`` is called: the callable's own, never a
+    signature it shows for something else.
+
+    ``inspect.signature`` follows ``__wrapped__`` (a ``functools.wraps`` wrapper would show
+    the wrapped function's parameters while its own defaults run) and honours a declared
+    ``__signature__``, on the callable or one level in (a callable object's ``__call__``, a
+    ``functools.partial``'s function; a method shows its function's attributes as its
+    own). The first is turned off; the second raises ``_DeclaredSignature`` wherever it is found. Wrappers that only pass
+    arguments through (``lru_cache``, ``cache``, a ``staticmethod``) are looked through.
+    """
+    if depth > 8:
+        raise ValueError("too many wrappers to inspect")
+    if isinstance(func, staticmethod):
+        return _own_parameters(func.__func__, depth + 1)
+    if isinstance(func, _PASS_THROUGH):
+        return _own_parameters(func.__wrapped__, depth + 1)
+    _refuse_declared_signature(func, depth)
+    return inspect.signature(func, follow_wrapped=False).parameters
+
+
+def _refuse_declared_signature(func: Any, depth: int) -> None:
+    """Raise ``_DeclaredSignature`` if ``func``, or what ``inspect.signature`` would read
+    in its place, declares ``__signature__``."""
+    if depth > 8:
+        raise ValueError("too many wrappers to inspect")
+    if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
+        raise _DeclaredSignature
+    if isinstance(func, functools.partial):
+        _refuse_declared_signature(func.func, depth + 1)
+    elif not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
+        call = getattr(type(func), "__call__", None)
+        if call is not None and not isinstance(call, _C_CALL):
+            _refuse_declared_signature(call, depth + 1)
+
+
 def _incomplete_callable(tool: Any) -> Optional[str]:
     """Why the callable declares a parameter the schema does not, or None if it declares
     none. Python would fill such a parameter from the callable's default after judgment, so
@@ -277,11 +333,9 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
     except TypeError as exc:
         return str(exc)
     try:
-        # the callable's own parameters: ``functools.wraps`` would show the wrapped
-        # function's, while the wrapper is what runs and fills its own defaults
-        if hasattr(func, "__signature__"):
-            return "its callable declares a signature that is not its own"
-        parameters = inspect.signature(func, follow_wrapped=False).parameters
+        parameters = _own_parameters(func)
+    except _DeclaredSignature:
+        return "its callable declares a signature that is not its own"
     except (TypeError, ValueError):
         return "its callable cannot be inspected for its parameters"
     fields = tool.args_schema.model_fields
@@ -346,7 +400,8 @@ _DISPATCH_ENTRY = _code(run_before_tool_call_hooks)
 
 #: The CrewAI functions that call that entry and then run the tool, by code object. The
 #: text route holds the tools the call is chosen from in its local ``tools`` and the
-#: arguments it executes in ``tool_calling.arguments``; the native
+#: arguments it executes in ``tool_calling.arguments``; the native routes the arguments in
+#: ``args_dict``,
 #: routes hold the name in ``func_name`` and the functions that run in
 #: ``self._available_functions`` (the agent executor) or ``available_functions`` (the
 #: plan-and-execute step). tests/test_crewai_gate.py pins each of these names.
@@ -355,6 +410,30 @@ _NATIVE_EXECUTOR_SITE = _code(AgentExecutor._execute_single_native_tool_call)
 _NATIVE_STEP_SITE = _code(_agent_utils.execute_single_native_tool_call)
 
 _UNKNOWN_SITE = "unknown"
+
+
+def _entry_wrappers() -> frozenset:
+    """The code of every ``functools.wraps`` wrapper that now stands, in one of the modules
+    CrewAI calls its hook entry from, between that module and the entry. Tracing and
+    instrumentation replace the module's name with such a wrapper; its frame then sits
+    between the entry and the function running the call, and is walked past. Nothing else
+    is: a frame of any other code between the two is a caller the gate does not know."""
+    codes = set()
+    for module in (
+        _tool_utils,
+        _agent_utils,
+        sys.modules.get(AgentExecutor.__module__),
+        sys.modules.get(run_before_tool_call_hooks.__module__),
+    ):
+        current = getattr(module, "run_before_tool_call_hooks", None)
+        for _ in range(8):
+            if current is None or not hasattr(current, "__wrapped__"):
+                break
+            code = getattr(current, "__code__", None)
+            if code is not None:
+                codes.add(code)
+            current = current.__wrapped__
+    return frozenset(codes)
 
 
 def _calling_site() -> Optional[tuple[str, Any]]:
@@ -373,6 +452,9 @@ def _calling_site() -> Optional[tuple[str, Any]]:
     while frame is not None:
         if frame.f_code is _DISPATCH_ENTRY:
             caller = frame.f_back
+            wrappers = _entry_wrappers()
+            while caller is not None and caller.f_code in wrappers:
+                caller = caller.f_back
             if caller is None:
                 return _UNKNOWN_SITE, None
             if caller.f_code is _TEXT_SITE:
@@ -395,13 +477,22 @@ def _unbound_arguments(site: Optional[tuple[str, Any]], tool_input: Any) -> Opti
     """Make the dict the hook was given the dict CrewAI executes, or say why it is not.
 
     On the text route CrewAI executes ``tool_calling.arguments``. That is the hook's dict,
-    except when the model sent no arguments: then the hook gets a new empty dict and the
+    unless a hook replaced ``tool_input`` with another (refused) or the model sent no
+    arguments: then the hook gets a new empty dict and the
     tool is invoked with nothing, so the invocation this gate prepares in the hook's dict
     (and anything an earlier hook wrote there) would be judged and thrown away. The gate
     puts the hook's dict in its place before judging; preparation then fills that one.
-    The native routes pass the hook's dict itself to the tool.
+    The native routes call the tool with their own ``args_dict``, which is the hook's dict
+    unless a hook replaced ``tool_input`` with another; then the call is refused, since the
+    gate would judge one dict while another runs.
     """
-    if site is None or site[0] != "text":
+    if site is None:
+        return None
+    if site[0] in ("native-executor", "native-step"):
+        if site[1].get("args_dict", _MISSING) is not tool_input:
+            return "the arguments handed to the gate are not the ones CrewAI would run"
+        return None
+    if site[0] != "text":
         return None
     calling = site[1].get("tool_calling", _MISSING)
     if calling is _MISSING:

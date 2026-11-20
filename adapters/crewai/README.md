@@ -153,7 +153,8 @@ order of a turn's entries on the chain is not always the order the model propose
   often the tool then ran or whether it ran. On CrewAI's text (ReAct) route a tool that
   raises is called again by CrewAI, up to six times in all on the tested release, under
   the one decision and the one entry: a tool with an effect before it raises repeats
-  that effect. A call CrewAI then
+  that effect; with the gate installed this includes a call with no arguments, which
+  CrewAI then runs with the defaults the gate judged. A call CrewAI then
   declines itself (a tool at its usage limit, a repeated call on the text route) is on
   the log as allowed, and so is a call CrewAI answers from its tool cache without
   running the tool.
