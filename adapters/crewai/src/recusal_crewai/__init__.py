@@ -26,7 +26,7 @@ from ._gate import (
     recusal_before_tool_call,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "BLOCKED_PREFIX",

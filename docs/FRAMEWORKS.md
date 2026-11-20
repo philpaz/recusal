@@ -232,7 +232,7 @@ For CrewAI, [`examples/crewai_gate.py`](https://github.com/philpaz/recusal/blob/
 hooks: `install_recusal_hooks(policy)` registers a `before_tool_call` hook that judges each
 call and blocks a refusal, and an `after_tool_call` hook that replaces CrewAI's fixed
 "blocked by hook" line with the reason the before hook blocked on (kept per invocation and
-never judged again; on the sync Crew runner, elsewhere the fixed line stays), so the model
+never judged again; where the reason was not kept for a call, CrewAI's fixed line stays), so the model
 reads why. The policy judges the invocation the tool receives, not the proposal: the hook
 completes omitted fields from the schema's defaults, runs the tool's own `args_schema`
 validation once, writes the validated values back into the dict CrewAI executes and judges
@@ -251,7 +251,7 @@ registry is
 process-global: one install covers every agent, task and crew in the process, and the
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
 that runs after the gate can change the argument dict the gate judged; the tests show the
-bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.10+, tested with
+bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.11+, tested with
 exactly `crewai==1.15.40`. To put every one of those calls on the record,
 [`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py)
 swaps in `install_audited_hooks(policy, log)`: the same decision, written as a hash-chained

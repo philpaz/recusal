@@ -13,8 +13,8 @@
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
 The [Recusal](https://github.com/philpaz/recusal) gate for
-[CrewAI](https://docs.crewai.com/): every tool call a crew makes is judged by your policy
-before the tool runs, and a refused call never runs.
+[CrewAI](https://docs.crewai.com/): every tool call CrewAI sends through its tool hooks is
+judged by your policy before the tool runs, and a refused call never runs.
 
 **New to Recusal?** It checks each tool call an AI agent proposes against your policy and
 refuses the unsafe or unapproved ones before the tool runs. No model makes that decision.
@@ -78,11 +78,35 @@ crew in the process, including a coworker an agent delegates to, and every tool 
 CrewAI runs through its hooks.
 
 **Install the gate after your other hooks.** Hooks run in registration order, and a hook
-registered after the gate can change the arguments the gate judged.
+registered after the gate can change the arguments the gate judged. A hook registered
+for one execution only (CrewAI's `scoped_hooks`) runs after every process-wide hook,
+the gate included, whatever the order: do not change tool arguments in one.
 
 The policy judges the invocation the tool receives, not the dict the model proposed:
 omitted defaults are completed from the tool's schema and values are validated once, the
 same way CrewAI prepares them at execution.
+
+**The name your policy is given is the one CrewAI calls the tool by**, which is the
+declared name normalised: a tool declared `"Run SQL"` reaches the policy as `run_sql`.
+Write rules against the normalised name.
+
+**Give each tool a distinct name.** If two of the tools a call is chosen from normalise
+to the same name, CrewAI itself does not keep them apart the same way on every route: it
+can hand a hook one tool and run the other. The gate does not take the handed tool on
+trust. It reads, in the CrewAI function that ran the hooks and is about to run the tool,
+the tools the call is being chosen from and the function about to run, and it judges a
+call only when the handed tool is the one that will run. Otherwise it refuses, before
+your policy runs:
+
+- on the text (ReAct) route, a call to a name two different tools there share (one tool
+  listed twice counts as one);
+- on the native routes, a call where the function CrewAI would run is not the handed
+  tool's own, and a call to a name CrewAI made up for a renamed tool (`run_sql_2`): a
+  rule written for `run_sql` would not match it;
+- a call whose hooks CrewAI ran from a function this version of the package does not
+  know. A CrewAI release that adds a route through the same hooks is refused there
+  until the package supports it. A release that changes what a known function does is
+  for the weekly test against the newest CrewAI to catch, not the gate at run time.
 
 ## Put every decision on the record
 
@@ -102,18 +126,37 @@ arguments). If the log cannot be written the call is refused. Check the log with
 **Entries carry no call id.** CrewAI's hook context has no id for the call, so the record
 does not invent one. Entries are told apart by their order on the chain, the tool, the
 fingerprint, and `control.crewai_agent`, the role of the agent that made the call.
-CrewAI runs one turn's tool calls on a thread pool, so the order of a turn's entries on
-the chain is not the order the model proposed them.
+When a turn proposes several tool calls CrewAI may run them on a thread pool, so the
+order of a turn's entries on the chain is not always the order the model proposed them.
 
 ## What the gate refuses, and what it does not see
 
 - **Refused before the policy runs:** a tool or schema that is not CrewAI's stock one (a
   schema with a validator, an alias, a constraint, a `default_factory` or an intermediate
-  base; a tool class that overrides CrewAI's run or validation methods), an unsupported
-  annotation, an unknown or missing parameter, a validation failure, and a callable that
-  declares a parameter its schema omits.
+  base; a tool class that overrides CrewAI's run or validation methods, a `Tool`
+  subclass with its own `_run`, a tool object with one of those methods set on it), an
+  unsupported
+  annotation, an unknown or missing parameter, a validation failure, a callable that
+  declares a parameter its schema omits, and a call the gate cannot tie to the tool that
+  will run (see "Give each tool a distinct name" above).
 - **Not judged:** what a tool does once it runs. A tool that executes code or shell it is
   handed needs a policy that names it.
+- **Not seen: tools CrewAI runs without its hooks.** The gate is CrewAI's own
+  `before_tool_call` hook, so it sees what CrewAI sends through that hook: an agent's
+  tool calls in a crew, a coworker's, and CrewAI's own agent tools. It does not see a
+  function passed to `LLM.call(available_functions=...)`, a tool action in a Flow, a tool
+  run by one of CrewAI's agent adapters (its OpenAI Agents and LangGraph adapters call
+  the tool themselves), a provider's built-in tool such as web search or the code
+  interpreter, which runs on the provider's side, or a delegation to a remote agent over
+  CrewAI's A2A support, which does not go through the tool hooks.
+- **After the decision.** An entry records the gate's decision for one hook call, not how
+  often the tool then ran or whether it ran. On CrewAI's text (ReAct) route a tool that
+  raises is called again by CrewAI, up to six times in all on the tested release, under
+  the one decision and the one entry: a tool with an effect before it raises repeats
+  that effect. A call CrewAI then
+  declines itself (a tool at its usage limit, a repeated call on the text route) is on
+  the log as allowed, and so is a call CrewAI answers from its tool cache without
+  running the tool.
 - **Not on the audit log:** a call a hook registered before the gate blocked, and whatever
   a hook registered after the gate changed.
 

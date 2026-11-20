@@ -17,6 +17,59 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **`recusal-crewai` 0.2.1: the gate holds the tool it is handed to the tool that runs.**
+  CrewAI finds a tool by its normalised name ("Run SQL" becomes `run_sql`) in more than
+  one place, and the places disagree once two of the tools a call is chosen from
+  normalise alike. On its text (ReAct) route the hook was handed the last tool of that
+  name while the first one ran, so the policy judged the arguments prepared for one tool
+  and another ran with its own defaults: a policy that refused `force=True` was shown a
+  call without `force` while a tool that forces by default ran. On the native routes
+  CrewAI renames the second tool (`run_sql_2`), a name a third tool may hold, and on the
+  plan-and-execute route a call to that name handed the hook the third tool while the
+  renamed one ran.
+  - A hook's context carries neither the tools a call is chosen from nor the function
+    about to run, and no list reachable from the agent or the task is reliably that
+    list. The gate now reads both where they are, in the CrewAI function that ran the
+    hooks and is about to run the tool, and judges a call only when the handed tool is
+    the one that will run. It refuses, before the policy: on the text route a call to a
+    name two different tools there share (one tool listed twice counts as one); on the
+    native routes a call whose function is not the handed tool's own `run`, and a call
+    to a name CrewAI made up for a renamed tool; and a call whose hooks CrewAI ran from a
+    function the gate does not know, so a release that adds a route through the same
+    hooks is refused there, not waved through.
+  - Also refused now, because the native routes run the original tool while the text
+    route runs the structured one, and the gate must be judging both: a tool class that
+    overrides `to_structured_tool`; a structured tool whose argument schema is not its
+    original tool's; a `Tool` subclass with its own `_run` (the native routes call its
+    function directly, so the function's defaults ran unjudged); and a tool object with
+    a run or validation method set on the object itself.
+  - Found by independent reviews of the adapter, repeated on each fix. Two earlier
+    attempts, which counted names on the lists reachable from the agent and task, were
+    each broken by the next review (tools passed to `Task.execute_sync`, tools a crew
+    adds, a plan-and-execute executor kept from an earlier run) and refused setups
+    CrewAI supports (the hierarchical process with `manager_llm`); neither was released.
+  - The tests drive the native and text routes on `kickoff`, `akickoff`,
+    `Task.execute_sync` and `Agent.kickoff`, the plan-and-execute route and the
+    hierarchical process; negative controls pin what CrewAI does without the gate, and a
+    test pins each local variable the gate reads in CrewAI's functions.
+  - Three more gaps in how the arguments are judged, older than this release and found
+    by the same reviews, are closed. On the text route a call with no arguments was
+    invoked with nothing, so what the gate prepared, and what an earlier hook had
+    written, was judged and thrown away; the gate now makes the dict it judges the one
+    CrewAI executes. A function behind `functools.wraps`, or with `__signature__` set,
+    showed the gate another function's parameters while its own defaults ran; the gate
+    now reads the callable's own and refuses a declared signature. And a hook that runs
+    the gate on another thread is refused, since the gate cannot find the call there.
+  - The README now says which name the policy is given (the normalised one), which tools
+    CrewAI runs without its hooks and the gate therefore never sees
+    (`LLM.call(available_functions=...)`, a Flow's tool action, CrewAI's agent adapters,
+    a provider's built-in tools, A2A delegation), and what an audit entry does not say:
+    on the text route CrewAI calls a tool that raises again, up to six times in all,
+    under one decision. Tests pin the repeated runs, the calls CrewAI declines after the
+    gate allowed them, and a function run inside the LLM class.
+  - `pydantic` is now a declared dependency (`>=2,<3`); the gate imports it and had left
+    it to CrewAI's own requirement.
+
 - Every adapter is now tested against, and requires, a recent release of its framework.
   With the workflow installs hash-locked, GitHub could see the full dependency tree of
   each test environment for the first time, and it reported known vulnerabilities in

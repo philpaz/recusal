@@ -3,6 +3,7 @@
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1103,3 +1104,1125 @@ class TestPreparedInvocation:
         }
         for name in fields:
             assert _adapter()._unsupported_field(name, fields[name]) is None, name
+
+
+# --- both of CrewAI's tool-calling routes, and which tool a call names ----------------------
+#
+# CrewAI runs a tool call one of two ways: natively (the model returns tool calls) or as
+# text (the model writes ``Action:`` and ``Action Input:``, the ReAct form). Everything above
+# drives the native route. These drive both, and hold the gate to one tool per name.
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+")
+class TestBothRoutes:
+    @pytest.fixture
+    def kit(self, tmp_path):
+        pytest.importorskip("crewai", reason="crewai is not installed")
+        import asyncio
+        import importlib.util
+        import logging
+
+        spec = importlib.util.spec_from_file_location("recusal_crewai_routes_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        example = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = example
+        spec.loader.exec_module(example)
+        from crewai import Agent, Crew, Task
+        from crewai.hooks import clear_after_tool_call_hooks, clear_before_tool_call_hooks
+        from crewai.llms.base_llm import BaseLLM
+        from crewai.tools import tool
+        from recusal_crewai import install_audited_hooks
+
+        from recusal import Finding
+        from recusal.audit import AuditLog
+
+        clear_before_tool_call_hooks()
+        clear_after_tool_call_hooks()
+        logging.disable(logging.CRITICAL)
+
+        class TurnLLM(BaseLLM):
+            """One scripted turn per call: a list of native ``(name, args, id)`` calls, or the
+            text of a ReAct turn. After the script it gives its final answer."""
+
+            def __init__(self, turns, native):
+                super().__init__(model="scripted")
+                self.script = list(turns)
+                self.native = native
+                self.heard = []
+
+            def call(self, messages, tools=None, callbacks=None, available_functions=None, **_):
+                self.heard.append(messages)
+                if self.script:
+                    turn = self.script.pop(0)
+                    if isinstance(turn, str):
+                        return turn
+                    return [example._tool_call(cid, name, args) for name, args, cid in turn]
+                return "Thought: I now know the final answer\nFinal Answer: done"
+
+            def supports_function_calling(self):
+                return self.native
+
+            def supports_stop_words(self):
+                return False
+
+            def get_context_window_size(self):
+                return 100_000
+
+        def run(
+            turns,
+            tools,
+            policy,
+            *,
+            native,
+            gated=True,
+            runner="kickoff",
+            task_tools=None,
+            agent_options=None,
+            crew_options=None,
+            llm=None,
+        ):
+            """Returns (what the model was told about its calls, the audit decisions, error).
+
+            ``runner`` is ``kickoff``, ``akickoff``, ``hierarchical`` (a crew whose task has
+            no agent of its own), ``agent`` (``Agent.kickoff``, no crew and no task) or
+            ``execute_sync``: the last runs the task by itself and passes ``tools`` to it,
+            leaving the agent with none."""
+            log = AuditLog(path=str(tmp_path / f"audit-{len(list(tmp_path.iterdir()))}.jsonl"))
+            llm = llm or TurnLLM(turns, native)
+            alone = runner == "execute_sync"
+            agent = Agent(
+                role="assistant",
+                goal="do the task",
+                backstory="offline",
+                llm=llm,
+                tools=[] if alone else tools,
+                **(agent_options or {}),
+            )
+            extra = {"tools": task_tools} if task_tools is not None else {}
+            unowned = alone or runner == "hierarchical"
+            task = Task(
+                description="go",
+                expected_output="done",
+                **({} if unowned else {"agent": agent}),
+                **extra,
+            )
+            crew = None
+            if runner not in ("execute_sync", "agent"):
+                crew = Crew(agents=[agent], tasks=[task], verbose=False, **(crew_options or {}))
+            uninstall = install_audited_hooks(policy, log) if gated else (lambda: None)
+            error = None
+            try:
+                if runner in ("kickoff", "hierarchical"):
+                    crew.kickoff()
+                elif runner == "agent":
+                    agent.kickoff("go")
+                elif alone:
+                    task.execute_sync(agent=agent, tools=tools)
+                else:
+                    asyncio.run(crew.akickoff())
+            except Exception as exc:  # noqa: BLE001, the caller asserts on it
+                error = exc
+            finally:
+                uninstall()
+            told = " ".join(str(m.get("content")) for m in llm.heard[-1] if isinstance(m, dict))
+            return told, [entry["decision"] for entry in log.entries], error
+
+        def no_deletes(name, args):
+            if "DELETE" in str(args.get("sql", "")).upper():
+                return [Finding.fail("no_deletes", severity="CRITICAL", message="DELETE refused")]
+            return []
+
+        yield SimpleNamespace(
+            run=run,
+            tool=tool,
+            no_deletes=no_deletes,
+            Finding=Finding,
+            BaseLLM=BaseLLM,
+            tool_call=example._tool_call,
+            before=example.recusal_before_tool_call,
+            scripted=lambda turns, native: TurnLLM(turns, native),
+        )
+        logging.disable(logging.NOTSET)
+        clear_before_tool_call_hooks()
+        clear_after_tool_call_hooks()
+
+    @staticmethod
+    def proposal(native, name, args, call_id="c1"):
+        if native:
+            return [(name, args, call_id)]
+        import json
+
+        return f"Thought: use it\nAction: {name}\nAction Input: {json.dumps(args)}"
+
+    @pytest.mark.parametrize("runner", ["kickoff", "akickoff"])
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_an_allowed_call_runs_and_a_refused_call_does_not_on_either_route(
+        self, kit, native, runner
+    ):
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return f"recorded {sql}"
+
+        told, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": SELECT})],
+            [run_sql],
+            kit.no_deletes,
+            native=native,
+            runner=runner,
+        )
+        assert error is None and ran == [SELECT] and decisions == ["PASS"]
+        assert f"recorded {SELECT}" in told
+
+        ran.clear()
+        told, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": DELETE})],
+            [run_sql],
+            kit.no_deletes,
+            native=native,
+            runner=runner,
+        )
+        assert error is None and ran == [] and decisions == ["FAIL"]
+        # the model reads the reason, on the async runner too
+        assert REFUSED in told and "DELETE refused" in told
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_the_policy_is_given_the_name_crewai_calls_the_tool_by(self, kit, native):
+        seen = []
+
+        @kit.tool("Run SQL")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            return "recorded"
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        kit.run(
+            [self.proposal(native, "run_sql", {"sql": SELECT})], [run_sql], recording, native=native
+        )
+        assert seen == ["run_sql"]
+
+    def _two_tools_named_alike(self, kit, ran):
+        @kit.tool("run_sql")
+        def with_force(sql: str, force: bool = True) -> str:
+            """Record SQL, forcing by default."""
+            ran.append(("with_force", sql, force))
+            return "A ran"
+
+        @kit.tool("Run SQL")
+        def plain(sql: str) -> str:
+            """Record SQL."""
+            ran.append(("plain", sql))
+            return "B ran"
+
+        return [with_force, plain]
+
+    @pytest.mark.parametrize("runner", ["kickoff", "akickoff", "execute_sync", "agent"])
+    def test_on_the_text_route_a_name_two_tools_share_is_refused_before_the_policy(
+        self, kit, runner
+    ):
+        """On the text route CrewAI hands the hook the last tool of that name and runs the
+        first, so a policy that refuses ``force`` was shown a call without it while the tool
+        that forces by default ran. The gate cannot say which tool its judgment is about.
+        ``execute_sync`` passes the tools to the task alone: they are on no list of the
+        agent's or the task's, only in the function that is running the call."""
+        ran, seen = [], []
+
+        def no_force(name, args):
+            seen.append((name, dict(args)))
+            if args.get("force"):
+                return [kit.Finding.fail("no_force", severity="CRITICAL", message="force refused")]
+            return []
+
+        told, decisions, error = kit.run(
+            [self.proposal(False, "run_sql", {"sql": "x"})],
+            self._two_tools_named_alike(kit, ran),
+            no_force,
+            native=False,
+            runner=runner,
+        )
+        assert error is None and ran == [] and seen == []
+        assert decisions == ["FAIL"]
+        assert "2 of the tools CrewAI is choosing this call from are named `run_sql`" in told
+        assert "give each tool a distinct name" in told
+
+    @pytest.mark.parametrize("runner", ["kickoff", "akickoff", "execute_sync", "agent"])
+    def test_on_the_native_route_the_policy_judges_the_tool_that_runs(self, kit, runner):
+        """On the native route the first tool of a shared name keeps the name, and the gate
+        holds the handed tool to the function CrewAI runs: the policy is shown the call as
+        the forcing tool receives it, and refuses it."""
+        ran, seen = [], []
+
+        def no_force(name, args):
+            seen.append((name, dict(args)))
+            if args.get("force"):
+                return [kit.Finding.fail("no_force", severity="CRITICAL", message="force refused")]
+            return []
+
+        told, decisions, error = kit.run(
+            [self.proposal(True, "run_sql", {"sql": "x"})],
+            self._two_tools_named_alike(kit, ran),
+            no_force,
+            native=True,
+            runner=runner,
+        )
+        assert error is None and ran == []
+        assert seen == [("run_sql", {"sql": "x", "force": True})]
+        assert decisions == ["FAIL"] and "force refused" in told
+
+    def test_negative_control_without_the_gate_the_text_route_runs_the_tool_the_hook_was_not_shown(
+        self, kit
+    ):
+        """What the refusal above prevents, pinned: ungated, the same proposal runs the tool
+        that forces by default. If a CrewAI release stops doing this, this says so."""
+        ran = []
+        kit.run(
+            [self.proposal(False, "run_sql", {"sql": "x"})],
+            self._two_tools_named_alike(kit, ran),
+            lambda name, args: [],
+            native=False,
+            gated=False,
+        )
+        assert ran == [("with_force", "x", True)]
+
+    def test_negative_control_tools_passed_to_the_task_alone_run_the_same_way_ungated(self, kit):
+        """``Task.execute_sync(tools=...)`` leaves the agent's and the task's own lists empty,
+        so the tools in play are only on the agent's executor. Ungated, the tool the hook
+        is not shown runs here too; gated, the test above refuses it."""
+        ran = []
+        kit.run(
+            [self.proposal(False, "run_sql", {"sql": "x"})],
+            self._two_tools_named_alike(kit, ran),
+            lambda name, args: [],
+            native=False,
+            gated=False,
+            runner="execute_sync",
+        )
+        assert ran == [("with_force", "x", True)]
+
+    def test_the_name_crewai_gives_a_renamed_duplicate_is_refused_too(self, kit):
+        """On the native route CrewAI renames the second tool of a shared name
+        (``run_sql_2``). A rule written for ``run_sql`` would not match it."""
+        ran, seen = [], []
+
+        def allow(name, args):
+            seen.append(name)
+            return []
+
+        told, decisions, error = kit.run(
+            [[("run_sql", {"sql": "x"}, "c1"), ("run_sql_2", {"sql": "x"}, "c2")]],
+            self._two_tools_named_alike(kit, ran),
+            allow,
+            native=True,
+        )
+        assert error is None
+        # `run_sql` is the first tool's own name and the first tool runs: judged, allowed
+        assert seen == ["run_sql"] and ran == [("with_force", "x", True)]
+        # `run_sql_2` is CrewAI's name for "Run SQL": refused, the policy never asked
+        assert sorted(decisions) == ["FAIL", "PASS"]
+        assert "for a call to `run_sql_2`" in told
+
+    def test_a_call_whose_name_is_not_the_handed_tools_own_is_refused_by_itself(self, kit):
+        """The name check alone, with no tool list to read: a context built by hand."""
+        from crewai.hooks.tool_hooks import ToolCallHookContext
+
+        seen = []
+
+        @kit.tool("Run SQL")
+        def plain(sql: str) -> str:
+            """Record SQL."""
+            return "ok"
+
+        def context(name):
+            return ToolCallHookContext(
+                tool_name=name,
+                tool_input={"sql": "x"},
+                tool=plain.to_structured_tool(),
+                agent=None,
+                task=None,
+                crew=None,
+            )
+
+        before = kit.before(lambda name, args: seen.append(name) or [])
+        assert before(context("run_sql_2")) is False and seen == []
+        assert before(context("run_sql")) is None and seen == ["run_sql"]
+
+    def test_the_gate_knows_the_function_calling_it_on_every_route(self, kit):
+        """The gate reads the tools a call is chosen from, and the function about to run,
+        in the CrewAI function that calls the hook. A route it does not recognise is
+        refused, so this pins that each route CrewAI has today is recognised, through a
+        hook that asks the gate where it was called from."""
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+
+        gate = _adapter()
+        sites, problems = [], []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            return "ok"
+
+        def spy(context):
+            site = gate._calling_site()
+            sites.append(site[0] if site else None)
+            problems.append(gate._identity_problem(context, site))
+            return None
+
+        register_before_tool_call_hook(spy)
+        try:
+            for native in (True, False):
+                for runner in ("kickoff", "akickoff", "execute_sync", "agent"):
+                    sites.append((native, runner))
+                    kit.run(
+                        [self.proposal(native, "run_sql", {"sql": SELECT})],
+                        [run_sql],
+                        lambda name, args: [],
+                        native=native,
+                        runner=runner,
+                        gated=False,
+                    )
+            sites.append("planning")
+            kit.run(
+                [],
+                [run_sql],
+                lambda name, args: [],
+                native=True,
+                gated=False,
+                agent_options={"planning": True},
+                llm=self._planning_model(kit, "run_sql"),
+            )
+        finally:
+            unregister_before_tool_call_hook(spy)
+        assert problems == [None] * 9
+        assert sites == [
+            (True, "kickoff"),
+            "native-executor",
+            (True, "akickoff"),
+            "native-executor",
+            (True, "execute_sync"),
+            "native-executor",
+            (True, "agent"),
+            "native-executor",
+            (False, "kickoff"),
+            "text",
+            (False, "akickoff"),
+            "text",
+            (False, "execute_sync"),
+            "text",
+            (False, "agent"),
+            "text",
+            "planning",
+            "native-step",
+        ]
+
+    def test_the_names_the_gate_reads_in_crewais_functions_exist(self, kit):
+        """The local variables the gate reads, by name, in each function it knows. A CrewAI
+        release that renames one makes the gate refuse every call on that route; this
+        says which name went."""
+        gate = _adapter()
+        assert "tools" in gate._TEXT_SITE.co_varnames
+        for code in (gate._NATIVE_EXECUTOR_SITE, gate._NATIVE_STEP_SITE):
+            assert "func_name" in code.co_varnames, code.co_name
+        assert "self" in gate._NATIVE_EXECUTOR_SITE.co_varnames
+        assert "available_functions" in gate._NATIVE_STEP_SITE.co_varnames
+
+    def _handed(self, kit, name="run_sql"):
+        @kit.tool(name)
+        def plain(sql: str) -> str:
+            """Record SQL."""
+            return "ok"
+
+        structured = plain.to_structured_tool()
+        context = SimpleNamespace(
+            tool_name="run_sql", tool_input={"sql": "x"}, tool=structured, agent=None, task=None
+        )
+        return plain, structured, context
+
+    def test_a_call_from_a_crewai_function_the_gate_does_not_know_is_refused(self, kit):
+        gate = _adapter()
+        _, _, context = self._handed(kit)
+        assert gate._identity_problem(context, None) is None
+        why = gate._identity_problem(context, (gate._UNKNOWN_SITE, None))
+        assert why is not None and "does not know" in why
+        assert "does not know" in gate._identity_problem(context, ("a-new-kind", {}))
+
+    @staticmethod
+    def _called_from(module_name, function):
+        """Call ``function`` from a frame whose module is ``module_name``, as a CrewAI
+        function of that module would."""
+        scope = {"__name__": module_name, "function": function}
+        exec("def caller():\n    return function()\n", scope)
+        return scope["caller"]()
+
+    def test_hooks_run_from_a_function_the_gate_does_not_know_are_refused(self, kit):
+        """CrewAI's entry to its before hooks, entered from a function that is none of the
+        three the gate knows: whatever module it is in, the gate cannot say what it will run
+        and refuses before the policy. This is what a new CrewAI route would look like."""
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+        from crewai.hooks.tool_hooks import run_before_tool_call_hooks
+
+        seen = []
+        _, _, context = self._handed(kit)
+        before = kit.before(lambda name, args: seen.append(name) or [])
+        register_before_tool_call_hook(before)
+        try:
+            for module in ("crewai.agents.a_new_route", "crewai_core.runtime", "crewai.hooks.x"):
+                blocked = self._called_from(module, lambda: run_before_tool_call_hooks(context))
+                assert blocked is True, module
+            # from this test itself, and from another thread, with no caller the gate knows
+            assert run_before_tool_call_hooks(context) is True
+            import threading
+
+            results = []
+            thread = threading.Thread(
+                target=lambda: results.append(run_before_tool_call_hooks(context))
+            )
+            thread.start()
+            thread.join()
+            assert results == [True]
+        finally:
+            unregister_before_tool_call_hook(before)
+        assert seen == []
+
+    def test_the_gate_tells_a_call_by_hand_from_crewais_dispatch(self, kit):
+        gate = _adapter()
+        # by hand: no CrewAI hook dispatch on the stack, wherever the caller lives
+        assert gate._calling_site() is None
+        assert self._called_from("my_app.hooks", gate._calling_site) is None
+        assert self._called_from("crewai.flow.flow", gate._calling_site) is None
+        # CrewAI's hook dispatch on the stack without its entry: not a route the gate knows
+        unknown = (gate._UNKNOWN_SITE, None)
+        assert self._called_from("crewai.hooks.dispatch", gate._calling_site) == unknown
+        assert self._called_from("crewai.hooks", gate._calling_site) == unknown
+
+        seen = []
+        _, _, context = self._handed(kit)
+        before = kit.before(lambda name, args: seen.append(name) or [])
+        assert self._called_from("crewai.hooks.dispatch", lambda: before(context)) is False
+        assert seen == []
+        assert self._called_from("crewai.flow.flow", lambda: before(context)) is None
+        assert seen == ["run_sql"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_hook_that_wraps_the_gate_is_still_tied_to_the_call(self, kit, native):
+        """CrewAI wraps a filtered hook (``@before_tool_call(tools=[...])`` on a ``@CrewBase``
+        method) in a function of its own, and an application may call the gate from its own
+        hook. Frames between the gate and CrewAI's entry are walked past, so the call is
+        judged, and a shared name is still refused."""
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+
+        ran, seen = [], []
+        before = kit.before(lambda name, args: seen.append(name) or [])
+        scope = {"__name__": "crewai.project.crew_base", "before": before}
+        exec("def filtered(context):\n    return before(context)\n", scope)
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        register_before_tool_call_hook(scope["filtered"])
+        try:
+            kit.run(
+                [self.proposal(native, "run_sql", {"sql": SELECT})],
+                [run_sql],
+                None,
+                native=native,
+                gated=False,
+            )
+            assert seen == ["run_sql"] and ran == [SELECT]
+            if not native:
+                collided = []
+                kit.run(
+                    [self.proposal(False, "run_sql", {"sql": "x"})],
+                    self._two_tools_named_alike(kit, collided),
+                    None,
+                    native=False,
+                    gated=False,
+                )
+                assert collided == [] and seen == ["run_sql"]
+        finally:
+            unregister_before_tool_call_hook(scope["filtered"])
+
+    def test_a_context_with_an_agent_and_no_crewai_function_to_be_found_is_refused(self, kit):
+        """Every CrewAI function that runs a tool passes its agent. A hook that runs the
+        gate on another thread leaves the gate with an agent and no CrewAI frame: it cannot
+        tie the call to what will run, and must not fall back to the by-hand rule."""
+        import threading
+
+        gate = _adapter()
+        seen = []
+        _, _, context = self._handed(kit)
+        assert gate._identity_problem(context, None) is None
+        context.agent = SimpleNamespace(role="assistant")
+        assert "cannot find the CrewAI function" in gate._identity_problem(context, None)
+
+        before = kit.before(lambda name, args: seen.append(name) or [])
+        results = []
+        thread = threading.Thread(target=lambda: results.append(before(context)))
+        thread.start()
+        thread.join()
+        assert results == [False] and seen == []
+
+    def test_on_the_text_route_a_call_with_no_arguments_runs_what_was_judged(self, kit):
+        """With no arguments CrewAI hands the hooks a new empty dict and invokes the tool
+        with nothing, so what a hook wrote there, and what the gate prepared, was thrown
+        away. The gate makes the hook's dict the one CrewAI executes."""
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+
+        ran, seen = [], []
+
+        @kit.tool("purge")
+        def purge(dry_run: bool = False) -> str:
+            """Purge."""
+            ran.append(dry_run)
+            return "ok"
+
+        def dry_runs_only(name, args):
+            seen.append(dict(args))
+            if not args.get("dry_run"):
+                return [kit.Finding.fail("dry", severity="CRITICAL", message="dry runs only")]
+            return []
+
+        def make_it_a_dry_run(context):
+            context.tool_input["dry_run"] = True
+            return None
+
+        empty = "Thought: use it\nAction: purge\nAction Input: {}"
+        # alone, the gate judges the default the tool will receive, and refuses it
+        _, decisions, error = kit.run([empty], [purge], dry_runs_only, native=False)
+        assert error is None and ran == [] and seen == [{"dry_run": False}]
+        assert decisions == ["FAIL"]
+        # with an earlier hook that writes the argument, the tool receives what was judged
+        seen.clear()
+        register_before_tool_call_hook(make_it_a_dry_run)
+        try:
+            _, decisions, error = kit.run([empty], [purge], dry_runs_only, native=False)
+        finally:
+            unregister_before_tool_call_hook(make_it_a_dry_run)
+        assert error is None and seen == [{"dry_run": True}] and ran == [True]
+        assert decisions == ["PASS"]
+
+    def test_a_callable_that_hides_its_own_parameters_is_refused(self, kit):
+        """``functools.wraps`` shows the wrapped function's signature while the wrapper is
+        what runs, and fills its own defaults after judgment."""
+        import functools
+
+        gate = _adapter()
+
+        def forcing(function):
+            @functools.wraps(function)
+            def wrapper(*args, force: bool = True, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        @kit.tool("delete_rows")
+        @forcing
+        def delete_rows(table: str) -> str:
+            """Delete rows."""
+            return "deleted"
+
+        why = gate._unsupported_tool(delete_rows.to_structured_tool())
+        assert why == "its callable's parameter `force` is absent from the argument schema"
+
+        def plain(table: str, force: bool = True) -> str:
+            """Delete rows."""
+            return "deleted"
+
+        def shown(table: str) -> str:
+            """Delete rows."""
+            return "deleted"
+
+        import inspect
+
+        plain.__signature__ = inspect.signature(shown)
+        declared = kit.tool("delete_rows")(plain)
+        why = gate._unsupported_tool(declared.to_structured_tool())
+        assert why == "its callable declares a signature that is not its own"
+
+    def test_a_call_with_no_name_or_a_tool_with_no_name_is_refused(self, kit):
+        gate = _adapter()
+        _, structured, context = self._handed(kit)
+        context.tool_name = None
+        assert gate._identity_problem(context, None) == "the call carries no tool name"
+        context.tool_name = "run_sql"
+        context.tool = SimpleNamespace(name=None)
+        assert "a tool of another name" in gate._identity_problem(context, None)
+        context.tool = SimpleNamespace(name=7)
+        assert "a tool of another name" in gate._identity_problem(context, None)
+
+    def test_on_the_text_route_the_handed_tool_must_be_the_one_tool_of_that_name(self, kit):
+        gate = _adapter()
+        _, structured, context = self._handed(kit)
+        _, other, _ = self._handed(kit, "Run SQL")
+        _, unrelated, _ = self._handed(kit, "lookup")
+
+        def problem(tools):
+            return gate._identity_problem(context, ("text", {"tools": tools}))
+
+        assert problem([structured]) is None
+        assert problem([unrelated, structured]) is None
+        # one tool listed twice: two structured copies of one original are one tool
+        copy = structured._original_tool.to_structured_tool()
+        assert copy is not structured and problem([copy, structured]) is None
+        # but not a copy that would validate or run differently
+        copy.args_schema = other.args_schema
+        assert "2 of the tools" in problem([copy, structured])
+        copy = structured._original_tool.to_structured_tool()
+        copy.func = other.func
+        assert "2 of the tools" in problem([copy, structured])
+        copy = structured._original_tool.to_structured_tool()
+        copy._original_tool = other._original_tool
+        assert "2 of the tools" in problem([copy, structured])
+        # nor a copy of another class
+        copy = structured._original_tool.to_structured_tool()
+        copy.__class__ = type("Sub", (type(structured),), {})
+        assert "2 of the tools" in problem([copy, structured])
+        # and two tools with no original tool are never copies of each other
+        original = structured._original_tool
+        copy = original.to_structured_tool()
+        structured._original_tool = None
+        copy._original_tool = None
+        assert "2 of the tools" in problem([copy, structured])
+        structured._original_tool = original
+        assert "2 of the tools" in problem([structured, other])
+        assert "not the one CrewAI would run" in problem([other])
+        assert "not the one CrewAI would run" in problem([unrelated])
+        assert "cannot read the tools" in gate._identity_problem(context, ("text", {}))
+        assert "cannot read the tools" in problem(None)
+
+    @pytest.mark.parametrize("kind", ["native-executor", "native-step"])
+    def test_on_the_native_routes_the_function_that_runs_must_be_the_handed_tools(self, kit, kind):
+        gate = _adapter()
+        plain, structured, context = self._handed(kit)
+        other, _, _ = self._handed(kit, "Run SQL")
+
+        def problem(functions, name="run_sql"):
+            if kind == "native-executor":
+                local = {"self": SimpleNamespace(_available_functions=functions), "func_name": name}
+            else:
+                local = {"available_functions": functions, "func_name": name}
+            return gate._identity_problem(context, (kind, local))
+
+        assert problem({"run_sql": plain.run}) is None
+        assert problem({"run_sql": plain.run, "run_sql_2": other.run}) is None
+        # the function CrewAI would run belongs to another tool
+        assert "not the one CrewAI would run" in problem({"run_sql": other.run})
+        assert "not the one CrewAI would run" in problem({"run_sql": lambda **kw: "x"})
+        assert "not the one CrewAI would run" in problem({})
+        # the name CrewAI is running is not the one on the hook's context
+        assert "cannot read the function" in problem({"run_sql": plain.run}, name="run_sql_2")
+        assert "cannot read the function" in problem(None)
+        local = {"func_name": "run_sql"}
+        assert "cannot read the function" in gate._identity_problem(context, (kind, local))
+        # a handed tool with no original tool cannot be held to a function
+        # another bound method of the same tool is not its `run`
+        assert "not the one CrewAI would run" in problem({"run_sql": plain.arun})
+        assert "not the one CrewAI would run" in problem({"run_sql": plain._run})
+        context.tool._original_tool = None
+        assert "not the one CrewAI would run" in problem({"run_sql": plain.run})
+        # nor to a plain function, which has no tool of its own either
+        assert "not the one CrewAI would run" in problem({"run_sql": lambda **kw: "x"})
+
+    def test_a_tool_whose_structured_form_is_not_stock_is_refused(self, kit):
+        """The native routes run the original tool, which validates with its own schema,
+        while the gate prepares with the structured tool's: they must be one, and
+        ``to_structured_tool`` must be CrewAI's own."""
+        from crewai.tools import BaseTool
+        from pydantic import BaseModel
+
+        gate = _adapter()
+
+        class Narrow(BaseModel):
+            sql: str
+
+        class Narrowed(BaseTool):
+            name: str = "run_sql"
+            description: str = "Record SQL."
+
+            def _run(self, sql: str, force: bool = True) -> str:
+                return "ran"
+
+            def to_structured_tool(self):
+                structured = super().to_structured_tool()
+                structured.args_schema = Narrow
+                return structured
+
+        why = gate._unsupported_tool(Narrowed().to_structured_tool())
+        assert why == "its tool class overrides `to_structured_tool`"
+
+        plain, structured, _ = self._handed(kit)
+        assert gate._unsupported_tool(structured) is None
+        structured.args_schema = Narrow
+        assert (
+            gate._unsupported_tool(structured) == "its argument schema is not its original tool's"
+        )
+
+    def test_a_tool_subclass_with_its_own_run_is_refused(self, kit):
+        """A stock ``Tool`` (what ``@tool`` builds) runs its function directly on the native
+        routes and through ``_run`` on the text route. A subclass with its own ``_run`` runs
+        two different things, and the gate holds only one of them to the schema."""
+        from crewai.tools.base_tool import Tool
+        from pydantic import BaseModel
+
+        gate = _adapter()
+
+        def charge(amount: int, force: bool = True) -> str:
+            return "charged"
+
+        class Careful(Tool):
+            def _run(self, amount: int) -> str:
+                return self.func(amount, force=False)
+
+        class Amount(BaseModel):
+            amount: int
+
+        careful = Careful(name="charge", description="Charge.", func=charge, args_schema=Amount)
+        why = gate._unsupported_tool(careful.to_structured_tool())
+        assert why == "its tool class overrides `_run`"
+
+        class Awaited(Tool):
+            async def _arun(self, amount: int) -> str:
+                return "charged"
+
+        awaited = Awaited(name="charge", description="Charge.", func=charge, args_schema=Amount)
+        why = gate._unsupported_tool(awaited.to_structured_tool())
+        assert why in (
+            "its tool class overrides `_arun`",
+            "its callable's parameter `force` is absent from the argument schema",
+        )
+
+    def test_a_method_set_on_the_tool_object_is_refused(self, kit):
+        """The stock checks compare the class's methods; one set on the object itself would
+        hide the class's from them and run in its place."""
+        gate = _adapter()
+        for name in ("run", "arun", "_validate_kwargs", "to_structured_tool", "_run", "_arun"):
+            plain, structured, _ = self._handed(kit)
+            assert gate._unsupported_tool(structured) is None
+            object.__setattr__(plain, name, lambda *a, **k: "replaced")
+            assert gate._unsupported_tool(structured) == f"its tool object replaces `{name}`"
+        for name in ("_parse_args", "invoke", "ainvoke"):
+            _, structured, _ = self._handed(kit)
+            object.__setattr__(structured, name, lambda *a, **k: "replaced")
+            assert gate._unsupported_tool(structured) == f"its tool object replaces `{name}`"
+
+    def _three_tools_one_renamed_onto_another(self, kit, ran):
+        @kit.tool("run_sql")
+        def first(sql: str) -> str:
+            """Record SQL."""
+            ran.append(("first", sql))
+            return "A ran"
+
+        @kit.tool("Run SQL")
+        def with_force(sql: str, force: bool = True) -> str:
+            """Record SQL, forcing by default."""
+            ran.append(("with_force", sql, force))
+            return "B ran"
+
+        @kit.tool("run_sql_2")
+        def harmless(sql: str) -> str:
+            """Record SQL."""
+            ran.append(("harmless", sql))
+            return "C ran"
+
+        return [first, with_force, harmless]
+
+    def _planning_model(self, kit, name="run_sql_2"):
+        """A model for CrewAI's plan-and-execute route: a one-step plan, then one call to
+        ``name``."""
+        import json
+
+        class PlanLLM(kit.BaseLLM):
+            def __init__(self):
+                super().__init__(model="scripted")
+                self.calls = [[(name, {"sql": "x"}, "c1")]]
+                self.heard = [[]]
+
+            def call(self, messages, tools=None, callbacks=None, available_functions=None, **_):
+                if available_functions and "create_reasoning_plan" in available_functions:
+                    step = {
+                        "step_number": 1,
+                        "description": "call the tool",
+                        "tool_to_use": name,
+                        "depends_on": [],
+                    }
+                    return json.dumps({"plan": "one step", "steps": [step], "ready": True})
+                if tools and self.calls:
+                    return [kit.tool_call(cid, n, a) for n, a, cid in self.calls.pop(0)]
+                return "done"
+
+            def supports_function_calling(self):
+                return True
+
+            def supports_stop_words(self):
+                return False
+
+            def get_context_window_size(self):
+                return 100_000
+
+        return PlanLLM()
+
+    @pytest.mark.parametrize("gated", [True, False], ids=["gated", "negative-control"])
+    def test_on_the_planning_route_a_renamed_tool_does_not_run_under_another_tools_judgment(
+        self, kit, gated
+    ):
+        """Three tools: ``run_sql``, "Run SQL" (which CrewAI renames ``run_sql_2``) and one
+        really named ``run_sql_2``. On the plan-and-execute route a call to ``run_sql_2``
+        hands the hook the third while the second runs, forcing by default. The called name
+        is no tool's shared name, so the gate refuses on the shared name elsewhere."""
+        ran, seen = [], []
+
+        def no_force(name, args):
+            seen.append((name, dict(args)))
+            if args.get("force"):
+                return [kit.Finding.fail("no_force", severity="CRITICAL", message="force refused")]
+            return []
+
+        _, decisions, error = kit.run(
+            [],
+            self._three_tools_one_renamed_onto_another(kit, ran),
+            no_force,
+            native=True,
+            gated=gated,
+            agent_options={"planning": True},
+            llm=self._planning_model(kit),
+        )
+        assert error is None
+        if gated:
+            assert ran == [] and seen == [] and decisions == ["FAIL"]
+        else:
+            # what the refusal prevents: ungated, the tool that forces by default runs
+            assert ran == [("with_force", "x", True)]
+
+    def test_on_the_planning_route_an_allowed_call_is_judged_and_runs(self, kit):
+        ran, seen = [], []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str, limit: int = 10) -> str:
+            """Record SQL."""
+            ran.append((sql, limit))
+            return "ok"
+
+        _, decisions, error = kit.run(
+            [],
+            [run_sql],
+            lambda name, args: seen.append((name, dict(args))) or [],
+            native=True,
+            agent_options={"planning": True},
+            llm=self._planning_model(kit, "run_sql"),
+        )
+        assert error is None and ran == [("x", 10)] and decisions == ["PASS"]
+        assert seen == [("run_sql", {"sql": "x", "limit": 10})]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_one_tool_listed_twice_is_one_tool(self, kit, native):
+        """The agent's list holds the tool twice, so CrewAI builds two structured copies of
+        it. A call by its own name runs the same thing whichever copy CrewAI picks."""
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": SELECT})],
+            [run_sql, run_sql],
+            kit.no_deletes,
+            native=native,
+        )
+        assert error is None and ran == [SELECT] and decisions == ["PASS"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_task_tool_named_like_an_agent_tool_is_the_one_judged_and_run(self, kit, native):
+        """A task's tools replace its agent's, so only the task's tool is in play. The gate
+        reads the tools the call is chosen from, not the agent's list, and judges it."""
+        ran, seen = [], []
+        on_agent, on_task = self._two_tools_named_alike(kit, ran)
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": "x"})],
+            [on_agent],
+            lambda name, args: seen.append((name, dict(args))) or [],
+            native=native,
+            task_tools=[on_task],
+        )
+        assert error is None and ran == [("plain", "x")] and decisions == ["PASS"]
+        assert seen == [("run_sql", {"sql": "x"})]
+
+    def test_a_crew_with_a_manager_model_runs_under_the_gate(self, kit):
+        """The hierarchical process with ``manager_llm``: CrewAI gives the manager its
+        delegation tools twice over and drops one pair from the list it runs from. The gate
+        reads that list, so the manager's delegation and the worker's call are judged."""
+        from crewai import Process
+
+        ran, seen = [], []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        delegate = {"task": "run it", "context": "now", "coworker": "assistant"}
+        _, decisions, error = kit.run(
+            [self.proposal(True, "run_sql", {"sql": SELECT})],
+            [run_sql],
+            lambda name, args: seen.append(name) or [],
+            native=True,
+            runner="hierarchical",
+            crew_options={
+                "process": Process.hierarchical,
+                "manager_llm": kit.scripted(
+                    [[("delegate_work_to_coworker", delegate, "m1")]], native=True
+                ),
+            },
+        )
+        assert error is None and ran == [SELECT]
+        assert seen == ["delegate_work_to_coworker", "run_sql"] and decisions == ["PASS", "PASS"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_one_tool_listed_on_the_agent_and_on_its_task_is_one_tool(self, kit, native):
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": SELECT})],
+            [run_sql, run_sql],
+            kit.no_deletes,
+            native=native,
+            task_tools=[run_sql],
+        )
+        assert error is None and ran == [SELECT] and decisions == ["PASS"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_tools_with_distinct_names_are_not_refused_for_their_names(self, kit, native):
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(("run_sql", sql))
+            return "ok"
+
+        @kit.tool("Run SQL Twice")
+        def twice(sql: str) -> str:
+            """Record SQL twice."""
+            ran.append(("twice", sql))
+            return "ok"
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql_twice", {"sql": SELECT})],
+            [run_sql, twice],
+            kit.no_deletes,
+            native=native,
+        )
+        assert error is None and ran == [("twice", SELECT)] and decisions == ["PASS"]
+
+    # --- the limits the README states, pinned ------------------------------------------
+
+    def test_on_the_text_route_a_tool_that_raises_runs_again_under_one_decision(self, kit):
+        """README, "After the decision": CrewAI calls a raising tool again without running
+        its hooks again, so one entry stands for several runs. Pinned so that a CrewAI
+        release which changes it shows up here."""
+        ran = []
+
+        @kit.tool("boom")
+        def boom(x: str) -> str:
+            """Always raises."""
+            ran.append(x)
+            raise RuntimeError("SECRET-MARKER")
+
+        told, decisions, _ = kit.run(
+            [self.proposal(False, "boom", {"x": "1"})], [boom], lambda n, a: [], native=False
+        )
+        assert decisions == ["PASS"]
+        # the README says "up to six"; this call, with an argument, is the six
+        assert len(ran) == 6, f"the README says six runs; CrewAI ran the tool {len(ran)} times"
+
+    def test_a_call_crewai_declines_itself_is_on_the_log_as_allowed(self, kit):
+        ran = []
+
+        @kit.tool("limited", max_usage_count=1)
+        def limited(x: str) -> str:
+            """Usable once."""
+            ran.append(x)
+            return "ok"
+
+        told, decisions, _ = kit.run(
+            [[("limited", {"x": "1"}, "c1")], [("limited", {"x": "2"}, "c2")]],
+            [limited],
+            lambda n, a: [],
+            native=True,
+        )
+        assert ran == ["1"] and decisions == ["PASS", "PASS"]
+        assert "usage limit" in told
+
+    def test_a_repeated_call_on_the_text_route_is_on_the_log_as_allowed(self, kit):
+        """README, "After the decision": CrewAI declines the second identical call on the
+        text route itself, after the hook allowed it."""
+        ran = []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Record SQL."""
+            ran.append(sql)
+            return "ok"
+
+        same = self.proposal(False, "run_sql", {"sql": SELECT})
+        _, decisions, _ = kit.run([same, same], [run_sql], lambda n, a: [], native=False)
+        assert ran == [SELECT] and decisions == ["PASS", "PASS"]
+
+    def test_a_function_the_llm_runs_itself_never_reaches_the_gate(self, kit, tmp_path):
+        """README, "Not seen": a function handed to an LLM as ``available_functions`` is run
+        inside the LLM class (``BaseLLM._handle_tool_execution``, driven here directly since
+        a provider's ``call`` needs a network), with no hook. Under a gate that refuses
+        everything it still runs."""
+        from crewai.llms.base_llm import BaseLLM
+        from recusal_crewai import install_audited_hooks
+
+        from recusal.audit import AuditLog
+
+        class Plain(BaseLLM):
+            def call(self, messages, **_):
+                return "unused"
+
+        ran = []
+        log = AuditLog(path=str(tmp_path / "direct.jsonl"))
+        refuse_all = lambda n, a: [kit.Finding.fail("no", severity="CRITICAL", message="no")]  # noqa: E731
+        uninstall = install_audited_hooks(refuse_all, log)
+        try:
+            result = Plain(model="scripted")._handle_tool_execution(
+                "run_sql", {"sql": DELETE}, {"run_sql": lambda sql: ran.append(sql) or "ran"}
+            )
+        finally:
+            uninstall()
+        assert result == "ran" and ran == [DELETE] and log.entries == []
+
+    def test_the_framework_names_the_gate_relies_on_exist(self, kit):
+        from crewai.utilities.string_utils import sanitize_tool_name
+
+        assert sanitize_tool_name("Run SQL") == "run_sql"
+        assert sanitize_tool_name("run_sql") == "run_sql"
+
+        @kit.tool("probe")
+        def probe(x: str) -> str:
+            """A tool."""
+            return x
+
+        structured = probe.to_structured_tool()
+        # ``_unsupported_tool`` reads this to hold the original tool to CrewAI's own methods;
+        # were it renamed, that check would be skipped without a sound
+        assert structured._original_tool is probe

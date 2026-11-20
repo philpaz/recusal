@@ -60,6 +60,24 @@ pin:
 - the gate judges the tool name and arguments, not what a tool does once it runs. A tool
   that executes code or shell it is handed (CrewAI's code interpreter, for instance) needs a
   policy that names it; the gate cannot see inside.
+
+The name the policy is given is the one CrewAI calls the tool by, which is the declared
+name normalised (``sanitize_tool_name``: "Run SQL" becomes ``run_sql``), not the declared
+name itself.
+
+The tool the hook is handed is not always the tool CrewAI runs. CrewAI finds a tool by its
+normalised name in more than one place, and the places disagree once two of the tools a
+call is chosen from normalise alike: on the text (ReAct) route the hook's lookup keeps the
+last of them while the executor runs the first; on the native routes the second is renamed
+(``run_sql_2``), a name a third tool may hold, and the function that runs is looked up
+apart from the tool the hook is handed. A hook's context carries neither the list the call
+was chosen from nor the function about to run, and no list reachable from the agent or the
+task is reliably that list (a task's tools replace the agent's, a crew adds and replaces
+tools, an executor may be built once and kept). So the gate reads them where they are: in
+the CrewAI function that entered the hooks and is about to run the tool, by its frame
+(``_calling_site``). There it holds the handed tool to what will run
+(``_identity_problem``), and refuses a call it cannot hold, including one CrewAI dispatches
+from a function it does not know.
 """
 
 from __future__ import annotations
@@ -68,19 +86,25 @@ import copy
 import dataclasses
 import inspect
 import re
+import sys
 import threading
+from types import FrameType
 from typing import Any, Callable, List, Optional
 
+from crewai.agents.agent_executor import AgentExecutor
 from crewai.hooks import (
     register_after_tool_call_hook,
     register_before_tool_call_hook,
     unregister_after_tool_call_hook,
     unregister_before_tool_call_hook,
 )
-from crewai.hooks.tool_hooks import ToolCallHookContext
+from crewai.hooks.tool_hooks import ToolCallHookContext, run_before_tool_call_hooks
 from crewai.tools import BaseTool
 from crewai.tools.base_tool import Tool
 from crewai.tools.structured_tool import CrewStructuredTool
+from crewai.utilities import agent_utils as _agent_utils
+from crewai.utilities import tool_utils as _tool_utils
+from crewai.utilities.string_utils import sanitize_tool_name
 from pydantic import BaseModel, Field, ValidationError
 from pydantic.fields import FieldInfo
 
@@ -184,7 +208,7 @@ def _unsupported_schema(schema: Any) -> Optional[str]:
 #: The structured tool's methods that validate and run an invocation on CrewAI's paths, and
 #: the original tool's; the gate supports a tool only while every one of them is CrewAI's own.
 _STOCK_STRUCTURED = ("_parse_args", "invoke", "ainvoke")
-_STOCK_ORIGINAL = ("run", "arun", "_validate_kwargs")
+_STOCK_ORIGINAL = ("run", "arun", "_validate_kwargs", "to_structured_tool")
 
 
 def _unsupported_tool(tool: Any) -> Optional[str]:
@@ -194,14 +218,28 @@ def _unsupported_tool(tool: Any) -> Optional[str]:
     for name in _STOCK_STRUCTURED:
         if getattr(type(tool), name) is not getattr(CrewStructuredTool, name):
             return f"its tool class overrides `{name}`"
+        if name in getattr(tool, "__dict__", {}):
+            return f"its tool object replaces `{name}`"
     original = getattr(tool, "_original_tool", None)
     if original is not None:
-        stock = {getattr(BaseTool, n) for n in _STOCK_ORIGINAL} | {
-            getattr(Tool, n) for n in _STOCK_ORIGINAL
-        }
+        stock = {getattr(cls, name) for cls in (BaseTool, Tool) for name in _STOCK_ORIGINAL}
         for name in _STOCK_ORIGINAL:
             if getattr(type(original), name, None) not in stock:
                 return f"its tool class overrides `{name}`"
+        # a stock ``Tool`` runs its ``func`` directly on the native routes and through
+        # ``_run`` on the text route; a subclass with its own ``_run`` runs two things
+        if isinstance(original, Tool):
+            for name in ("_run", "_arun"):
+                if getattr(type(original), name, None) is not getattr(Tool, name, None):
+                    return f"its tool class overrides `{name}`"
+        # a method set on the object itself hides the class's from every check above
+        for name in (*_STOCK_ORIGINAL, "_run", "_arun"):
+            if name in getattr(original, "__dict__", {}):
+                return f"its tool object replaces `{name}`"
+        # the native routes run the original tool, which validates with its own schema; the
+        # gate prepares with the structured tool's, so they must be one
+        if getattr(original, "args_schema", None) is not tool.args_schema:
+            return "its argument schema is not its original tool's"
     why = _unsupported_schema(tool.args_schema)
     if why is not None:
         return why
@@ -239,7 +277,11 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
     except TypeError as exc:
         return str(exc)
     try:
-        parameters = inspect.signature(func).parameters
+        # the callable's own parameters: ``functools.wraps`` would show the wrapped
+        # function's, while the wrapper is what runs and fills its own defaults
+        if hasattr(func, "__signature__"):
+            return "its callable declares a signature that is not its own"
+        parameters = inspect.signature(func, follow_wrapped=False).parameters
     except (TypeError, ValueError):
         return "its callable cannot be inspected for its parameters"
     fields = tool.args_schema.model_fields
@@ -291,6 +333,190 @@ def _prepared(
     tool_input.clear()
     tool_input.update(prepared)
     return copy.deepcopy(prepared), None
+
+
+def _code(function: Any) -> Any:
+    """A function's own code object, looking through ``functools.wraps`` wrappers (tracing
+    and instrumentation wrap CrewAI's functions; the frame that runs is the original's)."""
+    return inspect.unwrap(function).__code__
+
+
+#: CrewAI's entry to its before-tool-call hooks. Whatever calls it is about to run a tool.
+_DISPATCH_ENTRY = _code(run_before_tool_call_hooks)
+
+#: The CrewAI functions that call that entry and then run the tool, by code object. The
+#: text route holds the tools the call is chosen from in its local ``tools`` and the
+#: arguments it executes in ``tool_calling.arguments``; the native
+#: routes hold the name in ``func_name`` and the functions that run in
+#: ``self._available_functions`` (the agent executor) or ``available_functions`` (the
+#: plan-and-execute step). tests/test_crewai_gate.py pins each of these names.
+_TEXT_SITE = _code(_tool_utils.execute_tool_and_check_finality)
+_NATIVE_EXECUTOR_SITE = _code(AgentExecutor._execute_single_native_tool_call)
+_NATIVE_STEP_SITE = _code(_agent_utils.execute_single_native_tool_call)
+
+_UNKNOWN_SITE = "unknown"
+
+
+def _calling_site() -> Optional[tuple[str, Any]]:
+    """The CrewAI function that is running this tool call: ``(kind, its local variables)``.
+
+    Walks up the stack to CrewAI's entry to its before hooks
+    (``run_before_tool_call_hooks``); the function that called it is the one about to run
+    the tool. Frames between the hook and that entry are walked past, whoever's they are
+    (CrewAI's dispatch, a filter CrewAI wraps a hook in, a hook of yours that calls the
+    gate). ``("unknown", None)`` when that caller is not a function the gate knows, or when
+    CrewAI's hook dispatch is on the stack without that entry. ``None`` when neither is on
+    the stack: the hook was called by hand, and CrewAI is not about to run anything for it.
+    """
+    dispatching = False
+    frame: Optional[FrameType] = sys._getframe(1)
+    while frame is not None:
+        if frame.f_code is _DISPATCH_ENTRY:
+            caller = frame.f_back
+            if caller is None:
+                return _UNKNOWN_SITE, None
+            if caller.f_code is _TEXT_SITE:
+                return "text", caller.f_locals
+            if caller.f_code is _NATIVE_EXECUTOR_SITE:
+                return "native-executor", caller.f_locals
+            if caller.f_code is _NATIVE_STEP_SITE:
+                return "native-step", caller.f_locals
+            return _UNKNOWN_SITE, None
+        if str(frame.f_globals.get("__name__", "")).startswith("crewai.hooks"):
+            dispatching = True
+        frame = frame.f_back
+    return (_UNKNOWN_SITE, None) if dispatching else None
+
+
+_MISSING: Any = object()
+
+
+def _unbound_arguments(site: Optional[tuple[str, Any]], tool_input: Any) -> Optional[str]:
+    """Make the dict the hook was given the dict CrewAI executes, or say why it is not.
+
+    On the text route CrewAI executes ``tool_calling.arguments``. That is the hook's dict,
+    except when the model sent no arguments: then the hook gets a new empty dict and the
+    tool is invoked with nothing, so the invocation this gate prepares in the hook's dict
+    (and anything an earlier hook wrote there) would be judged and thrown away. The gate
+    puts the hook's dict in its place before judging; preparation then fills that one.
+    The native routes pass the hook's dict itself to the tool.
+    """
+    if site is None or site[0] != "text":
+        return None
+    calling = site[1].get("tool_calling", _MISSING)
+    if calling is _MISSING:
+        return "the gate cannot read the arguments CrewAI is about to run this call with"
+    if getattr(calling, "arguments", _MISSING) is tool_input:
+        return None
+    if not isinstance(tool_input, dict) or getattr(calling, "arguments", _MISSING):
+        return "the arguments handed to the gate are not the ones CrewAI would run"
+    try:
+        calling.arguments = tool_input
+    except Exception:  # noqa: BLE001, an object that cannot be set leaves the call unjudgeable
+        pass
+    if getattr(calling, "arguments", _MISSING) is not tool_input:
+        return "the arguments handed to the gate are not the ones CrewAI would run"
+    return None
+
+
+def _same_execution(candidate: Any, tool: Any) -> bool:
+    """Whether running ``candidate`` is running ``tool``: two structured tools built from
+    one original tool (a tool listed twice), of one class, with the one schema and the one
+    callable. Which of the two CrewAI picks then makes no difference."""
+    original = getattr(tool, "_original_tool", None)
+    return (
+        original is not None
+        and getattr(candidate, "_original_tool", None) is original
+        and type(candidate) is type(tool)
+        and getattr(candidate, "args_schema", None) is tool.args_schema
+        and getattr(candidate, "func", None) == tool.func
+    )
+
+
+def _identity_problem(context: Any, site: Optional[tuple[str, Any]]) -> Optional[str]:
+    """Why the tool this hook was handed may not be the tool CrewAI runs, or None.
+
+    Refused, before judgment:
+
+    - a call whose name is not the handed tool's own normalised name: CrewAI renamed the
+      tool because another holds its name, and a rule written for the declared name would
+      not match the new one;
+    - on the text route, a call unless the handed tool is among the tools it is chosen
+      from and every tool of that name there is the handed tool or a copy of it
+      (``_same_execution``). CrewAI's executor then selects that tool or its copy;
+    - on the native routes, a call unless the function CrewAI runs for that name is the
+      handed tool's original tool's ``run``, the class's own;
+    - a call CrewAI dispatches from a function the gate does not know.
+
+    A hook called by hand, outside CrewAI's hook dispatch and with no agent on its
+    context, is held to the first only. Every CrewAI function that runs a tool passes its
+    agent, so a context with an agent and no CrewAI function to be found (a hook that runs
+    the gate on another thread) is refused.
+    """
+    called = context.tool_name
+    if not isinstance(called, str):
+        return "the call carries no tool name"
+    tool = getattr(context, "tool", None)
+    if tool is None:
+        return None  # refused by ``_unsupported_tool``: the call carries no tool object
+    declared = getattr(tool, "name", None)
+    if not isinstance(declared, str) or sanitize_tool_name(declared) != sanitize_tool_name(called):
+        return (
+            f"CrewAI handed the gate a tool of another name for a call to `{called}`, so the "
+            "gate cannot say which tool would run; CrewAI renames a tool whose name another "
+            "tool shares, so give each tool a distinct name"
+        )
+    if site is None:
+        if getattr(context, "agent", None) is not None:
+            return (
+                "the gate cannot find the CrewAI function running this call (it must run on "
+                "the thread CrewAI runs its hooks on), so it cannot say which tool would run"
+            )
+        return None
+    kind, local = site
+    if kind == "text":
+        tools = local.get("tools", _MISSING)
+        if tools is _MISSING or tools is None:
+            return "the gate cannot read the tools CrewAI is choosing this call from"
+        named = [
+            candidate
+            for candidate in tools
+            if sanitize_tool_name(str(getattr(candidate, "name", ""))) == sanitize_tool_name(called)
+        ]
+        if not any(candidate is tool for candidate in named):
+            return f"the tool handed to the gate for `{called}` is not the one CrewAI would run"
+        if not all(candidate is tool or _same_execution(candidate, tool) for candidate in named):
+            return (
+                f"{len(named)} of the tools CrewAI is choosing this call from are named "
+                f"`{sanitize_tool_name(called)}` once it normalises their names, so the gate "
+                "cannot say which would run; give each tool a distinct name"
+            )
+        return None
+    if kind in ("native-executor", "native-step"):
+        if kind == "native-executor":
+            functions = getattr(local.get("self"), "_available_functions", _MISSING)
+        else:
+            functions = local.get("available_functions", _MISSING)
+        name = local.get("func_name", _MISSING)
+        if not isinstance(functions, dict) or name != called:
+            return "the gate cannot read the function CrewAI is about to run for this call"
+        original = getattr(tool, "_original_tool", None)
+        runs = functions.get(called)
+        if (
+            original is None
+            or runs is None
+            or getattr(runs, "__self__", None) is not original
+            or getattr(runs, "__func__", None) is not getattr(type(original), "run", None)
+        ):
+            return (
+                f"the tool handed to the gate for `{called}` is not the one CrewAI would run; "
+                "if two tools share a name once CrewAI normalises it, give each a distinct name"
+            )
+        return None
+    return (
+        "CrewAI ran its hooks from a function this version of recusal-crewai does not "
+        "know, so it cannot say which tool would run"
+    )
 
 
 #: Given the hook's ``ToolCallHookContext``, the recording arguments ``decide`` takes for the
@@ -411,9 +637,16 @@ def recusal_before_tool_call(
                 except Exception:  # noqa: BLE001, bookkeeping never changes the decision
                     pass
             record = dict(recording(context)) if recording is not None else {}
-            reason = _refusal(
-                getattr(context, "tool", None), context.tool_name, tool_input, policy, **record
-            )
+            site = _calling_site()
+            problem = _identity_problem(context, site) or _unbound_arguments(site, tool_input)
+            if problem is not None:
+                reason: Optional[str] = _unjudgeable(
+                    str(context.tool_name), problem, tool_input, record
+                )
+            else:
+                reason = _refusal(
+                    getattr(context, "tool", None), context.tool_name, tool_input, policy, **record
+                )
             if reason is None:
                 return None
             if store is not None:
