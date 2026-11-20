@@ -50,6 +50,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Probes in `tests/test_compat_langgraph.py` for the two private framework helpers
+  `recusal-langgraph` imports, `_get_runnable_config_param` (LangChain Core) and
+  `_get_all_injected_args` (LangGraph). Each pins only what the gate reads from its
+  helper, including a parameter renamed from `config`, and each has a negative control
+  (a tool with nothing injected gives the empty answer), so a release that renames,
+  moves or changes either fails on a test naming that helper. Both run in the pinned
+  lane and the weekly newest lane. No public API yet replaces either helper.
+  Contributed by @BuildWithPranav in #285. (#264)
+
 - `tools/raise_tested.py` raises the framework versions the adapters are tested with,
   everywhere they are written: each `tested-with.txt` and declared minimum, the READMEs,
   the examples, the documentation and the tests that hold those to each other, then the

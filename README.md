@@ -918,6 +918,10 @@ Thank you to the people who have made Recusal better:
 - [@noqt](https://github.com/noqt): the weekly lane that smoke-tests each installed adapter
   wheel against the newest framework release, in
   [#268](https://github.com/philpaz/recusal/pull/268).
+- [@BuildWithPranav](https://github.com/BuildWithPranav) (Pranav): probes that name the
+  two private framework helpers `recusal-langgraph` relies on, each with a negative
+  control, so a LangGraph or LangChain release that changes one fails on a test that
+  says which, in [#285](https://github.com/philpaz/recusal/pull/285).
 
 Want to join them? Issues labeled `good first issue` are a friendly place to start;
 see the [open issues](https://github.com/philpaz/recusal/issues).
