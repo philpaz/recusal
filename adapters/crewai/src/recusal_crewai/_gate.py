@@ -32,12 +32,13 @@ preparation is the one CrewAI repeats, the gate supports only a stock tool and s
 ``CrewStructuredTool`` whose class and whose original ``BaseTool`` keep CrewAI's own run and
 validation methods, and a schema that is a direct ``BaseModel`` subclass with no members of
 its own beyond what Pydantic generates, configuration limited to ``extra`` and ``title``,
-and every field a bare declaration (a supported annotation, an optional JSON default, an
-optional description and title; nothing else) compared against the canonical ``FieldInfo``
+and every field a bare declaration (a supported annotation, an optional JSON default or a
+``default_factory`` of ``list`` or ``dict``, an optional description and title; nothing
+else) compared against the canonical ``FieldInfo``
 that declaration produces. CrewAI's own generated schemas (``@tool`` functions, ``BaseTool``
 subclasses without an ``args_schema``) are exactly that. A customised schema (a validator,
 an overridden ``model_validate``, an intermediate base, a field with ``exclude``,
-``exclude_if``, ``default_factory``, an alias or a constraint), an unsupported annotation
+``exclude_if``, any other ``default_factory``, an alias or a constraint), an unsupported annotation
 (``Any``, ``Annotated``, an ``Enum``, a model), an unknown parameter, a missing required one
 and a validation failure are refused before judgment; a validation failure is reported by
 field name only, never with Pydantic's text, which carries the input values.
@@ -46,8 +47,10 @@ The validated dict reaches the tool's callable as keyword arguments (``func`` on
 structured tool: the original ``BaseTool``'s ``_run``, or the application function a stock
 ``Tool`` wraps), and Python fills any parameter that callable declares beyond the schema from
 the callable's own default, after judgment. The gate therefore holds the callable to the
-schema: every named parameter it declares must be a schema field, or the call is refused
-before judgment, naming the parameter and never its default. Declare it in the schema.
+schema: every named parameter it declares, and every one declared by a function a
+``functools.wraps`` wrapper stands in front of, must be a schema field, or the call is
+refused before judgment, naming the parameter and never its default. Declare it in the
+schema.
 
 CrewAI's hook registry is process-global: one install covers every agent, task and crew in
 the process, including the coworker an agent delegates to, and every tool kind CrewAI runs
@@ -89,7 +92,7 @@ import inspect
 import re
 import sys
 import threading
-from types import FrameType, MethodWrapperType, WrapperDescriptorType
+from types import FrameType, MethodType, MethodWrapperType, WrapperDescriptorType
 from typing import Any, Callable, List, Optional
 
 from crewai.agents.agent_executor import AgentExecutor
@@ -158,11 +161,29 @@ def _canonical_field(field: FieldInfo) -> FieldInfo:
         extra["title"] = field.title
     # Pydantic types a field's annotation as optional; a field read from a model class has one
     annotation: Any = field.annotation
+    if field.default_factory in _EMPTY_FACTORIES:
+        return FieldInfo.from_annotated_attribute(
+            annotation, Field(default_factory=field.default_factory, **extra)
+        )
     if field.is_required():
         if extra:
             return FieldInfo.from_annotated_attribute(annotation, Field(**extra))
         return FieldInfo.from_annotation(annotation)
     return FieldInfo.from_annotated_attribute(annotation, Field(default=field.default, **extra))
+
+
+#: The only ``default_factory`` values supported: each makes a new empty container, the same
+#: on every call, so the default the gate completes and judges is the one that runs (the
+#: gate writes it into the arguments CrewAI executes). CrewAI's own spreadsheet tool uses
+#: ``list``.
+_EMPTY_FACTORIES = (list, dict)
+
+
+def _field_default(field: FieldInfo) -> Any:
+    """The default an omitted field takes: its ``default``, or its empty factory's value."""
+    if field.default_factory in _EMPTY_FACTORIES:
+        return field.default_factory()  # type: ignore[call-arg]
+    return copy.deepcopy(field.default)
 
 
 def _unsupported_field(name: str, field: FieldInfo) -> Optional[str]:
@@ -175,7 +196,7 @@ def _unsupported_field(name: str, field: FieldInfo) -> Optional[str]:
     # the declaration supplied nothing the contract does not name.
     if field._attributes_set != canonical._attributes_set or repr(field) != repr(canonical):
         return f"field `{name}` carries a setting beyond a default, description and title"
-    if not field.is_required() and not _json_data(field.default):
+    if not field.is_required() and not _json_data(_field_default(field)):
         return f"field `{name}` has a default outside the JSON domain"
     return None
 
@@ -295,8 +316,9 @@ def _own_parameters(func: Any, depth: int = 0) -> Any:
     the wrapped function's parameters while its own defaults run) and honours a declared
     ``__signature__``, on the callable or one level in (a callable object's ``__call__``, a
     ``functools.partial``'s function; a method shows its function's attributes as its
-    own). The first is turned off; the second raises ``_DeclaredSignature`` wherever it is found. Wrappers that only pass
-    arguments through (``lru_cache``, ``cache``, a ``staticmethod``) are looked through.
+    own). The first is turned off; the second raises ``_DeclaredSignature`` wherever it is
+    found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
+    ``staticmethod``, and ``lru_cache`` over a method) are looked through.
     """
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
@@ -304,8 +326,34 @@ def _own_parameters(func: Any, depth: int = 0) -> Any:
         return _own_parameters(func.__func__, depth + 1)
     if isinstance(func, _PASS_THROUGH):
         return _own_parameters(func.__wrapped__, depth + 1)
+    if inspect.ismethod(func) and isinstance(func.__func__, _PASS_THROUGH):
+        return _own_parameters(_bound(func.__func__.__wrapped__, func.__self__), depth + 1)
     _refuse_declared_signature(func, depth)
     return inspect.signature(func, follow_wrapped=False).parameters
+
+
+def _bound(function: Any, owner: Any) -> Any:
+    """``function`` bound to ``owner`` as a method lookup would bind it, so its first
+    parameter is not read as one the caller passes; anything else is returned as it is."""
+    return MethodType(function, owner) if inspect.isfunction(function) else function
+
+
+def _wrapped_parameters(func: Any) -> list:
+    """The parameters of each callable a ``functools.wraps`` chain stands in front of.
+
+    A wrapper that takes ``(*args, **kwargs)`` passes the call to the function it wraps,
+    which fills its own defaults: a parameter declared there and not in the schema runs
+    with a value the policy never sees, though the wrapper's own parameters show none.
+    """
+    owner = func.__self__ if inspect.ismethod(func) else None
+    current = func.__func__ if inspect.ismethod(func) else func
+    found: list[Any] = []
+    for _ in range(8):
+        current = getattr(current, "__wrapped__", None)
+        if current is None:
+            return found
+        found.append(_own_parameters(current if owner is None else _bound(current, owner)))
+    raise ValueError("too many wrappers to inspect")
 
 
 def _refuse_declared_signature(func: Any, depth: int) -> None:
@@ -333,19 +381,20 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
     except TypeError as exc:
         return str(exc)
     try:
-        parameters = _own_parameters(func)
+        levels = [_own_parameters(func), *_wrapped_parameters(func)]
     except _DeclaredSignature:
         return "its callable declares a signature that is not its own"
     except (TypeError, ValueError):
         return "its callable cannot be inspected for its parameters"
     fields = tool.args_schema.model_fields
-    for name, parameter in parameters.items():
-        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-            continue
-        if parameter.kind is parameter.POSITIONAL_ONLY:
-            return f"its callable's parameter `{name}` is positional-only"
-        if name not in fields:
-            return f"its callable's parameter `{name}` is absent from the argument schema"
+    for parameters in levels:
+        for name, parameter in parameters.items():
+            if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+                continue
+            if parameter.kind is parameter.POSITIONAL_ONLY:
+                return f"its callable's parameter `{name}` is positional-only"
+            if name not in fields:
+                return f"its callable's parameter `{name}` is absent from the argument schema"
     return None
 
 
@@ -374,7 +423,7 @@ def _prepared(
         if name in tool_input:
             raw[name] = tool_input[name]
         elif not field.is_required():
-            raw[name] = copy.deepcopy(field.default)
+            raw[name] = _field_default(field)
         else:
             return None, f"required parameter `{name}` is missing"
     try:
@@ -399,10 +448,9 @@ def _code(function: Any) -> Any:
 _DISPATCH_ENTRY = _code(run_before_tool_call_hooks)
 
 #: The CrewAI functions that call that entry and then run the tool, by code object. The
-#: text route holds the tools the call is chosen from in its local ``tools`` and the
-#: arguments it executes in ``tool_calling.arguments``; the native routes the arguments in
-#: ``args_dict``,
-#: routes hold the name in ``func_name`` and the functions that run in
+#: text route holds the tools the call is chosen from in its local ``tools``, and the name
+#: it selects by and the arguments it executes in ``tool_calling``. The native routes hold
+#: the name in ``func_name``, the arguments in ``args_dict`` and the functions that run in
 #: ``self._available_functions`` (the agent executor) or ``available_functions`` (the
 #: plan-and-execute step). tests/test_crewai_gate.py pins each of these names.
 _TEXT_SITE = _code(_tool_utils.execute_tool_and_check_finality)
@@ -532,8 +580,9 @@ def _identity_problem(context: Any, site: Optional[tuple[str, Any]]) -> Optional
     - a call whose name is not the handed tool's own normalised name: CrewAI renamed the
       tool because another holds its name, and a rule written for the declared name would
       not match the new one;
-    - on the text route, a call unless the handed tool is among the tools it is chosen
-      from and every tool of that name there is the handed tool or a copy of it
+    - on the text route, a call unless the name CrewAI selects the tool by
+      (``tool_calling.tool_name``) is the call's, the handed tool is among the tools it is
+      chosen from, and every tool of that name there is the handed tool or a copy of it
       (``_same_execution``). CrewAI's executor then selects that tool or its copy;
     - on the native routes, a call unless the function CrewAI runs for that name is the
       handed tool's original tool's ``run``, the class's own;
@@ -569,6 +618,13 @@ def _identity_problem(context: Any, site: Optional[tuple[str, Any]]) -> Optional
         tools = local.get("tools", _MISSING)
         if tools is _MISSING or tools is None:
             return "the gate cannot read the tools CrewAI is choosing this call from"
+        # CrewAI runs the tool it selects by ``tool_calling.tool_name``, not the one on the
+        # context, which an earlier hook may have changed
+        running = getattr(local.get("tool_calling"), "tool_name", None)
+        if not isinstance(running, str) or sanitize_tool_name(running) != sanitize_tool_name(
+            called
+        ):
+            return f"the call handed to the gate for `{called}` is not the one CrewAI would run"
         named = [
             candidate
             for candidate in tools

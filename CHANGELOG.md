@@ -59,12 +59,21 @@ All notable changes to this project are documented here. The format follows
     written, was judged and thrown away; the gate now makes that dict the one CrewAI
     executes. A hook that replaces the argument dict outright, rather than editing it,
     had the replacement judged while CrewAI ran its own on the native routes; that is
-    now refused on every route. A function behind `functools.wraps`, or showing a
-    `__signature__` on itself, its `__call__`, a `partial`'s function or a method's
-    function, showed the gate other parameters than those Python binds; the gate now
-    reads the callable's own, looking through pass-through wrappers (`lru_cache`,
-    `cache`, `staticmethod`), and refuses a declared signature. A hook that runs the
-    gate on another thread is refused, since the gate cannot find the call there.
+    now refused on every route, as is, on the text route, a hook that points the context
+    at another tool (`context.tool_name`, `context.tool`): CrewAI runs the tool it
+    selected itself, so the gate now holds the call to the name CrewAI selects by. A
+    function behind `functools.wraps`, or showing a `__signature__` on itself, its
+    `__call__`, a `partial`'s function or a method's function, showed the gate other
+    parameters than those Python binds; the gate now reads the callable's own and those
+    of every function a `functools.wraps` wrapper stands in front of (a tracer of
+    `(*args, **kwargs)` around a `_run` that defaults `force=True` hid `force`), looks
+    through pass-through wrappers (`lru_cache`, `cache`, `staticmethod`, also over a
+    method), and refuses a declared signature. A hook that runs the gate on another
+    thread is refused, since the gate cannot find the call there.
+  - No longer refused: a field whose `default_factory` is `list` or `dict`, as in
+    CrewAI's own spreadsheet query tool, which CrewAI adds to an agent given spreadsheet
+    inputs. The gate completes the empty container, judges it and hands that value to
+    the tool. Any other factory is still refused.
   - Changed by this release: on the text route an empty call to a tool that raises is
     now retried by CrewAI as a call with arguments is, up to six runs in all instead of
     three, because the gate gives it the dict it judged.

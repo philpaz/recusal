@@ -80,7 +80,10 @@ CrewAI runs through its hooks.
 **Install the gate after your other hooks.** Hooks run in registration order, and a hook
 registered after the gate can change the arguments the gate judged. A hook registered
 for one execution only (CrewAI's `scoped_hooks`) runs after every process-wide hook,
-the gate included, whatever the order: do not change tool arguments in one.
+the gate included, whatever the order: do not change tool arguments in one. A `@CrewBase`
+crew registers its `@before_tool_call` methods process-wide when the crew class is
+instantiated, which is usually after the gate was installed: either install the gate
+after instantiating the crew, or do not change tool arguments in those methods.
 
 The policy judges the invocation the tool receives, not the dict the model proposed:
 omitted defaults are completed from the tool's schema and values are validated once, the
@@ -132,12 +135,13 @@ order of a turn's entries on the chain is not always the order the model propose
 ## What the gate refuses, and what it does not see
 
 - **Refused before the policy runs:** a tool or schema that is not CrewAI's stock one (a
-  schema with a validator, an alias, a constraint, a `default_factory` or an intermediate
-  base; a tool class that overrides CrewAI's run or validation methods, a `Tool`
+  schema with a validator, an alias, a constraint, a `default_factory` other than `list`
+  or `dict`, or an intermediate base; a tool class that overrides CrewAI's run or validation methods, a `Tool`
   subclass with its own `_run`, a tool object with one of those methods set on it), an
   unsupported
   annotation, an unknown or missing parameter, a validation failure, a callable that
-  declares a parameter its schema omits, and a call the gate cannot tie to the tool that
+  declares a parameter its schema omits (including one behind a `functools.wraps`
+  wrapper), and a call the gate cannot tie to the tool that
   will run (see "Give each tool a distinct name" above).
 - **Not judged:** what a tool does once it runs. A tool that executes code or shell it is
   handed needs a policy that names it.

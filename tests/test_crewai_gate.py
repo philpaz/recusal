@@ -1771,10 +1771,21 @@ class TestBothRoutes:
         _, other, _ = self._handed(kit, "Run SQL")
         _, unrelated, _ = self._handed(kit, "lookup")
 
-        def problem(tools):
-            return gate._identity_problem(context, ("text", {"tools": tools}))
+        def problem(tools, selects="run_sql"):
+            calling = SimpleNamespace(tool_name=selects)
+            return gate._identity_problem(
+                context, ("text", {"tools": tools, "tool_calling": calling})
+            )
 
         assert problem([structured]) is None
+        # CrewAI runs the tool it selects by ``tool_calling.tool_name``, so that name must be
+        # the call's (once normalised), whatever the context says
+        assert problem([structured], selects="Run SQL") is None
+        assert "is not the one CrewAI would run" in problem([structured], selects="lookup")
+        assert "is not the one CrewAI would run" in problem([structured], selects=None)
+        assert "is not the one CrewAI would run" in gate._identity_problem(
+            context, ("text", {"tools": [structured]})
+        )
         assert problem([unrelated, structured]) is None
         # one tool listed twice: two structured copies of one original are one tool
         copy = structured._original_tool.to_structured_tool()
@@ -2553,3 +2564,192 @@ class TestBothRoutes:
         assert error is None
         assert ran == [("outer", "go"), ("inner", SELECT)]
         assert seen == ["outer", "inner_sql"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_an_earlier_hook_that_changes_the_tool_is_not_judged_in_its_place(self, kit, native):
+        """A hook registered before the gate that points the context at another tool
+        (``context.tool_name``, ``context.tool``): CrewAI runs the tool it selected itself,
+        so judging the one on the context would pass a call the policy never saw."""
+        import sys
+
+        from crewai.hooks import register_before_tool_call_hook, unregister_before_tool_call_hook
+
+        ran, seen = [], []
+
+        @kit.tool("run_sql")
+        def run_sql(sql: str) -> str:
+            """Run SQL."""
+            ran.append(("run_sql", sql))
+            return "ran"
+
+        @kit.tool("read_sql")
+        def read_sql(sql: str) -> str:
+            """Read-only SQL."""
+            ran.append(("read_sql", sql))
+            return "read"
+
+        rerouted = []
+
+        def reroute(context):
+            # the text route's own structured read_sql, so the handed tool is among the
+            # tools CrewAI chooses from; the native routes have no such list
+            listed = read_sql.to_structured_tool()
+            frame = sys._getframe(1)
+            while frame is not None:
+                for candidate in frame.f_locals.get("tools", None) or ():
+                    if getattr(candidate, "name", None) == "read_sql":
+                        listed = candidate
+                frame = frame.f_back
+            context.tool_name, context.tool = "read_sql", listed
+            rerouted.append(listed)
+            return None
+
+        def only_reads(name, args):
+            seen.append(name)
+            if name != "read_sql":
+                return [kit.Finding.fail("only_reads", severity="CRITICAL", message="writes")]
+            return []
+
+        register_before_tool_call_hook(reroute)
+        try:
+            _, decisions, error = kit.run(
+                [self.proposal(native, "run_sql", {"sql": DELETE})],
+                [run_sql, read_sql],
+                only_reads,
+                native=native,
+            )
+        finally:
+            unregister_before_tool_call_hook(reroute)
+        assert len(rerouted) == 1
+        assert error is None and ran == [] and seen == [] and decisions == ["FAIL"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_wraps_wrapper_that_hides_the_wrapped_defaults_is_refused(self, kit, native):
+        """A tracer of ``(*args, **kwargs)`` around ``_run`` shows no parameters of its own,
+        while the ``_run`` it calls fills ``force`` from its default: a value the policy
+        would never see. Every function a ``functools.wraps`` chain stands in front of is
+        held to the schema."""
+        import functools
+
+        from crewai.tools import BaseTool
+        from pydantic import BaseModel
+
+        gate = _adapter()
+        ran, seen = [], []
+
+        def traced(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        class Sql(BaseModel):
+            sql: str
+
+        class Forcing(BaseTool):
+            name: str = "run_sql"
+            description: str = "Run SQL."
+            args_schema: type[BaseModel] = Sql
+
+            @traced
+            def _run(self, sql: str, force: bool = True) -> str:
+                ran.append((sql, force))
+                return "ran"
+
+        class Honest(BaseTool):
+            name: str = "run_sql"
+            description: str = "Run SQL."
+            args_schema: type[BaseModel] = Sql
+
+            @traced
+            def _run(self, sql: str) -> str:
+                return "ran"
+
+        why = gate._unsupported_tool(Forcing().to_structured_tool())
+        assert why == "its callable's parameter `force` is absent from the argument schema"
+        assert gate._unsupported_tool(Honest().to_structured_tool()) is None
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "run_sql", {"sql": DELETE})],
+            [Forcing()],
+            lambda name, args: seen.append(name) or [],
+            native=native,
+        )
+        assert error is None and ran == [] and seen == [] and decisions == ["FAIL"]
+
+    def test_lru_cache_over_a_method_is_looked_through(self, kit):
+        import functools
+
+        from crewai.tools import BaseTool
+        from pydantic import BaseModel
+
+        gate = _adapter()
+
+        class Sql(BaseModel):
+            sql: str
+
+        class Honest(BaseTool):
+            name: str = "run_sql"
+            description: str = "Run SQL."
+            args_schema: type[BaseModel] = Sql
+
+            @functools.lru_cache(maxsize=None)  # noqa: B019, the tool style under test
+            def _run(self, sql: str) -> str:
+                return "ran"
+
+        class Forcing(BaseTool):
+            name: str = "run_sql"
+            description: str = "Run SQL."
+            args_schema: type[BaseModel] = Sql
+
+            @functools.lru_cache(maxsize=None)  # noqa: B019, the tool style under test
+            def _run(self, sql: str, force: bool = True) -> str:
+                return "ran"
+
+        assert gate._unsupported_tool(Honest().to_structured_tool()) is None
+        why = gate._unsupported_tool(Forcing().to_structured_tool())
+        assert why == "its callable's parameter `force` is absent from the argument schema"
+
+    def test_an_empty_list_or_dict_factory_is_completed_and_judged(self, kit):
+        """``default_factory=list`` (CrewAI's own spreadsheet tool) and ``dict`` make a new
+        empty container on every call; the gate completes it, judges it and hands that
+        value to the tool. Any other factory is still refused."""
+        from crewai.tools import BaseTool
+        from pydantic import BaseModel, Field
+
+        gate = _adapter()
+        ran, seen = [], []
+
+        class Query(BaseModel):
+            sql: str
+            columns: list[str] = Field(default_factory=list, description="Columns.")
+            options: dict[str, str] = Field(default_factory=dict)
+
+        class QueryTool(BaseTool):
+            name: str = "query"
+            description: str = "Query."
+            args_schema: type[BaseModel] = Query
+
+            def _run(self, sql: str, columns: list, options: dict) -> str:
+                ran.append((sql, columns, options))
+                return "ok"
+
+        assert gate._unsupported_schema(Query) is None
+        for native in (True, False):
+            ran.clear(), seen.clear()
+            _, decisions, error = kit.run(
+                [self.proposal(native, "query", {"sql": SELECT})],
+                [QueryTool()],
+                lambda name, args: seen.append(dict(args)) or [],
+                native=native,
+            )
+            assert error is None and decisions == ["PASS"]
+            assert seen == [{"sql": SELECT, "columns": [], "options": {}}]
+            assert ran == [(SELECT, [], {})]
+
+        class Other(BaseModel):
+            sql: str
+            columns: list[str] = Field(default_factory=lambda: ["*"])
+
+        assert "carries a setting beyond" in gate._unsupported_schema(Other)
