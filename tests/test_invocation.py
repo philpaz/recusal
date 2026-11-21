@@ -16,8 +16,10 @@ import pytest
 
 from recusal.invocation import (
     SCALARS,
+    DeclaredSignature,
     detached,
     json_data,
+    reached_parameters,
     supported_annotation,
     unsupported_signature,
 )
@@ -101,6 +103,50 @@ def test_values_outside_the_json_domain(value):
     assert json_data(value) is False
 
 
+class _SneakyStr(str):
+    def __deepcopy__(self, memo):
+        return "SELECT 1"
+
+
+class _SneakyList(list):
+    pass
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _SneakyStr("DROP TABLE t"),
+        _SneakyList([1]),
+        ["ok", _SneakyStr("x")],
+        {"k": _SneakyList()},
+        float("inf"),
+        float("nan"),
+        [float("-inf")],
+    ],
+    ids=["str-subclass", "list-subclass", "nested-str", "nested-list", "inf", "nan", "nested-inf"],
+)
+def test_a_subclass_or_a_non_finite_float_is_not_json_data(value):
+    """A subclass of a JSON type can copy, compare or serialise as something else, so the
+    copy a policy judges could differ from the value the tool gets; a non-finite float is
+    not JSON and is not equal to itself."""
+    assert json_data(value) is False
+
+
+def test_an_annotation_that_only_compares_equal_to_a_scalar_is_unsupported():
+    class Lookalike(type):
+        def __eq__(cls, other):
+            return other is str
+
+        __hash__ = type.__hash__
+
+    class Cmd(metaclass=Lookalike):
+        pass
+
+    assert Cmd == str  # noqa: E721, the equality the annotation check must not trust
+    assert supported_annotation(Cmd) is False
+    assert supported_annotation(Optional[Cmd]) is False
+
+
 # --- unsupported_signature ----------------------------------------------------------------
 
 
@@ -152,6 +198,165 @@ def test_an_uninspectable_callable_is_refused_not_raised():
 
     assert unsupported_signature(tool) == "its signature cannot be inspected"
     assert unsupported_signature(42) == "its signature cannot be inspected"  # type: ignore[arg-type]
+
+
+# --- every callable a call reaches ---------------------------------------------------------
+
+_HIDDEN = (
+    "`force` is a parameter of a function the call reaches that the tool does not declare, "
+    "so it would run with a value no policy judged"
+)
+
+
+def _traced(function):
+    """A tracer as instrumentation writes one: ``functools.wraps``, everything passed on."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def test_a_wrapper_that_adds_a_parameter_of_its_own_is_refused():
+    """``inspect.signature`` reads a ``functools.wraps`` wrapper as the function it wraps,
+    so a framework declares the wrapped parameters; the wrapper's own ``force=True`` would
+    run with its default, never judged."""
+    import functools
+
+    def wipe(table: str) -> str:
+        return table
+
+    @functools.wraps(wipe)
+    def forcing(*args, force: bool = True, **kwargs):
+        return wipe(*args, **kwargs)
+
+    assert list(inspect_signature(forcing)) == ["table"]
+    assert unsupported_signature(forcing) == _HIDDEN
+    # inside another tracer the outer wrapper shows nothing of its own: the walk must follow
+    # ``__wrapped__`` to reach the wrapper that adds ``force``
+    outer = _traced(forcing)
+    assert list(inspect_signature(outer)) == ["table"]
+    assert unsupported_signature(outer) == _HIDDEN
+
+
+def test_every_place_a_wrapper_can_stand_is_followed():
+    """A wrapper that adds ``force`` hides it wherever it stands: behind a
+    ``functools.partial``, and in a class-based decorator (``functools.update_wrapper``),
+    whose ``__call__`` is what runs while its signature reads as the wrapped function's."""
+    import functools
+
+    def wipe(table: str) -> str:
+        return table
+
+    @functools.wraps(wipe)
+    def forcing(*args, force: bool = True, **kwargs):
+        return wipe(*args, **kwargs)
+
+    class Decorator:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, table: str, force: bool = True) -> str:
+            return table
+
+    assert list(inspect_signature(Decorator(wipe))) == ["table"]
+    assert unsupported_signature(Decorator(wipe)) == _HIDDEN
+
+    # the walk itself reaches ``force`` behind a partial; ``unsupported_signature`` refuses a
+    # partial before it gets there (its annotations cannot be read, as before), so the
+    # walk is pinned directly
+    reached = reached_parameters(functools.partial(forcing))
+    assert list(inspect_signature(functools.partial(forcing))) == ["table"]
+    assert any("force" in level for level in reached)
+    assert unsupported_signature(functools.partial(forcing)) == "its signature cannot be inspected"
+
+
+def test_ordinary_wrappers_are_read_through_and_accepted():
+    import functools
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def with_client(client: object, query: str) -> str:
+        return query
+
+    class Holder:
+        @functools.lru_cache(maxsize=None)  # noqa: B019, the tool style under test
+        def lookup(self, query: str) -> str:
+            return query
+
+    for func in (
+        _traced(search),
+        functools.lru_cache(maxsize=None)(search),
+        Holder().lookup,
+    ):
+        assert unsupported_signature(func) is None, func
+
+    # a partial that binds a dependency is read with that binding kept: ``client`` is bound,
+    # so no callable on the way shows it as a parameter the call must supply
+    reached = reached_parameters(functools.partial(_traced(with_client), object()))
+    assert all("client" not in level for level in reached)
+
+    # an injected parameter named in ``skip`` may be added by a wrapper too
+    @functools.wraps(search)
+    def with_context(*args, tool_context=None, **kwargs):
+        return search(*args, **kwargs)
+
+    assert unsupported_signature(with_context, skip=("tool_context",)) is None
+    assert unsupported_signature(with_context) is not None
+
+
+def test_a_declared_signature_anywhere_on_the_way_is_refused():
+    import functools
+    import inspect
+
+    def shown(table: str) -> str:
+        return table
+
+    def purge(table: str, force: bool = True) -> str:
+        return table
+
+    purge.__signature__ = inspect.signature(shown)  # type: ignore[attr-defined]
+    declared = "it declares a signature that is not its own"
+    assert unsupported_signature(purge) == declared
+    for func in (purge, functools.partial(purge)):
+        with pytest.raises(DeclaredSignature):
+            reached_parameters(func)
+
+
+def test_a_call_that_is_not_a_plain_method_and_a_class_are_refused():
+    import functools
+
+    def impl(force=True, *, table: str) -> str:
+        return table
+
+    class StaticCall:
+        __call__ = staticmethod(impl)
+
+    class PartialCall:
+        __call__ = functools.partial(impl)
+
+    class Runner:
+        def __init__(self, table: str) -> None:
+            self.table = table
+
+    for func in (StaticCall(), PartialCall()):
+        assert unsupported_signature(func) == "its signature cannot be inspected", func
+        # the walk refuses them itself, whatever refuses them first
+        with pytest.raises(TypeError, match="is not a plain method"):
+            reached_parameters(func)
+    # a class is refused whichever check reaches it first, and the walk refuses it itself
+    assert unsupported_signature(Runner) is not None
+    with pytest.raises(TypeError):
+        reached_parameters(Runner)
+
+
+def inspect_signature(func):
+    import inspect
+
+    return inspect.signature(func).parameters
 
 
 # --- detached -----------------------------------------------------------------------------
@@ -226,7 +431,11 @@ SHARED = {
 #: The gates that import the shared helpers, and the names each one uses.
 USERS = {
     "adapters/crewai/src/recusal_crewai/_gate.py": {"json_data", "supported_annotation"},
-    "adapters/google-adk/src/recusal_google_adk/_gate.py": {"unsupported_signature"},
+    "adapters/google-adk/src/recusal_google_adk/_gate.py": {
+        "detached",
+        "json_data",
+        "unsupported_signature",
+    },
     "adapters/openai/src/recusal_openai/_gate.py": {"unsupported_signature"},
     "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
 }
