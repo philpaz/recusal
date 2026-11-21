@@ -202,6 +202,41 @@ def test_the_agent_fields_gated_agent_reads_exist_with_these_names(adk):
     assert AgentTool(child).agent is child
 
 
+def test_the_adk_internals_the_gate_reads_exist_with_these_names(adk):
+    """The gate prepares, checks and judges a call with the ADK's own private machinery;
+    each name below is one it reads. An ADK release that renames one fails here, loudly,
+    instead of the gate refusing every call (google-adk 2.13 lacks
+    ``CallableSpec.get_best_effort_type_hints``, and the adapter requires 2.14)."""
+    from google.adk.agents import LlmAgent
+    from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool  # noqa: F401
+    from google.adk.agents.run_config import RunConfig
+    from google.adk.tools import AgentTool, FunctionTool
+    from google.adk.tools.agent_tool import _get_input_schema  # noqa: F401
+    from google.adk.tools.load_artifacts_tool import LoadArtifactsTool  # noqa: F401
+    from google.adk.tools.preload_memory_tool import PreloadMemoryTool  # noqa: F401
+    from google.adk.tools.set_model_response_tool import SetModelResponseTool  # noqa: F401
+
+    def tool(x: str) -> str:
+        return x
+
+    function_tool = FunctionTool(tool)
+    spec = function_tool._spec
+    assert spec.func is function_tool.func and spec.has_signature
+    assert list(spec.signature.parameters) == ["x"]
+    assert spec.get_best_effort_type_hints()["x"] is str
+    for method in ("_preprocess_args", "_validate_args", "_preprocess_args_with_validation"):
+        assert callable(getattr(function_tool, method)), method
+    assert isinstance(getattr(function_tool, "_ignore_params", None), list)
+    assert {"include_plugins", "propagate_grounding_metadata"} <= set(
+        inspect.signature(AgentTool.__init__).parameters
+    )
+    assert "support_cfc" in RunConfig.model_fields
+    assert "generate_content_config" in LlmAgent.model_fields
+    child = adk.scripted_agent([])
+    parent = LlmAgent(name="parent", model=child.model, sub_agents=[child])
+    assert parent.sub_agents[0].root_agent is parent
+
+
 def test_a_transfer_runs_the_sub_agents_tools_under_its_own_callbacks(adk):
     """The fact gated_agent's recursion and RecusalPlugin exist for: the parent's callback
     sees only transfer_to_agent; the child's tool call runs under the child's callbacks."""

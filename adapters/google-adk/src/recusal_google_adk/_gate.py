@@ -144,7 +144,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     if injected:
         return None, f"the call sets {injected!r}, which the ADK fills itself"
     raw.update(args)
-    converted, errors = tool._preprocess_args_with_validation(raw)
+    converted, errors = _always_validated(tool, raw)
     if errors:
         return None, f"{len(errors)} argument(s) do not validate against the tool's parameters"
     # ``run_async`` validates the dict the gate writes once more before the function runs.
@@ -160,6 +160,29 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     args.clear()
     args.update(converted)
     return copy.deepcopy(converted), None
+
+
+def _always_validated(tool: Any, raw: dict[str, Any]) -> tuple[dict[str, Any], list]:
+    """The tool's own preparation with its type validation always on: what
+    ``_preprocess_args_with_validation`` does when the ADK's ``FUNCTION_TOOL_ARG_VALIDATION``
+    is enabled, built from ``FunctionTool``'s own methods.
+
+    With the ADK's validation off (its default) the function would get the model's raw
+    values, and a validating decorator on it (``pydantic.validate_call``) would convert
+    them after judgment: ``"on"`` judged, ``True`` run. Converted here and written into
+    the arguments, the values are already of the declared types, and every later
+    validation (the ADK's, a decorator's) gives them back unchanged, which the fixed-point
+    check below confirms for the ADK's.
+    """
+    preprocessed = tool._preprocess_args(raw)
+    spec = tool._spec
+    if not spec.has_signature:
+        return preprocessed, []
+    hints = spec.get_best_effort_type_hints()
+    return tool._validate_args(
+        preprocessed,
+        ((name, hints.get(name, p.annotation)) for name, p in spec.signature.parameters.items()),
+    )
 
 
 def _agent_call(
@@ -508,8 +531,42 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
             "its generate_content_config declares tools, which the model provider runs "
             "itself; no before-tool callback sees them"
         )
+    why = _model_provider_tools(agent.model)
+    if why is not None:
+        return why
     for tool in agent.tools:
         why = _unjudged_tool_kind(tool)
+        if why is not None:
+            return why
+    return None
+
+
+#: The options a model wrapper hands its provider that declare or enable tools the provider
+#: runs itself (``LiteLlm(..., web_search_options=...)`` turns on the provider's web search).
+#: Any other provider option (temperature, timeouts, ...) is configuration the gate does not
+#: read.
+_PROVIDER_TOOL_OPTIONS = frozenset(
+    {"web_search_options", "tools", "functions", "tool_choice", "function_call", "builtin_tools"}
+)
+
+
+def _model_provider_tools(model: Any, depth: int = 0) -> Optional[str]:
+    """Why the agent's model object enables tools the provider runs itself, or None. A
+    model wrapper that passes extra options to the provider (``LiteLlm`` keeps them in
+    ``_additional_args``) is read for the options that declare tools; a ``FallbackModel``'s
+    every model is read."""
+    if depth > 8 or model is None or isinstance(model, str):
+        return None
+    extra = getattr(model, "_additional_args", None)
+    if isinstance(extra, dict):
+        named = sorted(set(extra) & _PROVIDER_TOOL_OPTIONS)
+        if named:
+            return (
+                f"its model passes {named!r} to the provider, which enables tools the "
+                "provider runs itself; no before-tool callback sees them"
+            )
+    for inner in getattr(model, "models", None) or ():
+        why = _model_provider_tools(inner, depth + 1)
         if why is not None:
             return why
     return None

@@ -87,6 +87,14 @@ All notable changes to this project are documented here. The format follows
   - `preload_memory` and `load_artifacts`, local ADK tools, are accepted on an agent
     again (a `load_artifacts` call is refused, as before); an agent in `task` mode is
     refused with that reason.
+  - The gate now validates a call's arguments against the function's types itself,
+    whatever the ADK's `FUNCTION_TOOL_ARG_VALIDATION` setting (off by default). With it
+    off, the policy judged the model's raw `"5000"` and `"on"` while a function behind
+    `pydantic.validate_call` ran with `5000` and `True`; the converted values are now
+    the ones judged and the ones every function receives.
+  - A model object that passes the provider options enabling its own tools
+    (`LiteLlm(..., web_search_options=...)`, `tools`, `functions`, `tool_choice`) is
+    refused, in a `FallbackModel` too; the provider's search ran with no callback asked.
     `is_gated` now requires the gate to be the agent's last
     before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
     a tool object is refused.

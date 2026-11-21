@@ -912,11 +912,81 @@ class TestGoogleAdkGate:
         responses = asyncio.run(example.run_agent(example.gated_agent(agent, recording)))
         assert seen == [("echo", {"text": "x"})]
         assert responses["c2"] == {"answer": "42"}
-        # only the ADK's own class passes; anything else named alike is judged as a tool
-        assert (
-            _adapter()._refusal(example.FunctionTool(example.echo), {"text": "x"}, lambda n, a: [])
-            is None
+        # only the ADK's own class passes: a developer's own tool NAMED set_model_response is
+        # a tool like any other, judged by the policy (review round 5: a check by name would
+        # have let it run unjudged)
+        from recusal import Finding
+
+        def set_model_response(answer: str) -> str:
+            """Look-alike."""
+            return answer
+
+        def deny(name, args):
+            return [Finding.fail("deny", severity="CRITICAL", message="denied")]
+
+        look_alike = example.FunctionTool(set_model_response)
+        assert look_alike.name == "set_model_response"
+        reason = _adapter()._refusal(look_alike, {"answer": "x"}, deny)
+        assert reason is not None and "denied" in reason
+
+    def test_a_validating_decorator_runs_with_the_values_judged(self, example):
+        """Review round 5: with the ADK's argument validation off (its default), the policy
+        judged the model's raw ``"5000"`` and ``"on"`` while ``pydantic.validate_call`` ran
+        the tool with ``5000`` and ``True``. The gate now validates the arguments itself,
+        so the values judged are the converted ones every function receives."""
+        from google.adk.features import FeatureName, override_feature_enabled
+        from pydantic import validate_call
+
+        ran, seen = [], []
+
+        @validate_call
+        def pay(amount: int, force: bool = False) -> str:
+            """Pay."""
+            ran.append((amount, type(amount).__name__, force, type(force).__name__))
+            return "paid"
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return []
+
+        for enabled in (False, True):
+            override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, enabled)
+            ran.clear(), seen.clear()
+            try:
+                example.run_calls(
+                    [("pay", {"amount": "5000", "force": "on"}, "c1")],
+                    policy=recording,
+                    tools=[example.FunctionTool(pay)],
+                )
+            finally:
+                override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True)
+            assert seen == [{"amount": 5000, "force": True}], enabled
+            assert ran == [(5000, "int", True, "bool")], enabled
+
+    def test_a_model_that_enables_provider_tools_is_refused(self, example):
+        """Review round 5: ``LiteLlm(..., web_search_options=...)`` turns on the provider's
+        own web search, which no callback sees. A stand-in carries the options the way
+        ``LiteLlm`` keeps them, so the test needs no litellm."""
+        from google.adk.models import BaseLlm
+
+        class Wrapper(BaseLlm):
+            async def generate_content_async(self, llm_request, stream=False):
+                if False:
+                    yield None
+
+        searching = Wrapper(model="search")
+        searching._additional_args = {"web_search_options": {"search_context_size": "high"}}
+        plain = Wrapper(model="plain")
+        plain._additional_args = {"temperature": 0.2}
+        agent = example.scripted_agent([])
+        with pytest.raises(ValueError, match="web_search_options"):
+            example.gated_agent(agent.clone(update={"model": searching}), lambda n, a: [])
+        assert example.is_gated(
+            example.gated_agent(agent.clone(update={"model": plain}), lambda n, a: [])
         )
+        fallback = SimpleNamespaceModel = type("Fallback", (), {})()
+        fallback.models = ["gemini-2.0-flash", searching]
+        assert "web_search_options" in _adapter()._model_provider_tools(SimpleNamespaceModel)
 
     def test_is_gated_requires_the_gate_to_be_the_last_callback(self, example):
         def later(tool, args, tool_context):
@@ -1051,7 +1121,9 @@ class TestPreparedInvocation:
             tools=[example.FunctionTool(charge)],
         )
         assert _same(seen[0]["amount"], received[0]), (seen, received)
-        assert type(received[0]) is (int if validation else str)
+        # the gate validates the arguments itself whatever the ADK's setting (review
+        # round 5), so the function receives the declared type in both modes
+        assert type(received[0]) is int
 
     def test_an_explicit_string_is_prepared_once_and_judged_as_received(self, example, validation):
         received, seen = [], []
@@ -1066,7 +1138,9 @@ class TestPreparedInvocation:
             tools=[example.FunctionTool(charge)],
         )
         assert _same(seen[0]["amount"], received[0])
-        assert type(received[0]) is (int if validation else str)
+        # the gate validates the arguments itself whatever the ADK's setting (review
+        # round 5), so the function receives the declared type in both modes
+        assert type(received[0]) is int
 
     def test_a_nested_container_default_is_judged_and_received_exactly(self, example):
         received, seen = [], []

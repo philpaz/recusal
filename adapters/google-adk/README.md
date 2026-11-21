@@ -146,7 +146,12 @@ path.
   A call that sets either is refused; outside a live run an `input_stream` parameter takes
   its own default, which is the tool's code.
 - **Not on the audit log:** a call another before-tool callback answered before the gate
-  ran. The tool did not run either.
+  ran (the tool did not run either), and a `set_model_response` call, which is the agent's
+  answer and passes without the policy.
+- **Provider options on the model:** a model object that passes options to its provider
+  which enable the provider's own tools (`LiteLlm(..., web_search_options=...)`, `tools`,
+  `functions`, `tool_choice`) is refused, in a `FallbackModel` too. Other provider options
+  are configuration the gate does not read.
 
 ## Compatibility
 
