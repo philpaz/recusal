@@ -32,9 +32,9 @@ preparation is the one CrewAI repeats, the gate supports only a stock tool and s
 ``CrewStructuredTool`` whose class and whose original ``BaseTool`` keep CrewAI's own run and
 validation methods, and a schema that is a direct ``BaseModel`` subclass with no members of
 its own beyond what Pydantic generates, configuration limited to ``extra`` and ``title``,
-and every field a bare declaration (a supported annotation, an optional JSON default or a
-``default_factory`` of ``list`` or ``dict``, an optional description and title; nothing
-else) compared against the canonical ``FieldInfo``
+and every field a bare declaration (a supported annotation, an optional default of the
+exact JSON types or a ``default_factory`` that is ``list`` or ``dict`` itself, an optional
+description and title; nothing else) compared against the canonical ``FieldInfo``
 that declaration produces. CrewAI's own generated schemas (``@tool`` functions, ``BaseTool``
 subclasses without an ``args_schema``) are exactly that. A customised schema (a validator,
 an overridden ``model_validate``, an intermediate base, a field with ``exclude``,
@@ -47,8 +47,9 @@ The validated dict reaches the tool's callable as keyword arguments (``func`` on
 structured tool: the original ``BaseTool``'s ``_run``, or the application function a stock
 ``Tool`` wraps), and Python fills any parameter that callable declares beyond the schema from
 the callable's own default, after judgment. The gate therefore holds the callable to the
-schema: every named parameter it declares, and every one declared by a function a
-``functools.wraps`` wrapper stands in front of, must be a schema field, or the call is
+schema: every named parameter it declares, and every one declared by a callable the call
+reaches (through a method, a ``functools.partial``, a callable object's ``__call__`` and
+every ``functools.wraps`` wrapper), must be a schema field, or the call is
 refused before judgment, naming the parameter and never its default. Declare it in the
 schema.
 
@@ -161,9 +162,10 @@ def _canonical_field(field: FieldInfo) -> FieldInfo:
         extra["title"] = field.title
     # Pydantic types a field's annotation as optional; a field read from a model class has one
     annotation: Any = field.annotation
-    if field.default_factory in _EMPTY_FACTORIES:
+    if _empty_factory(field):
         return FieldInfo.from_annotated_attribute(
-            annotation, Field(default_factory=field.default_factory, **extra)
+            annotation,
+            Field(default_factory=list if field.default_factory is list else dict, **extra),
         )
     if field.is_required():
         if extra:
@@ -179,10 +181,43 @@ def _canonical_field(field: FieldInfo) -> FieldInfo:
 _EMPTY_FACTORIES = (list, dict)
 
 
+def _empty_factory(field: FieldInfo) -> bool:
+    """Whether the field's ``default_factory`` is ``list`` or ``dict`` itself. By identity:
+    an object that only compares equal to ``list`` can return anything, and another value
+    each time it is called."""
+    return any(field.default_factory is factory for factory in _EMPTY_FACTORIES)
+
+
+#: The exact types a value in the JSON domain is built of. The shared ``json_data`` accepts
+#: a subclass of one; as a default it is refused here, because its own ``__deepcopy__``,
+#: ``__eq__`` or serialisation can make the copy the policy judges differ from the value
+#: the tool receives. The model's arguments are parsed JSON, so only a default declared by
+#: the tool's author can carry one.
+_EXACT_TYPES = frozenset((type(None), str, int, float, bool, list, dict))
+
+
+def _exact_types(value: Any, depth: int = 0) -> bool:
+    """True when ``value`` and everything inside it is of one of ``_EXACT_TYPES`` itself."""
+    if depth > 64 or type(value) not in _EXACT_TYPES:
+        return False
+    if type(value) is list:
+        return all(_exact_types(v, depth + 1) for v in value)
+    if type(value) is dict:
+        return all(
+            _exact_types(k, depth + 1) and _exact_types(v, depth + 1) for k, v in value.items()
+        )
+    return True
+
+
+def _plain_json(value: Any) -> bool:
+    """A value in the JSON domain (the shared ``json_data``) built only of its exact types."""
+    return _json_data(value) and _exact_types(value)
+
+
 def _field_default(field: FieldInfo) -> Any:
     """The default an omitted field takes: its ``default``, or its empty factory's value."""
-    if field.default_factory in _EMPTY_FACTORIES:
-        return field.default_factory()  # type: ignore[call-arg]
+    if _empty_factory(field):
+        return [] if field.default_factory is list else {}
     return copy.deepcopy(field.default)
 
 
@@ -196,7 +231,10 @@ def _unsupported_field(name: str, field: FieldInfo) -> Optional[str]:
     # the declaration supplied nothing the contract does not name.
     if field._attributes_set != canonical._attributes_set or repr(field) != repr(canonical):
         return f"field `{name}` carries a setting beyond a default, description and title"
-    if not field.is_required() and not _json_data(_field_default(field)):
+    # the default itself, not a copy of it: a copy is what the gate judges, the default
+    # is what Pydantic hands the tool when it is left for the schema to supply, and an
+    # object's ``__deepcopy__`` can make the two differ
+    if not field.is_required() and not _empty_factory(field) and not _plain_json(field.default):
         return f"field `{name}` has a default outside the JSON domain"
     return None
 
@@ -207,6 +245,10 @@ def _unsupported_schema(schema: Any) -> Optional[str]:
         return "its argument schema is not a Pydantic model"
     if schema.__bases__ != (BaseModel,):
         return "its argument schema has a base class of its own"
+    if type(schema) is not type(BaseModel):
+        # a metaclass of its own can define ``model_validate`` or ``model_dump`` outside
+        # the class body, where the checks below do not look
+        return "its argument schema has a metaclass of its own"
     own = sorted(
         n for n in vars(schema) if n not in _GENERATED_NAMES and not _PYDANTIC_FAMILY.match(n)
     )
@@ -244,11 +286,15 @@ def _unsupported_tool(tool: Any) -> Optional[str]:
             return f"its tool object replaces `{name}`"
     original = getattr(tool, "_original_tool", None)
     if original is not None:
+        # CrewAI's own class for this tool: a ``Tool`` keeps ``Tool``'s methods, any other
+        # ``BaseTool`` keeps ``BaseTool``'s. ``Tool.run`` on a plain ``BaseTool`` runs
+        # ``self.func`` on the native routes and ``_run`` on the text route: two callables,
+        # one inspected
+        stock_class = Tool if isinstance(original, Tool) else BaseTool
         for name in _STOCK_ORIGINAL:
             # CrewAI's own method of that very name: another stock method in its place
             # (``run = BaseTool.arun``) is not stock for this one
-            stock = {getattr(BaseTool, name), getattr(Tool, name)}
-            if getattr(type(original), name, None) not in stock:
+            if getattr(type(original), name, None) is not getattr(stock_class, name):
                 return f"its tool class overrides `{name}`"
         # a stock ``Tool`` runs its ``func`` directly on the native routes and through
         # ``_run`` on the text route; a subclass with its own ``_run`` runs two things
@@ -322,6 +368,10 @@ def _own_parameters(func: Any, depth: int = 0) -> Any:
     """
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
+    if isinstance(func, type):
+        # calling a class runs its ``__new__`` and ``__init__``, either of which can stand
+        # in front of a function with defaults of its own; not an ordinary tool callable
+        raise TypeError("a class is not inspected as a tool's callable")
     if isinstance(func, staticmethod):
         return _own_parameters(func.__func__, depth + 1)
     if isinstance(func, _PASS_THROUGH):
@@ -338,21 +388,45 @@ def _bound(function: Any, owner: Any) -> Any:
     return MethodType(function, owner) if inspect.isfunction(function) else function
 
 
-def _wrapped_parameters(func: Any) -> list:
-    """The parameters of each callable a ``functools.wraps`` chain stands in front of.
+def _next_callable(func: Any) -> Any:
+    """The callable ``func`` hands the call to, bound as ``func`` binds it, or None.
 
-    A wrapper that takes ``(*args, **kwargs)`` passes the call to the function it wraps,
-    which fills its own defaults: a parameter declared there and not in the schema runs
-    with a value the policy never sees, though the wrapper's own parameters show none.
+    A ``functools.wraps`` wrapper that takes ``(*args, **kwargs)`` passes the call to the
+    function it wraps, which fills its own defaults: a parameter declared there and not in
+    the schema runs with a value the policy never sees, though the wrapper's own
+    parameters show none. Such a wrapper can stand anywhere on the way: on the callable,
+    behind a method, behind a ``functools.partial`` or as a callable object's ``__call__``.
+    Each step is followed as Python takes it: a method's function bound to its object, a
+    partial's function with the partial's own arguments, an object's ``__call__`` bound
+    to the object, and ``__wrapped__``.
     """
-    owner = func.__self__ if inspect.ismethod(func) else None
-    current = func.__func__ if inspect.ismethod(func) else func
-    found: list[Any] = []
-    for _ in range(8):
-        current = getattr(current, "__wrapped__", None)
+    # a ``staticmethod`` (Python 3.10+) shows its function as ``__wrapped__``, taken below
+    if inspect.ismethod(func):
+        inner = _next_callable(func.__func__)
+        return None if inner is None else MethodType(inner, func.__self__)
+    if isinstance(func, functools.partial):
+        inner = _next_callable(func.func)
+        return None if inner is None else functools.partial(inner, *func.args, **func.keywords)
+    wrapped = getattr(func, "__wrapped__", None)
+    if wrapped is not None:
+        return wrapped
+    if not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
+        call = getattr(type(func), "__call__", None)
+        if inspect.isfunction(call):
+            return MethodType(call, func)
+    return None
+
+
+def _reached_parameters(func: Any) -> list:
+    """The parameters of every callable a call to ``func`` reaches (``_next_callable``),
+    ``func``'s own first."""
+    found = [_own_parameters(func)]
+    current = func
+    for _ in range(16):
+        current = _next_callable(current)
         if current is None:
             return found
-        found.append(_own_parameters(current if owner is None else _bound(current, owner)))
+        found.append(_own_parameters(current))
     raise ValueError("too many wrappers to inspect")
 
 
@@ -381,7 +455,7 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
     except TypeError as exc:
         return str(exc)
     try:
-        levels = [_own_parameters(func), *_wrapped_parameters(func)]
+        levels = _reached_parameters(func)
     except _DeclaredSignature:
         return "its callable declares a signature that is not its own"
     except (TypeError, ValueError):
@@ -408,8 +482,8 @@ def _prepared(
     validates once (the same ``model_validate`` CrewAI runs at execution, which coerces an
     explicit ``"100"`` to 100 for an ``int`` field), and the validated values replace the
     dict's contents, so the dict CrewAI executes is the prepared invocation and the policy
-    judges a copy of it. A default that is not a valid value of its own field is left for
-    the schema to supply, as CrewAI's own validation supplies it. A field the schema
+    judges a copy of it. An omitted field whose default is ``None`` is left for the schema
+    to supply, as CrewAI's own validation supplies it. A field the schema
     requires and the input omits is refused, as is an unknown parameter and a validation
     failure (named by field, without Pydantic's text).
     """
@@ -424,28 +498,17 @@ def _prepared(
     for name, field in fields.items():
         if name in tool_input:
             raw[name] = tool_input[name]
-        elif not field.is_required():
-            raw[name] = _field_default(field)
-        else:
+        elif field.is_required():
             return None, f"required parameter `{name}` is missing"
+        elif _empty_factory(field) or field.default is not None:
+            raw[name] = _field_default(field)
+        # An omitted field whose default is ``None`` is left for the schema to supply.
+        # Pydantic does not validate a default, so ``limit: int = None`` (what CrewAI
+        # generates for ``def f(limit: int = None)``) runs as ``None``, which written in as
+        # an explicit value would fail validation. CrewAI validates every call, an empty one
+        # included (``invoke(input={})``), so the schema supplies it at execution exactly as
+        # in the validation below; ``None`` is one object, so the two cannot differ.
     prepared, failed = _validated(tool.args_schema, raw)
-    left_out = sorted(failed & {name for name in fields if name not in tool_input})
-    if prepared is None and failed and len(left_out) == len(failed):
-        # Only defaults failed: a default that is not a valid value of its own field
-        # (``limit: int = None``, as CrewAI generates for ``def f(limit: int = None)``).
-        # Pydantic does not validate a default, so CrewAI runs it as it stands. Leave it
-        # out of the dict CrewAI executes, for the schema to supply exactly as CrewAI's own
-        # validation does, and judge what that validation produces.
-        for name in left_out:
-            del raw[name]
-        if not raw:
-            # the text route invokes an empty call with no arguments at all, so the
-            # schema's default would not be the one that runs
-            return None, (
-                f"the default of `{left_out[0]}` is not a valid value of its own field, and "
-                "a call with no other arguments cannot carry it; declare the field Optional"
-            )
-        prepared, failed = _validated(tool.args_schema, raw)
     if prepared is None:
         named = sorted(failed)
         return None, f"validation failed for `{named[0]}`" if named else "validation failed"

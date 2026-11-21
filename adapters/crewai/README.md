@@ -81,7 +81,8 @@ CrewAI runs through its hooks.
 registered after the gate can change the arguments the gate judged. A hook registered
 for one execution only (CrewAI's `scoped_hooks`) runs after every process-wide hook,
 the gate included, whatever the order: do not change tool arguments in one. A `@CrewBase`
-crew registers its `@before_tool_call` methods process-wide when the crew class is
+crew registers its `@before_tool_call` and `@on(InterceptionPoint.PRE_TOOL_CALL)`
+methods process-wide when the crew class is
 instantiated, which is usually after the gate was installed: either install the gate
 after instantiating the crew, or do not change tool arguments in those methods.
 
@@ -136,7 +137,8 @@ order of a turn's entries on the chain is not always the order the model propose
 
 - **Refused before the policy runs:** a tool or schema that is not CrewAI's stock one (a
   schema with a validator, an alias, a constraint, a `default_factory` other than `list`
-  or `dict`, or an intermediate base; a tool class that overrides CrewAI's run or validation methods, a `Tool`
+  or `dict` itself, a default not of the exact JSON types, a metaclass of its own, or an
+  intermediate base; a plain `BaseTool` that takes `Tool.run`; a tool class that overrides CrewAI's run or validation methods, a `Tool`
   subclass with its own `_run`, a tool object with one of those methods set on it), an
   unsupported
   annotation, an unknown or missing parameter, a validation failure, a callable that

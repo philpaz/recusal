@@ -57,7 +57,7 @@ All notable changes to this project are documented here. The format follows
     before, a `wrapt` wrapper there made the gate refuse every call.
   - Three more gaps in how the arguments are judged, older than this release and found
     by the same reviews, are closed. On the text route a call with no arguments was
-    invoked with nothing, so what the gate prepared, and what an earlier hook had
+    invoked with a new empty dict, not the hook's, so what the gate prepared, and what an earlier hook had
     written, was judged and thrown away; the gate now makes that dict the one CrewAI
     executes. A hook that replaces the argument dict outright, rather than editing it,
     had the replacement judged while CrewAI ran its own on the native routes; that is
@@ -72,7 +72,8 @@ All notable changes to this project are documented here. The format follows
     through pass-through wrappers (`lru_cache`, `cache`, `staticmethod`, also over a
     method), and refuses a declared signature. A hook that runs the gate on another
     thread is refused, since the gate cannot find the call there.
-  - No longer refused: a field whose `default_factory` is `list` or `dict`, as in
+  - No longer refused: a field whose `default_factory` is `list` or `dict` itself (by
+    identity: an object that only compares equal to `list` is refused), as in
     CrewAI's own spreadsheet query tool, which CrewAI adds to an agent given spreadsheet
     inputs. The gate completes the empty container, judges it and hands that value to
     the tool. Any other factory is still refused.
@@ -80,9 +81,19 @@ All notable changes to this project are documented here. The format follows
     as the `limit: int = None` CrewAI generates for `def f(limit: int = None)`. Pydantic
     does not validate a default, so CrewAI runs `limit=None`; the gate wrote the default
     into the call as an explicit value, which failed validation, and refused the call.
-    It now leaves such a default for the schema to supply, as CrewAI does, and judges
-    `limit=None`. A call that would carry nothing else is still refused, because the text
-    route runs an empty call with no arguments at all.
+    It now leaves an omitted field whose default is `None` for the schema to supply, as
+    CrewAI's own validation does on every route (an empty call included), and judges
+    `limit=None`. Only `None` is left out: it is one object, so the value judged and the
+    value run cannot differ.
+  - Also refused now, each a way a tool's own code could show the gate one thing and run
+    another, found by the last review rounds: a `functools.wraps` tracer that hides the
+    wrapped function's defaults from behind a `functools.partial`, as a callable object's
+    `__call__`, or as a callable object bound as a method (the gate now follows every
+    callable a call reaches, bound as Python binds it); a plain `BaseTool` that takes
+    `Tool.run` (a `Tool` must keep `Tool`'s methods and any other `BaseTool` keeps
+    `BaseTool`'s); a default that is not of the exact JSON types (a subclass, or an object
+    whose `__deepcopy__` returns something else); a schema with a metaclass of its own;
+    and a class as the tool's callable.
   - A test now pins that a policy which edits a nested argument (appends to a list)
     changes only its own copy, never the call that runs.
   - Changed by this release: on the text route an empty call to a tool that raises, when

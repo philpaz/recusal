@@ -237,10 +237,11 @@ reads why. The policy judges the invocation the tool receives, not the proposal:
 completes omitted fields from the schema's defaults, runs the tool's own `args_schema`
 validation once, writes the validated values back into the dict CrewAI executes and judges
 a copy, so `charge(amount: int = 100)` proposed with `{}` is judged as `{"amount": 100}`.
-A default that is not a valid value of its field (`limit: int = None`) is left for the
-schema to supply, as CrewAI's own validation supplies it, and judged as `None`.
+An omitted field whose default is `None` (`limit: int = None`, which would fail validation
+written in) is left for the schema to supply, as CrewAI's own validation supplies it, and
+judged as `None`.
 CrewAI does not always execute the dict a hook is handed, nor always the tool: on the text
-route an empty call is invoked with nothing, a hook may replace the dict or point the
+route an empty call is invoked with a new empty dict, a hook may replace the dict or point the
 context at another tool (CrewAI runs the tool it selected itself), and when two
 tools normalise to one name ("Run SQL" and `run_sql`) one tool can be handed to the hook
 while another runs. So the gate reads, in the CrewAI function that ran the hooks and is
@@ -254,8 +255,8 @@ It supports a stock tool and schema only: a `CrewStructuredTool` and `BaseTool` 
 CrewAI's run and validation methods, and a schema that is a direct `BaseModel` with no
 members of its own, configuration limited to `extra` and `title`, and bare field
 declarations (a supported annotation among `str`, `int`, `float`, `bool`, optionals, lists
-and string-keyed dicts of those, an optional JSON default or a `default_factory` of `list`
-or `dict`, description and title),
+and string-keyed dicts of those, an optional default of the exact JSON types or a
+`default_factory` that is `list` or `dict` itself, description and title),
 which is what CrewAI generates for `@tool` functions and `BaseTool` subclasses. A
 customised schema (a validator, an overridden `model_validate`, an intermediate base, a
 field with `exclude`, `exclude_if`, any other `default_factory`, an alias or a constraint), an
@@ -264,8 +265,11 @@ failure (named by field, never with Pydantic's text) are refused before judgment
 tool class that overrides `to_structured_tool`, a `Tool` subclass with its own `_run` or
 `_arun`, a run or validation method set on the tool object, and a callable that
 declares a `__signature__` or has a parameter its schema omits, counting the parameters
-of every function a `functools.wraps` wrapper stands in front of (`lru_cache`, `cache`
-and `staticmethod`, on a function or a method, are read as the function they wrap). The
+of every callable a call reaches: through a method, a `functools.partial`, a callable
+object's `__call__` and every `functools.wraps` wrapper (`lru_cache`, `cache` and
+`staticmethod`, on a function or a method, are read as the function they wrap). A plain
+`BaseTool` that takes `Tool.run`, a schema with a metaclass of its own and a class as the
+tool's callable are refused too. The
 registry is
 process-global: one install covers every agent, task and crew in the process, and the
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
