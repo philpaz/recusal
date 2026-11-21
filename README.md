@@ -116,6 +116,7 @@ issue nobody has taken yet: comment there to pick it up.
 | CrewAI audit trail | Tested | [`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py) |
 | Pydantic AI `Agent`, capability and hook | Tested | [`examples/pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py) |
 | Pydantic AI audit trail | Tested | [`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) |
+| OpenAI Codex CLI, `PreToolUse` hook | Coming | [#290](https://github.com/philpaz/recusal/issues/290) |
 | LlamaIndex | Wanted | [#109](https://github.com/philpaz/recusal/issues/109) |
 <!-- works-with:end -->
 
