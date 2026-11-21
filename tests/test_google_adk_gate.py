@@ -340,7 +340,9 @@ class TestGoogleAdkGate:
 
         for tool in (google_search, url_context):
             agent = example.scripted_agent([], tools=[example.FunctionTool(example.echo), tool])
-            with pytest.raises(ValueError, match="is not a FunctionTool: the model provider"):
+            with pytest.raises(
+                ValueError, match="is not a function, a FunctionTool or a plain AgentTool"
+            ):
                 example.gated_agent(agent, example.sql_scope_policy)
             hand_gated = agent.clone(
                 update={"before_tool_callback": example.recusal_before_tool(lambda n, a: [])}
@@ -362,7 +364,9 @@ class TestGoogleAdkGate:
             async def get_tools(self, readonly_context=None):
                 return []
 
-        with pytest.raises(ValueError, match="is not a FunctionTool"):
+        with pytest.raises(
+            ValueError, match="is not a function, a FunctionTool or a plain AgentTool"
+        ):
             example.gated_agent(example.scripted_agent([], tools=[Toolset()]), lambda n, a: [])
 
         class Wrapped(_adapter().AgentTool):
@@ -699,6 +703,98 @@ class TestGoogleAdkGate:
         assert "would not be judged" in why
         judged, why = _adapter()._agent_call(AgentTool(plain), {"request": "x"}, context)
         assert why is None and judged == {"request": "x"}
+
+    def test_the_structured_answer_is_judged_as_the_adk_stores_it(self, example):
+        """Review round 3: the policy judged ``{"amount": "5000"}`` while the ADK stored
+        ``{"amount": 5000, "approved": True}``: validation coerced the value and completed a
+        default. The policy now judges the answer the ADK computes."""
+        from pydantic import BaseModel
+
+        from recusal import Finding
+
+        class Decision(BaseModel):
+            amount: int
+            approved: bool = True
+
+        seen = []
+
+        def capped(name, args):
+            seen.append((name, dict(args)))
+            if name == "set_model_response" and args.get("amount", 0) > 1000:
+                return [Finding.fail("cap", severity="CRITICAL", message="amount over 1000")]
+            return []
+
+        agent = example.LlmAgent(
+            name="assistant",
+            model=example.ScriptedLlm(
+                model="s",
+                calls=[
+                    ("echo", {"text": "x"}, "c1"),
+                    ("set_model_response", {"amount": "5000"}, "c2"),
+                ],
+            ),
+            tools=[example.FunctionTool(example.echo)],
+            output_schema=Decision,
+        )
+        responses = asyncio.run(example.run_agent(example.gated_agent(agent, capped)))
+        assert ("set_model_response", {"amount": 5000, "approved": True}) in seen
+        assert "amount over 1000" in responses["c2"]["error"]
+        # an answer that does not validate is refused, not judged as proposed
+        from google.adk.tools.set_model_response_tool import SetModelResponseTool
+
+        _, why = _adapter()._model_response(SetModelResponseTool(Decision), {"amount": "lots"})
+        assert why == "the answer does not validate against the agent's output_schema"
+
+    def test_the_plugin_refuses_a_run_with_provider_code_execution(self, example):
+        """Review round 3: ``RunConfig(support_cfc=True)`` gives the root agent the model
+        provider's code execution, which no callback sees."""
+        from types import SimpleNamespace
+
+        clean = example.scripted_agent([])
+        context = SimpleNamespace(agent=clean, run_config=SimpleNamespace(support_cfc=True))
+        assert "support_cfc" in _adapter()._run_unseen_reason(context)
+        context.run_config = SimpleNamespace(support_cfc=False)
+        assert _adapter()._run_unseen_reason(context) is None
+
+    def test_the_run_check_walks_from_the_root_not_the_agent_the_run_resumes_at(self, example):
+        """Review round 3: on a continued session the ADK starts the run at the sub-agent
+        that replied last; the check walked only that agent, and the run transferred back to
+        a root with a code_executor."""
+        from types import SimpleNamespace
+
+        from google.adk.code_executors import UnsafeLocalCodeExecutor
+
+        sub = example.scripted_agent([]).clone(update={"name": "a"})
+        root = example.LlmAgent(
+            name="root",
+            model=example.ScriptedLlm(model="s", calls=[]),
+            sub_agents=[sub],
+            code_executor=UnsafeLocalCodeExecutor(),
+        )
+        resumed_at = root.sub_agents[0]
+        assert resumed_at.root_agent is root
+        context = SimpleNamespace(agent=resumed_at, run_config=None)
+        assert "code_executor" in _adapter()._run_unseen_reason(context)
+
+    def test_local_adk_tools_are_accepted_and_a_task_mode_agent_is_named(self, example):
+        """Review round 3: ``preload_memory`` (it only adds memory to the request) and
+        ``load_artifacts`` (its calls reach the callbacks) were refused as provider-side
+        tools. A task-mode agent's ``finish_task`` is refused with its real reason."""
+        from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
+        from google.adk.tools.preload_memory_tool import PreloadMemoryTool
+
+        for tool in (PreloadMemoryTool(), LoadArtifactsTool()):
+            agent = example.scripted_agent([], tools=[example.FunctionTool(example.echo), tool])
+            assert example.is_gated(example.gated_agent(agent, lambda n, a: []))
+        replaced = PreloadMemoryTool()
+        replaced.process_llm_request = lambda **kwargs: None
+        with pytest.raises(ValueError):
+            example.gated_agent(example.scripted_agent([], tools=[replaced]), lambda n, a: [])
+        task = example.LlmAgent(
+            name="root", model=example.ScriptedLlm(model="s", calls=[]), mode="task"
+        )
+        with pytest.raises(ValueError, match="task mode is not supported"):
+            example.gated_agent(task, lambda n, a: [])
 
     def test_a_call_that_sets_a_parameter_the_adk_fills_is_refused(self, example):
         """Review round 2: outside a live run the model could set ``input_stream`` (the tool

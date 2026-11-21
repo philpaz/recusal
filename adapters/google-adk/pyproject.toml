@@ -38,6 +38,9 @@ dependencies = [
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "google-adk>=2.14.0,<3",
+    # imported directly (the gate computes the structured answer the ADK stores), so
+    # declared here and not left to the ADK's own requirement
+    "pydantic>=2,<3",
 ]
 
 [project.urls]

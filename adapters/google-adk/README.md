@@ -81,10 +81,13 @@ gate as a runner plugin, given to the app:
 callbacks run before any agent's own, so the plugin judges a call only when nothing it
 cannot see runs after it. If the executing agent has another before-tool callback, or a
 later plugin overrides `before_tool_callback`, it refuses the call and names the fix. A
-plugin is handed tool calls only, so before a run starts it checks every agent the run
-can reach with the same rules `gated_agent` applies, and refuses the whole run when one
-of them can execute something no callback sees: a `code_executor`, a provider-side tool,
-a toolset, a `task` or `single_turn` sub-agent, or an agent class it does not know.
+plugin is handed tool calls only, so before a run starts it checks every agent in the
+tree, from the root (a continued session can start at a sub-agent and transfer anywhere),
+with the same rules `gated_agent` applies, and refuses the whole run when one of them can
+execute something no callback sees: a `code_executor`, a provider-side tool, a toolset, a
+`task` or `single_turn` sub-agent, or an agent class it does not know. It also refuses a
+run whose `RunConfig` sets `support_cfc`, which gives the agent the model provider's code
+execution.
 
 ## Put every decision on the record
 
@@ -114,7 +117,13 @@ path.
   `AgentTool`. That includes the built-in tools the model provider runs on its own side
   (`google_search`, `url_context`, `VertexAiSearchTool` and the like), which never reach a
   callback, tools declared in `generate_content_config`, and toolsets (MCP, OpenAPI),
-  whose tools it cannot judge.
+  whose tools it cannot judge. Two ADK tools that run locally are accepted:
+  `preload_memory` (it only adds memory to the model request) and `load_artifacts`
+  (whose calls the gate refuses, since it cannot judge them). An agent in `task` mode is
+  refused: the gate cannot judge how it finishes its task.
+- **`gated_agent` cannot see how you run the agent.** It is handed the agent, not the
+  `RunConfig`: do not set `support_cfc`, which gives the agent the model provider's code
+  execution. `RecusalPlugin` sees the run and refuses it.
 - **Refused before the policy runs:** a `FunctionTool` whose class or object replaces any
   method on its run path (preparing, filtering, confirming or calling), or whose function
   was replaced after it was built; a signature that cannot be judged by name, including a
@@ -129,8 +138,10 @@ path.
   `AgentTool` subclass, and the tools ADK makes for sub-agents in `single_turn` or `task`
   mode are refused.
 - **A structured answer:** for an agent with an `output_schema` and tools, the ADK adds a
-  `set_model_response` call that runs nothing and sets the agent's answer; the policy
-  judges its arguments like any call's.
+  `set_model_response` call that runs nothing and sets the agent's answer. The policy
+  judges the answer as the ADK stores it, validated against the `output_schema` (values
+  coerced, defaults completed), not as the model proposed it; an answer that does not
+  validate, or is not plain data, is refused.
 - **Not judged:** the parameters the ADK fills itself, `tool_context` and `input_stream`.
   A call that sets either is refused; outside a live run an `input_stream` parameter takes
   its own default, which is the tool's code.

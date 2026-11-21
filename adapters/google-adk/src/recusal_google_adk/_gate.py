@@ -44,6 +44,7 @@ import inspect
 from typing import Any, Callable, List, Optional
 
 from google.adk.agents import BaseAgent, LlmAgent
+from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
@@ -51,7 +52,10 @@ from google.adk.plugins import BasePlugin
 from google.adk.tools import AgentTool, BaseTool, FunctionTool, ToolContext
 from google.adk.tools.agent_tool import _get_input_schema as _agent_input_schema
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
+from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from pydantic import TypeAdapter, ValidationError
 
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
@@ -211,12 +215,37 @@ def _model_response(
     tool: Any, args: dict[str, Any]
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """The call the ADK adds for an agent with an ``output_schema`` and tools
-    (``set_model_response``): it runs nothing, and sets the agent's structured answer from
-    the arguments. The policy judges a detached copy of them, as the model proposed them."""
+    (``set_model_response``): it runs nothing, and sets the agent's structured answer, which
+    the next agent can read from state.
+
+    The answer is not the arguments as proposed: ``SetModelResponseTool.run_async`` validates
+    them against the schema, which coerces values and completes defaults. The gate computes
+    the answer the same way, from a copy, and the policy judges that: a model ``BaseModel``'s
+    ``model_validate(args, by_name=True).model_dump(exclude_none=True)``, a ``list`` of models'
+    validated ``items``, or for any other schema the ``response`` value as it stands. An answer
+    that does not validate is refused, as is one that is not plain JSON data. A model
+    answer is judged as itself; a list or other answer as ``{"items": ...}`` or
+    ``{"response": ...}``, the shape the model was asked for.
+    """
+    raw = copy.deepcopy(args)
     try:
-        return _detached(args), None
+        if tool._model_type is not None:
+            answer: Any = tool._model_type.model_validate(raw, by_name=True).model_dump(
+                exclude_none=True
+            )
+        elif tool._list_model_type is not None:
+            items = TypeAdapter(tool.output_schema).validate_python(raw.get("items", []))
+            answer = {"items": [item.model_dump(exclude_none=True) for item in items]}
+        else:
+            answer = {"response": raw.get("response")}
+    except ValidationError:
+        return None, "the answer does not validate against the agent's output_schema"
+    except Exception as exc:  # noqa: BLE001, an answer the gate cannot compute is refused
+        return None, f"the answer cannot be computed ({type(exc).__name__})"
+    try:
+        return _detached(answer), None
     except TypeError as exc:
-        return None, str(exc)
+        return None, f"the answer is not plain data ({exc})"
 
 
 def _unstock_function_tool(tool: Any) -> Optional[str]:
@@ -368,7 +397,7 @@ class RecusalPlugin(BasePlugin):
         from google.genai import types
 
         try:
-            reason = _unseen_reason(getattr(invocation_context, "agent", None))
+            reason = _run_unseen_reason(invocation_context)
         except Exception as exc:  # noqa: BLE001, a tree the gate cannot read is refused
             reason = f"the agents cannot be checked ({type(exc).__name__})"
         if reason is None:
@@ -447,6 +476,25 @@ def _carries_gate(agent: LlmAgent) -> bool:
     return bool(callbacks) and getattr(callbacks[-1], "recusal_gate", False) is True
 
 
+def _run_unseen_reason(invocation_context: Any) -> Optional[str]:
+    """Why a run can execute something no callback sees, or None.
+
+    The tree is walked from its ROOT: on a continued session the ADK starts the run at the
+    agent that replied last, often a sub-agent, and the run can still transfer anywhere in
+    the tree. The run's own settings are read too: ``RunConfig(support_cfc=True)`` gives the
+    root agent the model provider's code execution, which no callback sees.
+    """
+    run_config = getattr(invocation_context, "run_config", None)
+    if getattr(run_config, "support_cfc", False):
+        return (
+            "the run sets support_cfc, which gives the agent the model provider's code "
+            "execution; no callback sees it"
+        )
+    agent = getattr(invocation_context, "agent", None)
+    root = getattr(agent, "root_agent", None) or agent
+    return _unseen_reason(root)
+
+
 def _unseen_reason(agent: Any, _seen: Optional[set] = None) -> Optional[str]:
     """Why some agent in this tree can run something no Recusal callback sees, or None.
 
@@ -501,6 +549,13 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
     return None
 
 
+#: ADK's own tools that run locally and hide nothing from the callbacks, accepted on an
+#: agent by exact class: ``preload_memory`` only adds memory text to the model request and
+#: is never called; ``load_artifacts`` is called through the callbacks like any tool, where
+#: the gate, which cannot judge it, refuses the call (as before this release).
+_LOCAL_ADK_TOOLS = (PreloadMemoryTool, LoadArtifactsTool)
+
+
 def _unjudged_tool_kind(tool: Any) -> Optional[str]:
     """Why a tool on an agent's list never reaches the before-tool callback as a call the
     gate can judge, or None if it does. Default-deny: a function (the ADK wraps it in a
@@ -530,11 +585,21 @@ def _unjudged_tool_kind(tool: Any) -> Optional[str]:
                 "the model provider runs itself"
             )
         return None
+    if type(tool) in _LOCAL_ADK_TOOLS and "process_llm_request" not in getattr(
+        tool, "__dict__", {}
+    ):
+        return None
     if isinstance(tool, (BaseTool, BaseToolset)):
         name = getattr(tool, "name", type(tool).__name__)
+        if type(tool) is FinishTaskTool:
+            return (
+                f"tool {name!r} is how an agent in task mode finishes its task, which this "
+                "gate cannot judge; task mode is not supported"
+            )
         return (
-            f"tool {name!r} ({type(tool).__name__}) is not a FunctionTool: the model provider "
-            "runs built-in tools itself, and other tool kinds cannot be judged"
+            f"tool {name!r} ({type(tool).__name__}) is not a function, a FunctionTool or a "
+            "plain AgentTool, so the gate cannot judge it (a built-in tool the model "
+            "provider runs, a toolset, or another tool kind)"
         )
     if callable(tool):
         return None

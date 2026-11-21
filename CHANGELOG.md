@@ -76,6 +76,15 @@ All notable changes to this project are documented here. The format follows
     run can reach with the rules `gated_agent` applies and refuses the run before any
     agent starts. A call that sets `tool_context` or `input_stream`, which the ADK fills
     itself, is refused, and a subclass of a workflow agent is no longer taken for one.
+    The run check walks the tree from its root, since a continued session can start at a
+    sub-agent and transfer back to one the check had not seen, and refuses a run whose
+    `RunConfig` sets `support_cfc` (`gated_agent` is handed the agent, not the run, so
+    the README says not to set it there).
+  - The `set_model_response` answer is judged as the ADK stores it, validated against the
+    `output_schema` (values coerced, defaults completed), not as the model proposed it:
+    the policy was shown `{"amount": "5000"}` while `{"amount": 5000, "approved": true}`
+    was stored. `preload_memory` and `load_artifacts`, local ADK tools, are accepted on an
+    agent again; an agent in `task` mode is refused with that reason.
     `is_gated` now requires the gate to be the agent's last
     before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
     a tool object is refused.
