@@ -74,7 +74,9 @@ The gate prepares the invocation the way the ADK will (defaults completed, value
 validated), judges a detached copy, and the tool runs with exactly what was judged.
 
 For an app whose agents you do not build yourself, `RecusalPlugin(policy)` is the same
-gate as a runner plugin: `InMemoryRunner(agent, plugins=[RecusalPlugin(policy)])`. Plugin
+gate as a runner plugin, given to the app:
+`InMemoryRunner(app=App(name="shop", root_agent=agent, plugins=[RecusalPlugin(policy)]))`
+(`from google.adk.apps import App`). Plugin
 callbacks run before any agent's own, so the plugin judges a call only when nothing it
 cannot see runs after it. If the executing agent has another before-tool callback, or a
 later plugin overrides `before_tool_callback`, it refuses the call and names the fix.
@@ -100,12 +102,24 @@ path.
 
 ## What the gate refuses, and what it does not see
 
-- **`gated_agent` raises at construction** for an agent that can run something the
-  callback never sees: an agent with a `code_executor` (model-written code runs outside
-  the tool path), an `LlmAgent` subclass, or an agent class it does not know how to gate.
-- **Refused before the policy runs:** a tool that is not a stock `FunctionTool`, a
-  signature that cannot be judged by name, an unknown or missing parameter, and arguments
-  that do not validate.
+- **`gated_agent` raises at construction** (and `is_gated` is `False`) for an agent that
+  can run something the callback never sees: an agent with a `code_executor` (model-written
+  code runs outside the tool path), an `LlmAgent` subclass, an agent class it does not know
+  how to gate, and any tool that is not a function, a `FunctionTool` or a plain
+  `AgentTool`. That includes the built-in tools the model provider runs on its own side
+  (`google_search`, `url_context`, `VertexAiSearchTool` and the like), which never reach a
+  callback, tools declared in `generate_content_config`, and toolsets (MCP, OpenAPI),
+  whose tools it cannot judge.
+- **Refused before the policy runs:** a `FunctionTool` whose class or object replaces any
+  method on its run path (preparing, filtering, confirming or calling), or whose function
+  was replaced after it was built; a signature that cannot be judged by name, including a
+  `functools.wraps` wrapper that adds a parameter of its own; an unknown or missing
+  parameter; arguments that do not validate, or that validating again would change.
+- **Agent tools:** a call to a plain `AgentTool` is judged as the sub-agent receives it
+  (the `request` text, or the arguments as JSON), and the sub-agent's own tool calls are
+  judged by its own gate. An `AgentTool` whose agent declares an `input_schema`, an
+  `AgentTool` subclass, and the tools ADK makes for sub-agents in `single_turn` or `task`
+  mode are refused.
 - **Not on the audit log:** a call another before-tool callback answered before the gate
   ran. The tool did not run either.
 
