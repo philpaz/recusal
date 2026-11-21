@@ -34,24 +34,21 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 [How it works](#how-it-works) · [CI](#gate-your-ci) ·
 [Built to be checked](#built-to-be-checked) · [Documentation](#documentation)
 
-> **New with 0.14.2**
+> **New with 0.15.0**
 >
-> - **One fix in the kernel.** The audit log's tolerant reader skips a line that is not
->   valid UTF-8, as its contract says, where it used to raise. It failed safe, and the
->   strict verifier is unchanged:
->   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0142---2026-11-19).
-> - **Coverage-guided fuzzing of the kernel**, which is what found it. Five harnesses, each
->   stating the contract it holds its target to:
->   [`fuzz/README.md`](https://github.com/philpaz/recusal/blob/main/fuzz/README.md).
-> - **Security releases of three adapter packages.** If you gate a LangGraph `ToolNode`,
->   upgrade `recusal-langgraph` to 0.2.0 and build the node with `gated_tool_node`; with
->   it come `recusal-langchain` 0.1.2 and `recusal-openai` 0.2.0:
+> - **The kernel finds a parameter a wrapper adds.** `recusal.invocation` now walks every
+>   callable a tool call reaches, so a decorator's own `force=True` is refused instead of
+>   running unjudged, and look-alike types are refused:
+>   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0150---2026-11-21).
+> - **Security releases of two adapter packages.** If you gate a CrewAI crew, upgrade
+>   `recusal-crewai` to 0.2.1; if you gate a Google ADK agent, upgrade `recusal-google-adk`
+>   to 0.2.0, which requires this kernel:
 >   [what changed and why](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#security).
 >
-> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.14.2
-> differs from 0.14.1 in the audit reader, the read check in `recusal audit verify`, and
-> the version string; the adapters are not part of its wheel. The full list is in the
-> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0142---2026-11-19).
+> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.15.0
+> differs from 0.14.2 in `recusal.invocation` and the version string; the adapters are
+> not part of its wheel. The full list is in the
+> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0150---2026-11-21).
 
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
@@ -757,7 +754,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.14.2   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.15.0   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl

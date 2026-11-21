@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-21
+
+A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public
+helpers (`reached_parameters`, `own_parameters`, `DeclaredSignature`) that walk every
+callable a tool call reaches, and `unsupported_signature` uses them. It is also a security
+release, under Security below: a `functools.wraps` wrapper that adds a parameter of its own
+ran with its default while a gate judged a call without it, and `json_data` and
+`supported_annotation` took look-alike types. Each change refuses something that was
+accepted; nothing that was refused is accepted now. No verdict, decision path, reason
+string of the frozen kernel or import path changed.
+
+Everything else listed here was added to the repository since 0.14.2 and is not part of
+the `recusal` wheel: two adapter packages, each a separate distribution on PyPI under its
+own version and tag. `recusal-crewai` 0.2.1 is released; `recusal-google-adk` 0.2.0, which
+requires this kernel, is released next. If you gate a CrewAI crew or a Google ADK agent,
+read the Security section and upgrade that package.
+
 ### Changed
 
 - The project has a website, [recusal.io](https://recusal.io). The README links to it,
@@ -41,7 +58,7 @@ All notable changes to this project are documented here. The format follows
   callable object is still read through its class's annotations, as before. The same walk
   was first built inside `recusal-crewai` 0.2.1; it now lives here, and `recusal-crewai`
   moves to it from its own copy in its next release.
-- **`recusal-google-adk` 0.2.0, unreleased: the gate refuses what it cannot see and holds a
+- **`recusal-google-adk` 0.2.0: the gate refuses what it cannot see and holds a
   tool's whole run path to the stock one.** Found by the adapter review of 2026-11-19 and
   reproduced on `google-adk` 2.14.0:
   - The built-in tools the model provider runs on its own side (`google_search`,
@@ -105,8 +122,8 @@ All notable changes to this project are documented here. The format follows
     a tool object is refused.
   - The README and the example give plugins to an `App`; the `plugins=` argument of a
     runner is deprecated.
-  - Releasing it requires the kernel release above first, and its floor raised to
-    `recusal>=0.14.3`: with an older kernel the wrapper check is absent.
+  - It requires `recusal>=0.15.0`: with an older kernel the wrapper check is absent, so
+    the floor is raised and a test pins it.
 - **`recusal-crewai` 0.2.1: the gate holds the tool it is handed to the tool that runs.**
   CrewAI finds a tool by its normalised name ("Run SQL" becomes `run_sql`) in more than
   one place, and the places disagree once two of the tools a call is chosen from

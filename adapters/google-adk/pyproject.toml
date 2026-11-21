@@ -33,8 +33,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
-    "recusal>=0.14.0,<1",
+    # 0.15.0 is the first release whose `recusal.invocation` walks every callable a call
+    # reaches (`reached_parameters`); with an older kernel the wrapper check is absent.
+    "recusal>=0.15.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "google-adk>=2.14.0,<3",

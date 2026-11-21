@@ -70,6 +70,28 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
     assert ci.count("requirements/adapter-google-adk.txt") == 3
 
 
+def test_the_package_requires_the_kernel_that_walks_every_callable():
+    """The gate's wrapper check lives in the kernel (``recusal.invocation``): installed
+    with an older kernel, recusal-google-adk would import cleanly and silently lack it, so
+    a wrapper's own ``force=True`` would run unjudged (review round 4). The floor is the
+    first kernel with ``reached_parameters``, stated in the package and in its README, and
+    the kernel in this tree is at or past it."""
+    import recusal
+    from recusal import invocation
+
+    floor = "0.15.0"
+    pyproject = (ROOT / "adapters" / "google-adk" / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (ROOT / "adapters" / "google-adk" / "README.md").read_text(encoding="utf-8")
+    assert f'"recusal>={floor},<1"' in pyproject
+    assert f"`recusal>={floor}`" in readme
+    assert hasattr(invocation, "reached_parameters")
+
+    def parts(version):
+        return tuple(int(part) for part in version.split("."))
+
+    assert parts(recusal.__version__) >= parts(floor)
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="the Google ADK requires Python 3.11+")
 class TestGoogleAdkGate:
     @pytest.fixture
