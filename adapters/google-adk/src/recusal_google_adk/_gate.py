@@ -134,6 +134,12 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     unknown = sorted(k for k in args if k not in parameters)
     if unknown:
         return None, f"unknown parameter(s) {unknown!r}"
+    # a parameter the ADK fills itself (``tool_context``, ``input_stream``) is not the
+    # model's to set: the tool receives the ADK's value, or outside a live run the model's
+    # unchecked one, and the policy would judge something else
+    injected = sorted(k for k in args if k in skip)
+    if injected:
+        return None, f"the call sets {injected!r}, which the ADK fills itself"
     raw.update(args)
     converted, errors = tool._preprocess_args_with_validation(raw)
     if errors:
@@ -175,7 +181,9 @@ def _agent_call(
     if type(tool) is not AgentTool:
         return None, f"{type(tool).__name__} runs its agent in a way this gate does not judge"
     if not is_gated(tool.agent) and not (
-        tool.include_plugins and _runner_has_recusal_plugin(tool_context)
+        tool.include_plugins
+        and _runner_has_recusal_plugin(tool_context)
+        and _unseen_reason(tool.agent) is None
     ):
         return None, (
             f"the tool calls agent {tool.agent.name!r} makes would not be judged: gate it "
@@ -351,6 +359,25 @@ class RecusalPlugin(BasePlugin):
         self._policy = policy
         self._recording = recording
 
+    async def before_run_callback(self, *, invocation_context: Any) -> Optional[Any]:
+        """Refuse the whole run when any agent the runner drives can execute something no
+        callback sees (``_unseen_reason``): a plugin is handed tool calls only, so model-
+        written code, a provider-side tool or a task delegation would otherwise run
+        unjudged. Returning content ends the run before any agent starts. A nested run (an
+        ``AgentTool`` that inherits the plugin) is checked the same way."""
+        from google.genai import types
+
+        try:
+            reason = _unseen_reason(getattr(invocation_context, "agent", None))
+        except Exception as exc:  # noqa: BLE001, a tree the gate cannot read is refused
+            reason = f"the agents cannot be checked ({type(exc).__name__})"
+        if reason is None:
+            return None
+        return types.Content(
+            role="model",
+            parts=[types.Part(text=f"Recusal refused this run: {reason}")],
+        )
+
     async def before_tool_callback(
         self, *, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
     ) -> Optional[dict[str, Any]]:
@@ -420,9 +447,39 @@ def _carries_gate(agent: LlmAgent) -> bool:
     return bool(callbacks) and getattr(callbacks[-1], "recusal_gate", False) is True
 
 
+def _unseen_reason(agent: Any, _seen: Optional[set] = None) -> Optional[str]:
+    """Why some agent in this tree can run something no Recusal callback sees, or None.
+
+    The rules ``gated_agent`` applies when it builds, over the whole tree: every agent,
+    its ``sub_agents`` and the agent behind every ``AgentTool`` (including the tools the
+    ADK adds for ``task`` and ``single_turn`` sub-agents, which it refuses). A plugin sees
+    only tool calls, so ``RecusalPlugin`` refuses a run whose tree fails this rather than
+    let a ``code_executor``, a provider-side tool or a task delegation run unjudged.
+    """
+    seen = set() if _seen is None else _seen
+    if id(agent) in seen:
+        return None
+    seen.add(id(agent))
+    reason = _ungateable_reason(agent)
+    if reason is not None:
+        return f"agent {getattr(agent, 'name', '?')!r}: {reason}"
+    if isinstance(agent, LlmAgent):
+        for tool in agent.tools:
+            if isinstance(tool, AgentTool):
+                reason = _unseen_reason(tool.agent, seen)
+                if reason is not None:
+                    return reason
+    for sub in getattr(agent, "sub_agents", ()) or ():
+        reason = _unseen_reason(sub, seen)
+        if reason is not None:
+            return reason
+    return None
+
+
 def _ungateable_reason(agent: Any) -> Optional[str]:
     """Why an agent can run something the callback never sees, or None if it cannot."""
-    if isinstance(agent, _WORKFLOW_AGENTS):
+    # the exact classes: a subclass of a workflow agent can run anything of its own
+    if type(agent) in _WORKFLOW_AGENTS:
         return None
     if type(agent) is not LlmAgent:
         return (
