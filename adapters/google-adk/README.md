@@ -77,9 +77,11 @@ the tool runs with exactly what was judged, apart from the parameters the ADK fi
 `null` is judged as `None`, and runs as `None`: it is written into the call when a wrapper
 on the way declares another default for it. A decorator whose own code fills or changes an
 argument (`kwargs.setdefault(...)`) is the tool's code, which no gate reads. A value that
-does not validate against its type (`"abc"` for an `int`) is refused, naming the parameter;
-with the ADK's `FUNCTION_TOOL_ARG_VALIDATION` on, a `None` for a parameter not declared
-`Optional` is refused too, since the ADK would refuse it.
+does not validate against its type (`"abc"` for an `int`) is refused, naming the parameter.
+When a `None` has to be written into the call (a wrapper declares another default) and the
+ADK's `FUNCTION_TOOL_ARG_VALIDATION` is on, a parameter not declared `Optional` is refused,
+since the ADK would refuse the `None`. A wrapper with its own default over a
+`pydantic.validate_call` function that rejects `None` fails the call; nothing runs.
 
 For an app whose agents you do not build yourself, `RecusalPlugin(policy)` is the same
 gate as a runner plugin, given to the app:
@@ -157,8 +159,9 @@ path.
   answer and passes without the policy.
 - **Provider options on the model:** a model object that passes its provider an option
   turning on the provider's own tool, `LiteLlm(..., web_search_options=...)`, also when
-  nested (`extra_body`), or an OpenRouter web plugin, is refused, in a `FallbackModel` too. Other provider options are configuration the gate does not
-  read, and a model that searches on its own with no option set is the model's choice.
+  nested (`extra_body`), or an OpenRouter web plugin in its options, is refused, in a
+  `FallbackModel` too. Other provider options and model names are configuration the gate
+  does not read, and a model that searches on its own is the model's choice.
 
 ## Compatibility
 

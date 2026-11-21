@@ -1000,6 +1000,51 @@ class TestGoogleAdkGate:
         finally:
             override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, before)
 
+    @pytest.mark.parametrize("route", ["gated_agent", "hand_attached", "plugin"])
+    def test_a_written_none_under_adk_validation_is_refused_on_every_route(self, example, route):
+        """When a ``None`` default has to be written into the call (a wrapper declares
+        another default) and the ADK's validation is on, the ADK would reject it for a
+        ``str``; the gate refuses it first, naming the parameter, on every route."""
+        import functools
+
+        from google.adk.features import FeatureName, is_feature_enabled, override_feature_enabled
+
+        ran = []
+
+        def search(query: str, region: str = None) -> str:  # noqa: RUF013
+            """Search."""
+            return query
+
+        @functools.wraps(search)
+        def defaulting(query: str, region: str = "all-regions") -> str:
+            ran.append(region)
+            return query
+
+        calls = [("search", {"query": "q"}, "c1")]
+        agent = example.scripted_agent(calls, tools=[example.FunctionTool(defaulting)])
+        before = is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION)
+        override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True)
+        try:
+            if route == "gated_agent":
+                responses = asyncio.run(
+                    example.run_agent(example.gated_agent(agent, lambda n, a: []))
+                )
+            elif route == "hand_attached":
+                hand = agent.clone(
+                    update={"before_tool_callback": example.recusal_before_tool(lambda n, a: [])}
+                )
+                responses = asyncio.run(example.run_agent(hand))
+            else:
+                plugin = example.RecusalPlugin(lambda n, a: [])
+                responses = asyncio.run(example.run_agent(agent, plugins=[plugin]))
+        finally:
+            override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, before)
+        assert ran == []
+        assert (
+            "refuses None for `region`; declare the parameter Optional"
+            in (responses["c1"]["error"])
+        )
+
     def test_a_none_default_runs_as_none_behind_a_wrapper_and_validate_call(self, example):
         """Confirming round: left for Python to fill, a ``None`` default ran as whatever a
         wrapper declared for the same parameter (``"all-regions"``), not the ``None`` judged.
@@ -1090,6 +1135,8 @@ class TestGoogleAdkGate:
         for extra in (
             {"extra_body": {"web_search_options": {}}},
             {"extra_body": {"plugins": [{"id": "web"}]}},
+            {"extra_body": {"plugins": ({"id": "web"},)}},
+            {"plugins": [{"id": "web"}]},
         ):
             nested = Wrapper(model="nested")
             nested._additional_args = extra

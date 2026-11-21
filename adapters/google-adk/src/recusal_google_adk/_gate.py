@@ -618,7 +618,7 @@ def _provider_tool_option(options: Any, depth: int = 0) -> Optional[str]:
         for key, value in options.items():
             if key in _PROVIDER_TOOL_OPTIONS:
                 return f"`{key}`"
-            if key == "plugins" and isinstance(value, list):
+            if key == "plugins" and isinstance(value, (list, tuple)):
                 if any(isinstance(p, dict) and p.get("id") == "web" for p in value):
                     return "an OpenRouter web plugin"
             found = _provider_tool_option(value, depth + 1)
