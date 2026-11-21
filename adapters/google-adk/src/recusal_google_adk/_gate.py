@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import re
 from typing import Any, Callable, List, Optional
 
 from google.adk.agents import BaseAgent, LlmAgent
@@ -128,11 +129,23 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
         return None, f"its signature cannot be judged ({why})"
     parameters = inspect.signature(func).parameters
     raw: dict[str, Any] = {}
+    # A parameter whose default is ``None`` (``region: str = None``) and that the call
+    # leaves out, or sets to ``null``, is not written into the call: validated as a ``str``
+    # the ``None`` would fail, though the ADK runs the call. Python then fills ``None``,
+    # one object, and the policy judges exactly that.
+    left_to_python: list[str] = []
     for name, parameter in parameters.items():
-        if name in skip or name in args:
+        if name in skip:
+            continue
+        if name in args:
+            if args[name] is None and parameter.default is None:
+                left_to_python.append(name)
             continue
         if parameter.default is parameter.empty:
             return None, f"required parameter `{name}` was not supplied"
+        if parameter.default is None:
+            left_to_python.append(name)
+            continue
         raw[name] = copy.deepcopy(parameter.default)
     unknown = sorted(k for k in args if k not in parameters)
     if unknown:
@@ -143,10 +156,15 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     injected = sorted(k for k in args if k in skip)
     if injected:
         return None, f"the call sets {injected!r}, which the ADK fills itself"
-    raw.update(args)
+    raw.update({k: v for k, v in args.items() if k not in left_to_python})
     converted, errors = _always_validated(tool, raw)
     if errors:
-        return None, f"{len(errors)} argument(s) do not validate against the tool's parameters"
+        # the parameter names, never the values (the ADK's own text carries the input)
+        named = sorted({m.group(1) for e in errors if (m := _ERROR_PARAMETER.match(e))})
+        which = f": {', '.join(f'`{n}`' for n in named)}" if named else ""
+        return None, (
+            f"{len(errors)} argument(s) do not validate against the tool's parameters{which}"
+        )
     # ``run_async`` validates the dict the gate writes once more before the function runs.
     # Judge only arguments that are plain JSON data and that this validation gives back
     # exactly, type for type: whatever the validation does to them has then been applied,
@@ -159,7 +177,13 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
         )
     args.clear()
     args.update(converted)
-    return copy.deepcopy(converted), None
+    judged = copy.deepcopy(converted)
+    judged.update({name: None for name in left_to_python})
+    return judged, None
+
+
+#: How ``FunctionTool._validate_args`` names a failing parameter in its error text.
+_ERROR_PARAMETER = re.compile(r"^Parameter '([^']+)'")
 
 
 def _always_validated(tool: Any, raw: dict[str, Any]) -> tuple[dict[str, Any], list]:
@@ -541,13 +565,12 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
     return None
 
 
-#: The options a model wrapper hands its provider that declare or enable tools the provider
-#: runs itself (``LiteLlm(..., web_search_options=...)`` turns on the provider's web search).
-#: Any other provider option (temperature, timeouts, ...) is configuration the gate does not
-#: read.
-_PROVIDER_TOOL_OPTIONS = frozenset(
-    {"web_search_options", "tools", "functions", "tool_choice", "function_call", "builtin_tools"}
-)
+#: The options a model wrapper hands its provider that turn on a tool the provider runs
+#: itself, as verified in ADK 2.14's ``LiteLlm``: ``web_search_options`` turns on the
+#: provider's web search. ``tools`` is not one (``LiteLlm`` drops it and sends the agent's
+#: own), nor is ``tool_choice`` (it steers the agent's own tools). Any other provider option
+#: (temperature, timeouts, ...) is configuration the gate does not read.
+_PROVIDER_TOOL_OPTIONS = frozenset({"web_search_options"})
 
 
 def _model_provider_tools(model: Any, depth: int = 0) -> Optional[str]:

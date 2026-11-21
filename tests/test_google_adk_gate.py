@@ -949,6 +949,9 @@ class TestGoogleAdkGate:
             seen.append(dict(args))
             return []
 
+        from google.adk.features import is_feature_enabled
+
+        before = is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION)
         for enabled in (False, True):
             override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, enabled)
             ran.clear(), seen.clear()
@@ -959,9 +962,57 @@ class TestGoogleAdkGate:
                     tools=[example.FunctionTool(pay)],
                 )
             finally:
-                override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True)
+                # back to what it was, the ADK's default unless set: later tests run under it
+                override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, before)
             assert seen == [{"amount": 5000, "force": True}], enabled
             assert ran == [(5000, "int", True, "bool")], enabled
+
+    @pytest.mark.parametrize("validation_on", [False, True], ids=["adk-default", "adk-on"])
+    def test_a_none_default_runs_and_is_judged_as_none(self, example, validation_on):
+        """Review round 6: with the gate validating, ``region: str = None`` completed as
+        ``None`` failed ``str`` and every call was refused, though the ADK runs it. A
+        ``None`` default, left out or sent as ``null``, is judged as ``None`` and filled by
+        Python."""
+        from google.adk.features import FeatureName, is_feature_enabled, override_feature_enabled
+
+        ran, seen = [], []
+
+        def search(query: str, region: str = None, tags: list[str] = None) -> str:  # noqa: RUF013
+            """Search."""
+            ran.append((query, region, tags))
+            return "found"
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return []
+
+        before = is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION)
+        override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, validation_on)
+        try:
+            for call in ({"query": "shoes"}, {"query": "shoes", "region": None}):
+                ran.clear(), seen.clear()
+                responses, _ = example.run_calls(
+                    [("search", call, "c1")], policy=recording, tools=[example.FunctionTool(search)]
+                )
+                assert "error" not in responses["c1"], (call, responses)
+                assert seen == [{"query": "shoes", "region": None, "tags": None}]
+                assert ran == [("shoes", None, None)]
+        finally:
+            override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, before)
+
+    def test_a_value_that_does_not_validate_is_refused_naming_the_parameter(self, example):
+        def count(n: int) -> str:
+            """Count."""
+            return "counted"
+
+        responses, _ = example.run_calls(
+            [("count", {"n": "abc"}, "c1")],
+            policy=lambda name, args: [],
+            tools=[example.FunctionTool(count)],
+        )
+        error = responses["c1"]["error"]
+        assert "do not validate against the tool's parameters: `n`" in error
+        assert "abc" not in error
 
     def test_a_model_that_enables_provider_tools_is_refused(self, example):
         """Review round 5: ``LiteLlm(..., web_search_options=...)`` turns on the provider's
@@ -984,9 +1035,18 @@ class TestGoogleAdkGate:
         assert example.is_gated(
             example.gated_agent(agent.clone(update={"model": plain}), lambda n, a: [])
         )
-        fallback = SimpleNamespaceModel = type("Fallback", (), {})()
-        fallback.models = ["gemini-2.0-flash", searching]
-        assert "web_search_options" in _adapter()._model_provider_tools(SimpleNamespaceModel)
+        # a real FallbackModel, and the plugin's run check, read every model in it
+        from google.adk.models import FallbackModel
+
+        fallback = FallbackModel(models=["gemini-2.0-flash", searching])
+        with pytest.raises(ValueError, match="web_search_options"):
+            example.gated_agent(agent.clone(update={"model": fallback}), lambda n, a: [])
+        root = agent.clone(update={"model": fallback})
+        assert "web_search_options" in _adapter()._unseen_reason(root)
+        # tool_choice steers the agent's own tools and turns on none of the provider's
+        steering = Wrapper(model="steer")
+        steering._additional_args = {"tool_choice": "required"}
+        assert _adapter()._model_provider_tools(steering) is None
 
     def test_is_gated_requires_the_gate_to_be_the_last_callback(self, example):
         def later(tool, args, tool_context):
@@ -1081,11 +1141,14 @@ class TestPreparedInvocation:
 
     @pytest.fixture(params=[True, False], ids=["validation-on", "validation-off"])
     def validation(self, request):
-        from google.adk.features import FeatureName, override_feature_enabled
+        from google.adk.features import FeatureName, is_feature_enabled, override_feature_enabled
 
+        before = is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION)
         override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, request.param)
         yield request.param
-        override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True)
+        # back to what it was (the ADK's default unless set), not to True: the tests after
+        # this one run under the ADK's default
+        override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, before)
 
     @staticmethod
     def budget(seen):

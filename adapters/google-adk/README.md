@@ -70,9 +70,12 @@ callback, and gates its `sub_agents` and the agent behind every `AgentTool` the 
 A refused call is answered to the model as `{"error": reason}`. The tool does not run. A
 policy that raises refuses the call (fail closed).
 
-The gate prepares the invocation the way the ADK will (defaults completed, values
-validated), judges a detached copy, and the tool runs with exactly what was judged, apart
-from the parameters the ADK fills itself (see below).
+The gate prepares the invocation (defaults completed, values validated against the
+function's types whatever the ADK's own validation setting), judges a detached copy, and
+the tool runs with exactly what was judged, apart from the parameters the ADK fills itself
+(see below). A parameter whose default is `None` and that the call leaves out or sets to
+`null` is judged as `None` and filled by Python. A value that does not validate against its
+type (`"abc"` for an `int`) is refused, naming the parameter.
 
 For an app whose agents you do not build yourself, `RecusalPlugin(policy)` is the same
 gate as a runner plugin, given to the app:
@@ -148,10 +151,10 @@ path.
 - **Not on the audit log:** a call another before-tool callback answered before the gate
   ran (the tool did not run either), and a `set_model_response` call, which is the agent's
   answer and passes without the policy.
-- **Provider options on the model:** a model object that passes options to its provider
-  which enable the provider's own tools (`LiteLlm(..., web_search_options=...)`, `tools`,
-  `functions`, `tool_choice`) is refused, in a `FallbackModel` too. Other provider options
-  are configuration the gate does not read.
+- **Provider options on the model:** a model object that passes its provider an option
+  turning on the provider's own tool, `LiteLlm(..., web_search_options=...)`, is refused,
+  in a `FallbackModel` too. Other provider options are configuration the gate does not
+  read, and a model that searches on its own with no option set is the model's choice.
 
 ## Compatibility
 
