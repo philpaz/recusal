@@ -149,6 +149,17 @@ _GENERATED_NAMES = frozenset(
     }
 )
 _PYDANTIC_FAMILY = re.compile(r"^__pydantic_\w+__$")
+
+
+class _Built(BaseModel):
+    """A model Pydantic builds here, for the types of the validator and serializer it
+    compiles for every model (``pydantic_core``'s, which this package does not import)."""
+
+    value: int
+
+
+_VALIDATOR_TYPE = type(_Built.__pydantic_validator__)
+_SERIALIZER_TYPE = type(_Built.__pydantic_serializer__)
 _ALLOWED_CONFIG = frozenset({"extra", "title"})
 
 
@@ -249,6 +260,12 @@ def _unsupported_schema(schema: Any) -> Optional[str]:
         # a metaclass of its own can define ``model_validate`` or ``model_dump`` outside
         # the class body, where the checks below do not look
         return "its argument schema has a metaclass of its own"
+    # what validates and dumps: Pydantic's own compiled validator and serializer, never an
+    # object set in their place (the names are skipped by the own-names check below)
+    if type(getattr(schema, "__pydantic_validator__", None)) is not _VALIDATOR_TYPE:
+        return "its argument schema's validator is not Pydantic's"
+    if type(getattr(schema, "__pydantic_serializer__", None)) is not _SERIALIZER_TYPE:
+        return "its argument schema's serializer is not Pydantic's"
     own = sorted(
         n for n in vars(schema) if n not in _GENERATED_NAMES and not _PYDANTIC_FAMILY.match(n)
     )
@@ -275,10 +292,24 @@ _STOCK_STRUCTURED = ("_parse_args", "invoke", "ainvoke")
 _STOCK_ORIGINAL = ("run", "arun", "_validate_kwargs", "to_structured_tool")
 
 
+def _custom_lookup(obj: Any, stock: type) -> Optional[str]:
+    """Why ``obj``'s class looks its attributes up its own way, or None. Every check here
+    reads the class and the object's ``__dict__``; CrewAI's methods read ``self._run`` and
+    the like through ``__getattribute__`` and ``__getattr__``, which a class of its own can
+    answer with anything."""
+    for name in ("__getattribute__", "__getattr__"):
+        if getattr(type(obj), name, None) is not getattr(stock, name, None):
+            return f"its tool class overrides `{name}`"
+    return None
+
+
 def _unsupported_tool(tool: Any) -> Optional[str]:
     """Why this tool's execution cannot be judged faithfully, or None if it can."""
     if not isinstance(tool, CrewStructuredTool):
         return "the call carries no CrewAI tool object"
+    why = _custom_lookup(tool, CrewStructuredTool)
+    if why is not None:
+        return why
     for name in _STOCK_STRUCTURED:
         if getattr(type(tool), name) is not getattr(CrewStructuredTool, name):
             return f"its tool class overrides `{name}`"
@@ -291,6 +322,9 @@ def _unsupported_tool(tool: Any) -> Optional[str]:
         # ``self.func`` on the native routes and ``_run`` on the text route: two callables,
         # one inspected
         stock_class = Tool if isinstance(original, Tool) else BaseTool
+        why = _custom_lookup(original, stock_class)
+        if why is not None:
+            return why
         for name in _STOCK_ORIGINAL:
             # CrewAI's own method of that very name: another stock method in its place
             # (``run = BaseTool.arun``) is not stock for this one
@@ -388,8 +422,8 @@ def _bound(function: Any, owner: Any) -> Any:
     return MethodType(function, owner) if inspect.isfunction(function) else function
 
 
-def _next_callable(func: Any) -> Any:
-    """The callable ``func`` hands the call to, bound as ``func`` binds it, or None.
+def _next_callables(func: Any) -> list:
+    """The callables ``func`` may hand the call to, each bound as ``func`` binds it.
 
     A ``functools.wraps`` wrapper that takes ``(*args, **kwargs)`` passes the call to the
     function it wraps, which fills its own defaults: a parameter declared there and not in
@@ -397,36 +431,45 @@ def _next_callable(func: Any) -> Any:
     parameters show none. Such a wrapper can stand anywhere on the way: on the callable,
     behind a method, behind a ``functools.partial`` or as a callable object's ``__call__``.
     Each step is followed as Python takes it: a method's function bound to its object, a
-    partial's function with the partial's own arguments, an object's ``__call__`` bound
-    to the object, and ``__wrapped__``.
+    partial's function with the partial's own arguments, ``__wrapped__``, and an object's
+    ``__call__`` bound to the object. An object can have both (a class-based decorator
+    built with ``functools.update_wrapper``): both are followed, because its ``__call__``
+    is what runs. A ``__call__`` that Python would call without the object (a
+    ``staticmethod``, a ``partial``, any other non-function) is refused: what it binds
+    cannot be read as a method's parameters.
     """
     # a ``staticmethod`` (Python 3.10+) shows its function as ``__wrapped__``, taken below
     if inspect.ismethod(func):
-        inner = _next_callable(func.__func__)
-        return None if inner is None else MethodType(inner, func.__self__)
+        return [MethodType(inner, func.__self__) for inner in _next_callables(func.__func__)]
     if isinstance(func, functools.partial):
-        inner = _next_callable(func.func)
-        return None if inner is None else functools.partial(inner, *func.args, **func.keywords)
+        return [
+            functools.partial(inner, *func.args, **func.keywords)
+            for inner in _next_callables(func.func)
+        ]
+    found = []
     wrapped = getattr(func, "__wrapped__", None)
     if wrapped is not None:
-        return wrapped
+        found.append(wrapped)
     if not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
-        call = getattr(type(func), "__call__", None)
+        call = inspect.getattr_static(type(func), "__call__", None)
         if inspect.isfunction(call):
-            return MethodType(call, func)
-    return None
+            found.append(MethodType(call, func))
+        elif call is not None and not isinstance(call, _C_CALL):
+            raise TypeError("its callable object's `__call__` is not a plain method")
+    return found
 
 
 def _reached_parameters(func: Any) -> list:
-    """The parameters of every callable a call to ``func`` reaches (``_next_callable``),
+    """The parameters of every callable a call to ``func`` reaches (``_next_callables``),
     ``func``'s own first."""
     found = [_own_parameters(func)]
-    current = func
-    for _ in range(16):
-        current = _next_callable(current)
-        if current is None:
+    pending = _next_callables(func)
+    for _ in range(32):
+        if not pending:
             return found
+        current = pending.pop()
         found.append(_own_parameters(current))
+        pending.extend(_next_callables(current))
     raise ValueError("too many wrappers to inspect")
 
 
@@ -512,11 +555,33 @@ def _prepared(
     if prepared is None:
         named = sorted(failed)
         return None, f"validation failed for `{named[0]}`" if named else "validation failed"
+    written = {name: prepared[name] for name in raw}
+    # CrewAI validates and dumps the dict the gate writes once more before the tool runs.
+    # Judge only arguments that are plain JSON and that this validation gives back exactly
+    # as they are: whatever the schema does to them (a validator, a serializer, an
+    # annotation's own schema) has then been applied, and applying it again changes nothing
+    again, _ = _validated(tool.args_schema, copy.deepcopy(written))
+    if not _plain_json(prepared) or again is None or not _identical(again, prepared):
+        return None, (
+            "the tool's schema does not give back the arguments it validated, so the gate "
+            "cannot say what would run"
+        )
     tool_input.clear()
-    tool_input.update({name: prepared[name] for name in raw})
+    tool_input.update(written)
     # the policy gets its own copy, nested values included: ``decide`` hands the policy the
     # object it is given, and a policy that edits it must not edit the call that runs
     return copy.deepcopy(prepared), None
+
+
+def _identical(a: Any, b: Any, depth: int = 0) -> bool:
+    """Equal, and of the same type all the way down (``1 == True`` is not enough)."""
+    if depth > 64 or type(a) is not type(b):
+        return False
+    if type(a) is list:
+        return len(a) == len(b) and all(_identical(x, y, depth + 1) for x, y in zip(a, b))
+    if type(a) is dict:
+        return a.keys() == b.keys() and all(_identical(a[k], b[k], depth + 1) for k in a)
+    return bool(a == b)
 
 
 def _validated(schema: Any, raw: dict[str, Any]) -> tuple[Optional[dict[str, Any]], set]:

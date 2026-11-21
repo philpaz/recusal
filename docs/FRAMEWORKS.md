@@ -268,8 +268,12 @@ declares a `__signature__` or has a parameter its schema omits, counting the par
 of every callable a call reaches: through a method, a `functools.partial`, a callable
 object's `__call__` and every `functools.wraps` wrapper (`lru_cache`, `cache` and
 `staticmethod`, on a function or a method, are read as the function they wrap). A plain
-`BaseTool` that takes `Tool.run`, a schema with a metaclass of its own and a class as the
-tool's callable are refused too. The
+`BaseTool` that takes `Tool.run`, a schema with a metaclass of its own, a validator or
+serializer that is not Pydantic's, a tool class with its own attribute lookup, a callable
+object whose `__call__` is not a plain method and a class as the tool's callable are
+refused too. CrewAI validates the dict the gate writes once more before the tool runs, so
+the gate judges arguments only when they are plain JSON and validating them again gives
+them back exactly. The
 registry is
 process-global: one install covers every agent, task and crew in the process, and the
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook

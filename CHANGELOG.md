@@ -94,6 +94,17 @@ All notable changes to this project are documented here. The format follows
     `BaseTool`'s); a default that is not of the exact JSON types (a subclass, or an object
     whose `__deepcopy__` returns something else); a schema with a metaclass of its own;
     and a class as the tool's callable.
+  - The arguments are now judged only at a fixed point: CrewAI validates and dumps the
+    dict the gate writes once more before the tool runs, so the gate judges arguments
+    only when they are plain JSON and validating them again gives them back exactly. A
+    schema whose validation changes them again (a validator or serializer set in
+    Pydantic's place, an annotation with a schema of its own that appends to a value)
+    is refused, as is a validator or serializer that is not Pydantic's own. Also
+    refused: a tool class with its own `__getattribute__` or `__getattr__` (CrewAI reads
+    `self._run` through them), and a callable object whose `__call__` is a
+    `staticmethod`, a `partial` or anything but a plain method; a class-based decorator
+    (`functools.update_wrapper`) is followed through both what it wraps and its
+    `__call__`.
   - A test now pins that a policy which edits a nested argument (appends to a list)
     changes only its own copy, never the call that runs.
   - Changed by this release: on the text route an empty call to a tool that raises, when

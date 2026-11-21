@@ -137,8 +137,11 @@ order of a turn's entries on the chain is not always the order the model propose
 
 - **Refused before the policy runs:** a tool or schema that is not CrewAI's stock one (a
   schema with a validator, an alias, a constraint, a `default_factory` other than `list`
-  or `dict` itself, a default not of the exact JSON types, a metaclass of its own, or an
-  intermediate base; a plain `BaseTool` that takes `Tool.run`; a tool class that overrides CrewAI's run or validation methods, a `Tool`
+  or `dict` itself, a default not of the exact JSON types, a metaclass of its own, a
+  validator or serializer that is not Pydantic's, or an intermediate base; a schema whose
+  validation would change the arguments again when CrewAI validates them before the tool
+  runs; a plain `BaseTool` that takes `Tool.run`; a tool class with its own
+  `__getattribute__` or `__getattr__`; a tool class that overrides CrewAI's run or validation methods, a `Tool`
   subclass with its own `_run`, a tool object with one of those methods set on it), an
   unsupported
   annotation, an unknown or missing parameter, a validation failure, a callable that
@@ -150,7 +153,12 @@ order of a turn's entries on the chain is not always the order the model propose
   that does not use `functools.wraps`: the gate reads the decorator's own parameters, and
   a function it calls with values of its own, or with that function's defaults, is the
   tool's code. Use `functools.wraps`, and the wrapped function's parameters are held to
-  the schema too.
+  the schema too. The gate holds a tool to CrewAI's and Pydantic's own machinery and
+  refuses what it can tell is not stock; code written to show the gate one thing and do
+  another is, like the tool's body, the tool's own code.
+- **Annotations:** `str`, `int`, `float`, `bool`, optionals, and lists and string-keyed
+  dicts of those. `Literal`, `Enum`, `Any`, `Annotated` and models are refused; use
+  `str` and check the value in your policy.
 - **Not seen: tools CrewAI runs without its hooks.** The gate is CrewAI's own
   `before_tool_call` hook, so it sees what CrewAI sends through that hook: an agent's
   tool calls in a crew, a coworker's, and CrewAI's own agent tools. It does not see a
