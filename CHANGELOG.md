@@ -37,8 +37,8 @@ All notable changes to this project are documented here. The format follows
   (not a subclass of one, whose own copying or comparison could make the value judged
   differ from the value run) and only finite floats; `supported_annotation` compares the
   scalar types by identity, not equality. Nothing that was refused is now accepted; a
-  `functools.partial`, and a callable object whose class does not annotate its parameters,
-  are still refused because their annotations cannot be read, as before. The same walk
+  `functools.partial` is still refused because its annotations cannot be read, and a
+  callable object is still read through its class's annotations, as before. The same walk
   was first built inside `recusal-crewai` 0.2.1; it now lives here, and `recusal-crewai`
   moves to it from its own copy in its next release.
 - **`recusal-google-adk` 0.2.0, unreleased: the gate refuses what it cannot see and holds a
@@ -69,8 +69,12 @@ All notable changes to this project are documented here. The format follows
     `gated_agent` now keeps every setting of an `AgentTool` it rebuilds; it dropped
     `include_plugins` and `propagate_grounding_metadata`.
   - The `set_model_response` call the ADK adds for an agent with an `output_schema` and
-    tools was always refused, so such an agent never gave its structured answer; it is
-    now judged like any call. A plugin is handed tool calls only, so under
+    tools was always refused, so such an agent never gave its structured answer. It now
+    passes without the policy: it runs nothing, and the model can set the same answer as
+    plain final text, which no callback sees, so judging the call guarded nothing (an
+    explicit `null` even brought back a default the policy never saw). An agent's answer
+    is its output, not a tool call, and no Recusal gate judges it; the README says so. A
+    plugin is handed tool calls only, so under
     `RecusalPlugin` a `task` delegation and a `code_executor` (at the root, or on an agent
     behind an `AgentTool`) ran with no policy asked; the plugin now checks every agent a
     run can reach with the rules `gated_agent` applies and refuses the run before any
@@ -80,11 +84,9 @@ All notable changes to this project are documented here. The format follows
     sub-agent and transfer back to one the check had not seen, and refuses a run whose
     `RunConfig` sets `support_cfc` (`gated_agent` is handed the agent, not the run, so
     the README says not to set it there).
-  - The `set_model_response` answer is judged as the ADK stores it, validated against the
-    `output_schema` (values coerced, defaults completed), not as the model proposed it:
-    the policy was shown `{"amount": "5000"}` while `{"amount": 5000, "approved": true}`
-    was stored. `preload_memory` and `load_artifacts`, local ADK tools, are accepted on an
-    agent again; an agent in `task` mode is refused with that reason.
+  - `preload_memory` and `load_artifacts`, local ADK tools, are accepted on an agent
+    again (a `load_artifacts` call is refused, as before); an agent in `task` mode is
+    refused with that reason.
     `is_gated` now requires the gate to be the agent's last
     before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
     a tool object is refused.

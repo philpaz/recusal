@@ -137,11 +137,11 @@ path.
   Otherwise the call is refused. An `AgentTool` whose agent declares an `input_schema`, an
   `AgentTool` subclass, and the tools ADK makes for sub-agents in `single_turn` or `task`
   mode are refused.
-- **A structured answer:** for an agent with an `output_schema` and tools, the ADK adds a
-  `set_model_response` call that runs nothing and sets the agent's answer. The policy
-  judges the answer as the ADK stores it, validated against the `output_schema` (values
-  coerced, defaults completed), not as the model proposed it; an answer that does not
-  validate, or is not plain data, is refused.
+- **Not judged: an agent's answer.** The gate judges tool calls, not what an agent says.
+  A structured answer (`output_schema`) is the agent's output either way it arrives: the
+  `set_model_response` call the ADK adds when the agent has tools, which runs nothing and
+  passes without the policy, or the final text, which no callback sees. Judge whatever
+  acts on the answer (the next agent's tool calls are judged by their own gate).
 - **Not judged:** the parameters the ADK fills itself, `tool_context` and `input_stream`.
   A call that sets either is refused; outside a live run an `input_stream` parameter takes
   its own default, which is the tool's code.

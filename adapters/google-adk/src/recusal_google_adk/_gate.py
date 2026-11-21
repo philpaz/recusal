@@ -55,7 +55,6 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
-from pydantic import TypeAdapter, ValidationError
 
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
@@ -211,43 +210,6 @@ def _runner_has_recusal_plugin(tool_context: Any) -> bool:
     return any(isinstance(plugin, RecusalPlugin) for plugin in plugins)
 
 
-def _model_response(
-    tool: Any, args: dict[str, Any]
-) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """The call the ADK adds for an agent with an ``output_schema`` and tools
-    (``set_model_response``): it runs nothing, and sets the agent's structured answer, which
-    the next agent can read from state.
-
-    The answer is not the arguments as proposed: ``SetModelResponseTool.run_async`` validates
-    them against the schema, which coerces values and completes defaults. The gate computes
-    the answer the same way, from a copy, and the policy judges that: a model ``BaseModel``'s
-    ``model_validate(args, by_name=True).model_dump(exclude_none=True)``, a ``list`` of models'
-    validated ``items``, or for any other schema the ``response`` value as it stands. An answer
-    that does not validate is refused, as is one that is not plain JSON data. A model
-    answer is judged as itself; a list or other answer as ``{"items": ...}`` or
-    ``{"response": ...}``, the shape the model was asked for.
-    """
-    raw = copy.deepcopy(args)
-    try:
-        if tool._model_type is not None:
-            answer: Any = tool._model_type.model_validate(raw, by_name=True).model_dump(
-                exclude_none=True
-            )
-        elif tool._list_model_type is not None:
-            items = TypeAdapter(tool.output_schema).validate_python(raw.get("items", []))
-            answer = {"items": [item.model_dump(exclude_none=True) for item in items]}
-        else:
-            answer = {"response": raw.get("response")}
-    except ValidationError:
-        return None, "the answer does not validate against the agent's output_schema"
-    except Exception as exc:  # noqa: BLE001, an answer the gate cannot compute is refused
-        return None, f"the answer cannot be computed ({type(exc).__name__})"
-    try:
-        return _detached(answer), None
-    except TypeError as exc:
-        return None, f"the answer is not plain data ({exc})"
-
-
 def _unstock_function_tool(tool: Any) -> Optional[str]:
     """Why this ``FunctionTool`` does not run a call the stock way, or None if it does."""
     name = type(tool).__name__
@@ -325,13 +287,17 @@ def _refusal(
     (:func:`_prepared` changes ``args`` only when it succeeds).
     """
     tool_name = getattr(tool, "name", "?")
+    if type(tool) is SetModelResponseTool:
+        # the agent's structured answer, not an action: it runs nothing, and the model can
+        # set the same answer as plain final text, which no callback sees. Judging the call
+        # would guard nothing a text reply cannot also set, so no Recusal gate judges an
+        # agent's answer (the README says so); judge what acts on it
+        return None
     if not isinstance(args, dict):
         return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
     try:
         if isinstance(tool, AgentTool):
             invocation, why = _agent_call(tool, args, _tool_context)
-        elif type(tool) is SetModelResponseTool:
-            invocation, why = _model_response(tool, args)
         else:
             invocation, why = _prepared(tool, args)
     except Exception as exc:  # noqa: BLE001, a preparation the gate cannot complete is refused

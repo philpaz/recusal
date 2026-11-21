@@ -704,46 +704,91 @@ class TestGoogleAdkGate:
         judged, why = _adapter()._agent_call(AgentTool(plain), {"request": "x"}, context)
         assert why is None and judged == {"request": "x"}
 
-    def test_the_structured_answer_is_judged_as_the_adk_stores_it(self, example):
-        """Review round 3: the policy judged ``{"amount": "5000"}`` while the ADK stored
-        ``{"amount": 5000, "approved": True}``: validation coerced the value and completed a
-        default. The policy now judges the answer the ADK computes."""
-        from pydantic import BaseModel
+    def test_the_plugin_refuses_a_support_cfc_run_end_to_end(self, example):
+        """The plugin's run check, wired: a real run with ``RunConfig(support_cfc=True)`` is
+        refused before any agent starts, so the model is never even connected. The ADK
+        allows ``support_cfc`` only for a model that serves the live API (``connect``)."""
+        import contextlib
 
-        from recusal import Finding
+        from google.adk.agents.run_config import RunConfig
+        from google.adk.apps import App
+        from google.adk.models import BaseLlm, LlmResponse
+        from google.adk.models.base_llm_connection import BaseLlmConnection
+        from google.adk.runners import InMemoryRunner
+        from google.genai import types
 
-        class Decision(BaseModel):
-            amount: int
-            approved: bool = True
+        connected = []
 
-        seen = []
+        class Connection(BaseLlmConnection):
+            async def send_history(self, history):
+                pass
 
-        def capped(name, args):
-            seen.append((name, dict(args)))
-            if name == "set_model_response" and args.get("amount", 0) > 1000:
-                return [Finding.fail("cap", severity="CRITICAL", message="amount over 1000")]
-            return []
+            async def send_content(self, content):
+                pass
 
-        agent = example.LlmAgent(
-            name="assistant",
-            model=example.ScriptedLlm(
-                model="s",
-                calls=[
-                    ("echo", {"text": "x"}, "c1"),
-                    ("set_model_response", {"amount": "5000"}, "c2"),
-                ],
+            async def send_realtime(self, blob):
+                pass
+
+            async def receive(self):
+                yield LlmResponse(
+                    content=types.Content(role="model", parts=[types.Part(text="done")]),
+                    turn_complete=True,
+                )
+
+            async def close(self):
+                pass
+
+        class LiveModel(BaseLlm):
+            async def generate_content_async(self, llm_request, stream=False):
+                yield LlmResponse(
+                    content=types.Content(role="model", parts=[types.Part(text="done")])
+                )
+
+            @contextlib.asynccontextmanager
+            async def connect(self, llm_request):
+                connected.append(llm_request)
+                yield Connection()
+
+        async def run():
+            agent = example.LlmAgent(
+                name="root",
+                model=LiveModel(model="gemini-2.0-flash"),
+                tools=[example.FunctionTool(example.echo)],
+            )
+            app = App(name="p", root_agent=agent, plugins=[example.RecusalPlugin(lambda n, a: [])])
+            runner = InMemoryRunner(app=app)
+            session = await runner.session_service.create_session(app_name="p", user_id="u")
+            texts = []
+            stream = runner.run_async(
+                user_id="u",
+                session_id=session.id,
+                new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+                run_config=RunConfig(support_cfc=True),
+            )
+            async for event in stream:
+                for part in event.content.parts if event.content and event.content.parts else []:
+                    texts.append(part.text or "")
+            return texts
+
+        texts = asyncio.wait_for(run(), 30)
+        texts = asyncio.run(texts)
+        assert connected == []
+        assert any("support_cfc" in text for text in texts)
+
+    def test_a_load_artifacts_call_is_refused(self, example):
+        """``load_artifacts`` is accepted on an agent, and a call to it reaches the callbacks,
+        where the gate, which cannot judge it, refuses it."""
+        from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
+
+        tools = [example.FunctionTool(example.echo), LoadArtifactsTool()]
+        agent = example.gated_agent(
+            example.scripted_agent(
+                [("load_artifacts", {"artifact_names": ["a"]}, "c1")], tools=tools
             ),
-            tools=[example.FunctionTool(example.echo)],
-            output_schema=Decision,
+            lambda n, a: [],
         )
-        responses = asyncio.run(example.run_agent(example.gated_agent(agent, capped)))
-        assert ("set_model_response", {"amount": 5000, "approved": True}) in seen
-        assert "amount over 1000" in responses["c2"]["error"]
-        # an answer that does not validate is refused, not judged as proposed
-        from google.adk.tools.set_model_response_tool import SetModelResponseTool
-
-        _, why = _adapter()._model_response(SetModelResponseTool(Decision), {"amount": "lots"})
-        assert why == "the answer does not validate against the agent's output_schema"
+        responses = asyncio.run(example.run_agent(agent))
+        assert "only a google.adk.tools.FunctionTool can be judged" in responses["c1"]["error"]
 
     def test_the_plugin_refuses_a_run_with_provider_code_execution(self, example):
         """Review round 3: ``RunConfig(support_cfc=True)`` gives the root agent the model
@@ -835,9 +880,12 @@ class TestGoogleAdkGate:
         assert example.EXECUTED == []
         assert "would not be judged" in responses["a1"]["error"]
 
-    def test_the_structured_answer_call_is_judged_not_refused(self, example):
+    def test_the_structured_answer_call_passes_without_the_policy(self, example):
         """For an agent with an ``output_schema`` and tools the ADK adds ``set_model_response``,
-        which runs nothing and sets the answer. It was refused on every call; it is judged."""
+        which runs nothing and sets the agent's answer. It was refused on every call. Review
+        round 4 showed the model can set the same answer as plain final text, which no
+        callback sees, so judging the call guarded nothing: an answer is the agent's output,
+        not a tool call, and no gate judges it. The call now passes without the policy."""
         from pydantic import BaseModel
 
         class Answer(BaseModel):
@@ -862,8 +910,13 @@ class TestGoogleAdkGate:
             output_schema=Answer,
         )
         responses = asyncio.run(example.run_agent(example.gated_agent(agent, recording)))
-        assert ("set_model_response", {"answer": "42"}) in seen
-        assert "error" not in responses["c2"]
+        assert seen == [("echo", {"text": "x"})]
+        assert responses["c2"] == {"answer": "42"}
+        # only the ADK's own class passes; anything else named alike is judged as a tool
+        assert (
+            _adapter()._refusal(example.FunctionTool(example.echo), {"text": "x"}, lambda n, a: [])
+            is None
+        )
 
     def test_is_gated_requires_the_gate_to_be_the_last_callback(self, example):
         def later(tool, args, tool_context):
