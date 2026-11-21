@@ -17,6 +17,66 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **Kernel: `recusal.invocation` finds a parameter a wrapper adds, and takes only exact
+  types.** `unsupported_signature` read a callable with `inspect.signature`, which reads a
+  `functools.wraps` wrapper as the function it wraps and honours a declared
+  `__signature__`. A wrapper that adds a parameter of its own (`force=True`) therefore ran
+  with its default while a gate judged a call without it. It now also walks every callable
+  a call reaches (`reached_parameters`: through a method, a `functools.partial`, a callable
+  object's `__call__`, a class-based decorator and every `__wrapped__`) and refuses a named
+  parameter one of them declares that the callable does not, a parameter a forwarding
+  wrapper names that the function it wraps also takes (the wrapper keeps the argument and
+  the function runs with its own default), and a declared `__signature__` anywhere on the
+  way. `json_data` now accepts only the exact JSON types
+  (not a subclass of one, whose own copying or comparison could make the value judged
+  differ from the value run) and only finite floats; `supported_annotation` compares the
+  scalar types by identity, not equality. Nothing that was refused is now accepted; a
+  `functools.partial`, and a callable object whose class does not annotate its parameters,
+  are still refused because their annotations cannot be read, as before. The same walk
+  was first built inside `recusal-crewai` 0.2.1; it now lives here, and `recusal-crewai`
+  moves to it from its own copy in its next release.
+- **`recusal-google-adk` 0.2.0, unreleased: the gate refuses what it cannot see and holds a
+  tool's whole run path to the stock one.** Found by the adapter review of 2026-11-19 and
+  reproduced on `google-adk` 2.14.0:
+  - The built-in tools the model provider runs on its own side (`google_search`,
+    `url_context` and the like) never reach a before-tool callback, yet `gated_agent`
+    accepted them and `is_gated` returned `True`. `gated_agent` now raises, and `is_gated`
+    is `False`, for any tool that is not a function, a `FunctionTool` or a plain
+    `AgentTool` (default-deny, so a kind added in a later ADK release is refused too), and
+    for tools declared in `generate_content_config`. This is why the release is 0.2.0: an
+    agent that carried a built-in tool is now refused instead of silently ungated.
+  - A `FunctionTool` subclass that overrode `_prepare_invocation_args` or
+    `_invoke_callable` changed the arguments after the policy judged them (judged
+    `force=False`, ran `force=True`). Every method `FunctionTool` defines on its run path is
+    now held to `FunctionTool`'s own, read from `FunctionTool` itself so a method added
+    later is held too; so is a method set on the tool object, a class with its own
+    attribute lookup, and a function swapped in after the tool was built. The ADK
+    validates the arguments the gate writes once more before the function runs, so the
+    gate judges them only when that validation gives them back exactly, type for type.
+  - Every `AgentTool` call was refused although the README said it is gated. A call to a
+    plain `AgentTool` is now judged as the sub-agent receives it, and the sub-agent's
+    calls by its own gate; one whose agent declares an `input_schema`, a subclass, and
+    the tools the ADK makes for sub-agents in `single_turn` or `task` mode are refused.
+    An `AgentTool` call is judged only when the sub-agent's own calls are judged too (it
+    is gated, or it inherits `RecusalPlugin`); under the plugin with
+    `include_plugins=False` the sub-agent's calls would otherwise have run unjudged.
+    `gated_agent` now keeps every setting of an `AgentTool` it rebuilds; it dropped
+    `include_plugins` and `propagate_grounding_metadata`.
+  - The `set_model_response` call the ADK adds for an agent with an `output_schema` and
+    tools was always refused, so such an agent never gave its structured answer; it is
+    now judged like any call. A plugin is handed tool calls only, so under
+    `RecusalPlugin` a `task` delegation and a `code_executor` (at the root, or on an agent
+    behind an `AgentTool`) ran with no policy asked; the plugin now checks every agent a
+    run can reach with the rules `gated_agent` applies and refuses the run before any
+    agent starts. A call that sets `tool_context` or `input_stream`, which the ADK fills
+    itself, is refused, and a subclass of a workflow agent is no longer taken for one.
+    `is_gated` now requires the gate to be the agent's last
+    before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
+    a tool object is refused.
+  - The README and the example give plugins to an `App`; the `plugins=` argument of a
+    runner is deprecated.
+  - Releasing it requires the kernel release above first, and its floor raised to
+    `recusal>=0.14.3`: with an older kernel the wrapper check is absent.
 - **`recusal-crewai` 0.2.1: the gate holds the tool it is handed to the tool that runs.**
   CrewAI finds a tool by its normalised name ("Run SQL" becomes `run_sql`) in more than
   one place, and the places disagree once two of the tools a call is chosen from

@@ -27,6 +27,10 @@ Two ways to attach it:
 What the callback cannot see, so ``gated_agent`` refuses rather than skips it:
 
 - a ``code_executor`` on the agent: model-written code runs outside the tool path;
+- a tool that is not a function, a ``FunctionTool`` or a plain ``AgentTool``: the built-in
+  tools the model provider runs itself (``google_search``, ``url_context``, ...) never
+  reach a callback, and toolsets (MCP, OpenAPI) cannot be judged; tools declared in
+  ``generate_content_config`` run on the provider's side too;
 - a ``sub_agent`` or an ``AgentTool`` whose agent is not itself gated: its tool calls run
   under its own callbacks, not the parent's (``gated_agent`` gates them recursively, and
   refuses an agent class it does not know how to gate);
@@ -45,8 +49,13 @@ from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.plugins import BasePlugin
 from google.adk.tools import AgentTool, BaseTool, FunctionTool, ToolContext
+from google.adk.tools.agent_tool import _get_input_schema as _agent_input_schema
+from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 
 from recusal import Finding, decide
+from recusal.invocation import detached as _detached
+from recusal.invocation import json_data as _json_data
 from recusal.invocation import unsupported_signature as _unsupported_signature
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
@@ -61,14 +70,26 @@ Recording = Callable[[Any], dict]
 _WORKFLOW_AGENTS = (SequentialAgent, ParallelAgent, LoopAgent)
 
 
-#: The FunctionTool methods that prepare and run an invocation. A tool class is supported
-#: only while every one of them is FunctionTool's own (the ADK's built-in subclasses such as
-#: transfer_to_agent inherit them; a user subclass that overrides preprocessing is refused).
-_STOCK_LIFECYCLE = (
-    "_preprocess_args",
-    "_preprocess_args_with_validation",
-    "_validate_args",
-    "run_async",
+#: The methods ``FunctionTool`` defines that do not take part in running a call: how the tool
+#: is declared to the model, and a telemetry hook. ADK's own subclasses override only these
+#: (``LongRunningFunctionTool``, ``TransferToAgentTool``, ``LoadMemoryTool``), besides
+#: ``run_async`` (``AuthenticatedFunctionTool``, ``GoogleTool``, ``ComputerUseTool``), which
+#: changes how the call runs and is refused.
+_NOT_ON_THE_RUN_PATH = frozenset({"__init__", "_get_declaration", "_detect_error_in_response"})
+
+#: Every other method ``FunctionTool`` defines prepares, filters, checks or runs the call
+#: (``_preprocess_args_with_validation``, ``_prepare_invocation_args``,
+#: ``check_require_confirmation``, ``_invoke_callable``, ``_run_generator_as_node``, ...). A
+#: tool is supported only while each is ``FunctionTool``'s own, on its class and not set on
+#: the object: an override of any of them can change the arguments after the policy judged
+#: them. Read from ``FunctionTool`` itself, so a method added in a later ADK release is held
+#: to the rule too.
+_STOCK_LIFECYCLE = tuple(
+    sorted(
+        name
+        for name, value in vars(FunctionTool).items()
+        if callable(value) and name not in _NOT_ON_THE_RUN_PATH
+    )
 )
 
 
@@ -94,13 +115,9 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
             None,
             f"only a google.adk.tools.FunctionTool can be judged, not {type(tool).__name__}",
         )
-    for method in _STOCK_LIFECYCLE:
-        if getattr(type(tool), method) is not getattr(FunctionTool, method):
-            return (
-                None,
-                f"{type(tool).__name__} overrides FunctionTool.{method}, so its preparation "
-                "is not the stock one",
-            )
+    why = _unstock_function_tool(tool)
+    if why is not None:
+        return None, why
     func = tool.func
     skip = tuple(getattr(tool, "_ignore_params", ()) or ())
     why = _unsupported_signature(func, skip)
@@ -117,13 +134,122 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     unknown = sorted(k for k in args if k not in parameters)
     if unknown:
         return None, f"unknown parameter(s) {unknown!r}"
+    # a parameter the ADK fills itself (``tool_context``, ``input_stream``) is not the
+    # model's to set: the tool receives the ADK's value, or outside a live run the model's
+    # unchecked one, and the policy would judge something else
+    injected = sorted(k for k in args if k in skip)
+    if injected:
+        return None, f"the call sets {injected!r}, which the ADK fills itself"
     raw.update(args)
     converted, errors = tool._preprocess_args_with_validation(raw)
     if errors:
         return None, f"{len(errors)} argument(s) do not validate against the tool's parameters"
+    # ``run_async`` validates the dict the gate writes once more before the function runs.
+    # Judge only arguments that are plain JSON data and that this validation gives back
+    # exactly, type for type: whatever the validation does to them has then been applied,
+    # and applying it again changes nothing
+    again, errors = tool._preprocess_args_with_validation(copy.deepcopy(converted))
+    if errors or not _json_data(converted) or not _identical(again, converted):
+        return None, (
+            "the tool's validation does not give back the arguments it validated, so the "
+            "gate cannot say what would run"
+        )
     args.clear()
     args.update(converted)
     return copy.deepcopy(converted), None
+
+
+def _agent_call(
+    tool: Any, args: dict[str, Any], tool_context: Any = None
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """The call to an ``AgentTool`` as the sub-agent receives it, for judgment; or
+    ``(None, reason)``.
+
+    A stock ``AgentTool`` whose agent declares no ``input_schema`` hands the sub-agent one
+    text: ``args["request"]``, or the whole dict as JSON. So the dict is the request, and the
+    policy judges a detached copy of it; nothing the policy does reaches it.
+
+    Judging the request is not enough: the sub-agent then makes tool calls of its own, so
+    the call is judged only when those are covered too, either by the sub-agent's own gate
+    (``gated_agent`` gates it) or by a ``RecusalPlugin`` the nested run inherits
+    (``include_plugins``, the default, and the plugin among the runner's). Otherwise, with
+    a gate attached by hand or the plugin and ``include_plugins=False``, the sub-agent's
+    calls would run unjudged, so the call is refused. Refused too: a subclass (ADK's
+    single-turn and task wrappers run the agent another way) and an agent with an
+    ``input_schema``, whose own validation would decide what the sub-agent reads.
+    """
+    if type(tool) is not AgentTool:
+        return None, f"{type(tool).__name__} runs its agent in a way this gate does not judge"
+    if not is_gated(tool.agent) and not (
+        tool.include_plugins
+        and _runner_has_recusal_plugin(tool_context)
+        and _unseen_reason(tool.agent) is None
+    ):
+        return None, (
+            f"the tool calls agent {tool.agent.name!r} makes would not be judged: gate it "
+            "with gated_agent, or let it inherit RecusalPlugin (include_plugins=True)"
+        )
+    # ADK's own reading (it looks into a workflow agent's first sub-agent), so the gate and
+    # ``AgentTool.run_async`` cannot disagree about whether a schema applies
+    if _agent_input_schema(tool.agent) is not None:
+        return None, "an agent tool whose agent declares an input_schema is not supported"
+    try:
+        return _detached(args), None
+    except TypeError as exc:
+        return None, str(exc)
+
+
+def _runner_has_recusal_plugin(tool_context: Any) -> bool:
+    """Whether the runner driving this call carries a ``RecusalPlugin``, which a nested
+    ``AgentTool`` run inherits when ``include_plugins`` is on."""
+    invocation = getattr(tool_context, "_invocation_context", None)
+    plugins = getattr(getattr(invocation, "plugin_manager", None), "plugins", None) or []
+    return any(isinstance(plugin, RecusalPlugin) for plugin in plugins)
+
+
+def _model_response(
+    tool: Any, args: dict[str, Any]
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """The call the ADK adds for an agent with an ``output_schema`` and tools
+    (``set_model_response``): it runs nothing, and sets the agent's structured answer from
+    the arguments. The policy judges a detached copy of them, as the model proposed them."""
+    try:
+        return _detached(args), None
+    except TypeError as exc:
+        return None, str(exc)
+
+
+def _unstock_function_tool(tool: Any) -> Optional[str]:
+    """Why this ``FunctionTool`` does not run a call the stock way, or None if it does."""
+    name = type(tool).__name__
+    for method in _STOCK_LIFECYCLE:
+        if getattr(type(tool), method, None) is not getattr(FunctionTool, method):
+            return f"{name} overrides FunctionTool.{method}, so its run is not the stock one"
+        if method in getattr(tool, "__dict__", {}):
+            return f"the tool object replaces FunctionTool.{method}"
+    # every check here reads the class and the object's ``__dict__``; ADK reads
+    # ``self.func`` and its methods through these, which a class of its own can answer with
+    # anything
+    for method in ("__getattribute__", "__getattr__"):
+        if getattr(type(tool), method, None) is not getattr(FunctionTool, method, None):
+            return f"{name} overrides `{method}`"
+    # ADK reads the signature it filters and validates by from ``_spec``, built from the
+    # function the tool was created with, and calls ``self.func``: they must be one
+    spec = getattr(tool, "_spec", None)
+    if getattr(spec, "func", None) is not tool.func:
+        return "its function was replaced after the tool was built"
+    return None
+
+
+def _identical(a: Any, b: Any, depth: int = 0) -> bool:
+    """Equal, and of the same type all the way down (``1 == True`` is not enough)."""
+    if depth > 64 or type(a) is not type(b):
+        return False
+    if type(a) is list:
+        return len(a) == len(b) and all(_identical(x, y, depth + 1) for x, y in zip(a, b))
+    if type(a) is dict:
+        return a.keys() == b.keys() and all(_identical(a[k], b[k], depth + 1) for k in a)
+    return bool(a == b)
 
 
 def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> str:
@@ -153,7 +279,9 @@ def _record_for(recording: Optional[Recording], tool_context: Any) -> dict:
     return dict(recording(tool_context)) if recording is not None else {}
 
 
-def _refusal(tool: Any, args: Any, policy: Policy, **record: Any) -> Optional[str]:
+def _refusal(
+    tool: Any, args: Any, policy: Policy, _tool_context: Any = None, **record: Any
+) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
     The ADK hands the callback the same ``args`` dict the tool will be called with; the
@@ -171,7 +299,12 @@ def _refusal(tool: Any, args: Any, policy: Policy, **record: Any) -> Optional[st
     if not isinstance(args, dict):
         return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
     try:
-        invocation, why = _prepared(tool, args)
+        if isinstance(tool, AgentTool):
+            invocation, why = _agent_call(tool, args, _tool_context)
+        elif type(tool) is SetModelResponseTool:
+            invocation, why = _model_response(tool, args)
+        else:
+            invocation, why = _prepared(tool, args)
     except Exception as exc:  # noqa: BLE001, a preparation the gate cannot complete is refused
         return _unjudgeable(
             tool_name, f"the invocation cannot be prepared ({type(exc).__name__})", args, record
@@ -201,7 +334,7 @@ def recusal_before_tool(policy: Policy, recording: Optional[Recording] = None):
                 "error": "Recusal failed closed (policy error): "
                 f"RECUSAL_POLICY_ERROR ({type(exc).__name__})"
             }
-        reason = _refusal(tool, args, policy, **record)
+        reason = _refusal(tool, args, policy, tool_context, **record)
         if reason is not None:
             return {"error": reason}
         return None
@@ -226,6 +359,25 @@ class RecusalPlugin(BasePlugin):
         self._policy = policy
         self._recording = recording
 
+    async def before_run_callback(self, *, invocation_context: Any) -> Optional[Any]:
+        """Refuse the whole run when any agent the runner drives can execute something no
+        callback sees (``_unseen_reason``): a plugin is handed tool calls only, so model-
+        written code, a provider-side tool or a task delegation would otherwise run
+        unjudged. Returning content ends the run before any agent starts. A nested run (an
+        ``AgentTool`` that inherits the plugin) is checked the same way."""
+        from google.genai import types
+
+        try:
+            reason = _unseen_reason(getattr(invocation_context, "agent", None))
+        except Exception as exc:  # noqa: BLE001, a tree the gate cannot read is refused
+            reason = f"the agents cannot be checked ({type(exc).__name__})"
+        if reason is None:
+            return None
+        return types.Content(
+            role="model",
+            parts=[types.Part(text=f"Recusal refused this run: {reason}")],
+        )
+
     async def before_tool_callback(
         self, *, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
     ) -> Optional[dict[str, Any]]:
@@ -239,7 +391,7 @@ class RecusalPlugin(BasePlugin):
         reason = _ordering_reason(self, tool_context)
         if reason is not None:
             return {"error": _unjudgeable(tool.name, reason, tool_args, record)}
-        reason = _refusal(tool, tool_args, self._policy, **record)
+        reason = _refusal(tool, tool_args, self._policy, tool_context, **record)
         return {"error": reason} if reason is not None else None
 
 
@@ -289,12 +441,45 @@ def _callbacks(agent: LlmAgent) -> list:
 
 
 def _carries_gate(agent: LlmAgent) -> bool:
-    return any(getattr(cb, "recusal_gate", False) for cb in _callbacks(agent))
+    """Whether the agent's LAST before-tool callback is a Recusal gate: a callback after it
+    could change the arguments the gate judged (``gated_agent`` always appends it last)."""
+    callbacks = _callbacks(agent)
+    return bool(callbacks) and getattr(callbacks[-1], "recusal_gate", False) is True
+
+
+def _unseen_reason(agent: Any, _seen: Optional[set] = None) -> Optional[str]:
+    """Why some agent in this tree can run something no Recusal callback sees, or None.
+
+    The rules ``gated_agent`` applies when it builds, over the whole tree: every agent,
+    its ``sub_agents`` and the agent behind every ``AgentTool`` (including the tools the
+    ADK adds for ``task`` and ``single_turn`` sub-agents, which it refuses). A plugin sees
+    only tool calls, so ``RecusalPlugin`` refuses a run whose tree fails this rather than
+    let a ``code_executor``, a provider-side tool or a task delegation run unjudged.
+    """
+    seen = set() if _seen is None else _seen
+    if id(agent) in seen:
+        return None
+    seen.add(id(agent))
+    reason = _ungateable_reason(agent)
+    if reason is not None:
+        return f"agent {getattr(agent, 'name', '?')!r}: {reason}"
+    if isinstance(agent, LlmAgent):
+        for tool in agent.tools:
+            if isinstance(tool, AgentTool):
+                reason = _unseen_reason(tool.agent, seen)
+                if reason is not None:
+                    return reason
+    for sub in getattr(agent, "sub_agents", ()) or ():
+        reason = _unseen_reason(sub, seen)
+        if reason is not None:
+            return reason
+    return None
 
 
 def _ungateable_reason(agent: Any) -> Optional[str]:
     """Why an agent can run something the callback never sees, or None if it cannot."""
-    if isinstance(agent, _WORKFLOW_AGENTS):
+    # the exact classes: a subclass of a workflow agent can run anything of its own
+    if type(agent) in _WORKFLOW_AGENTS:
         return None
     if type(agent) is not LlmAgent:
         return (
@@ -303,7 +488,57 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
         )
     if agent.code_executor is not None:
         return "it has a code_executor; model-written code runs outside the tool path"
+    config = getattr(agent, "generate_content_config", None)
+    if getattr(config, "tools", None):
+        return (
+            "its generate_content_config declares tools, which the model provider runs "
+            "itself; no before-tool callback sees them"
+        )
+    for tool in agent.tools:
+        why = _unjudged_tool_kind(tool)
+        if why is not None:
+            return why
     return None
+
+
+def _unjudged_tool_kind(tool: Any) -> Optional[str]:
+    """Why a tool on an agent's list never reaches the before-tool callback as a call the
+    gate can judge, or None if it does. Default-deny: a function (the ADK wraps it in a
+    ``FunctionTool``), a ``FunctionTool``, and a plain ``AgentTool`` pass; anything else is
+    refused, so a tool kind added in a later ADK release is refused too.
+
+    The kinds this refuses: the built-in tools the model provider runs on its own side
+    (``google_search``, ``url_context``, ``VertexAiSearchTool``, ...), which edit the model
+    request and never reach a callback; toolsets (MCP, OpenAPI, ...), whose tools the gate
+    could not judge; and an ``AgentTool`` subclass.
+    """
+    if isinstance(tool, AgentTool):
+        if type(tool) is not AgentTool:
+            return f"{type(tool).__name__} is an AgentTool subclass, which it cannot gate"
+        return None
+    if isinstance(tool, FunctionTool):
+        # ``process_llm_request`` edits the request sent to the model; the ADK's own tools
+        # that override it add instructions, but an override could add a provider-side tool
+        if "process_llm_request" in getattr(tool, "__dict__", {}):
+            return "the tool object replaces process_llm_request"
+        method = type(tool).process_llm_request
+        if method is not BaseTool.process_llm_request and not getattr(
+            method, "__module__", ""
+        ).startswith("google.adk."):
+            return (
+                f"{type(tool).__name__} overrides process_llm_request, which can add tools "
+                "the model provider runs itself"
+            )
+        return None
+    if isinstance(tool, (BaseTool, BaseToolset)):
+        name = getattr(tool, "name", type(tool).__name__)
+        return (
+            f"tool {name!r} ({type(tool).__name__}) is not a FunctionTool: the model provider "
+            "runs built-in tools itself, and other tool kinds cannot be judged"
+        )
+    if callable(tool):
+        return None
+    return f"{tool!r} is not a tool"
 
 
 def is_gated(agent: Any, _seen: Optional[set] = None) -> bool:
@@ -344,10 +579,14 @@ def gated_agent(
         tools: list[Any] = []
         for tool in agent.tools:
             if isinstance(tool, AgentTool):
+                # every setting the tool was built with, not only the agent: a dropped
+                # ``include_plugins`` would change which plugins the sub-agent runs under
                 tools.append(
                     AgentTool(
                         gated_agent(tool.agent, policy, recording),
                         skip_summarization=tool.skip_summarization,
+                        include_plugins=tool.include_plugins,
+                        propagate_grounding_metadata=tool.propagate_grounding_metadata,
                     )
                 )
             else:

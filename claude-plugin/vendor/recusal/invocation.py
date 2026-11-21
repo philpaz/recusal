@@ -9,7 +9,8 @@ and they are decisions about data, not about any framework:
 - which values are JSON data, so a default can be completed and judged
   (:func:`json_data`);
 - whether every parameter of a callable can be judged by name
-  (:func:`unsupported_signature`);
+  (:func:`unsupported_signature`), counting every callable a call reaches
+  (:func:`reached_parameters`);
 - how to hand a policy a copy it can write to without reaching what executes
   (:func:`detached`).
 
@@ -22,12 +23,13 @@ What stays in each gate is the part that is the framework's: where its hook sits
 prepares an invocation, and which of its own parameters it injects.
 """
 
+import functools
 import inspect
 import math
 import types
 import typing
 from enum import Enum
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 #: The scalar types a judged parameter may be annotated with.
 SCALARS: Tuple[type, ...] = (str, int, float, bool)
@@ -40,8 +42,11 @@ def supported_annotation(annotation: Any) -> bool:
     """True for an annotation whose preparation is a pure function of the value: ``str``,
     ``int``, ``float``, ``bool``, ``Optional`` of one, ``list[T]`` and ``dict[str, T]`` with
     ``T`` supported in turn. Everything else (no annotation, ``Any``, a model, an ``Enum``, an
-    ``Annotated``, a dataclass, a bare ``list``/``dict``) is unsupported."""
-    if annotation in SCALARS:
+    ``Annotated``, a dataclass, a bare ``list``/``dict``) is unsupported.
+
+    By identity: an object that only compares equal to ``str`` (a metaclass with its own
+    ``__eq__``) can carry a schema of its own, which would prepare the value differently."""
+    if any(annotation is scalar for scalar in SCALARS):
         return True
     origin, args = typing.get_origin(annotation), typing.get_args(annotation)
     if origin is typing.Union or (_UNION_TYPE is not None and origin is _UNION_TYPE):
@@ -54,14 +59,24 @@ def supported_annotation(annotation: Any) -> bool:
     return False
 
 
-def json_data(value: Any) -> bool:
-    """True for a value in the JSON domain (what a default may be)."""
-    if value is None or isinstance(value, SCALARS):
+def json_data(value: Any, _depth: int = 0) -> bool:
+    """True for a value in the JSON domain (what a default may be), built only of the exact
+    JSON types: ``None``, ``str``, ``int``, ``float`` (finite), ``bool``, ``list`` and
+    ``dict`` with string keys.
+
+    A subclass of one of them is not JSON data here: its own ``__deepcopy__``, ``__eq__`` or
+    serialisation can make the copy a policy judges differ from the value a tool receives.
+    A non-finite float is not JSON, and is not equal to itself."""
+    if _depth > 64:
+        return False
+    if value is None or type(value) in (str, int, bool):
         return True
-    if isinstance(value, list):
-        return all(json_data(v) for v in value)
-    if isinstance(value, dict):
-        return all(isinstance(k, str) and json_data(v) for k, v in value.items())
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) is list:
+        return all(json_data(v, _depth + 1) for v in value)
+    if type(value) is dict:
+        return all(type(k) is str and json_data(v, _depth + 1) for k, v in value.items())
     return False
 
 
@@ -89,7 +104,157 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
             return f"`{name}` is not annotated with a supported data type"
         if parameter.default is not parameter.empty and not json_data(parameter.default):
             return f"`{name}` has a default outside the JSON domain"
+    # ``inspect.signature`` reads a ``functools.wraps`` wrapper as the function it wraps, and
+    # honours a declared ``__signature__``: a wrapper's own parameter (``force=True``) would
+    # run with its default while the gate judged a call without it
+    try:
+        reached = reached_parameters(func)
+    except DeclaredSignature:
+        return "it declares a signature that is not its own"
+    except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
+        return "its signature cannot be inspected"
+    for level in reached:
+        for name, parameter in level.items():
+            if name in skip or name in parameters:
+                continue
+            if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+                continue
+            return (
+                f"`{name}` is a parameter of a function the call reaches that the tool does "
+                "not declare, so it would run with a value no policy judged"
+            )
+    # a forwarding wrapper (``*args``/``**kwargs``) that also names a parameter takes that
+    # argument itself; a function further in that names it too then runs with its own
+    # default, not the value the policy judged
+    named = [
+        {n for n, p in level.items() if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)}
+        for level in reached
+    ]
+    for index, level in enumerate(reached):
+        forwards = any(p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) for p in level.values())
+        if not forwards:
+            continue
+        for name in sorted(named[index] - set(skip)):
+            if any(name in other for i, other in enumerate(named) if i != index):
+                return (
+                    f"`{name}` is taken by a wrapper and by the function it wraps, which can "
+                    "then run with a value no policy judged"
+                )
     return None
+
+
+class DeclaredSignature(Exception):
+    """A callable on the way to the code that runs carries a ``__signature__`` of its own."""
+
+
+#: Wrappers that pass every argument through unchanged and declare no parameters of their
+#: own, so the code that runs is the function they wrap: ``functools.lru_cache`` and
+#: ``functools.cache``.
+_PASS_THROUGH = (type(functools.lru_cache(maxsize=None)(lambda: None)),)
+
+#: A ``__call__`` implemented in C (a slot wrapper or a bound one): it carries no
+#: ``__signature__`` of its own and has nothing further in to read. A bound method is one
+#: such callable: its own ``__dict__`` shows its function's attributes, so a signature
+#: declared there is found, and its ``__call__`` is where the walk stops.
+_C_CALL = (types.WrapperDescriptorType, types.MethodWrapperType)
+
+
+def own_parameters(func: Any, _depth: int = 0) -> Any:
+    """The parameters Python binds when ``func`` is called: the callable's own, never a
+    signature it shows for something else.
+
+    ``inspect.signature`` follows ``__wrapped__`` and honours a declared ``__signature__``,
+    on the callable or one level in (a callable object's ``__call__``, a
+    ``functools.partial``'s function; a method shows its function's attributes as its
+    own). The first is turned off; the second raises :class:`DeclaredSignature` wherever it
+    is found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
+    ``staticmethod``, and ``lru_cache`` over a method) are looked through. A class is not a
+    callable this reads: calling it runs ``__new__`` and ``__init__``.
+    """
+    if _depth > 8:
+        raise ValueError("too many wrappers to inspect")
+    if isinstance(func, type):
+        raise TypeError("a class is not inspected as a callable")
+    if isinstance(func, staticmethod):
+        return own_parameters(func.__func__, _depth + 1)
+    if isinstance(func, _PASS_THROUGH):
+        return own_parameters(func.__wrapped__, _depth + 1)
+    if inspect.ismethod(func) and isinstance(func.__func__, _PASS_THROUGH):
+        inner = func.__func__.__wrapped__
+        bound = types.MethodType(inner, func.__self__) if inspect.isfunction(inner) else inner
+        return own_parameters(bound, _depth + 1)
+    _refuse_declared_signature(func, _depth)
+    return inspect.signature(func, follow_wrapped=False).parameters
+
+
+def _refuse_declared_signature(func: Any, depth: int) -> None:
+    """Raise :class:`DeclaredSignature` if ``func``, or what ``inspect.signature`` would
+    read in its place, declares ``__signature__``."""
+    if depth > 8:
+        raise ValueError("too many wrappers to inspect")
+    if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
+        raise DeclaredSignature
+    if isinstance(func, functools.partial):
+        _refuse_declared_signature(func.func, depth + 1)
+    elif not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
+        call = getattr(type(func), "__call__", None)
+        if call is not None and not isinstance(call, _C_CALL):
+            _refuse_declared_signature(call, depth + 1)
+
+
+def _next_callables(func: Any) -> List[Any]:
+    """The callables ``func`` may hand the call to, each bound as ``func`` binds it.
+
+    A ``functools.wraps`` wrapper that takes ``(*args, **kwargs)`` passes the call to the
+    function it wraps, which fills its own defaults; a wrapper can also add a parameter of
+    its own. Such a wrapper can stand anywhere on the way: on the callable, behind a
+    method, behind a ``functools.partial`` or as a callable object's ``__call__``. Each step
+    is followed as Python takes it: a method's function bound to its object, a partial's
+    function with the partial's own arguments, ``__wrapped__``, and an object's ``__call__``
+    bound to the object. An object can have both (a class-based decorator built with
+    ``functools.update_wrapper``): both are followed, because its ``__call__`` is what runs.
+    A ``__call__`` that Python would call without the object (a ``staticmethod``, a
+    ``partial``, any other non-function) raises ``TypeError``: what it binds cannot be read
+    as a method's parameters.
+    """
+    # a ``staticmethod`` (Python 3.10+) shows its function as ``__wrapped__``, taken below
+    if inspect.ismethod(func):
+        return [types.MethodType(inner, func.__self__) for inner in _next_callables(func.__func__)]
+    if isinstance(func, functools.partial):
+        return [
+            functools.partial(inner, *func.args, **func.keywords)
+            for inner in _next_callables(func.func)
+        ]
+    found = []
+    wrapped = getattr(func, "__wrapped__", None)
+    if wrapped is not None:
+        found.append(wrapped)
+    if not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
+        call = inspect.getattr_static(type(func), "__call__", None)
+        if inspect.isfunction(call):
+            found.append(types.MethodType(call, func))
+        elif call is not None and not isinstance(call, _C_CALL):
+            raise TypeError("its callable object's `__call__` is not a plain method")
+    return found
+
+
+def reached_parameters(func: Any) -> List[Any]:
+    """The parameters of every callable a call to ``func`` reaches, ``func``'s own first.
+
+    A gate that completes and judges a call by the parameters a framework declares must
+    also find every named parameter some callable on the way would fill from a default of
+    its own; this is that walk. Raises :class:`DeclaredSignature`, ``TypeError`` or
+    ``ValueError`` for a callable it cannot read, which a gate turns into a refusal.
+    """
+    found = [own_parameters(func)]
+    pending = _next_callables(func)
+    for _ in range(32):
+        if not pending:
+            return found
+        current = pending.pop()
+        found.append(own_parameters(current))
+        pending.extend(_next_callables(current))
+    raise ValueError("too many wrappers to inspect")
 
 
 def detached(value: Any, ancestors: Tuple[int, ...] = ()) -> Any:

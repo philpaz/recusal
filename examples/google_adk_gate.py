@@ -73,6 +73,7 @@ if sys.version_info < (3, 11):
 
 try:
     from google.adk.agents import BaseAgent, LlmAgent
+    from google.adk.apps import App
     from google.adk.models import BaseLlm, LlmRequest, LlmResponse
     from google.adk.runners import InMemoryRunner
     from google.adk.tools import FunctionTool
@@ -164,8 +165,10 @@ def scripted_agent(calls: list[tuple[str, Any, str]], tools: Optional[list] = No
 
 
 async def run_agent(agent: BaseAgent, plugins: Optional[list] = None) -> dict[str, Any]:
-    """Run the agent offline through InMemoryRunner; return each call's response by id."""
-    runner = InMemoryRunner(agent=agent, app_name="recusal-adk-example", plugins=plugins)
+    """Run the agent offline through InMemoryRunner; return each call's response by id.
+    Plugins go on the ``App``, which is where the ADK takes them now."""
+    app = App(name="recusal-adk-example", root_agent=agent, plugins=list(plugins or []))
+    runner = InMemoryRunner(app=app)
     session = await runner.session_service.create_session(
         app_name="recusal-adk-example", user_id="user"
     )
