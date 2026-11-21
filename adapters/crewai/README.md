@@ -158,7 +158,12 @@ order of a turn's entries on the chain is not always the order the model propose
   another is, like the tool's body, the tool's own code.
 - **Annotations:** `str`, `int`, `float`, `bool`, optionals, and lists and string-keyed
   dicts of those. `Literal`, `Enum`, `Any`, `Annotated` and models are refused; use
-  `str` and check the value in your policy.
+  `str` and check the value in your policy. CrewAI builds an MCP tool's `enum`
+  parameter as a `Literal`, so an MCP tool with one is refused on every call.
+- **A hook that raises:** CrewAI runs the tool when a hook raises anything but its own
+  abort. The gate catches every exception inside itself and blocks the call; an error
+  Python raises before the gate's first line runs (a stack overflow at the call itself)
+  is outside it.
 - **Not seen: tools CrewAI runs without its hooks.** The gate is CrewAI's own
   `before_tool_call` hook, so it sees what CrewAI sends through that hook: an agent's
   tool calls in a crew, a coworker's, and CrewAI's own agent tools. It does not see a
