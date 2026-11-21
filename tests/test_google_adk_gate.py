@@ -577,6 +577,101 @@ class TestGoogleAdkGate:
         assert example.EXECUTED == []
         assert "no cleanup" in responses["a1"]["error"]
 
+    @pytest.mark.parametrize("include_plugins", [False, True], ids=["isolated", "inherits"])
+    def test_under_the_plugin_an_agent_tool_call_needs_its_sub_agent_judged(
+        self, example, include_plugins
+    ):
+        """Review round 1: with ``RecusalPlugin`` and ``AgentTool(sub, include_plugins=False)``
+        the parent's request was judged and allowed, and the nested run, with no plugins,
+        ran the sub-agent's DELETE unjudged. The call is now judged only when the sub-agent's
+        own calls are covered."""
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return example.sql_scope_policy(name, args)
+
+        child = example.LlmAgent(
+            name="child",
+            description="helper",
+            model=example.ScriptedLlm(model="s", calls=[("run_sql", {"sql": DELETE}, "s1")]),
+            tools=[example.FunctionTool(example.run_sql)],
+        )
+        parent = example.scripted_agent(
+            [("child", {"request": "clean up"}, "a1")],
+            tools=[_adapter().AgentTool(child, include_plugins=include_plugins)],
+        )
+        example.EXECUTED.clear()
+        responses = asyncio.run(
+            example.run_agent(parent, plugins=[example.RecusalPlugin(recording)])
+        )
+        assert example.EXECUTED == []
+        if include_plugins:
+            assert seen == ["child", "run_sql"]
+        else:
+            assert seen == []
+            assert "would not be judged" in responses["a1"]["error"]
+
+    def test_a_hand_attached_gate_refuses_an_agent_tool_whose_sub_agent_is_ungated(self, example):
+        child = example.LlmAgent(
+            name="child",
+            description="helper",
+            model=example.ScriptedLlm(model="s", calls=[("run_sql", {"sql": DELETE}, "s1")]),
+            tools=[example.FunctionTool(example.run_sql)],
+        )
+        parent = example.scripted_agent(
+            [("child", {"request": "clean up"}, "a1")], tools=[_adapter().AgentTool(child)]
+        ).clone(update={"before_tool_callback": example.recusal_before_tool(lambda n, a: [])})
+        example.EXECUTED.clear()
+        responses = asyncio.run(example.run_agent(parent))
+        assert example.EXECUTED == []
+        assert "would not be judged" in responses["a1"]["error"]
+
+    def test_the_structured_answer_call_is_judged_not_refused(self, example):
+        """For an agent with an ``output_schema`` and tools the ADK adds ``set_model_response``,
+        which runs nothing and sets the answer. It was refused on every call; it is judged."""
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            answer: str
+
+        seen = []
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        agent = example.LlmAgent(
+            name="assistant",
+            model=example.ScriptedLlm(
+                model="s",
+                calls=[
+                    ("echo", {"text": "x"}, "c1"),
+                    ("set_model_response", {"answer": "42"}, "c2"),
+                ],
+            ),
+            tools=[example.FunctionTool(example.echo)],
+            output_schema=Answer,
+        )
+        responses = asyncio.run(example.run_agent(example.gated_agent(agent, recording)))
+        assert ("set_model_response", {"answer": "42"}) in seen
+        assert "error" not in responses["c2"]
+
+    def test_is_gated_requires_the_gate_to_be_the_last_callback(self, example):
+        def later(tool, args, tool_context):
+            return None
+
+        gate = example.recusal_before_tool(lambda n, a: [])
+        agent = example.scripted_agent([])
+        assert example.is_gated(agent.clone(update={"before_tool_callback": [later, gate]}))
+        assert not example.is_gated(agent.clone(update={"before_tool_callback": [gate, later]}))
+
+    def test_a_process_llm_request_set_on_a_tool_object_is_refused(self, example):
+        tool = example.FunctionTool(example.echo)
+        tool.process_llm_request = lambda **kwargs: None
+        with pytest.raises(ValueError, match="replaces process_llm_request"):
+            example.gated_agent(example.scripted_agent([], tools=[tool]), lambda n, a: [])
+
     def test_an_agent_tool_with_an_input_schema_is_refused(self, example):
         from pydantic import BaseModel
 

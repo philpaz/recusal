@@ -71,7 +71,8 @@ A refused call is answered to the model as `{"error": reason}`. The tool does no
 policy that raises refuses the call (fail closed).
 
 The gate prepares the invocation the way the ADK will (defaults completed, values
-validated), judges a detached copy, and the tool runs with exactly what was judged.
+validated), judges a detached copy, and the tool runs with exactly what was judged, apart
+from the parameters the ADK fills itself (see below).
 
 For an app whose agents you do not build yourself, `RecusalPlugin(policy)` is the same
 gate as a runner plugin, given to the app:
@@ -113,13 +114,22 @@ path.
 - **Refused before the policy runs:** a `FunctionTool` whose class or object replaces any
   method on its run path (preparing, filtering, confirming or calling), or whose function
   was replaced after it was built; a signature that cannot be judged by name, including a
-  `functools.wraps` wrapper that adds a parameter of its own; an unknown or missing
+  `functools.wraps` wrapper that adds a parameter of its own or names one the function it
+  wraps also takes; an unknown or missing
   parameter; arguments that do not validate, or that validating again would change.
 - **Agent tools:** a call to a plain `AgentTool` is judged as the sub-agent receives it
-  (the `request` text, or the arguments as JSON), and the sub-agent's own tool calls are
-  judged by its own gate. An `AgentTool` whose agent declares an `input_schema`, an
+  (the `request` text, or the arguments as JSON), and only when the sub-agent's own tool
+  calls are judged too: it is gated (`gated_agent` gates it), or it inherits
+  `RecusalPlugin` (`include_plugins=True`, the default, with the plugin on the app).
+  Otherwise the call is refused. An `AgentTool` whose agent declares an `input_schema`, an
   `AgentTool` subclass, and the tools ADK makes for sub-agents in `single_turn` or `task`
   mode are refused.
+- **A structured answer:** for an agent with an `output_schema` and tools, the ADK adds a
+  `set_model_response` call that runs nothing and sets the agent's answer; the policy
+  judges its arguments like any call's.
+- **Not judged:** the parameters the ADK fills itself, `tool_context` and `input_stream`.
+  The model cannot set either; outside a live run, an `input_stream` parameter takes its
+  own default, which is the tool's code.
 - **Not on the audit log:** a call another before-tool callback answered before the gate
   ran. The tool did not run either.
 

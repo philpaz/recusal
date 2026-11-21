@@ -30,13 +30,15 @@ All notable changes to this project are documented here. The format follows
   with its default while a gate judged a call without it. It now also walks every callable
   a call reaches (`reached_parameters`: through a method, a `functools.partial`, a callable
   object's `__call__`, a class-based decorator and every `__wrapped__`) and refuses a named
-  parameter one of them declares that the callable does not, and a declared
-  `__signature__` anywhere on the way. `json_data` now accepts only the exact JSON types
+  parameter one of them declares that the callable does not, a parameter a forwarding
+  wrapper names that the function it wraps also takes (the wrapper keeps the argument and
+  the function runs with its own default), and a declared `__signature__` anywhere on the
+  way. `json_data` now accepts only the exact JSON types
   (not a subclass of one, whose own copying or comparison could make the value judged
   differ from the value run) and only finite floats; `supported_annotation` compares the
-  scalar types by identity, not equality. Nothing that was refused is now accepted: a
-  `functools.partial` or a callable object as a tool's function is still refused by
-  `unsupported_signature`, as before. The same walk was first built inside
+  scalar types by identity, not equality. Nothing that was refused is now accepted; a
+  `functools.partial`, and a callable object whose class does not annotate its parameters,
+  are still refused because their annotations cannot be read, as before. The same walk was first built inside
   `recusal-crewai` 0.2.1; it now lives here, once, for every gate.
 - **`recusal-google-adk` 0.2.0, unreleased: the gate refuses what it cannot see and holds a
   tool's whole run path to the stock one.** Found by the adapter review of 2026-11-19 and
@@ -60,8 +62,16 @@ All notable changes to this project are documented here. The format follows
     plain `AgentTool` is now judged as the sub-agent receives it, and the sub-agent's
     calls by its own gate; one whose agent declares an `input_schema`, a subclass, and
     the tools the ADK makes for sub-agents in `single_turn` or `task` mode are refused.
+    An `AgentTool` call is judged only when the sub-agent's own calls are judged too (it
+    is gated, or it inherits `RecusalPlugin`); under the plugin with
+    `include_plugins=False` the sub-agent's calls would otherwise have run unjudged.
     `gated_agent` now keeps every setting of an `AgentTool` it rebuilds; it dropped
     `include_plugins` and `propagate_grounding_metadata`.
+  - The `set_model_response` call the ADK adds for an agent with an `output_schema` and
+    tools was always refused, so such an agent never gave its structured answer; it is
+    now judged like any call. `is_gated` now requires the gate to be the agent's last
+    before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
+    a tool object is refused.
   - The README and the example give plugins to an `App`; the `plugins=` argument of a
     runner is deprecated.
   - Releasing it requires the kernel release above first, and its floor raised to
