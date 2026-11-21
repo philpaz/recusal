@@ -123,6 +123,23 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
                 f"`{name}` is a parameter of a function the call reaches that the tool does "
                 "not declare, so it would run with a value no policy judged"
             )
+    # a forwarding wrapper (``*args``/``**kwargs``) that also names a parameter takes that
+    # argument itself; a function further in that names it too then runs with its own
+    # default, not the value the policy judged
+    named = [
+        {n for n, p in level.items() if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)}
+        for level in reached
+    ]
+    for index, level in enumerate(reached):
+        forwards = any(p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) for p in level.values())
+        if not forwards:
+            continue
+        for name in sorted(named[index] - set(skip)):
+            if any(name in other for i, other in enumerate(named) if i != index):
+                return (
+                    f"`{name}` is taken by a wrapper and by the function it wraps, which can "
+                    "then run with a value no policy judged"
+                )
     return None
 
 

@@ -241,6 +241,37 @@ def test_a_wrapper_that_adds_a_parameter_of_its_own_is_refused():
     assert unsupported_signature(outer) == _HIDDEN
 
 
+def test_a_wrapper_that_takes_a_parameter_the_function_also_takes_is_refused():
+    """Review round 1: ``wrapper(*args, sandbox=False, **kwargs)`` around
+    ``transfer(amount, sandbox=False)`` keeps ``sandbox`` for itself, so the policy judged
+    ``sandbox=True`` and the transfer ran with ``False``."""
+    import functools
+
+    def transfer(amount: int, sandbox: bool = False) -> str:
+        return "sent"
+
+    @functools.wraps(transfer)
+    def wrapper(*args, sandbox: bool = False, **kwargs):
+        return transfer(*args, **kwargs)
+
+    assert list(inspect_signature(wrapper)) == ["amount", "sandbox"]
+    assert unsupported_signature(wrapper) == (
+        "`sandbox` is taken by a wrapper and by the function it wraps, which can then run "
+        "with a value no policy judged"
+    )
+
+    # a name the framework injects (``skip``) may be taken by both
+    @functools.wraps(transfer)
+    def with_context(*args, tool_context=None, **kwargs):
+        return transfer(*args, **kwargs)
+
+    def transfer_in_context(amount: int, tool_context=None) -> str:
+        return "sent"
+
+    with_context.__wrapped__ = transfer_in_context
+    assert unsupported_signature(with_context, skip=("tool_context",)) is None
+
+
 def test_every_place_a_wrapper_can_stand_is_followed():
     """A wrapper that adds ``force`` hides it wherever it stands: behind a
     ``functools.partial``, and in a class-based decorator (``functools.update_wrapper``),

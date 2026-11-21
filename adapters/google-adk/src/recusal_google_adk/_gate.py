@@ -51,6 +51,7 @@ from google.adk.plugins import BasePlugin
 from google.adk.tools import AgentTool, BaseTool, FunctionTool, ToolContext
 from google.adk.tools.agent_tool import _get_input_schema as _agent_input_schema
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
@@ -152,23 +153,58 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     return copy.deepcopy(converted), None
 
 
-def _agent_call(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def _agent_call(
+    tool: Any, args: dict[str, Any], tool_context: Any = None
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """The call to an ``AgentTool`` as the sub-agent receives it, for judgment; or
     ``(None, reason)``.
 
     A stock ``AgentTool`` whose agent declares no ``input_schema`` hands the sub-agent one
     text: ``args["request"]``, or the whole dict as JSON. So the dict is the request, and the
-    policy judges a detached copy of it; nothing the policy does reaches it. The sub-agent's
-    own tool calls run under its own gate (``gated_agent`` gates it). Refused: a subclass
-    (ADK's single-turn and task wrappers run the agent another way) and an agent with an
+    policy judges a detached copy of it; nothing the policy does reaches it.
+
+    Judging the request is not enough: the sub-agent then makes tool calls of its own, so
+    the call is judged only when those are covered too, either by the sub-agent's own gate
+    (``gated_agent`` gates it) or by a ``RecusalPlugin`` the nested run inherits
+    (``include_plugins``, the default, and the plugin among the runner's). Otherwise, with
+    a gate attached by hand or the plugin and ``include_plugins=False``, the sub-agent's
+    calls would run unjudged, so the call is refused. Refused too: a subclass (ADK's
+    single-turn and task wrappers run the agent another way) and an agent with an
     ``input_schema``, whose own validation would decide what the sub-agent reads.
     """
     if type(tool) is not AgentTool:
         return None, f"{type(tool).__name__} runs its agent in a way this gate does not judge"
+    if not is_gated(tool.agent) and not (
+        tool.include_plugins and _runner_has_recusal_plugin(tool_context)
+    ):
+        return None, (
+            f"the tool calls agent {tool.agent.name!r} makes would not be judged: gate it "
+            "with gated_agent, or let it inherit RecusalPlugin (include_plugins=True)"
+        )
     # ADK's own reading (it looks into a workflow agent's first sub-agent), so the gate and
     # ``AgentTool.run_async`` cannot disagree about whether a schema applies
     if _agent_input_schema(tool.agent) is not None:
         return None, "an agent tool whose agent declares an input_schema is not supported"
+    try:
+        return _detached(args), None
+    except TypeError as exc:
+        return None, str(exc)
+
+
+def _runner_has_recusal_plugin(tool_context: Any) -> bool:
+    """Whether the runner driving this call carries a ``RecusalPlugin``, which a nested
+    ``AgentTool`` run inherits when ``include_plugins`` is on."""
+    invocation = getattr(tool_context, "_invocation_context", None)
+    plugins = getattr(getattr(invocation, "plugin_manager", None), "plugins", None) or []
+    return any(isinstance(plugin, RecusalPlugin) for plugin in plugins)
+
+
+def _model_response(
+    tool: Any, args: dict[str, Any]
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """The call the ADK adds for an agent with an ``output_schema`` and tools
+    (``set_model_response``): it runs nothing, and sets the agent's structured answer from
+    the arguments. The policy judges a detached copy of them, as the model proposed them."""
     try:
         return _detached(args), None
     except TypeError as exc:
@@ -235,7 +271,9 @@ def _record_for(recording: Optional[Recording], tool_context: Any) -> dict:
     return dict(recording(tool_context)) if recording is not None else {}
 
 
-def _refusal(tool: Any, args: Any, policy: Policy, **record: Any) -> Optional[str]:
+def _refusal(
+    tool: Any, args: Any, policy: Policy, _tool_context: Any = None, **record: Any
+) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
     The ADK hands the callback the same ``args`` dict the tool will be called with; the
@@ -253,9 +291,12 @@ def _refusal(tool: Any, args: Any, policy: Policy, **record: Any) -> Optional[st
     if not isinstance(args, dict):
         return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
     try:
-        invocation, why = (
-            _agent_call(tool, args) if isinstance(tool, AgentTool) else _prepared(tool, args)
-        )
+        if isinstance(tool, AgentTool):
+            invocation, why = _agent_call(tool, args, _tool_context)
+        elif type(tool) is SetModelResponseTool:
+            invocation, why = _model_response(tool, args)
+        else:
+            invocation, why = _prepared(tool, args)
     except Exception as exc:  # noqa: BLE001, a preparation the gate cannot complete is refused
         return _unjudgeable(
             tool_name, f"the invocation cannot be prepared ({type(exc).__name__})", args, record
@@ -285,7 +326,7 @@ def recusal_before_tool(policy: Policy, recording: Optional[Recording] = None):
                 "error": "Recusal failed closed (policy error): "
                 f"RECUSAL_POLICY_ERROR ({type(exc).__name__})"
             }
-        reason = _refusal(tool, args, policy, **record)
+        reason = _refusal(tool, args, policy, tool_context, **record)
         if reason is not None:
             return {"error": reason}
         return None
@@ -323,7 +364,7 @@ class RecusalPlugin(BasePlugin):
         reason = _ordering_reason(self, tool_context)
         if reason is not None:
             return {"error": _unjudgeable(tool.name, reason, tool_args, record)}
-        reason = _refusal(tool, tool_args, self._policy, **record)
+        reason = _refusal(tool, tool_args, self._policy, tool_context, **record)
         return {"error": reason} if reason is not None else None
 
 
@@ -373,7 +414,10 @@ def _callbacks(agent: LlmAgent) -> list:
 
 
 def _carries_gate(agent: LlmAgent) -> bool:
-    return any(getattr(cb, "recusal_gate", False) for cb in _callbacks(agent))
+    """Whether the agent's LAST before-tool callback is a Recusal gate: a callback after it
+    could change the arguments the gate judged (``gated_agent`` always appends it last)."""
+    callbacks = _callbacks(agent)
+    return bool(callbacks) and getattr(callbacks[-1], "recusal_gate", False) is True
 
 
 def _ungateable_reason(agent: Any) -> Optional[str]:
@@ -418,6 +462,8 @@ def _unjudged_tool_kind(tool: Any) -> Optional[str]:
     if isinstance(tool, FunctionTool):
         # ``process_llm_request`` edits the request sent to the model; the ADK's own tools
         # that override it add instructions, but an override could add a provider-side tool
+        if "process_llm_request" in getattr(tool, "__dict__", {}):
+            return "the tool object replaces process_llm_request"
         method = type(tool).process_llm_request
         if method is not BaseTool.process_llm_request and not getattr(
             method, "__module__", ""
