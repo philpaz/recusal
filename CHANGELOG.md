@@ -94,10 +94,12 @@ All notable changes to this project are documented here. The format follows
     the ones judged and the ones every function receives. A value that does not convert
     is refused, naming the parameter (an `int` given `"abc"`, a `str` given `94107`); a
     parameter whose default is `None` and that the call leaves out or sets to `null` is
-    judged as `None` and filled by Python, as the ADK runs it.
+    judged as `None` and runs as `None`, written into the call when a wrapper on the way
+    declares another default for it.
   - A model object that passes its provider the option turning on the provider's own web
-    search (`LiteLlm(..., web_search_options=...)`) is refused, in a `FallbackModel` too;
-    the provider's search ran with no callback asked.
+    search (`LiteLlm(..., web_search_options=...)`, also nested in `extra_body`, or an
+    OpenRouter web plugin) is refused, in a `FallbackModel` too; the provider's search ran
+    with no callback asked.
     `is_gated` now requires the gate to be the agent's last
     before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
     a tool object is refused.

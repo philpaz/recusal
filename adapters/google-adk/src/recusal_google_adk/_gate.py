@@ -60,6 +60,7 @@ from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
 from recusal.invocation import json_data as _json_data
+from recusal.invocation import reached_parameters as _reached_parameters
 from recusal.invocation import unsupported_signature as _unsupported_signature
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
@@ -106,13 +107,14 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     user subclass that overrides preprocessing does not) and whose parameters, outside the
     ones the ADK injects (``_ignore_params``),
     all carry a supported data annotation and JSON defaults. Omitted parameters are completed
-    from the signature's defaults INTO the raw arguments first, then the tool's own
-    ``_preprocess_args_with_validation`` runs once, so a default such as ``int = "100"`` is
-    prepared exactly as explicit input would be; the converted values are written back into
-    ``args`` (the ADK calls the tool with this dict) and the policy judges a deep copy. On
-    the supported set the ADK's execution-time preparation returns equal values, with the
-    validation feature on (coercion) or off (none), so judged equals received. A validation
-    failure is refused as such, without the SDK's text, which carries input values.
+    from the signature's defaults INTO the raw arguments, then validated against the
+    function's types (``_always_validated``, whatever the ADK's own setting), so a default
+    such as ``int = "100"`` is prepared exactly as explicit input would be; a ``None``
+    default is written as ``None`` and not validated. The values are written back into
+    ``args`` (the ADK calls the tool with this dict), the ADK's own validation must give
+    them back exactly, and the policy judges a deep copy, so judged equals received. A
+    validation failure is refused naming the parameter, without the SDK's text, which
+    carries input values.
     """
     if not isinstance(tool, FunctionTool):
         return (
@@ -130,21 +132,24 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     parameters = inspect.signature(func).parameters
     raw: dict[str, Any] = {}
     # A parameter whose default is ``None`` (``region: str = None``) and that the call
-    # leaves out, or sets to ``null``, is not written into the call: validated as a ``str``
-    # the ``None`` would fail, though the ADK runs the call. Python then fills ``None``,
-    # one object, and the policy judges exactly that.
-    left_to_python: list[str] = []
+    # leaves out, or sets to ``null``, is judged as ``None`` and not validated against its
+    # type (``None`` would fail ``str``, though the ADK runs the call). It is left for
+    # Python to fill when every callable the call reaches that names it declares ``None``
+    # too, so ``None`` is what runs (a ``validate_call`` function then keeps its own
+    # unvalidated default). When one declares another default (a wrapper with a default of
+    # its own) it is written as ``None`` explicitly, so that default never applies.
+    none_defaults: list[str] = []
     for name, parameter in parameters.items():
         if name in skip:
             continue
         if name in args:
             if args[name] is None and parameter.default is None:
-                left_to_python.append(name)
+                none_defaults.append(name)
             continue
         if parameter.default is parameter.empty:
             return None, f"required parameter `{name}` was not supplied"
         if parameter.default is None:
-            left_to_python.append(name)
+            none_defaults.append(name)
             continue
         raw[name] = copy.deepcopy(parameter.default)
     unknown = sorted(k for k in args if k not in parameters)
@@ -156,7 +161,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     injected = sorted(k for k in args if k in skip)
     if injected:
         return None, f"the call sets {injected!r}, which the ADK fills itself"
-    raw.update({k: v for k, v in args.items() if k not in left_to_python})
+    raw.update({k: v for k, v in args.items() if k not in none_defaults})
     converted, errors = _always_validated(tool, raw)
     if errors:
         # the parameter names, never the values (the ADK's own text carries the input)
@@ -169,17 +174,47 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     # Judge only arguments that are plain JSON data and that this validation gives back
     # exactly, type for type: whatever the validation does to them has then been applied,
     # and applying it again changes nothing
-    again, errors = tool._preprocess_args_with_validation(copy.deepcopy(converted))
-    if errors or not _json_data(converted) or not _identical(again, converted):
+    explicit = _none_defaults_to_write(func, none_defaults)
+    written = {**converted, **{name: None for name in explicit}}
+    again, errors = tool._preprocess_args_with_validation(copy.deepcopy(written))
+    if errors:
+        named = sorted({m.group(1) for e in errors if (m := _ERROR_PARAMETER.match(e))})
+        if named and set(named) <= set(none_defaults):
+            # only with the ADK's FUNCTION_TOOL_ARG_VALIDATION on, which checks every key
+            return None, (
+                "the ADK's own validation refuses None for "
+                + ", ".join(f"`{n}`" for n in named)
+                + "; declare the parameter Optional"
+            )
+    if errors or not _json_data(written) or not _identical(again, written):
         return None, (
             "the tool's validation does not give back the arguments it validated, so the "
             "gate cannot say what would run"
         )
     args.clear()
-    args.update(converted)
-    judged = copy.deepcopy(converted)
-    judged.update({name: None for name in left_to_python})
+    args.update(written)
+    judged = copy.deepcopy(written)
+    judged.update({name: None for name in none_defaults})
     return judged, None
+
+
+def _none_defaults_to_write(func: Any, names: list[str]) -> list[str]:
+    """Of the parameters left at a ``None`` default, the ones that must be written as
+    ``None``: those some callable the call reaches names with another default (or none),
+    which would otherwise fill its own. The others are left for Python, which fills
+    ``None`` on every level."""
+    if not names:
+        return []
+    try:
+        levels = _reached_parameters(func)
+    except Exception:  # noqa: BLE001, read before by unsupported_signature; write them all
+        return list(names)
+    write = []
+    for name in names:
+        defaults = [level[name].default for level in levels if name in level]
+        if any(default is not None for default in defaults):
+            write.append(name)
+    return write
 
 
 #: How ``FunctionTool._validate_args`` names a failing parameter in its error text.
@@ -573,6 +608,30 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
 _PROVIDER_TOOL_OPTIONS = frozenset({"web_search_options"})
 
 
+def _provider_tool_option(options: Any, depth: int = 0) -> Optional[str]:
+    """The provider-tool option found anywhere in a model's options, or None: at the top
+    level or nested (``extra_body={"web_search_options": ...}`` reaches the provider the
+    same way), and an OpenRouter web plugin (``extra_body={"plugins": [{"id": "web"}]}``)."""
+    if depth > 16:
+        return "options nested too deep to read"
+    if isinstance(options, dict):
+        for key, value in options.items():
+            if key in _PROVIDER_TOOL_OPTIONS:
+                return f"`{key}`"
+            if key == "plugins" and isinstance(value, list):
+                if any(isinstance(p, dict) and p.get("id") == "web" for p in value):
+                    return "an OpenRouter web plugin"
+            found = _provider_tool_option(value, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(options, (list, tuple)):
+        for value in options:
+            found = _provider_tool_option(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
 def _model_provider_tools(model: Any, depth: int = 0) -> Optional[str]:
     """Why the agent's model object enables tools the provider runs itself, or None. A
     model wrapper that passes extra options to the provider (``LiteLlm`` keeps them in
@@ -582,11 +641,11 @@ def _model_provider_tools(model: Any, depth: int = 0) -> Optional[str]:
         return None
     extra = getattr(model, "_additional_args", None)
     if isinstance(extra, dict):
-        named = sorted(set(extra) & _PROVIDER_TOOL_OPTIONS)
-        if named:
+        found = _provider_tool_option(extra)
+        if found is not None:
             return (
-                f"its model passes {named!r} to the provider, which enables tools the "
-                "provider runs itself; no before-tool callback sees them"
+                f"its model passes {found} to the provider, which turns on a tool the "
+                "provider runs itself; no before-tool callback sees it"
             )
     for inner in getattr(model, "models", None) or ():
         why = _model_provider_tools(inner, depth + 1)

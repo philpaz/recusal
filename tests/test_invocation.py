@@ -468,6 +468,7 @@ USERS = {
     "adapters/google-adk/src/recusal_google_adk/_gate.py": {
         "detached",
         "json_data",
+        "reached_parameters",
         "unsupported_signature",
     },
     "adapters/openai/src/recusal_openai/_gate.py": {"unsupported_signature"},

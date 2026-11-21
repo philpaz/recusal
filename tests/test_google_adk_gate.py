@@ -1000,6 +1000,48 @@ class TestGoogleAdkGate:
         finally:
             override_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION, before)
 
+    def test_a_none_default_runs_as_none_behind_a_wrapper_and_validate_call(self, example):
+        """Confirming round: left for Python to fill, a ``None`` default ran as whatever a
+        wrapper declared for the same parameter (``"all-regions"``), not the ``None`` judged.
+        It is now written as ``None`` when a callable on the way declares another default,
+        and still left out when every one declares ``None`` (``validate_call`` would reject
+        an explicit ``None`` for a ``str``)."""
+        import functools
+
+        from pydantic import validate_call
+
+        ran, seen = [], []
+
+        def recording(name, args):
+            seen.append(dict(args))
+            return []
+
+        def search(query: str, region: str = None) -> str:  # noqa: RUF013
+            """Search."""
+            return query
+
+        @functools.wraps(search)
+        def defaulting(query: str, region: str = "all-regions") -> str:
+            ran.append(("defaulting", query, region))
+            return query
+
+        @validate_call
+        def checked(query: str, region: str = None) -> str:  # noqa: RUF013
+            """Search."""
+            ran.append(("checked", query, region))
+            return query
+
+        for tool in (defaulting, checked):
+            ran.clear(), seen.clear()
+            responses, _ = example.run_calls(
+                [(tool.__name__, {"query": "q"}, "c1")],
+                policy=recording,
+                tools=[example.FunctionTool(tool)],
+            )
+            assert "error" not in responses["c1"], (tool, responses)
+            assert seen == [{"query": "q", "region": None}]
+            assert ran[0][1:] == ("q", None), ran
+
     def test_a_value_that_does_not_validate_is_refused_naming_the_parameter(self, example):
         def count(n: int) -> str:
             """Count."""
@@ -1044,6 +1086,14 @@ class TestGoogleAdkGate:
         root = agent.clone(update={"model": fallback})
         assert "web_search_options" in _adapter()._unseen_reason(root)
         # tool_choice steers the agent's own tools and turns on none of the provider's
+        # nested options reach the provider the same way (confirming round)
+        for extra in (
+            {"extra_body": {"web_search_options": {}}},
+            {"extra_body": {"plugins": [{"id": "web"}]}},
+        ):
+            nested = Wrapper(model="nested")
+            nested._additional_args = extra
+            assert _adapter()._model_provider_tools(nested) is not None, extra
         steering = Wrapper(model="steer")
         steering._additional_args = {"tool_choice": "required"}
         assert _adapter()._model_provider_tools(steering) is None
