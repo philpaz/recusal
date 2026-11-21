@@ -296,12 +296,13 @@ def test_every_place_a_wrapper_can_stand_is_followed():
     assert unsupported_signature(Decorator(wipe)) == _HIDDEN
 
     # the walk itself reaches ``force`` behind a partial; ``unsupported_signature`` refuses a
-    # partial before it gets there (its annotations cannot be read, as before), so the
-    # walk is pinned directly
+    # partial before it gets there, as before, because its annotations cannot be read
+    # (older Pythons raise, 3.14 returns none, so the reason differs), so the walk is
+    # pinned directly
     reached = reached_parameters(functools.partial(forcing))
     assert list(inspect_signature(functools.partial(forcing))) == ["table"]
     assert any("force" in level for level in reached)
-    assert unsupported_signature(functools.partial(forcing)) == "its signature cannot be inspected"
+    assert unsupported_signature(functools.partial(forcing)) is not None
 
 
 def test_ordinary_wrappers_are_read_through_and_accepted():
@@ -374,7 +375,9 @@ def test_a_call_that_is_not_a_plain_method_and_a_class_are_refused():
             self.table = table
 
     for func in (StaticCall(), PartialCall()):
-        assert unsupported_signature(func) == "its signature cannot be inspected", func
+        # refused before the walk on every Python, for a reason that differs by version
+        # (``get_type_hints`` raises on older ones and returns none on 3.14)
+        assert unsupported_signature(func) is not None, func
         # the walk refuses them itself, whatever refuses them first
         with pytest.raises(TypeError, match="is not a plain method"):
             reached_parameters(func)
