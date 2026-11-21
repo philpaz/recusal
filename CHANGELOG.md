@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The project has a website, [recusal.io](https://recusal.io). The README links to it,
+  and the `Homepage` URL of the kernel and of all eight adapter packages now points to it
+  (shown on PyPI from each package's next release); `Repository` still points to GitHub.
+
 ### Fixed
 
 - The two verify workflows could not install their Sigstore client. They check nothing

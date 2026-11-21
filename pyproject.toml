@@ -54,7 +54,7 @@ dev = ["pytest>=8", "ruff==0.17.4", "mypy>=1.8,<2", "hypothesis>=6"]
 recusal = "recusal.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/philpaz/recusal"
+Homepage = "https://recusal.io"
 Author = "https://www.linkedin.com/in/philippaz/"
 Documentation = "https://github.com/philpaz/recusal/tree/main/docs"
 Repository = "https://github.com/philpaz/recusal"

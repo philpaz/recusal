@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/philpaz/recusal"
+Homepage = "https://recusal.io"
 Documentation = "https://github.com/philpaz/recusal/tree/main/adapters/langchain"
 Repository = "https://github.com/philpaz/recusal"
 Issues = "https://github.com/philpaz/recusal/issues"

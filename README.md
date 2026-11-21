@@ -17,6 +17,9 @@ are [eight adapter packages](#the-kernel-and-its-adapters), each tested against 
 framework: LangGraph, LangChain, the OpenAI API and Agents SDK, Google ADK, CrewAI and
 Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 
+**Website: [recusal.io](https://recusal.io)**, with an interactive demo of the gate.
+
+[![Website](https://img.shields.io/badge/website-recusal.io-2453c4)](https://recusal.io)
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/philpaz/recusal/badge)](https://scorecard.dev/viewer/?uri=github.com/philpaz/recusal)
