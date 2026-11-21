@@ -38,8 +38,9 @@ All notable changes to this project are documented here. The format follows
   differ from the value run) and only finite floats; `supported_annotation` compares the
   scalar types by identity, not equality. Nothing that was refused is now accepted; a
   `functools.partial`, and a callable object whose class does not annotate its parameters,
-  are still refused because their annotations cannot be read, as before. The same walk was first built inside
-  `recusal-crewai` 0.2.1; it now lives here, once, for every gate.
+  are still refused because their annotations cannot be read, as before. The same walk
+  was first built inside `recusal-crewai` 0.2.1; it now lives here, and `recusal-crewai`
+  moves to it from its own copy in its next release.
 - **`recusal-google-adk` 0.2.0, unreleased: the gate refuses what it cannot see and holds a
   tool's whole run path to the stock one.** Found by the adapter review of 2026-11-19 and
   reproduced on `google-adk` 2.14.0:
@@ -69,7 +70,13 @@ All notable changes to this project are documented here. The format follows
     `include_plugins` and `propagate_grounding_metadata`.
   - The `set_model_response` call the ADK adds for an agent with an `output_schema` and
     tools was always refused, so such an agent never gave its structured answer; it is
-    now judged like any call. `is_gated` now requires the gate to be the agent's last
+    now judged like any call. A plugin is handed tool calls only, so under
+    `RecusalPlugin` a `task` delegation and a `code_executor` (at the root, or on an agent
+    behind an `AgentTool`) ran with no policy asked; the plugin now checks every agent a
+    run can reach with the rules `gated_agent` applies and refuses the run before any
+    agent starts. A call that sets `tool_context` or `input_stream`, which the ADK fills
+    itself, is refused, and a subclass of a workflow agent is no longer taken for one.
+    `is_gated` now requires the gate to be the agent's last
     before-tool callback, as `gated_agent` places it, and a `process_llm_request` set on
     a tool object is refused.
   - The README and the example give plugins to an `App`; the `plugins=` argument of a

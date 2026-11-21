@@ -474,10 +474,11 @@ class TestGoogleAdkGate:
         assert "overrides `__getattribute__`" in responses["c1"]["error"]
 
     def test_an_agent_tool_subclass_is_refused_when_a_call_reaches_the_gate(self, example):
-        """``gated_agent`` refuses an ``AgentTool`` subclass on the agent; a call can still
-        reach a gate with one (the ADK builds its own for sub-agents in ``single_turn`` and
-        ``task`` mode, and a plugin sees calls on agents it did not build), so the call is
-        refused there too."""
+        """``gated_agent`` refuses an ``AgentTool`` subclass on the agent; a call to one that
+        still reaches a gate (a ``single_turn`` sub-agent's tool under a plugin, which the
+        run check below refuses first, or a hand-attached gate) is refused there too. A
+        ``task`` delegation never reaches a tool callback at all; the run check is what
+        refuses it (``test_the_plugin_refuses_a_run_it_cannot_see_all_of``)."""
 
         class Wrapped(_adapter().AgentTool):
             pass
@@ -611,6 +612,117 @@ class TestGoogleAdkGate:
         else:
             assert seen == []
             assert "would not be judged" in responses["a1"]["error"]
+
+    @pytest.mark.parametrize(
+        "shape", ["task", "single_turn", "code_executor", "nested_code", "sub_agent_code"]
+    )
+    def test_the_plugin_refuses_a_run_it_cannot_see_all_of(self, example, shape):
+        """Review round 2: a plugin is handed tool calls only. A ``task`` delegation runs its
+        sub-agent without a tool callback, and a ``code_executor`` runs model-written code
+        without one, at the root or behind an ``AgentTool``; under ``RecusalPlugin`` they
+        ran unjudged. The plugin now refuses the whole run before any agent starts."""
+        from google.adk.code_executors import UnsafeLocalCodeExecutor
+
+        ran = []
+
+        def worker_tool(x: str) -> str:
+            """Work."""
+            ran.append(x)
+            return "worked"
+
+        def worker(mode=None, executor=None):
+            kwargs = {"mode": mode} if mode else {}
+            if executor:
+                kwargs["code_executor"] = executor
+            return example.LlmAgent(
+                name="worker",
+                description="helper",
+                model=example.ScriptedLlm(model="s", calls=[("worker_tool", {"x": "hi"}, "w1")]),
+                tools=[example.FunctionTool(worker_tool)],
+                **kwargs,
+            )
+
+        calls = [("worker", {"request": "do it"}, "p1")]
+        if shape in ("task", "single_turn"):
+            root = example.LlmAgent(
+                name="parent",
+                model=example.ScriptedLlm(model="s", calls=calls),
+                sub_agents=[worker(mode=shape)],
+            )
+        elif shape == "code_executor":
+            root = worker(executor=UnsafeLocalCodeExecutor())
+        elif shape == "sub_agent_code":
+            # a plain sub-agent reached by transfer, not a tool: only the walk over
+            # ``sub_agents`` finds its code_executor
+            root = example.LlmAgent(
+                name="parent",
+                model=example.ScriptedLlm(model="s", calls=calls),
+                sub_agents=[worker(executor=UnsafeLocalCodeExecutor())],
+            )
+        else:
+            root = example.scripted_agent(
+                calls, tools=[_adapter().AgentTool(worker(executor=UnsafeLocalCodeExecutor()))]
+            )
+        seen = []
+        responses = asyncio.run(
+            example.run_agent(
+                root, plugins=[example.RecusalPlugin(lambda n, a: seen.append(n) or [])]
+            )
+        )
+        assert ran == [] and seen == [] and responses == {}
+        assert _adapter()._unseen_reason(root) is not None
+        # an agent tree the plugin can see all of runs as before
+        assert _adapter()._unseen_reason(example.scripted_agent([])) is None
+
+    def test_an_agent_tool_call_under_the_plugin_needs_the_whole_sub_agent_tree_seen(self, example):
+        """The run check refuses such a tree first; the call itself is refused as well, so a
+        run that reaches it another way still cannot take the plugin's word for the
+        sub-agent."""
+        from types import SimpleNamespace
+
+        from google.adk.code_executors import UnsafeLocalCodeExecutor
+
+        coder = example.LlmAgent(
+            name="coder",
+            description="writes code",
+            model=example.ScriptedLlm(model="s", calls=[]),
+            code_executor=UnsafeLocalCodeExecutor(),
+        )
+        plain = example.scripted_agent([]).clone(update={"name": "plain"})
+        context = SimpleNamespace(
+            _invocation_context=SimpleNamespace(
+                plugin_manager=SimpleNamespace(plugins=[example.RecusalPlugin(lambda n, a: [])])
+            )
+        )
+        AgentTool = _adapter().AgentTool
+        _, why = _adapter()._agent_call(AgentTool(coder), {"request": "x"}, context)
+        assert "would not be judged" in why
+        judged, why = _adapter()._agent_call(AgentTool(plain), {"request": "x"}, context)
+        assert why is None and judged == {"request": "x"}
+
+    def test_a_call_that_sets_a_parameter_the_adk_fills_is_refused(self, example):
+        """Review round 2: outside a live run the model could set ``input_stream`` (the tool
+        got it unchecked), and the policy judged a ``tool_context`` the tool never got."""
+        ran = []
+
+        def watch(topic: str, tool_context=None, input_stream: str = "") -> str:
+            ran.append(topic)
+            return "watched"
+
+        responses, _ = example.run_calls(
+            [("watch", {"topic": "t", "input_stream": "MODEL-SET"}, "c1")],
+            policy=lambda n, a: [],
+            tools=[example.FunctionTool(watch)],
+        )
+        assert ran == []
+        assert "which the ADK fills itself" in responses["c1"]["error"]
+
+    def test_a_workflow_agent_subclass_is_not_taken_for_a_workflow_agent(self, example):
+        class Custom(_adapter().SequentialAgent):
+            pass
+
+        with pytest.raises(ValueError, match="is not a plain LlmAgent"):
+            example.gated_agent(Custom(name="flow", sub_agents=[]), lambda n, a: [])
 
     def test_a_hand_attached_gate_refuses_an_agent_tool_whose_sub_agent_is_ungated(self, example):
         child = example.LlmAgent(

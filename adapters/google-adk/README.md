@@ -80,7 +80,11 @@ gate as a runner plugin, given to the app:
 (`from google.adk.apps import App`). Plugin
 callbacks run before any agent's own, so the plugin judges a call only when nothing it
 cannot see runs after it. If the executing agent has another before-tool callback, or a
-later plugin overrides `before_tool_callback`, it refuses the call and names the fix.
+later plugin overrides `before_tool_callback`, it refuses the call and names the fix. A
+plugin is handed tool calls only, so before a run starts it checks every agent the run
+can reach with the same rules `gated_agent` applies, and refuses the whole run when one
+of them can execute something no callback sees: a `code_executor`, a provider-side tool,
+a toolset, a `task` or `single_turn` sub-agent, or an agent class it does not know.
 
 ## Put every decision on the record
 
@@ -128,8 +132,8 @@ path.
   `set_model_response` call that runs nothing and sets the agent's answer; the policy
   judges its arguments like any call's.
 - **Not judged:** the parameters the ADK fills itself, `tool_context` and `input_stream`.
-  The model cannot set either; outside a live run, an `input_stream` parameter takes its
-  own default, which is the tool's code.
+  A call that sets either is refused; outside a live run an `input_stream` parameter takes
+  its own default, which is the tool's code.
 - **Not on the audit log:** a call another before-tool callback answered before the gate
   ran. The tool did not run either.
 
