@@ -174,13 +174,23 @@ def test_each_adapter_readme_stands_on_its_own_as_a_pypi_page():
 def _kernel_picture(asset):
     """The kernel README's centered <picture> block for one asset, byte for byte."""
     found = re.findall(
-        r'<p align="center">\n  <picture>\n    <source [^\n]*/assets/'
+        r'<p align="center">\n(?:  <a href="[^"\n]*">\n)? *<picture>\n *<source [^\n]*/assets/'
         + re.escape(asset)
-        + r'\.(?:png|svg)">\n    <img [^\n]*>\n  </picture>\n</p>\n',
+        + r'\.(?:png|svg)">\n *<img [^\n]*>\n *</picture>\n(?:  </a>\n)?</p>\n',
         README,
     )
     assert len(found) == 1, asset
     return found[0]
+
+
+def test_the_banner_links_to_the_website_on_every_page():
+    """The banner is the first thing on the GitHub page and on each PyPI page, and it is a
+    link to recusal.io. The adapter pages carry the kernel's banner block byte for byte
+    (the test below), so the link cannot be on one page and missing from another."""
+    banner = _kernel_picture("banner-gate-strip")
+    assert README.startswith(banner)
+    assert banner.startswith('<p align="center">\n  <a href="https://recusal.io">\n')
+    assert banner.endswith("  </a>\n</p>\n")
 
 
 def test_each_adapter_readme_shows_the_kernels_pictures_where_its_reader_needs_them():
