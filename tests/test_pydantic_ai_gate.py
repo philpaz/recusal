@@ -1747,7 +1747,7 @@ class TestPydanticAiGate:
 
         ran, seen = [], []
 
-        def delete_rows(ctx, table: str, mode: str = "hard", *rest: str, **more: str) -> str:
+        def delete_rows(ctx, table: str, mode: str = "hard") -> str:
             ran.append((table, mode))
             return "deleted"
 
@@ -1764,9 +1764,28 @@ class TestPydanticAiGate:
         agent.run_sync("go")
         assert seen == [("delete_rows", {"table": "t", "mode": "hard"})] and ran == [("t", "hard")]
 
-    def test_defaults_are_read_through_wrappers_and_left_alone_where_there_is_no_function(
-        self, example, adapter
-    ):
+    @staticmethod
+    def _ctx_for(function, *, takes_ctx=False, validated=True):
+        """A run context whose tool ``t`` runs ``function``, as the tool manager holds it."""
+        from types import SimpleNamespace
+
+        def validate_python(value):
+            if validated:
+                raise ValueError("not an object")
+            return value
+
+        schema = SimpleNamespace(
+            function=function,
+            takes_ctx=takes_ctx,
+            validator=SimpleNamespace(validate_python=validate_python),
+        )
+        bound = SimpleNamespace(__self__=schema)
+        record = SimpleNamespace(call_func=None, source_tool=SimpleNamespace(call_func=bound))
+        return SimpleNamespace(tool_manager=SimpleNamespace(tools={"t": record}))
+
+    def test_what_is_completed_and_what_is_left_alone(self, example, adapter):
+        """Only the outermost callable's own defaults are completed: Python fills those in
+        when the function is called. Where there is no local function, nothing is done."""
         import functools
         from types import SimpleNamespace
 
@@ -1774,33 +1793,163 @@ class TestPydanticAiGate:
             return "ok"
 
         @functools.wraps(inner)
-        def outer(*args, **kwargs):
+        def retrying(*args, _retries: int = 3, **kwargs):
             return inner(*args, **kwargs)
 
-        def ctx_for(function, takes_ctx=False):
-            schema = SimpleNamespace(function=function, takes_ctx=takes_ctx)
-            schema.call = lambda args, ctx: None
-            bound = SimpleNamespace(__self__=schema)
-            record = SimpleNamespace(call_func=None, source_tool=SimpleNamespace(call_func=bound))
-            return SimpleNamespace(tool_manager=SimpleNamespace(tools={"t": record}))
-
-        completed, reason = adapter._with_defaults(ctx_for(outer), "t", {"table": "x", "limit": 1})
-        assert reason is None and completed == {"table": "x", "limit": 1, "mode": "hard"}
-        same = {"table": "x"}
-        assert adapter._with_defaults(ctx_for(inner), "other", same) == (same, None)
-        assert adapter._with_defaults(SimpleNamespace(), "t", same) == (same, None)
-        assert adapter._with_defaults(ctx_for(inner), "t", "not a dict") == ("not a dict", None)
-        assert adapter._function_of(ctx_for(None), "t") == (None, False)
+        validated = {"table": "x", "mode": "hard", "limit": 1}
+        completed, reason = adapter._with_defaults(self._ctx_for(retrying), "t", validated)
+        assert reason is None and completed == {**validated, "_retries": 3}
+        sent = {"table": "x", "_retries": 9}
+        assert adapter._with_defaults(self._ctx_for(retrying), "t", sent) == (sent, None)
+        same = {"table": "x", "mode": "soft", "limit": 2}
+        assert adapter._with_defaults(self._ctx_for(inner), "t", same) == (same, None)
+        assert adapter._with_defaults(self._ctx_for(inner), "other", {}) == ({}, None)
+        assert adapter._with_defaults(SimpleNamespace(), "t", {}) == ({}, None)
+        assert adapter._with_defaults(self._ctx_for(inner), "t", "text") == ("text", None)
+        assert adapter._function_of(self._ctx_for(None), "t") == (None, False, True)
 
         def with_context(ctx=None, table: str = "x") -> str:
             return "ok"
 
-        completed, _ = adapter._with_defaults(ctx_for(with_context, takes_ctx=True), "t", {})
+        completed, _ = adapter._with_defaults(self._ctx_for(with_context, takes_ctx=True), "t", {})
         assert completed == {"table": "x"}
-        completed, _ = adapter._with_defaults(ctx_for(with_context), "t", {})
+        completed, _ = adapter._with_defaults(self._ctx_for(with_context), "t", {})
         assert completed == {"ctx": None, "table": "x"}
-        _, reason = adapter._with_defaults(ctx_for(print), "t", {})
-        assert reason is None or "cannot be inspected" in reason
+
+    def test_a_default_that_cannot_be_judged_is_refused_by_name(self, example, adapter):
+        """A decorator's own keyword with an object for a default is filled in by Python
+        where no policy sees it, and cannot be shown to one; the refusal names it."""
+        import functools
+        import logging
+
+        log = logging.getLogger("x")
+
+        def inner(table: str) -> str:
+            return "ok"
+
+        @functools.wraps(inner)
+        def logged(*args, _log=log, **kwargs):
+            return inner(*args, **kwargs)
+
+        args = {"table": "x"}
+        same, reason = adapter._with_defaults(self._ctx_for(logged), "t", args)
+        assert same is args and "parameter `_log`" in reason and "not plain data" in reason
+
+    def test_an_unvalidated_tool_whose_defaults_cannot_be_read_is_refused(self, example, adapter):
+        """For a tool given its schema by hand, what the function does with a parameter the
+        model left out is all that decides its value. A function taking ``**kwargs`` can
+        fill one in in its body, as Pydantic AI's LangChain bridge does, and a wrapper may
+        or may not pass on a parameter that has a default further in."""
+        import functools
+
+        def inner(table: str, mode: str = "hard") -> str:
+            return "ok"
+
+        def proxy(*args, **kwargs):
+            return inner(**({"mode": "hard"} | kwargs))
+
+        @functools.wraps(inner)
+        def narrow(table):
+            return inner(table, mode="soft")
+
+        @functools.wraps(inner)
+        def naming(table, mode="soft"):
+            return inner(table, mode)
+
+        def by_hand(function):
+            return adapter._with_defaults(
+                self._ctx_for(function, validated=False), "t", {"table": "x"}
+            )
+
+        assert "variadic parameter" in by_hand(proxy)[1]
+        assert "hides `mode`" in by_hand(narrow)[1]
+        sent = {"table": "x", "mode": "soft"}  # the model sent it: nothing is left to a default
+        unvalidated = self._ctx_for(narrow, validated=False)
+        assert adapter._with_defaults(unvalidated, "t", sent) == (sent, None)
+        assert by_hand(naming) == ({"table": "x", "mode": "soft"}, None)
+        assert by_hand(inner) == ({"table": "x", "mode": "hard"}, None)
+        # the same functions behind a validated tool are Pydantic AI's to complete
+        for function in (proxy, narrow):
+            assert adapter._with_defaults(self._ctx_for(function), "t", {"table": "x"})[1] is None
+        assert adapter._validates(object()) is True
+
+    def test_a_function_that_cannot_be_inspected_is_refused(self, example, adapter, monkeypatch):
+        def tool(table: str, mode: str = "hard") -> str:
+            return "ok"
+
+        def unreadable(function, **kwargs):
+            raise ValueError("no signature")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", unreadable)
+        completed, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
+        assert reason is None and completed == {"table": "x", "mode": "hard"}  # the fallback
+        monkeypatch.setattr(adapter.inspect, "signature", unreadable)
+        same, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
+        assert same == {"table": "x"} and "cannot be inspected" in reason
+
+    def test_the_completed_arguments_are_what_the_hook_hands_back(self, example):
+        """The hook returns the arguments it judged, so the function is called with the
+        defaults written out, and a refusal for a function it could not read is a refusal."""
+        import asyncio
+
+        from pydantic_ai.exceptions import ToolFailed
+        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.tools import ToolDefinition
+
+        def tool(table: str, mode: str = "hard") -> str:
+            return "ok"
+
+        def proxy(**kwargs):
+            return "ok"
+
+        seen = []
+        gate = example.RecusalGate(lambda n, a: seen.append(dict(a)) or [])
+        call = ToolCallPart("t", {"table": "x"}, tool_call_id="c1")
+
+        def run(function, hook):
+            ctx = self._ctx_for(function, validated=False)
+            ctx.root_capability = None
+            ctx.tool_manager.toolset = None
+            return asyncio.run(
+                hook(ctx, call=call, tool_def=ToolDefinition(name="t"), args={"table": "x"})
+            )
+
+        plain = example.recusal_before_tool_execute(lambda n, a: seen.append(dict(a)) or [])
+        for hook in (gate.before_tool_execute, plain):
+            seen.clear()
+            assert run(tool, hook) == {"table": "x", "mode": "hard"}
+            assert seen == [{"table": "x", "mode": "hard"}]
+            with pytest.raises(ToolFailed, match="variadic parameter"):
+                run(proxy, hook)
+            assert len(seen) == 1
+
+    def test_tools_from_pydantic_ais_langchain_bridge_are_refused(self, example):
+        """``pydantic_ai.ext.langchain`` builds each tool by hand around a function that takes
+        ``**kwargs`` and merges the LangChain tool's defaults in its body: the policy was
+        shown ``{"table": "t"}`` and the tool ran with ``mode="hard"``. Such a tool is now
+        refused."""
+        from types import SimpleNamespace
+
+        from pydantic_ai.ext.langchain import tool_from_langchain
+
+        ran, seen = [], []
+        langchain_tool = SimpleNamespace(
+            name="delete_rows",
+            description="d",
+            args={"table": {"type": "string"}, "mode": {"type": "string", "default": "hard"}},
+            get_input_jsonschema=lambda: {
+                "type": "object",
+                "properties": {"table": {"type": "string"}, "mode": {"type": "string"}},
+            },
+            run=lambda kwargs: ran.append(kwargs) or "ok",
+        )
+        agent = example.Agent(
+            self._model_calling(example, "delete_rows", {"table": "t"}),
+            tools=[tool_from_langchain(langchain_tool)],
+            capabilities=[example.RecusalGate(lambda n, a: seen.append(n) or [])],
+        )
+        answers = example.responses_of(agent.run_sync("go"))
+        assert ran == [] and seen == [] and "variadic parameter" in answers["c1"][1]
 
     @pytest.mark.parametrize("form", ["innermost", "wrapped_gate", "hooks_subclass"])
     def test_an_output_changed_after_the_gate_is_refused(self, example, form):

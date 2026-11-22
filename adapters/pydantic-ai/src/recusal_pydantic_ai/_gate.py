@@ -66,6 +66,7 @@ from pydantic_ai.toolsets.set_metadata import SetMetadataToolset
 
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
+from recusal.invocation import json_data as _json_data
 from recusal.invocation import reached_parameters as _reached_parameters
 
 if TYPE_CHECKING:
@@ -578,10 +579,11 @@ def _rewriter_after(
     return unknown
 
 
-def _function_of(ctx: Any, tool_name: str) -> tuple[Any, bool]:
-    """The Python function a function tool runs and whether it takes the run context first,
-    or ``(None, False)`` for a tool that runs no local function Pydantic AI built a schema
-    for (an MCP tool, a toolset of the application's own)."""
+def _function_of(ctx: Any, tool_name: str) -> tuple[Any, bool, bool]:
+    """The Python function a function tool runs, whether it takes the run context first,
+    and whether Pydantic AI validates its arguments; ``(None, False, True)`` for a tool that
+    runs no local function Pydantic AI built a schema for (an MCP tool, a toolset of the
+    application's own)."""
     tools = getattr(getattr(ctx, "tool_manager", None), "tools", None)
     tool = tools.get(tool_name) if isinstance(tools, Mapping) else None
     for _ in range(32):
@@ -593,21 +595,49 @@ def _function_of(ctx: Any, tool_name: str) -> tuple[Any, bool]:
     schema = getattr(getattr(tool, "call_func", None), "__self__", None)
     function = getattr(schema, "function", None)
     if not callable(function):
-        return None, False
-    return function, bool(getattr(schema, "takes_ctx", False))
+        return None, False, True
+    return function, bool(getattr(schema, "takes_ctx", False)), _validates(schema)
+
+
+def _validates(schema: Any) -> bool:
+    """False for a function schema that accepts anything: ``Tool.from_schema`` gives the
+    function the "any" validator, which hands back whatever it is given, so the arguments
+    reach the function as the model sent them."""
+    probe = object()
+    try:
+        return schema.validator.validate_python(probe) is not probe
+    except Exception:  # noqa: BLE001, a validator that refuses an arbitrary object validates
+        return True
+
+
+def _defaulted(level: Any, skip_first: bool) -> dict[str, Any]:
+    """The named parameters of one callable that have a default, and the default."""
+    found: dict[str, Any] = {}
+    for position, (name, parameter) in enumerate(level.items()):
+        if position == 0 and skip_first:
+            continue
+        if parameter.default is not parameter.empty:
+            found[name] = parameter.default
+    return found
 
 
 def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[str]]:
-    """The arguments the function will run with: ``args`` plus every default the function,
-    or a function it wraps, would fill in for a parameter ``args`` leaves out.
+    """The arguments the function will run with, or why they cannot be known.
 
-    Pydantic AI's validation fills a function's defaults in before the hook, so for a tool
-    built from its signature nothing is missing. A tool given its schema by hand
-    (``Tool.from_schema``) is not validated: the model leaves a parameter out, the hook is
-    handed the arguments without it, and Python fills the default when the function is
-    called, where no policy sees it. The completed arguments are what the policy judges and
-    what the hook returns, so the function is called with them, written out."""
-    function, takes_ctx = _function_of(ctx, tool_name)
+    Python fills a default in when the function is called, after every hook. Pydantic AI's
+    validation has already filled in the defaults of the signature it built the tool from,
+    so what is left is:
+
+    - a default of the outermost callable itself that the arguments leave out: a decorator's
+      own keyword, or, for a tool given its schema by hand (``Tool.from_schema``, which is
+      not validated), any parameter the model left out. These are added, so the policy
+      judges them and the function is called with them written out. One that is not plain
+      data cannot be judged and is refused by name.
+    - for a tool that is not validated, what happens further in. A function that takes
+      ``*args`` or ``**kwargs`` can fill in a value in its own body (Pydantic AI's LangChain
+      bridge does), and a wrapper may or may not pass on a parameter the function it wraps
+      gives a default. Neither can be read, so both are refused."""
+    function, takes_ctx, validated = _function_of(ctx, tool_name)
     if function is None or not isinstance(args, dict):
         return args, None
     try:
@@ -617,14 +647,36 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
             levels = [inspect.signature(function, follow_wrapped=False).parameters]
     except Exception:  # noqa: BLE001, nothing readable: the defaults cannot be known
         return args, "the function this tool runs cannot be inspected for its defaults"
-    missing: dict[str, Any] = {}
-    for index, level in enumerate(levels):
-        for position, (name, parameter) in enumerate(level.items()):
-            if index == 0 and position == 0 and takes_ctx:
-                continue
-            if parameter.default is parameter.empty or name in args or name in missing:
-                continue
-            missing[name] = parameter.default
+    missing = {
+        name: default
+        for name, default in _defaulted(levels[0], takes_ctx).items()
+        if name not in args
+    }
+    for name, default in missing.items():
+        if not _json_data(default):
+            return args, (
+                f"parameter `{name}` of the function this tool runs has a default that is "
+                "not plain data, so the value the function would run with cannot be judged; "
+                "give it a JSON default (or None) and resolve the object inside the function"
+            )
+    if not validated:
+        by_hand = "this tool was given its schema by hand, so its arguments are not validated"
+        for level in levels:
+            for name, parameter in level.items():
+                if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+                    return args, (
+                        f"{by_hand}, and its function takes `{name}` as a variadic parameter: "
+                        "a value it fills in itself cannot be read or judged; give the "
+                        "function named parameters, or build the tool from its signature"
+                    )
+        for level in levels[1:]:
+            for name in _defaulted(level, False):
+                if name not in args and name not in levels[0]:
+                    return args, (
+                        f"{by_hand}, and a wrapper around its function hides `{name}`, which "
+                        "has a default further in: whether that default applies cannot be "
+                        "read; name the parameter on the wrapper"
+                    )
     return ({**args, **missing} if missing else args), None
 
 

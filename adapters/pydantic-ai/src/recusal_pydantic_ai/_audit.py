@@ -35,7 +35,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from recusal.audit import AuditLog
 
-from ._gate import Policy, RecusalGate, _refusal
+from ._gate import Policy, RecusalGate, _refusal, _unjudgeable, _with_defaults
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -91,13 +91,11 @@ def recusal_audited_before_tool_execute(
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        reason = _refusal(
-            call.tool_name,
-            args,
-            policy,
-            proposal=_proposal(call),
-            **_recording(call, actor, control, log),
-        )
+        record = _recording(call, actor, control, log)
+        args, unseen = _with_defaults(ctx, call.tool_name, args)
+        if unseen:
+            raise ToolFailed(_unjudgeable(call.tool_name, unseen, _proposal(call), record))
+        reason = _refusal(call.tool_name, args, policy, proposal=_proposal(call), **record)
         if reason is not None:
             raise ToolFailed(reason)
         return args

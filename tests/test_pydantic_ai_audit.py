@@ -630,6 +630,56 @@ class TestPydanticAiAudit:
         assert second["action"]["surface"] == "pydantic_ai.handle_deferred_tool_calls"
         assert second["action"]["input_sha256"] == _sha({"INVALID_JSON": "not json"})
 
+    def test_the_audited_hook_form_judges_and_records_the_completed_arguments(self, example, log):
+        """The audited hook function completes the arguments as the gate does: for a tool
+        given its schema by hand it judged, and recorded as allowed, arguments without the
+        default the function then ran with."""
+        from pydantic_ai import Agent, Tool
+        from pydantic_ai.capabilities import Hooks
+
+        from recusal import Finding
+
+        ran = []
+
+        def delete_rows(table: str, mode: str = "hard") -> str:
+            ran.append((table, mode))
+            return "deleted"
+
+        def policy(name, args):
+            if args.get("mode") == "hard":
+                return [Finding.fail("no_hard", severity="CRITICAL", message="hard refused")]
+            return []
+
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        tool = Tool.from_schema(
+            delete_rows, name="delete_rows", description="d", json_schema=schema
+        )
+        hook = example.recusal_audited_before_tool_execute(policy, log)
+        Agent(
+            self._model_calling("delete_rows", {"table": "t"}),
+            tools=[tool],
+            capabilities=[Hooks(before_tool_execute=hook)],
+        ).run_sync("go")
+        (entry,) = log.entries
+        assert ran == [] and entry["action"]["decision"] == "deny"
+        assert entry["action"]["input_sha256"] == _sha({"table": "t", "mode": "hard"})
+
+        # a function whose defaults cannot be read is refused, and that is on the record
+        def proxy(**kwargs):
+            ran.append(kwargs)
+            return "ok"
+
+        tool = Tool.from_schema(proxy, name="delete_rows", description="d", json_schema=schema)
+        Agent(
+            self._model_calling("delete_rows", {"table": "t"}),
+            tools=[tool],
+            capabilities=[Hooks(before_tool_execute=hook)],
+        ).run_sync("go")
+        refused = log.entries[-1]
+        assert ran == [] and len(log.entries) == 2
+        assert refused["action"]["decision"] == "deny"
+        assert refused["action"]["input_sha256"] == _sha({"table": "t"})
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):

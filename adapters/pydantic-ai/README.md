@@ -81,13 +81,25 @@ placed inside a `WrapperCapability`, which does not pass the gate's position on.
 same holds for output functions and `before_output_process`. A hook bundled before the
 gate, in the same list or behind the same wrapper, runs before it and is not refused.
 
-**Defaults are judged too.** Pydantic AI fills a function's defaults in before the hook,
-so the policy sees them. A tool given its schema by hand (`Tool.from_schema`) is not
-validated: a parameter the model leaves out would reach the function absent, and Python
-would fill the default where no policy sees it. The gate completes the arguments with
-every default the function, or a function it wraps, would fill in, judges those, and
-the function is called with them written out. A default that is not plain data is
-refused like any other such argument.
+**Defaults are judged too.** Python fills a default in when the function is called,
+after every hook. Pydantic AI's validation has already filled in the defaults of the
+signature it built the tool from, so the policy sees those. For what is left, all four
+forms of the gate (the two capabilities and the two hook functions) do this:
+
+- A default of the function Pydantic AI calls that the arguments leave out is added,
+  judged, and passed to the function written out. That is a decorator's own keyword
+  (`def wrapper(*args, retries=3, **kwargs)`), and, for a tool given its schema by hand
+  (`Tool.from_schema`, which Pydantic AI does not validate), any parameter the model
+  left out.
+- A default that is not plain data (a logger, a client, a sentinel object) cannot be
+  shown to a policy, so the call is refused, and the refusal names the parameter. Give
+  it a JSON default or `None` and resolve the object inside the function.
+- For a tool given its schema by hand, two shapes are refused because what the function
+  does with a missing parameter cannot be read: a function that takes `*args` or
+  `**kwargs` (it can fill a value in in its body; the tools
+  `pydantic_ai.ext.langchain` builds are of this kind), and a wrapper that does not name
+  a parameter the function it wraps gives a default. Give the function named
+  parameters, or build the tool from its signature.
 
 A toolset runs after every capability hook, so one that runs other tools' calls itself
 could also change the arguments after the gate judged them. A run with one in its
@@ -232,7 +244,12 @@ path.
   run's toolset from `RunContext.tool_manager` at the time of each call. Where Pydantic AI
   provides none (its Temporal activity context), the gate relies on the check it makes
   when the run's toolsets are assembled, which does not see a wrapper another capability
-  adds afterwards or one a dynamic toolset returns.
+  adds afterwards or one a dynamic toolset returns. It finds the function a tool runs
+  the same way, so there it completes no defaults either.
+- **A default filled in somewhere the gate cannot read.** A value a function sets in its
+  own body, a default an MCP server or a toolset of your own applies to a call it
+  receives, and a decorator's own keyword default on an output function (for a tool that
+  one is judged): the policy sees the arguments as they are handed over.
 - **A delegated agent.** An agent called from inside a tool function runs under its own
   capabilities. Give every agent its own gate; `is_gated(agent)` reads only the agent it
   is given.
