@@ -642,7 +642,7 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
 
   # The same proof for recusal-openai-agents-mcp.
   adapter-openai-agents-mcp-wheel:
