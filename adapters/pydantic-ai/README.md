@@ -110,10 +110,10 @@ path.
 
 ## Status
 
-**In security review.** The fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
-[What "security reviewed" means, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
+[What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:

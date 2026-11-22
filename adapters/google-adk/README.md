@@ -169,10 +169,10 @@ path.
 
 ## Status
 
-**Security reviewed.** The fixes from the review are released in 0.2.0. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review complete.** Its fixes are released in 0.2.0. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
-[What "security reviewed" means, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
+[What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:

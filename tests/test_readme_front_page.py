@@ -257,22 +257,32 @@ def test_every_adapter_states_the_status_the_project_table_gives_it():
     """The kernel README's "Project status" table says where each adapter stands in security
     review, and each adapter's own page says the same in its "Status" section, with the
     invitation to help and the private route for a security gap. The table has one row per
-    adapter package, so a new adapter cannot ship without a status, and a status changed in
-    one place and not the other fails here."""
+    adapter package, so a new adapter cannot ship without a status; a status changed in one
+    place and not the other fails here; and the counts in the sentence above the table are
+    the table's own."""
     section = README.split("\n## Project status\n", 1)[1].split("\n## ", 1)[0]
     assert "not a finished or\ncertified security product" in section
     assert "not a third-party audit" in section
     assert "https://github.com/philpaz/recusal/security/advisories/new" in section
-    rows = re.findall(
-        r"^\| \[`recusal-([a-z-]+)`\]\(https://github\.com/philpaz/recusal/tree/main/adapters/([a-z-]+)\) \| (.+?) \| (.+?) \|$",
-        section,
-        re.M,
+    row = (
+        r"^\| \[`recusal-([a-z-]+)`\]\(https://github\.com/philpaz/recusal/tree/main/adapters/"
+        r"([a-z-]+)\) \| (.+?) \| (.+?) \|$"
     )
+    rows = re.findall(row, section, re.M)
     directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
     assert [directory for _, directory, _, _ in rows] == directories
+    statuses = [status for _, _, status, _ in rows]
+    done, now, first = (
+        statuses.count(label)
+        for label in ("In-depth review complete", "In-depth review under way", "First review only")
+    )
+    assert done + now + first == len(rows) == 8
+    assert (
+        f"Of the {len(rows)} adapters,\n{done} have completed the in-depth review, {now} is in it "
+        f"now and {first} have had the first review only:"
+    ) in section
     for name, directory, status, detail in rows:
         assert name == directory
-        assert status in ("Security reviewed", "In security review", "Not yet security reviewed")
         page = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
         own = page.split("\n## Status\n", 1)[1].split("\n## ", 1)[0]
         assert own.lstrip("\n").startswith(f"**{status}.** {detail} "), directory

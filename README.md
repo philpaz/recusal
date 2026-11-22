@@ -194,26 +194,33 @@ help teams develop and evolve security controls for AI agents. It is not a finis
 certified security product, and it is provided under Apache-2.0 without warranty.
 [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) says what is stable and what may still change.
 
-The adapters are at different stages of security review:
+The adapters are at different stages of security review. Of the 8 adapters,
+2 have completed the in-depth review, 1 is in it now and 5 have had the first review only:
 
 | Package | Security review | Where it stands |
 |---|---|---|
-| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | Security reviewed | The fixes from the review are released in 0.2.1. |
-| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | Security reviewed | The fixes from the review are released in 0.2.0. |
-| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
-| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
-| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
-| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In security review | The fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. |
+| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | In-depth review complete | Its fixes are released in 0.2.1. |
+| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | In-depth review complete | Its fixes are released in 0.2.0. |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | First review only | The in-depth review has not started. |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | First review only | The first review closed an ungated `ToolNode` route, fixed in 0.2.0. The in-depth review has not started. |
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | First review only | The in-depth review has not started. |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | First review only | The in-depth review has not started. |
+| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | First review only | The in-depth review has not started. |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. |
 
-"Security reviewed" means the adapter went through repeated adversarial review against a
-stated threat model: the model is untrusted, and the application's own code is trusted
-but ordinary. Each finding was reproduced, fixed and pinned by a test, and the rounds
-continued until one found no way for a model to get a call past the gate. It is the
-project's own review, not a third-party audit, and a review finds what it looks for: a
-reviewed adapter can still have gaps. Each adapter's README says what its gate refuses
-and what it does not see.
+What the two reviews are:
+
+- **The first review** was one pass over all eight adapters against the newest versions
+  of their frameworks, on 2026-11-19. What it found and fixed is in the
+  [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md).
+- **The in-depth review** is repeated adversarial review of one adapter against a stated
+  threat model: the model is untrusted, and the application's own code is trusted but
+  ordinary. Each finding is reproduced, fixed and pinned by a test, and the rounds
+  continue until one finds no way for a model to get a call past the gate.
+
+Both are the project's own reviews, not a third-party audit, and a review finds what it
+looks for: a reviewed adapter can still have gaps. Each adapter's README says what its
+gate refuses and what it does not see.
 
 **Help make it better.** Read the code, test an adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
