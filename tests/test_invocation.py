@@ -928,12 +928,28 @@ def test_a_held_wrapper_is_judged_by_the_rule_and_the_code_that_judge_one_the_wa
 
         return wrapper
 
+    def keeping_through_args(function):
+        @functools.wraps(function)
+        def wrapper(*args, limit=1):  # passes on through ``*args`` alone
+            return function(*args)
+
+        return wrapper
+
+    def keeping_through_kwargs(function):
+        @functools.wraps(function)
+        def wrapper(query, limit=1, **kwargs):  # passes on through ``**kwargs`` alone
+            return function(query, **kwargs)
+
+        return wrapper
+
     for make, skip in (
         (_traced, ()),
         (_copying, ()),  # names only what the tool declares, and passes nothing else on
         (_renaming, ()),  # a name the tool does not declare
         (_forcing, ()),
         (keeping_limit, ()),  # a forwarding wrapper that keeps a name the function takes
+        (keeping_through_args, ()),
+        (keeping_through_kwargs, ()),
         (with_context, ()),
         (with_context, ("tool_context",)),  # a name the framework injects
         (lambda f: _traced(_copying(f)), ()),
@@ -963,6 +979,78 @@ def test_a_held_wrapper_is_judged_by_the_rule_and_the_code_that_judge_one_the_wa
     assert "`limit` is taken by a wrapper" in unsupported_signature(_calling(keeping_limit)(search))
     assert unsupported_signature(_calling(with_context)(search)) is not None
     assert unsupported_signature(_calling(with_context)(search), ("tool_context",)) is None
+
+
+def test_a_held_wrapper_of_a_method_receives_the_receiver_the_method_does():
+    """A method's decorator is usually written ``def wrapper(self, *args, **kwargs)``. When
+    the tool is the bound method, the walk reads its levels without the receiver; a wrapper
+    its decorator holds is passed the same receiver, so its first positional parameter is
+    not one of its own either, whatever it is called. Held and read agree here too."""
+    import functools
+    import types
+
+    def held(make):
+        return _calling(make)
+
+    def cases(make):
+        class Service:
+            @make
+            def search(self, query: str, limit: int = 5) -> str:
+                return query
+
+            @classmethod
+            @make
+            def build(cls, query: str, limit: int = 5) -> str:
+                return query
+
+        def search(receiver, query: str, limit: int = 5) -> str:
+            return query
+
+        bound = functools.partial(make(search), object())
+        return Service().search, Service.build, Service().build, bound
+
+    for make, keeps in (
+        (_receiving, False),
+        (_traced, False),
+        (_copying_method, False),
+        (_keeping_method, True),
+    ):
+        for read, kept in zip(cases(make), cases(held(make))):
+            reached_parameters(read)  # read on the walk, it is a level, never a hidden wrapper
+            if not isinstance(read, functools.partial):
+                why = unsupported_signature(read)
+                assert (why is not None) is keeps, (make, read, why)
+                assert unsupported_signature(kept) == why, (make, read)
+            if keeps:
+                with pytest.raises(HiddenWrapper):
+                    reached_parameters(kept)
+            else:
+                reached_parameters(kept)
+    service_tool = cases(held(_receiving))[0]
+    assert unsupported_signature(service_tool) is None
+    assert _levels(service_tool) == [_FORWARD, ["query", "limit"]]
+    assert "`timeout` is a parameter" in unsupported_signature(cases(held(_keeping_method))[0])
+
+    # the receiver is counted once for every binding on the way, and never forgotten: a
+    # bound method of an ``lru_cache`` wrapper still binds what the function receives
+    fetch = _fetch()
+    cached = functools.lru_cache(maxsize=None)
+    assert _levels(_holding(types.MethodType(cached(_receiving(fetch)), object()), fetch)) == [
+        _FORWARD,
+        _FETCH,
+    ]
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(_holding(types.MethodType(cached(_keeping_method(fetch)), 0), fetch))
+
+
+def _copying_method(function):
+    """A wrapper that copies a method's own parameters, receiver included."""
+    import functools
+
+    def search(self, query, limit=5):
+        return function(self, query, limit)
+
+    return functools.update_wrapper(search, function)
 
 
 def test_a_bound_receiver_is_not_a_parameter_and_a_keyword_behind_it_is():
@@ -1237,7 +1325,15 @@ def _limits():
 
         return helper
 
+    def of_a_tool_that_names_nothing(function):
+        def tool(url: str, timeout: int = 999999) -> int:  # no __wrapped__: it holds nothing read
+            return function(url) if timeout else again(url)
+
+        again = _with_timeout(tool)
+        return tool
+
     return [
+        ("a wrapper of a tool that names nothing as __wrapped__", of_a_tool_that_names_nothing),
         ("a plain inner function", _calling(named_nothing)),
         ("a lambda", _calling(lambda f: lambda *a, timeout=30, **k: f(*a, **k))),
         ("a callable object", _calling(Guard)),
@@ -1529,10 +1625,12 @@ def test_a_dispatching_function_is_refused_wherever_it_stands_on_the_walk():
 
 def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
     """``functools.singledispatchmethod`` hands out a new function at each access. It has
-    no registry of its own; where it keeps the way to one is found once, at import."""
+    no registry of its own; where it keeps the way to one is found once, at import. What
+    it hands out differs by Python (a function, or from 3.14 an object that answers
+    ``__wrapped__`` through a property), so what is pinned here is relative to the walk
+    without this check: a registered one is refused, a base-only one is walked exactly as
+    it was, and the check runs no code the walk did not already run."""
     import functools
-
-    _needs_method_access()
 
     class Recording(functools.singledispatchmethod):
         """A subclass, which records every attribute asked of it."""
@@ -1574,8 +1672,6 @@ def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
 
     assert Holder().lookup(1) == "int, skip_review=True"
     assert not hasattr(Holder().lookup, "registry")
-    recorded = Holder().recorded
-    del _TOUCHED[:]
     for func in (
         Holder().lookup,
         Holder.lookup,
@@ -1583,11 +1679,15 @@ def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
         functools.partial(Holder().lookup),
         functools.lru_cache(maxsize=None)(Holder().lookup),
         Holder.make,
-        recorded,
+        Holder().recorded,
     ):
+        _, before = _without_the_dispatch_check(func)
+        del _TOUCHED[:]
         with pytest.raises(DispatchedAtCallTime):
             reached_parameters(func)
-    assert _TOUCHED == []  # the descriptor is known by its type and read where it is stored
+        # the descriptor is known by its type and read where it is stored: whatever of it
+        # runs, the walk ran before this check existed, in the same order
+        assert _TOUCHED == before[: len(_TOUCHED)], func
     assert unsupported_signature(Holder().lookup, skip=("self",)) == _AT_CALL_TIME
 
     # a subclass that answers ``__dict__`` itself cannot be read, so it is refused; its
@@ -1615,16 +1715,48 @@ def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
             return "base"
 
     opaque, find = Other().lookup, Other().find
+    _, before = _without_the_dispatch_check(opaque)
     del _TOUCHED[:]
     with pytest.raises(DispatchedAtCallTime):
         reached_parameters(opaque)
-    assert _levels(find) == [_FORWARD, ["self", "key", "deep"]]
-    assert _TOUCHED == []
-    # with only the base registered the base is what runs, and it is walked as before
-    own = ["self", "key", "deep"]
-    assert _levels(Holder().plain) == [_FORWARD, own]
-    assert unsupported_signature(Holder().plain, skip=("self",)) is None
-    assert _levels(functools.lru_cache(maxsize=None)(Holder().plain)) == [_FORWARD, _FORWARD, own]
+    assert _TOUCHED == before[: len(_TOUCHED)]
+    # with only the base registered the base is what runs: the walk, the verdict and the
+    # code that runs are what they were without the check
+    for func in (
+        find,
+        Holder().plain,
+        Holder.plain,
+        _traced(Holder().plain),
+        functools.lru_cache(maxsize=None)(Holder().plain),
+    ):
+        walked, before = _without_the_dispatch_check(func)
+        del _TOUCHED[:]
+        assert _levels(func) == walked, func
+        assert _TOUCHED == before, func
+        assert walked[-1] == ["self", "key", "deep"]
+    for skip in ((), ("self",)):
+        real = invocation._refuse_call_time_dispatch
+        invocation._refuse_call_time_dispatch = lambda func, wrapped: None
+        try:
+            judged = unsupported_signature(Holder().plain, skip)
+        finally:
+            invocation._refuse_call_time_dispatch = real
+        assert unsupported_signature(Holder().plain, skip) == judged
+
+
+def _without_the_dispatch_check(func):
+    """The walk of ``func`` with the call-time-dispatch check left out, as the walk was
+    before that check existed, and the names of the hooks of this file it ran."""
+    real = invocation._refuse_call_time_dispatch
+    invocation._refuse_call_time_dispatch = lambda func, wrapped: None
+    del _TOUCHED[:]
+    try:
+        walked = _levels(func)
+    except (TypeError, ValueError) as error:
+        walked = type(error)
+    finally:
+        invocation._refuse_call_time_dispatch = real
+    return walked, list(_TOUCHED)
 
 
 def _registry_cell(dispatcher):
@@ -1658,10 +1790,7 @@ def test_a_replaced_base_is_refused_by_identity():
 
     assert list(lookup.registry) == [object]
     assert lookup("k") == Holder().lookup("k") == "replacement, skip_review=True"
-    replaced = [lookup, _traced(lookup)]
-    if invocation._METHOD_ACCESS is not None:
-        replaced.append(Holder().lookup)
-    for func in replaced:
+    for func in (lookup, _traced(lookup), Holder().lookup):
         with pytest.raises(DispatchedAtCallTime):
             reached_parameters(func)
     assert unsupported_signature(lookup) == _AT_CALL_TIME
@@ -1721,6 +1850,18 @@ def test_the_registry_read_is_the_real_one_not_the_attribute():
     with pytest.raises(DispatchedAtCallTime):
         reached_parameters(claimed)
 
+    # nor does a ``dispatch`` attribute: the base carries the ``dispatch`` of another
+    # dispatcher over the same base, which has only that base
+    def shared(key: str, deep: bool = False) -> str:
+        return "base"
+
+    shared.dispatch = functools.singledispatch(shared).dispatch  # type: ignore[attr-defined]
+    borrowed = functools.singledispatch(shared)
+    borrowed.register(int, lambda key, deep=False, skip_review=True: "int")
+    assert borrowed.dispatch is shared.dispatch and borrowed(1) == "int"  # type: ignore[attr-defined]
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(borrowed)
+
     def search(query: str, limit: int = 5) -> str:
         return query
 
@@ -1739,6 +1880,138 @@ def test_the_registry_read_is_the_real_one_not_the_attribute():
         reached_parameters(odd)
     assert unsupported_signature(odd) == _AT_CALL_TIME
     assert _TOUCHED == []
+
+
+_IMPORTED_AFTER = """
+import functools, json, sys
+REAL, REAL_METHOD, RAN = functools.singledispatch, functools.singledispatchmethod, []
+scenario = sys.argv[1]
+if scenario == "wrapped":
+    def trace(function):
+        @functools.wraps(function)
+        def traced(*args, **kwargs):
+            RAN.append("traced")
+            return function(*args, **kwargs)
+        return traced
+    functools.singledispatch = trace(REAL)
+elif scenario == "object":
+    class Odd:
+        @property
+        def __code__(self):
+            RAN.append("__code__")
+            raise RuntimeError("no code here")
+        def __getattr__(self, name):
+            RAN.append(name)
+            raise RuntimeError(name)
+        def __call__(self, function):
+            return REAL(function)
+    functools.singledispatch = Odd()
+elif scenario == "method":
+    class Recording(REAL_METHOD):
+        def __getattribute__(self, name):
+            RAN.append(name)
+            return super().__getattribute__(name)
+        def __get__(self, obj, cls=None):
+            RAN.append("__get__")
+            raise KeyboardInterrupt("no")
+    functools.singledispatchmethod = Recording
+elif scenario == "method-subclass":
+    class Inheriting(REAL_METHOD):
+        def __getattribute__(self, name):
+            RAN.append(name)
+            return super().__getattribute__(name)
+    functools.singledispatchmethod = Inheriting
+elif scenario == "reimplemented":
+    def singledispatch(func):
+        RAN.append("singledispatch")
+        registry = {object: func}
+        def dispatch(cls):
+            return registry[object]
+        def register(cls, func=None):
+            if func is None:
+                return lambda function: register(cls, function)
+            registry[cls] = func
+            return func
+        def wrapper(*args, **kw):
+            return dispatch(args[0].__class__)(*args, **kw)
+        wrapper.register, wrapper.dispatch, wrapper.registry = register, dispatch, registry
+        return functools.update_wrapper(wrapper, func)
+    functools.singledispatch = singledispatch
+from recusal import invocation
+ran_at_import = list(RAN)
+def base(key: str, deep: bool = False) -> str:
+    return "base"
+def verdict(func):
+    try:
+        invocation.reached_parameters(func)
+        return "walked"
+    except Exception as error:
+        return type(error).__name__
+registered = REAL(base)
+registered.register(int, lambda key, deep=False, skip_review=True: "int")
+class Holder:
+    @REAL_METHOD
+    def plain(self, key: str, deep: bool = False) -> str:
+        return "base"
+    @REAL_METHOD
+    def lookup(self, key: str, deep: bool = False) -> str:
+        return "base"
+    @lookup.register(int)
+    def lookup_int(self, key: int, deep: bool = False, skip_review: bool = True) -> str:
+        return "int"
+print(json.dumps({
+    "ran": ran_at_import,
+    "found": invocation._WRAPPER_CODE is not None,
+    "method": invocation._METHOD_ACCESS is not None,
+    "registered": verdict(registered),
+    "base_only": verdict(REAL(base)),
+    "method_registered": verdict(Holder().lookup),
+    "method_base_only": verdict(Holder().plain),
+}))
+"""
+
+
+@pytest.mark.parametrize(
+    "scenario", ["none", "wrapped", "object", "reimplemented", "method", "method-subclass"]
+)
+def test_importing_the_module_runs_nothing_whatever_stands_in_functools(scenario):
+    """A process can wrap or replace ``functools.singledispatch`` before this module is
+    imported. The import then runs none of that code and does not raise; the dispatcher's
+    code is not identified, and the dispatch check is off: it refuses nothing, so a
+    base-only single-dispatch method is walked as before, and a registered dispatcher is
+    not found (a stated limit). A replaced ``singledispatchmethod`` turns off only the
+    recognition of single-dispatch methods."""
+    import json
+    import os
+    import subprocess
+
+    root = str(pathlib.Path(__file__).resolve().parent.parent)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    done = subprocess.run(
+        [sys.executable, "-c", _IMPORTED_AFTER, scenario],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    assert seen["ran"] == []
+    assert seen["base_only"] == seen["method_base_only"] == "walked"
+    expected = {
+        "none": (True, True, "DispatchedAtCallTime", "DispatchedAtCallTime"),
+        "wrapped": (False, False, "walked", "walked"),
+        "object": (False, False, "walked", "walked"),
+        "reimplemented": (False, False, "walked", "walked"),
+        "method": (True, False, "DispatchedAtCallTime", "walked"),
+        "method-subclass": (True, False, "DispatchedAtCallTime", "walked"),
+    }[scenario]
+    assert (
+        seen["found"],
+        seen["method"],
+        seen["registered"],
+        seen["method_registered"],
+    ) == expected
 
 
 def test_the_single_dispatch_this_python_builds_is_recognised():
@@ -1762,19 +2035,14 @@ def test_the_single_dispatch_this_python_builds_is_recognised():
     assert not invocation._only_runs(search, search)
 
 
-def _needs_method_access():
-    """Skip where the callable ``functools.singledispatchmethod`` hands out does not keep
-    the way to its registry anywhere the walk reads. On the Pythons where it is known to
-    (3.9 to 3.12, in a closure cell), not finding it is a failure, not a skip."""
-    if invocation._METHOD_ACCESS is None:
-        assert sys.version_info >= (3, 13), "single-dispatch methods are no longer read"
-        pytest.skip("this Python hands out a single-dispatch method in a way that is not read")
-
-
 def test_where_a_single_dispatch_method_keeps_its_registry_is_found():
+    """Found at import by looking at one built there. It differs by Python: a closure cell
+    holding the descriptor (3.9 to 3.12) or the ``dispatch`` function (3.13), an instance
+    attribute holding the descriptor (3.14, 3.15). Not finding it is a failure on every
+    Python, never a skip: recognising a single-dispatch method would be lost silently."""
     import functools
 
-    _needs_method_access()
+    assert invocation._METHOD_ACCESS is not None, "single-dispatch methods are no longer read"
     kind, code, name, is_descriptor = invocation._METHOD_ACCESS
 
     class Holder:
@@ -1792,11 +2060,17 @@ def test_where_a_single_dispatch_method_keeps_its_registry_is_found():
         def plain(key: str, deep: bool = False) -> str:
             return "base"
 
-    handed = Holder().lookup
+    handed, descriptor = Holder().lookup, vars(Holder)["lookup"]
     assert type(handed) is kind
-    assert code is None or handed.__code__ is code
-    if sys.version_info < (3, 13):
-        assert (kind.__name__, name, is_descriptor) == ("function", "self", True)
+    if code is None:
+        kept = invocation._entry(invocation._instance_attributes(handed), name)
+    else:
+        assert handed.__code__ is code
+        kept = invocation._cell(handed, name)
+    assert kept is (descriptor if is_descriptor else descriptor.dispatcher.dispatch)
+    found = invocation._dispatcher(handed, getattr(handed, "__wrapped__", None))
+    assert found is not None and found[0] is descriptor.dispatcher.dispatch
+    assert invocation._only_runs(*found)
     # with only its base, each flavour is read as before, which is not always a walk:
     # never a refusal as dispatch (on Python 3.9 the function handed out for a classmethod
     # names the function inside it as ``__wrapped__``, not the classmethod the registry has)
@@ -1949,6 +2223,54 @@ def test_a_dispatcher_a_wrapper_calls_in_place_of_its_base_is_refused():
         return base_only(*args, **kwargs)
 
     assert _levels(plain) == [_FORWARD, ["key", "deep"]]
+
+    # a dispatcher anywhere on the held way counts, not only the last wrapper on it
+    def base(key: str, deep: bool = False) -> str:
+        return "base"
+
+    over_a_tracer = functools.singledispatch(_traced(base))
+    over_a_tracer.register(int, lambda key, deep=False, skip_review=True: "int")
+
+    @functools.wraps(base)
+    def deep(*args, **kwargs):
+        return over_a_tracer(*args, **kwargs)
+
+    assert deep(1) == "int"
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(deep)
+
+    # and so does the function a registered single-dispatch method hands out, where it is
+    # a plain function (from Python 3.14 it is an object, which a callable is not read for)
+    class Holder:
+        @functools.singledispatchmethod
+        def lookup(self, key: str, deep: bool = False) -> str:
+            return "base"
+
+        @lookup.register(int)
+        def lookup_int(self, key: int, deep: bool = False, skip_review: bool = True) -> str:
+            return "int"
+
+        @functools.singledispatchmethod
+        def plain(self, key: str, deep: bool = False) -> str:
+            return "base"
+
+    def holding_the_method(handed, descriptor):
+        @functools.wraps(descriptor.func)
+        def through(*args, **kwargs):
+            return handed(*args, **kwargs)
+
+        return through
+
+    holder = Holder()
+    registered = holding_the_method(holder.lookup, vars(Holder)["lookup"])
+    only_base = holding_the_method(holder.plain, vars(Holder)["plain"])
+    assert registered(1) == "int"
+    reached_parameters(only_base)
+    if invocation._METHOD_ACCESS[1] is not None:
+        with pytest.raises(HiddenWrapper):
+            reached_parameters(registered)
+    else:
+        reached_parameters(registered)  # a stated limit on this Python
 
 
 def test_dispatch_the_walk_does_not_find_is_accepted():

@@ -36,16 +36,31 @@ All notable changes to this project are documented here. The format follows
     read. It is judged by the same rule, and the same code, as a wrapper the walk does
     read: refused when it takes a name the tool does not declare, or, being a wrapper that
     passes `*args` or `**kwargs` on, keeps a name another callable on the way takes too.
-    The reason names the parameter, as it does for a wrapper the walk reads. So the same
-    wrapper gets the same verdict held inside a decorator and applied directly. Two ways
-    are refused as they stand, with the reason "a wrapper holds another wrapper of the
-    function it wraps, which the walk does not follow": one through a single-dispatch
-    function that can run more than its base, and one still going at its 32nd link (a held
-    wrapper up to 31 links from a callable the walk read is judged; one further is refused).
+    The reason names the parameter, as it does for a wrapper the walk reads. A receiver is
+    not a parameter of its own: when the tool is a bound method (or a `classmethod`, or a
+    `functools.partial` that binds positional arguments), a wrapper its decorator holds is
+    passed the same receiver, so its first positional parameter is left out, whatever it is
+    called, exactly as it is for the level the walk reads. So the parameters of a wrapper
+    get the same verdict, for the same reason, held inside a decorator and applied
+    directly. Only its parameters: applied directly, a wrapper can also be refused for
+    something a held one is not read for, a declared `__signature__` (a tracing decorator
+    that declares one and takes an extra parameter is refused directly for the signature
+    and, held, for the parameter). Two ways are refused as they stand, with the reason "a
+    wrapper holds another wrapper of the function it wraps, which the walk does not
+    follow": one through a single-dispatch function, or the function a single-dispatch
+    method hands out, that can run more than its base, and one still going at its 32nd
+    link (a held wrapper up to 31 links from a callable the walk read is judged; one
+    further is refused).
   - *What is not.* A decorator that holds the function it wraps, configuration and
     helpers; a second wrapper that only passes `(*args, **kwargs)` on, `functools.lru_cache`
     included; one that copies the tool's own parameters, as signature-preserving decorators
     generate; and everything under "not found" below.
+  - *What a library user will see.* A class-based decorator that keeps an extra entry
+    point on the decorator object is refused when that entry point is a wrapper with a
+    parameter of its own (`self.with_retry = retry(self.__call__)`,
+    `self.batch = batched(self.function)`), although the tool call never goes through it:
+    the kernel cannot know which attribute `__call__` uses. Keep such helpers off the
+    decorator object (a module-level function, a method), or build them on demand.
   - *Nothing held is run.* A function can hold anything (a lazy proxy that connects when
     touched, a remote stub that answers every attribute). A held value's type is read with
     `type()`. If it is not exactly one of the closed set, nothing else of it is read. If it
@@ -86,10 +101,13 @@ All notable changes to this project are documented here. The format follows
     identity. So a registered implementation is refused, and so is `register(object, ...)`,
     which replaces the base and leaves the one key. The callable a
     `functools.singledispatchmethod` hands out at each access is known the same exact way
-    and held to the same rule (on Python 3.9 to 3.12 it keeps the descriptor in a closure
-    cell; where it is kept is found at import, and on a Python that keeps it nowhere this
-    reads, a single-dispatch method is not found). A wrapper that names the base function
-    and calls a dispatcher held in its closure is refused as a `HiddenWrapper`.
+    and held to the same rule. Where it keeps the way to its registry differs by Python
+    and is found at import: a closure cell holding the descriptor (3.9 to 3.12), a closure
+    cell holding the `dispatch` function (3.13), an instance attribute holding the
+    descriptor (3.14 and 3.15, where what is handed out is an object). Run on 3.9 to 3.15,
+    3.14 free-threaded included. A wrapper that names the base function and calls a
+    dispatcher held in its closure is refused as a `HiddenWrapper`; so is one that holds
+    the function a registered single-dispatch method handed out, on 3.9 to 3.13.
   - *What is not.* A single-dispatch function or method with only its base implementation,
     which is walked as before. A wrapper of one: `functools.update_wrapper` copies
     `registry`, `dispatch` and `register` onto every wrapper of a dispatcher, so those
@@ -102,8 +120,15 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design.* A dispatch written by hand in a function's body; a dispatcher
     another library builds; an implementation registered after a gate has read the tool; a
     dispatcher reached through a wrapper or a helper that names nothing as `__wrapped__`;
-    a dispatcher whose closure was rewritten by hand; and a Python that builds
-    `functools.singledispatch` another way than 3.9 to 3.12 do (a test fails there first).
+    a dispatcher whose closure was rewritten by hand. A registered single-dispatch method
+    that a wrapper holds, on Python 3.14 and later, where what is handed out is an object
+    outside the closed set. A process in which `functools.singledispatch` was wrapped or
+    replaced before `recusal.invocation` was imported: the import runs none of that code
+    and the dispatcher's code is then not identified, so this whole check is off there (it
+    refuses nothing, and a base-only single-dispatch method is walked as before); a
+    replaced `functools.singledispatchmethod` turns off the method half only. And a Python
+    that builds `functools.singledispatch` another way than 3.9 to 3.15 do (a test fails
+    there first).
 
 ## [0.15.0] - 2026-11-21
 

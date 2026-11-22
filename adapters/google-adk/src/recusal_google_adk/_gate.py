@@ -174,7 +174,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     # Judge only arguments that are plain JSON data and that this validation gives back
     # exactly, type for type: whatever the validation does to them has then been applied,
     # and applying it again changes nothing
-    explicit = _none_defaults_to_write(func, none_defaults)
+    explicit = _none_defaults_to_write(func, none_defaults, skip)
     written = {**converted, **{name: None for name in explicit}}
     again, errors = tool._preprocess_args_with_validation(copy.deepcopy(written))
     if errors:
@@ -198,7 +198,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     return judged, None
 
 
-def _none_defaults_to_write(func: Any, names: list[str]) -> list[str]:
+def _none_defaults_to_write(func: Any, names: list[str], skip: tuple = ()) -> list[str]:
     """Of the parameters left at a ``None`` default, the ones that must be written as
     ``None``: those some callable the call reaches names with another default (or none),
     which would otherwise fill its own. The others are left for Python, which fills
@@ -206,7 +206,7 @@ def _none_defaults_to_write(func: Any, names: list[str]) -> list[str]:
     if not names:
         return []
     try:
-        levels = _reached_parameters(func)
+        levels = _reached_parameters(func, skip)
     except Exception:  # noqa: BLE001, read before by unsupported_signature; write them all
         return list(names)
     write = []
