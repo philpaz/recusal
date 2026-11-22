@@ -1783,32 +1783,72 @@ class TestPydanticAiGate:
         record = SimpleNamespace(call_func=None, source_tool=SimpleNamespace(call_func=bound))
         return SimpleNamespace(tool_manager=SimpleNamespace(tools={"t": record}))
 
-    def test_what_is_completed_and_what_is_left_alone(self, example, adapter):
-        """A default the arguments leave out is added when it will reach the function it
-        belongs to: on the outermost callable Python fills it in at the call, and further in
-        a value written out is carried down through ``**kwargs``. Where there is no local
-        function, nothing is done."""
+    @staticmethod
+    def _decorators():
+        """Wrappers of the shapes the rule tells apart."""
         import functools
         from types import SimpleNamespace
+
+        def forwards(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def retries(default=3):
+            def decorate(function):
+                @functools.wraps(function)
+                def wrapper(*args, retries=default, **kwargs):
+                    return function(*args, **kwargs)
+
+                return wrapper
+
+            return decorate
+
+        return SimpleNamespace(forwards=forwards, retries=retries)
+
+    def test_a_transparent_wrapper_is_read_through(self, example, adapter):
+        """What the innermost function runs with can be read from the arguments when every
+        wrapper above it either takes only ``*args`` and ``**kwargs``, restates the
+        function's parameters with a fixed signature, or forwards and names a parameter that
+        has no default on either side. Then the function's own defaults that the arguments
+        leave out are added."""
+        import functools
+        from types import SimpleNamespace
+
+        d = self._decorators()
 
         def inner(table: str, mode: str = "hard", limit: int = 5) -> str:
             return "ok"
 
         @functools.wraps(inner)
-        def retrying(*args, _retries: int = 3, **kwargs):
-            return inner(*args, **kwargs)
+        def restated(table, mode="hard", limit=5):
+            return inner(table, mode, limit)
 
-        validated = {"table": "x", "mode": "hard", "limit": 1}
-        completed, reason = adapter._with_defaults(self._ctx_for(retrying), "t", validated)
-        assert reason is None and completed == {**validated, "_retries": 3}
-        sent = {"table": "x", "mode": "soft", "limit": 1, "_retries": 9}
-        assert adapter._with_defaults(self._ctx_for(retrying), "t", sent) == (sent, None)
-        # arguments that reached the hook without validation: the inner defaults are added too
-        completed, reason = adapter._with_defaults(self._ctx_for(retrying), "t", {"table": "x"})
-        assert reason is None
-        assert completed == {"table": "x", "_retries": 3, "mode": "hard", "limit": 5}
-        same = {"table": "x", "mode": "soft", "limit": 2}
-        assert adapter._with_defaults(self._ctx_for(inner), "t", same) == (same, None)
+        @functools.wraps(inner)
+        def all_required(table, mode, limit):
+            return inner(table, mode, limit)
+
+        @functools.wraps(inner)
+        def names_a_required_one(table, **kwargs):
+            return inner(table, **kwargs)
+
+        validated = {"table": "x", "mode": "soft", "limit": 1}
+        completed = {"table": "x", "mode": "hard", "limit": 5}
+        for function in (
+            inner,
+            d.forwards(inner),
+            d.forwards(d.forwards(d.forwards(inner))),
+            restated,
+            all_required,
+            names_a_required_one,
+            d.forwards(restated),
+        ):
+            ctx = self._ctx_for(function)
+            assert adapter._with_defaults(ctx, "t", dict(validated)) == (validated, None)
+            # arguments that reached the hook without validation: the defaults are added
+            assert adapter._with_defaults(ctx, "t", {"table": "x"}) == (completed, None)
         assert adapter._with_defaults(self._ctx_for(inner), "other", {}) == ({}, None)
         assert adapter._with_defaults(SimpleNamespace(), "t", {}) == ({}, None)
         assert adapter._with_defaults(self._ctx_for(inner), "t", "text") == ("text", None)
@@ -1822,31 +1862,205 @@ class TestPydanticAiGate:
         completed, _ = adapter._with_defaults(self._ctx_for(with_context), "t", {})
         assert completed == {"ctx": None, "table": "x"}
 
-    def test_a_default_that_cannot_be_judged_is_refused_by_name(self, example, adapter):
-        """A decorator's own keyword with an object for a default is filled in by Python
-        where no policy sees it, and cannot be shown to one; the refusal names it."""
+    def test_a_wrapper_with_a_parameter_of_its_own_is_refused(self, example, adapter):
+        """Whether a value a wrapper takes reaches the function under it depends on the
+        wrapper's body. A keyword default of the wrapper's own ran unjudged; a keyword the
+        wrapper shares with the function let the model send ``refresh=False`` while the
+        function ran on its own ``refresh=True``; two wrappers of the same shape hid the
+        collision. Each is refused, naming the parameter, wherever it sits in a stack and
+        whatever was sent."""
         import functools
+
+        d = self._decorators()
+
+        def inner(table: str, mode: str = "hard") -> str:
+            return "ok"
+
+        def purge(table: str, refresh: bool = True, **extra: bool) -> str:
+            return "ok"
+
+        @functools.wraps(purge)
+        def keeps_refresh(*args, refresh=True, **kwargs):
+            return purge(*args, **kwargs)
+
+        @functools.wraps(inner)
+        def hides_mode(table):
+            return inner(table)
+
+        @functools.wraps(inner)
+        def other_default(table, mode="soft"):
+            return inner(table, mode)
+
+        @functools.wraps(inner)
+        def reordered(mode, table):
+            return inner(table, mode)
+
+        @functools.wraps(inner)
+        def keyword_only(table, *, mode="hard"):
+            return inner(table, mode)
+
+        @functools.wraps(inner)
+        def options_named_like_nothing(*args, options="skip", **kwargs):
+            return inner(*args, **kwargs)
+
+        @functools.wraps(inner)
+        def names_a_defaulted_one(*args, mode="hard", **kwargs):
+            return inner(*args, mode=mode, **kwargs)
+
+        # a wrapper that forwards and names a parameter with a default, on either side
+        @functools.wraps(inner)
+        def both_default(table, mode="hard", **kwargs):
+            return inner(table, mode, **kwargs)
+
+        @functools.wraps(inner)
+        def function_defaults(table, mode, **kwargs):
+            return inner(table, **kwargs)
+
+        def required(table: str, mode: str) -> str:
+            return "ok"
+
+        @functools.wraps(required)
+        def wrapper_defaults(table, mode="hard", **kwargs):
+            return required(table, mode, **kwargs)
+
+        def flag(table: str, force: bool = True) -> str:
+            return "ok"
+
+        @functools.wraps(flag)
+        def one_for_true(table, force=1):
+            return flag(table, force)
+
+        same, reason = adapter._with_defaults(self._ctx_for(one_for_true), "t", {"table": "x"})
+        assert same == {"table": "x"} and "takes `force` in a way of its own" in reason
+
+        cases = [
+            (both_default, "mode"),
+            (function_defaults, "mode"),
+            (wrapper_defaults, "mode"),
+            (d.retries()(inner), "retries"),
+            (d.forwards(d.retries()(inner)), "retries"),
+            (d.retries()(d.forwards(inner)), "retries"),
+            (d.forwards(d.forwards(d.forwards(d.retries()(inner)))), "retries"),
+            (d.retries(1)(d.retries(50)(inner)), "retries"),
+            (d.retries()(d.retries()(inner)), "retries"),
+            (keeps_refresh, "refresh"),
+            (hides_mode, "mode"),
+            (other_default, "mode"),
+            (reordered, "mode"),
+            (keyword_only, "mode"),
+            (options_named_like_nothing, "options"),
+            (names_a_defaulted_one, "mode"),
+        ]
+        for function, name in cases:
+            for sent in ({"table": "x"}, {"table": "x", "mode": "soft", "refresh": False}):
+                same, reason = adapter._with_defaults(self._ctx_for(function), "t", dict(sent))
+                assert same == sent, function
+                assert f"takes `{name}` in a way of its own" in reason, (function, reason)
+
+    def test_a_decorated_tool_with_a_keyword_of_its_own_never_reaches_the_policy(self, example):
+        """End to end, for both forms of the gate: the decorator in the middle of the stack
+        has ``skip_review=True``; the call is refused before the policy and nothing runs."""
+        import functools
+
+        ran, seen = [], []
+        d = self._decorators()
+
+        def fast_path(function):
+            @functools.wraps(function)
+            def wrapper(*args, skip_review=True, **kwargs):
+                ran.append(("skip_review", skip_review))
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        @d.forwards
+        @fast_path
+        def transfer(account: str, amount: int) -> str:
+            """Transfer."""
+            ran.append(("transfer", account, amount))
+            return "sent"
+
+        @d.forwards
+        @fast_path
+        def transfer_with_options(account: str, amount: int, **options: bool) -> str:
+            """Transfer."""
+            ran.append(("transfer", account, amount))
+            return "sent"
+
+        def policy(name, args):
+            seen.append(dict(args))
+            return []
+
+        for tool, sent in (
+            (transfer, {"account": "x", "amount": 5}),
+            (transfer_with_options, {"account": "x", "amount": 5}),
+            (transfer_with_options, {"account": "x", "amount": 5, "skip_review": False}),
+        ):
+            for capabilities in (
+                [example.RecusalGate(policy)],
+                [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))],
+            ):
+                ran.clear(), seen.clear()
+                agent = example.Agent(
+                    self._model_calling(example, tool.__name__, sent),
+                    tools=[tool],
+                    capabilities=capabilities,
+                )
+                answers = example.responses_of(agent.run_sync("go"))
+                assert ran == [] and seen == []
+                assert "takes `skip_review` in a way of its own" in answers["c1"][1]
+
+    def test_a_forwarding_decorator_changes_nothing(self, example):
+        """The ordinary case: a logging or timing decorator that takes ``*args, **kwargs``.
+        The tool is judged with the validated arguments and runs with them."""
+        ran, seen = [], []
+        d = self._decorators()
+
+        @d.forwards
+        @d.forwards
+        def wipe(table: str, force: bool = False) -> str:
+            """Wipe."""
+            ran.append((table, force))
+            return "wiped"
+
+        agent = example.Agent(
+            self._model_calling(example, "wipe", {"table": "t"}),
+            tools=[wipe],
+            capabilities=[example.RecusalGate(lambda n, a: seen.append(dict(a)) or [])],
+        )
+        agent.run_sync("go")
+        assert seen == [{"table": "t", "force": False}] and ran == [("t", False)]
+
+    def test_a_default_that_cannot_be_judged_is_refused_by_name(self, example, adapter):
+        """A default that is not plain data cannot be shown to a policy, and one on a
+        positional-only parameter cannot be written out by name."""
         import logging
 
         log = logging.getLogger("x")
 
-        def inner(table: str) -> str:
+        def with_object(table: str, log=log) -> str:
             return "ok"
 
-        @functools.wraps(inner)
-        def logged(*args, _log=log, **kwargs):
-            return inner(*args, **kwargs)
+        def positional(table, mode="hard", /) -> str:
+            return "ok"
 
         args = {"table": "x"}
-        same, reason = adapter._with_defaults(self._ctx_for(logged), "t", args)
-        assert same is args and "parameter `_log`" in reason and "not plain data" in reason
+        same, reason = adapter._with_defaults(self._ctx_for(with_object), "t", args)
+        assert same is args and "parameter `log`" in reason and "not plain data" in reason
+        same, reason = adapter._with_defaults(self._ctx_for(positional), "t", args)
+        assert same is args and "parameter `mode`" in reason and "positional-only" in reason
+        sent = {"table": "x", "mode": "soft", "log": None}
+        assert adapter._with_defaults(self._ctx_for(with_object), "t", sent) == (sent, None)
 
-    def test_an_unvalidated_tool_whose_defaults_cannot_be_read_is_refused(self, example, adapter):
+    def test_a_tool_that_is_not_validated_is_held_to_named_parameters(self, example, adapter):
         """For a tool given its schema by hand, what the function does with a parameter the
-        model left out is all that decides its value. A function taking ``**kwargs`` can
-        fill one in in its body, as Pydantic AI's LangChain bridge does, and a wrapper may
-        or may not pass on a parameter that has a default further in."""
+        model left out is all that decides its value. A function taking ``*args`` or
+        ``**kwargs`` can fill one in in its body, as Pydantic AI's LangChain bridge does, so
+        it is refused, at any level; a function with named parameters has its defaults
+        added; a ``functools.partial`` says in its own signature what a call binds."""
         import functools
+
+        d = self._decorators()
 
         def inner(table: str, mode: str = "hard") -> str:
             return "ok"
@@ -1854,37 +2068,6 @@ class TestPydanticAiGate:
         def proxy(*args, **kwargs):
             return inner(**({"mode": "hard"} | kwargs))
 
-        @functools.wraps(inner)
-        def narrow(table):
-            return inner(table, mode="soft")
-
-        @functools.wraps(inner)
-        def naming(table, mode="soft"):
-            return inner(table, mode)
-
-        def by_hand(function):
-            return adapter._with_defaults(
-                self._ctx_for(function, validated=False), "t", {"table": "x"}
-            )
-
-        assert "variadic parameter" in by_hand(proxy)[1]
-        assert "hides `mode`" in by_hand(narrow)[1]
-        sent = {"table": "x", "mode": "soft"}  # the model sent it: nothing is left to a default
-        unvalidated = self._ctx_for(narrow, validated=False)
-        assert adapter._with_defaults(unvalidated, "t", sent) == (sent, None)
-        assert by_hand(naming) == ({"table": "x", "mode": "soft"}, None)
-        assert by_hand(inner) == ({"table": "x", "mode": "hard"}, None)
-        # behind a validated tool a function that takes **kwargs is read like any other, and
-        # a wrapper that hides a parameter is refused only when the arguments leave it out
-        assert adapter._with_defaults(self._ctx_for(proxy), "t", {"table": "x"})[1] is None
-        validated = {"table": "x", "mode": "hard"}
-        assert adapter._with_defaults(self._ctx_for(narrow), "t", validated) == (validated, None)
-        assert (
-            "hides `mode`" in adapter._with_defaults(self._ctx_for(narrow), "t", {"table": "x"})[1]
-        )
-        assert adapter._validates(object()) is True
-
-        # an unvalidated tool is refused for either variadic kind, at any level
         def only_positional(*args):
             return "ok"
 
@@ -1895,52 +2078,46 @@ class TestPydanticAiGate:
         def named(table):
             return takes_options(table)
 
+        def by_hand(function, sent=None):
+            ctx = self._ctx_for(function, validated=False)
+            return adapter._with_defaults(ctx, "t", {"table": "x"} if sent is None else sent)
+
+        assert "`args` as a variadic parameter" in by_hand(proxy)[1]
         assert "`args` as a variadic parameter" in by_hand(only_positional)[1]
         assert "`options` as a variadic parameter" in by_hand(named)[1]
+        assert "`args` as a variadic parameter" in by_hand(d.forwards(inner))[1]
+        assert by_hand(inner) == ({"table": "x", "mode": "hard"}, None)
+        sent = {"table": "x", "mode": "soft"}
+        assert by_hand(inner, sent) == (sent, None)
+        # behind a validated tool the same variadic functions are read like any other
+        for function in (proxy, d.forwards(inner)):
+            assert adapter._with_defaults(self._ctx_for(function), "t", dict(sent))[1] is None
+        assert adapter._validates(object()) is True
 
-    def test_which_inner_defaults_can_be_passed_down(self, example, adapter):
-        """A value written out reaches an inner function only through ``**kwargs``: a wrapper
-        that takes ``*args`` alone cannot carry a keyword, so the default it hides is
-        refused. A parameter a wrapper names itself is that wrapper's to pass on. Only the
-        outermost callable's first parameter is the run context."""
-        import functools
-
-        def inner(table: str, mode: str = "hard") -> str:
-            return "ok"
-
-        @functools.wraps(inner)
-        def positional_only_wrapper(*args):
-            return inner(*args)
-
-        @functools.wraps(inner)
-        def requires_mode(table, mode):
-            return inner(table, mode)
-
-        def first_has_default(first: str = "a", table: str = "x") -> str:
-            return "ok"
-
-        @functools.wraps(first_has_default)
-        def takes_context(ctx, **kwargs):
-            return first_has_default(**kwargs)
-
-        sent = {"table": "x"}
-        refused = adapter._with_defaults(self._ctx_for(positional_only_wrapper), "t", sent)
-        assert refused[0] == sent and "hides `mode`" in refused[1]
-        assert adapter._with_defaults(self._ctx_for(requires_mode), "t", sent) == (sent, None)
-        completed, reason = adapter._with_defaults(
-            self._ctx_for(takes_context, takes_ctx=True), "t", {}
-        )
-        assert reason is None and completed == {"first": "a", "table": "x"}
+        # a partial: its keywords are the defaults of its own signature, its positionals are gone
+        soft = functools.partial(inner, mode="soft")
+        assert by_hand(soft) == ({"table": "x", "mode": "soft"}, None)
+        assert adapter._with_defaults(self._ctx_for(soft), "t", {"table": "x"})[0]["mode"] == "soft"
+        bound = functools.partial(inner, "acme")
+        assert by_hand(bound, {}) == ({"mode": "hard"}, None)
+        # what the partial wraps is read like any other function
+        over_opaque = functools.partial(d.forwards(d.retries()(inner)), "acme")
+        same, reason = adapter._with_defaults(self._ctx_for(over_opaque), "t", {})
+        assert same == {} and "takes `retries` in a way of its own" in reason
+        variadic = functools.partial(proxy, table="x")
+        assert "variadic parameter" in by_hand(variadic, {})[1]
 
     def test_a_decorator_the_kernel_cannot_read_is_refused_wherever_it_sits(self, example):
         """A class-based decorator that is also a descriptor (it defines ``__get__`` so it
         works on methods; ``cachetools.cached`` is one) has no signature Python will give,
         and the walk fails as a whole. Read by its outermost callable alone, a stack with
         one in the middle left the default under it unjudged: the transfer ran with
-        ``skip_review=True``. Such a stack is refused, outermost or in the middle."""
+        ``skip_review=True``. Such a stack is refused, outermost, in the middle, or under a
+        ``functools.partial``."""
         import functools
 
         ran, seen = [], []
+        d = self._decorators()
 
         class Counted:
             def __init__(self, function):
@@ -1961,234 +2138,31 @@ class TestPydanticAiGate:
 
             return wrapper
 
-        def timed(function):
-            @functools.wraps(function)
-            def wrapper(*args, **kwargs):
-                return function(*args, **kwargs)
-
-            return wrapper
-
         def transfer(account: str, amount: int) -> str:
             """Transfer."""
             ran.append(("transfer", account, amount))
             return "sent"
 
-        for build in (
-            lambda: timed(Counted(fast_path(transfer))),
-            lambda: Counted(fast_path(transfer)),
+        def bound_first(function):
+            named = functools.partial(function, "x")
+            named.__name__ = named.__qualname__ = "transfer"
+            named.__doc__ = "Transfer."
+            return named
+
+        for build, sent in (
+            (lambda: d.forwards(Counted(fast_path(transfer))), {"account": "x", "amount": 5}),
+            (lambda: Counted(fast_path(transfer)), {"account": "x", "amount": 5}),
+            (lambda: bound_first(d.forwards(Counted(fast_path(transfer)))), {"amount": 5}),
         ):
             ran.clear(), seen.clear()
             agent = example.Agent(
-                self._model_calling(example, "transfer", {"account": "x", "amount": 5}),
+                self._model_calling(example, "transfer", sent),
                 tools=[build()],
                 capabilities=[example.RecusalGate(lambda n, a: seen.append(dict(a)) or [])],
             )
             answers = example.responses_of(agent.run_sync("go"))
             assert ran == [] and seen == []
-            assert (
-                "a decorator on the function this tool runs cannot be inspected"
-                in (answers["c1"][1])
-            )
-
-    def test_a_keyword_two_functions_share_is_refused_when_one_can_run_on_its_default(
-        self, example, adapter
-    ):
-        """A wrapper that forwards (``*args`` or ``**kwargs``) keeps a keyword it names. When
-        a function under it has the same keyword with a default, that function runs on its
-        own default whatever the wrapper was given: the model sent ``refresh=False``
-        (allowed) and ``purge`` ran with ``refresh=True``. Refused whatever was sent. A
-        ``**options`` parameter names no keyword, a required parameter cannot fall back on
-        a default, and a proxy that mirrors the function it wraps is the same level."""
-        import functools
-
-        def purge(table: str, force: bool = True, refresh: bool = True) -> str:
-            return "purged"
-
-        @functools.wraps(purge)
-        def cached(*args, refresh=False, **kwargs):
-            return purge(*args, **kwargs)
-
-        for sent in ({"table": "t", "force": True, "refresh": False}, {"table": "t"}):
-            same, reason = adapter._with_defaults(self._ctx_for(cached), "t", dict(sent))
-            assert same == sent and "`refresh` is taken by a wrapper and by a function" in reason
-
-        # two decorators with the same keyword and different defaults are not one level:
-        # the outer keeps its 1 and the inner runs on its 50
-        def send(to: str) -> str:
-            return "sent"
-
-        def retrying(default):
-            def decorate(function):
-                @functools.wraps(function)
-                def wrapper(*args, retries=default, **kwargs):
-                    return function(*args, **kwargs)
-
-                return wrapper
-
-            return decorate
-
-        twice = retrying(1)(retrying(50)(send))
-        same, reason = adapter._with_defaults(self._ctx_for(twice), "t", {"to": "x"})
-        assert same == {"to": "x"} and "`retries` is taken by a wrapper" in reason
-
-        # a wrapper's ** parameter is not a keyword named `options`
-        def transfer(account: str) -> str:
-            return "sent"
-
-        @functools.wraps(transfer)
-        def with_options(*args, options="skip_review", **kwargs):
-            return transfer(*args, **kwargs)
-
-        @functools.wraps(with_options)
-        def traced(*args, **options):
-            return with_options(*args, **options)
-
-        completed, reason = adapter._with_defaults(self._ctx_for(traced), "t", {"account": "a"})
-        assert reason is None and completed == {"account": "a", "options": "skip_review"}
-
-        # a required parameter named on a forwarding wrapper is handed on, or the call fails
-        def wipe(table: str, force: bool = False) -> str:
-            return "ok"
-
-        @functools.wraps(wipe)
-        def logged(table, **kwargs):
-            return wipe(table, **kwargs)
-
-        validated = {"table": "t", "force": False}
-        assert adapter._with_defaults(self._ctx_for(logged), "t", validated) == (validated, None)
-
-        # a proxy that shows exactly the parameters of what it wraps is one level with it
-        @functools.wraps(with_options)
-        def mirror(*args, options="skip_review", **kwargs):
-            return with_options(*args, **kwargs)
-
-        completed, reason = adapter._with_defaults(self._ctx_for(mirror), "t", {"account": "a"})
-        assert reason is None and completed == {"account": "a", "options": "skip_review"}
-        shapes = adapter._without_mirrors(adapter._reached_parameters(mirror))
-        assert [list(level) for level in shapes] == [["args", "options", "kwargs"], ["account"]]
-
-    def test_every_level_of_a_deep_stack_is_read(self, example, adapter):
-        """Defaults three and four callables in are found, each wrapper above must pass
-        ``**kwargs`` for a value to be carried down, and a name is completed once."""
-        import functools
-
-        def base(table: str) -> str:
-            return "ok"
-
-        def passes(function):
-            @functools.wraps(function)
-            def wrapper(*args, **kwargs):
-                return function(*args, **kwargs)
-
-            return wrapper
-
-        def third(function):
-            @functools.wraps(function)
-            def wrapper(*args, depth_three=3, **kwargs):
-                return function(*args, **kwargs)
-
-            return wrapper
-
-        def fourth(function):
-            @functools.wraps(function)
-            def wrapper(*args, depth_four=4, **kwargs):
-                return function(*args, **kwargs)
-
-            return wrapper
-
-        def fifth(function):
-            @functools.wraps(function)
-            def wrapper(*args, depth_five=5, **kwargs):
-                return function(*args, **kwargs)
-
-            return wrapper
-
-        def blocks(function):
-            @functools.wraps(function)
-            def wrapper(table):
-                return function(table)
-
-            return wrapper
-
-        stack = passes(passes(third(fourth(fifth(base)))))
-        completed, reason = adapter._with_defaults(self._ctx_for(stack), "t", {"table": "t"})
-        assert reason is None
-        assert completed == {"table": "t", "depth_three": 3, "depth_four": 4, "depth_five": 5}
-        # one wrapper above that cannot carry a keyword is enough to refuse, wherever it is
-        for hidden in (
-            passes(blocks(third(base))),
-            blocks(passes(third(base))),
-            passes(passes(blocks(fourth(base)))),
-        ):
-            same, reason = adapter._with_defaults(self._ctx_for(hidden), "t", {"table": "t"})
-            assert same == {"table": "t"} and "hides `depth_" in reason
-
-    def test_a_default_on_a_decorator_in_the_middle_of_a_stack_is_judged(self, example):
-        """Pydantic AI builds a tool's schema from the innermost function and calls the
-        outermost, so a keyword default on a decorator between the two was read by nobody:
-        the policy was shown no ``skip_review`` and the transfer ran with
-        ``skip_review=True``. Where the function takes ``**options`` the model could send
-        the keyword (refused) or leave it out (ran). Every callable the call reaches is
-        read."""
-        import functools
-
-        from recusal import Finding
-
-        ran, seen = [], []
-
-        def fast_path(function):
-            @functools.wraps(function)
-            def wrapper(*args, skip_review=True, **kwargs):
-                ran.append(("skip_review", skip_review))
-                return function(*args, **kwargs)
-
-            return wrapper
-
-        def timed(function):
-            @functools.wraps(function)
-            def wrapper(*args, **kwargs):
-                return function(*args, **kwargs)
-
-            return wrapper
-
-        def policy(name, args):
-            seen.append(dict(args))
-            if args.get("skip_review"):
-                return [Finding.fail("review", severity="CRITICAL", message="review skipped")]
-            return []
-
-        @timed
-        @fast_path
-        def transfer(account: str, amount: int) -> str:
-            """Transfer."""
-            ran.append(("transfer", account, amount))
-            return "sent"
-
-        @timed
-        @fast_path
-        def transfer_with_options(account: str, amount: int, **options: bool) -> str:
-            """Transfer."""
-            ran.append(("transfer", account, amount))
-            return "sent"
-
-        for tool, sent in (
-            (transfer, {"account": "x", "amount": 5}),
-            (transfer_with_options, {"account": "x", "amount": 5}),
-            (transfer_with_options, {"account": "x", "amount": 5, "skip_review": True}),
-        ):
-            for capabilities in (
-                [example.RecusalGate(policy)],
-                [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))],
-            ):
-                ran.clear(), seen.clear()
-                agent = example.Agent(
-                    self._model_calling(example, tool.__name__, sent),
-                    tools=[tool],
-                    capabilities=capabilities,
-                )
-                answers = example.responses_of(agent.run_sync("go"))
-                assert seen == [{"account": "x", "amount": 5, "skip_review": True}]
-                assert ran == [] and "review skipped" in answers["c1"][1]
+            assert "or a decorator on it, cannot be inspected" in answers["c1"][1]
 
     def test_a_function_that_declares_its_own_signature_is_refused(self, example, adapter):
         """A callable with a ``__signature__`` shows parameters other than the ones Python
@@ -2210,7 +2184,23 @@ class TestPydanticAiGate:
             same, reason = adapter._with_defaults(ctx, "t", {"table": "x"})
             assert same == {"table": "x"} and "declares a signature of its own" in reason
 
-    def test_a_function_that_cannot_be_inspected_is_refused(self, example, adapter, monkeypatch):
+    def test_a_function_that_cannot_be_walked_is_refused_unless_nothing_can_wrap_it(
+        self, example, adapter, monkeypatch
+    ):
+        """When the kernel cannot walk the callable, nothing under it has been read. Only a
+        class or a builtin, which wraps nothing and whose own signature Pydantic AI
+        validated, is let through, and only for a validated tool."""
+
+        class Report:
+            def __init__(self, title: str, pages: int = 1):
+                self.title = title
+
+        args = {"title": "x"}
+        assert adapter._with_defaults(self._ctx_for(Report), "t", args) == (args, None)
+        by_hand = self._ctx_for(Report, validated=False)
+        same, reason = adapter._with_defaults(by_hand, "t", dict(args))
+        assert same == args and "cannot be inspected" in reason
+
         def tool(table: str, mode: str = "hard") -> str:
             return "ok"
 
@@ -2218,23 +2208,6 @@ class TestPydanticAiGate:
             raise ValueError("no signature")
 
         monkeypatch.setattr(adapter, "_reached_parameters", unreadable)
-        completed, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
-        assert reason is None and completed == {"table": "x", "mode": "hard"}  # the fallback
-        # a decorator stack that cannot be walked is refused as a whole: reading the
-        # outermost callable alone would leave every default under it unread
-        import functools
-
-        @functools.wraps(tool)
-        def outer(*args, attempts=2, **kwargs):
-            return tool(*args, **kwargs)
-
-        same, reason = adapter._with_defaults(self._ctx_for(outer), "t", {"table": "x"})
-        assert same == {"table": "x"} and "a decorator on the function" in reason
-        # for a tool that is not validated there is nothing to fall back on
-        by_hand = self._ctx_for(tool, validated=False)
-        same, reason = adapter._with_defaults(by_hand, "t", {"table": "x"})
-        assert same == {"table": "x"} and "cannot be inspected" in reason
-        monkeypatch.setattr(adapter.inspect, "signature", unreadable)
         same, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
         assert same == {"table": "x"} and "cannot be inspected" in reason
 

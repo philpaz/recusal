@@ -81,51 +81,50 @@ placed inside a `WrapperCapability`, which does not pass the gate's position on.
 same holds for output functions and `before_output_process`. A hook bundled before the
 gate, in the same list or behind the same wrapper, runs before it and is not refused.
 
-**Defaults are judged too.** Python fills a default in when a function is called, after
-every hook, and a decorated tool is several functions: Pydantic AI builds the tool's
-schema from the innermost one and calls the outermost. Its validation fills in the
-innermost function's defaults, so the policy sees those. Every wrapper on the way can
-have a keyword default of its own (`def wrapper(*args, retries=3, **kwargs)`) that
-nothing has read. All four forms of the gate (the two capabilities and the two hook
-functions) read every function the call reaches. For each named parameter with a default
-that the arguments leave out, the gate:
+**A decorated tool must be transparent.** Python fills a default in when a function is
+called, after every hook, and a decorated tool is several functions: Pydantic AI builds
+the tool's schema from the innermost one and calls the outermost. Its validation fills
+in the innermost function's defaults, so the policy sees those. A wrapper on the way
+that has a parameter of its own is read by nothing, and whether its value reaches the
+function under it depends on the wrapper's body, which cannot be read. So all four forms
+of the gate (the two capabilities and the two hook functions) read every function the
+call reaches, following `__wrapped__`, bound methods, callable objects and
+`functools.partial`, and each wrapper must be one of these:
 
-- adds it, judges it, and passes it to the function written out, when it will reach the
-  function it belongs to: it is on the outermost function, or every wrapper above it
-  passes `**kwargs` through and none names it;
-- leaves it to a wrapper above that has a fixed signature and names it: that wrapper's
-  own value was dealt with at its level, and is what it passes on.
+- it takes only `*args` and `**kwargs` (a logging, timing, tracing or retry decorator
+  that passes everything through);
+- it has a fixed signature that restates the function's own parameters, in order, each
+  with no default or the function's own default;
+- it forwards and also names a parameter that has no default on either side
+  (`def wrapper(table, **kwargs)`): a required parameter must be handed on, or the call
+  fails.
 
-A call is refused, before the policy runs and with a reason that says which of these it
-is, when the value a function would run with cannot be read or judged:
+Anything else is refused before the policy runs, with a reason that names the parameter:
+a wrapper with a keyword of its own (`def wrapper(*args, retries=3, **kwargs)`), a
+keyword it shares with the function, a default that differs from the function's, a
+parameter left out or reordered. Give such a wrapper its setting when it is built
+(`@retrying(times=3)`) and not as a parameter of the wrapper itself. Also refused:
 
-- **A default that is hidden.** A wrapper above it takes neither that parameter nor
-  `**kwargs`. Name the parameter on the wrapper, or let the wrapper pass `**kwargs`
-  through.
-- **A keyword two functions share.** A wrapper that forwards (`*args` or `**kwargs`) and
-  a function under it both have the keyword, and the one under it has a default: the
-  wrapper keeps the value it is given and the function under it runs on its own default.
-  Refused whatever was sent. Give the two different names.
-- **A default that is not plain data** (a logger, a client, a sentinel object): it cannot
-  be shown to a policy. The refusal names the parameter. Give it a JSON default or `None`
-  and resolve the object inside the function. A decorator that keeps such an object in
-  a keyword default of its wrapper is refused the same way (`beartype`'s is one).
 - **A function that declares a signature of its own** (`__signature__`): the parameters
   Python binds cannot be read. The decorators the `decorator` library builds do this.
 - **A decorator that cannot be inspected**: a class-based decorator that is also a
-  descriptor, such as `cachetools.cached`, or a stack more than 32 deep. Call the
-  decorated function from a plain function and register that one.
+  descriptor, such as `cachetools.cached`, or a stack more than 31 decorators deep. Call
+  the decorated function from a plain function and register that one.
 
-A decorator that shows exactly the parameters of the function it wraps and passes
-everything through (those built with `wrapt` do) is read as one level with it.
+**Defaults are judged.** A default of the innermost function that the arguments leave
+out is added, judged, and passed to the function written out. For a tool built from its
+signature Pydantic AI has already done that. A tool given its schema by hand
+(`Tool.from_schema`) is not validated, so there the gate completes whatever the model
+left out. Two more refusals follow from it:
 
-A tool given its schema by hand (`Tool.from_schema`) is not validated by Pydantic AI, so
-nothing has filled in anything, and a parameter the model leaves out is completed the
-same way. There a function that takes `*args` or `**kwargs` can fill a value in in its
-own body, which cannot be read, so such a tool is refused; the tools
-`pydantic_ai.ext.langchain` builds are of this kind. A function the gate cannot inspect
-(a callable object with an unusual `__call__`) is refused there too. Give the function
-named parameters, or build the tool from its signature.
+- **A default that is not plain data** (a logger, a client, a sentinel object) cannot be
+  shown to a policy; the refusal names the parameter. Give it a JSON default or `None`
+  and resolve the object inside the function. A positional-only parameter left out is
+  refused too, since its default cannot be written out by name.
+- **For a tool given its schema by hand, a function that takes `*args` or `**kwargs`**:
+  it can fill a value in in its own body, which cannot be read. The tools
+  `pydantic_ai.ext.langchain` builds are of this kind. Give the function named
+  parameters, or build the tool from its signature.
 
 A toolset runs after every capability hook, so one that runs other tools' calls itself
 could also change the arguments after the gate judged them. A run with one in its
@@ -272,10 +271,14 @@ path.
   when the run's toolsets are assembled, which does not see a wrapper another capability
   adds afterwards or one a dynamic toolset returns. It finds the function a tool runs
   the same way, so there it completes no defaults either.
-- **A default filled in somewhere the gate cannot read.** A value a function sets in its
-  own body, a default an MCP server or a toolset of your own applies to a call it
-  receives, and a decorator's own keyword default on an output function (for a tool that
-  one is judged): the policy sees the arguments as they are handed over.
+- **What a function does in its own body.** A value a function sets itself, a wrapper
+  that restates the function's parameters and then does not pass one on, and a decorator
+  that applies another decorator inside itself (the gate follows the function a wrapper
+  says it wraps, `__wrapped__`, and that is not the one such a wrapper calls): the policy
+  judged the arguments, and what the code does with them is its own.
+- **A default applied somewhere else.** A default an MCP server or a toolset of your own
+  applies to a call it receives, and a decorator on an output function: for output
+  functions the gate judges the value and does not read the function's wrappers.
 - **A delegated agent.** An agent called from inside a tool function runs under its own
   capabilities. Give every agent its own gate; `is_gated(agent)` reads only the agent it
   is given.
