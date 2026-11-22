@@ -42,6 +42,7 @@ What the hook cannot see:
 from __future__ import annotations
 
 import inspect
+from collections import deque
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
@@ -65,6 +66,7 @@ from pydantic_ai.toolsets.set_metadata import SetMetadataToolset
 
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
+from recusal.invocation import reached_parameters as _reached_parameters
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -109,9 +111,10 @@ def _refusal(
 ) -> Optional[str]:
     """Return the reason a call is refused, or None to run it.
 
-    Pydantic AI hands the hook the validated argument dict the tool will be called with, so
-    the policy judges exactly what would run. A non-dict is refused: the tool would not
-    accept it either, and the policy cannot read it.
+    Pydantic AI hands the hook the validated argument dict the tool will be called with,
+    and the callers complete it first with any default the function would fill in itself
+    (``_with_defaults``), so the policy judges what would run. A non-dict is refused: the
+    tool would not accept it either, and the policy cannot read it.
 
     The policy judges detached data, built by ``_detached``, and the tool runs with the
     validated dict itself. Unsupported values refuse before the policy is called. No
@@ -166,6 +169,9 @@ def recusal_before_tool_execute(policy: Policy) -> BeforeToolExecuteHookFunc:
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
+        args, unseen = _with_defaults(ctx, call.tool_name, args)
+        if unseen:
+            raise ToolFailed(_unjudgeable(call.tool_name, unseen, None, {}))
         reason = _refusal(call.tool_name, args, policy)
         if reason is not None:
             raise ToolFailed(reason)
@@ -242,6 +248,8 @@ class RecusalGate(AbstractCapability[Any]):
             unseen = _rewriting_wrapper(toolset) if toolset is not None else None
         if not unseen:
             unseen = _rewriter_after(getattr(ctx, "root_capability", None), self)
+        if not unseen:
+            args, unseen = _with_defaults(ctx, call.tool_name, args)
         if unseen:
             raise ToolFailed(_unjudgeable(call.tool_name, unseen, self._proposal(call), record))
         reason = _refusal(
@@ -328,6 +336,7 @@ class RecusalGate(AbstractCapability[Any]):
         call = output_context.tool_call
         record = self._record(call.tool_call_id if call is not None else None, SURFACE_OUTPUT)
         name = output_context.function_name
+        self._refuse_output_changed_after(ctx, name or "output", output, record)
         if name is None:
             raise ModelRetry(
                 _unjudgeable(
@@ -345,6 +354,17 @@ class RecusalGate(AbstractCapability[Any]):
             raise ModelRetry(reason)
         return output
 
+    def _refuse_output_changed_after(
+        self, ctx: RunContext[Any], name: str, output: Any, record: dict[str, Any]
+    ) -> None:
+        """Refuse an output a ``before_output_process`` of the application's, dispatched
+        after the gate, could change before the function or action runs."""
+        reason = _rewriter_after(
+            getattr(ctx, "root_capability", None), self, "before_output_process"
+        )
+        if reason is not None:
+            raise ModelRetry(_unjudgeable(name, reason, output, record))
+
     def _judge_choice(
         self, ctx: RunContext[Any], output_context: OutputContext, output: Any
     ) -> Any:
@@ -357,6 +377,7 @@ class RecusalGate(AbstractCapability[Any]):
             return output
         call = output_context.tool_call
         record = self._record(call.tool_call_id if call is not None else None, SURFACE_OUTPUT)
+        self._refuse_output_changed_after(ctx, "choice", output, record)
         name = getattr(output_context.output_type, "__name__", "Choices")
         picked = {"choice": output, "set": name}
         reason = _refusal("choice", picked, self.policy, proposal=self._proposal(call), **record)
@@ -452,6 +473,8 @@ def _deferred_handlers_elsewhere(capability: Any) -> list[str]:
         if own is WrapperCapability.handle_deferred_tool_calls:
             return _deferred_handlers_elsewhere(capability.wrapped)
     elif isinstance(capability, Hooks):
+        if own is not Hooks.handle_deferred_tool_calls:
+            return [type(capability).__name__]
         try:
             registered = bool(capability._get("handle_deferred_tool_calls"))
         except Exception:  # noqa: BLE001, a Hooks this cannot read may answer them
@@ -486,71 +509,123 @@ def _holds(capability: Any, gate: Any, depth: int = 0) -> bool:
     return False
 
 
-def _changes_arguments(capability: Any, gate: Any, depth: int = 0) -> Optional[str]:
-    """The name of a capability here whose ``before_tool_execute`` is the application's and
-    so could change a call's arguments, or None. The gate itself, Pydantic AI's own
-    capabilities and wrappers that only pass the hook on are not such."""
+def _changes_arguments(capability: Any, gate: Any, hook: str, depth: int = 0) -> Optional[str]:
+    """The name of a capability here whose ``hook`` is the application's and so could change
+    what the gate judged, or None. The gate itself, Pydantic AI's own capabilities and
+    wrappers that only pass the hook on are not such."""
     if capability is gate or isinstance(capability, RecusalGate) or depth > 32:
         return None
     if isinstance(capability, CombinedCapability):
         for child in capability.capabilities:
-            name = _changes_arguments(child, gate, depth + 1)
+            name = _changes_arguments(child, gate, hook, depth + 1)
             if name is not None:
                 return name
         return None
-    own = type(capability).before_tool_execute
+    own = getattr(type(capability), hook)
     if isinstance(capability, Hooks):
+        if own is not getattr(Hooks, hook):
+            return type(capability).__name__
         try:
-            registered = bool(capability._get("before_tool_execute"))
+            registered = bool(capability._get(hook))
         except Exception:  # noqa: BLE001, a Hooks this cannot read may have one
             registered = True
         return "Hooks" if registered else None
     if isinstance(capability, WrapperCapability):
         if _stock(own):
-            return _changes_arguments(capability.wrapped, gate, depth + 1)
+            return _changes_arguments(capability.wrapped, gate, hook, depth + 1)
         return type(capability).__name__
     return None if _stock(own) else type(capability).__name__
 
 
-def _rewriter_after(root: Any, gate: Any) -> Optional[str]:
-    """Why a capability of this run could change a call's arguments after the gate judged
-    them, or None. Pydantic AI runs ``before_tool_execute`` in dispatch order, so the gate
-    must be the last capability with one of the application's: it is, when listed directly,
-    by its ``innermost`` position, unless another ``innermost`` capability is listed after
-    it; inside a ``WrapperCapability`` it has no position of its own."""
-    if root is None or root is gate:
+def _rewriter_after(
+    node: Any, gate: Any, hook: str = "before_tool_execute", depth: int = 0
+) -> Optional[str]:
+    """Why a capability of this run could change what the gate judged after it judged, or
+    None. Pydantic AI runs ``hook`` in dispatch order, so the gate must be the last
+    capability with one of the application's: it is, when listed directly, by its
+    ``innermost`` position, unless another ``innermost`` capability is listed after it;
+    inside a ``WrapperCapability`` it has no position of its own among the wrapper's
+    neighbours. Read level by level: within each group, what is dispatched after the member
+    that holds the gate; and each wrapper around the gate, for a hook of its own."""
+    if node is None or node is gate:
         return None
-    if not isinstance(root, CombinedCapability):
-        return _wrapped_by_rewriter(root, gate)
-    members = list(getattr(root, "_dispatch", None) or root.capabilities)
-    place = next((i for i, member in enumerate(members) if _holds(member, gate)), None)
-    if place is None:
-        return "the gate is not among the capabilities this run dispatches, so its place is unknown"
-    reason = _wrapped_by_rewriter(members[place], gate)
-    if reason is not None:
-        return reason
-    for member in members[place + 1 :]:
-        name = _changes_arguments(member, gate)
-        if name is not None:
+    unknown = "the gate is not among the capabilities this run dispatches, so its place is unknown"
+    if depth > 32:
+        return unknown
+    if isinstance(node, CombinedCapability):
+        members = list(getattr(node, "_dispatch", None) or node.capabilities)
+        place = next((i for i, member in enumerate(members) if _holds(member, gate)), None)
+        if place is None:
+            return unknown
+        reason = _rewriter_after(members[place], gate, hook, depth + 1)
+        if reason is not None:
+            return reason
+        for member in members[place + 1 :]:
+            name = _changes_arguments(member, gate, hook)
+            if name is not None:
+                return (
+                    f"capability {name} has a `{hook}` that runs after the gate, so it could "
+                    "change what the gate judged; list the gate directly and last"
+                )
+        return None
+    if isinstance(node, WrapperCapability) and _holds(node, gate):
+        if not _stock(getattr(type(node), hook)):
             return (
-                f"capability {name} has a `before_tool_execute` that runs after the gate, so "
-                "it could change the arguments after the gate judged them; list the gate "
-                "directly and last"
+                f"capability {type(node).__name__}, which holds the gate, has a `{hook}` of "
+                "its own, so it could change what the gate judged"
             )
-    return None
+        return _rewriter_after(node.wrapped, gate, hook, depth + 1)
+    return unknown
 
 
-def _wrapped_by_rewriter(member: Any, gate: Any) -> Optional[str]:
-    """Why what wraps the gate could change a call after it, or None."""
-    if member is gate:
-        return None
-    name = _changes_arguments(member, gate)
-    if name is not None:
-        return (
-            f"capability {name}, which holds the gate, has a `before_tool_execute` of its own, "
-            "so it could change the arguments after the gate judged them"
-        )
-    return None
+def _function_of(ctx: Any, tool_name: str) -> tuple[Any, bool]:
+    """The Python function a function tool runs and whether it takes the run context first,
+    or ``(None, False)`` for a tool that runs no local function Pydantic AI built a schema
+    for (an MCP tool, a toolset of the application's own)."""
+    tools = getattr(getattr(ctx, "tool_manager", None), "tools", None)
+    tool = tools.get(tool_name) if isinstance(tools, Mapping) else None
+    for _ in range(32):
+        # a combined toolset hands out a record that points at the tool it came from
+        source = getattr(tool, "source_tool", None)
+        if getattr(tool, "call_func", None) is not None or source is None:
+            break
+        tool = source
+    schema = getattr(getattr(tool, "call_func", None), "__self__", None)
+    function = getattr(schema, "function", None)
+    if not callable(function):
+        return None, False
+    return function, bool(getattr(schema, "takes_ctx", False))
+
+
+def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[str]]:
+    """The arguments the function will run with: ``args`` plus every default the function,
+    or a function it wraps, would fill in for a parameter ``args`` leaves out.
+
+    Pydantic AI's validation fills a function's defaults in before the hook, so for a tool
+    built from its signature nothing is missing. A tool given its schema by hand
+    (``Tool.from_schema``) is not validated: the model leaves a parameter out, the hook is
+    handed the arguments without it, and Python fills the default when the function is
+    called, where no policy sees it. The completed arguments are what the policy judges and
+    what the hook returns, so the function is called with them, written out."""
+    function, takes_ctx = _function_of(ctx, tool_name)
+    if function is None or not isinstance(args, dict):
+        return args, None
+    try:
+        try:
+            levels = _reached_parameters(function)
+        except Exception:  # noqa: BLE001, a wrapper the kernel does not read: the outer one
+            levels = [inspect.signature(function, follow_wrapped=False).parameters]
+    except Exception:  # noqa: BLE001, nothing readable: the defaults cannot be known
+        return args, "the function this tool runs cannot be inspected for its defaults"
+    missing: dict[str, Any] = {}
+    for index, level in enumerate(levels):
+        for position, (name, parameter) in enumerate(level.items()):
+            if index == 0 and position == 0 and takes_ctx:
+                continue
+            if parameter.default is parameter.empty or name in args or name in missing:
+                continue
+            missing[name] = parameter.default
+    return ({**args, **missing} if missing else args), None
 
 
 #: Settings that switch a provider-run tool on without it being among the native tools.
@@ -626,17 +701,18 @@ def _attributes(obj: Any) -> list[Any]:
     return values
 
 
-def _held_toolsets(toolset: Any) -> list[Any]:
-    """The toolsets this one holds: in its attributes, in containers there (lists, tuples,
-    sets, dicts, nested), and in plain objects there, ``_HELD_DEPTH`` levels down. The
-    search stops at each toolset it finds (that one is searched in its own turn) and after
-    ``_HELD_LIMIT`` values. A toolset reached only through a function is not found."""
+def _held_toolsets(toolset: Any) -> tuple[list[Any], bool]:
+    """The toolsets this one holds, and whether the search was complete: in its attributes,
+    in containers there (lists, tuples, sets, dicts, nested), and in plain objects there,
+    ``_HELD_DEPTH`` levels down, nearest first. The search stops at each toolset it finds
+    (that one is searched in its own turn) and gives up after ``_HELD_LIMIT`` values. A
+    toolset reached only through a function is not found."""
     held: list[Any] = []
     seen: set[int] = {id(toolset)}
-    pending: list[tuple[Any, int]] = [(value, 1) for value in _attributes(toolset)]
+    pending: deque[tuple[Any, int]] = deque((value, 1) for value in _attributes(toolset))
     read = 0
     while pending and read < _HELD_LIMIT:
-        value, depth = pending.pop()
+        value, depth = pending.popleft()
         read += 1
         if id(value) in seen:
             continue
@@ -653,7 +729,7 @@ def _held_toolsets(toolset: Any) -> list[Any]:
             pending.extend((item, depth + 1) for item in value)
         elif not _stock(type(value)):
             pending.extend((item, depth + 1) for item in _attributes(value))
-    return held
+    return held, not pending
 
 
 def _stock(obj: Any) -> bool:
@@ -685,7 +761,7 @@ def _rewriting_wrapper(
             f"toolset {cls.__name__} has a `process_tool_call` function, which runs "
             "each call itself and could change the arguments after the gate judged them"
         )
-    held = _held_toolsets(toolset)
+    held, searched = _held_toolsets(toolset)
     try:
         own_instance = "call_tool" in vars(toolset)
     except TypeError:
@@ -706,6 +782,12 @@ def _rewriting_wrapper(
             return (
                 f"toolset {cls.__name__} replaces the `call_tool` of the Pydantic AI toolset "
                 "it extends, so it could change the arguments after the gate judged them"
+            )
+        if not searched:
+            return (
+                f"toolset {cls.__name__} has its own `call_tool` and holds more than the gate "
+                f"searches for other toolsets ({_HELD_LIMIT} values), so it cannot be told "
+                "from one that runs other tools' calls"
             )
         return None
     for inner in held:

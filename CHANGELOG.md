@@ -47,6 +47,14 @@ All notable changes to this project are documented here. The format follows
     placed inside a `WrapperCapability`. The gate now reads the order the run dispatches
     in and refuses a call when a `before_tool_execute` of the application's comes after
     it.
+  - A tool given its schema by hand (`Tool.from_schema`) is not validated, so a
+    parameter the model left out ran with the function's Python default, which no
+    policy had seen: judged `{"table": "t"}`, ran `mode="hard"`. The gate, and the plain
+    hook form, now complete the arguments with every default the function or a function
+    it wraps would fill in, judge those, and pass them written out.
+  - The order check holds for output functions and `Choices` picks as for tool calls,
+    and counts a `Hooks` subclass that writes a hook as a method. A container the
+    search for held toolsets cannot finish (4,000 values) is refused instead of passed.
   - A realtime session, which calls none of the hooks the gate judges in, is refused
     when it starts. Provider-tool settings on the model, and on each candidate of a
     `FallbackModel`, are read as well as the run's.

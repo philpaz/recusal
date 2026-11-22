@@ -77,7 +77,17 @@ ordinary capability's. List it directly and last. The gate reads the order the r
 dispatches in, and a call is refused when a capability with a `before_tool_execute` of
 yours comes after the gate, since it could change the arguments the gate judged. That
 happens in two ways: another `innermost` capability listed after the gate, and a gate
-placed inside a `WrapperCapability`, which does not pass the gate's position on.
+placed inside a `WrapperCapability`, which does not pass the gate's position on. The
+same holds for output functions and `before_output_process`. A hook bundled before the
+gate, in the same list or behind the same wrapper, runs before it and is not refused.
+
+**Defaults are judged too.** Pydantic AI fills a function's defaults in before the hook,
+so the policy sees them. A tool given its schema by hand (`Tool.from_schema`) is not
+validated: a parameter the model leaves out would reach the function absent, and Python
+would fill the default where no policy sees it. The gate completes the arguments with
+every default the function, or a function it wraps, would fill in, judges those, and
+the function is called with them written out. A default that is not plain data is
+refused like any other such argument.
 
 A toolset runs after every capability hook, so one that runs other tools' calls itself
 could also change the arguments after the gate judged them. A run with one in its
@@ -87,7 +97,10 @@ toolsets has every call refused:
   `WrapperToolset` subclass overriding it, or a container written from scratch, which
   would also hide what it holds). The gate looks for held toolsets in the toolset's
   attributes and four levels into the lists, tuples, sets, dicts and plain objects
-  there;
+  there, nearest first, and gives up after 4,000 values: a toolset with its own
+  `call_tool` that it could not finish searching is refused as well. A toolset that
+  only keeps a reference to another one, and never forwards to it, is refused by the
+  same rule: keep such a reference outside the toolset;
 - a subclass of a Pydantic AI toolset that replaces its `call_tool`;
 - a toolset with a `process_tool_call` function, such as an MCP server given one.
 
@@ -160,8 +173,9 @@ tool the model drops, or replaces with its local version (`WebSearch`, `WebFetch
 would be used, turn it off with `native=False`. Provider-side tool search is allowed: it
 finds tools, and the calls to them are judged like any other.
 
-**Realtime sessions** are refused with a `UserError` when they start: a session calls
-none of the request and output hooks the gate judges in.
+**Realtime sessions** (`agent.realtime(...).session()`) are refused with a `UserError`
+when they start: a session calls none of the request and output hooks the gate judges
+in.
 
 **The name the policy is given** is the one the model calls the tool by: under a
 `PrefixedToolset` or `RenamedToolset` that is the prefixed or new name (`db_wipe` for a
@@ -204,6 +218,10 @@ path.
   builds or fetches the toolset it forwards to inside `call_tool` (a factory, a closure)
   holds nothing the gate can find, so it is taken for the tool itself: the policy judged
   the arguments it was handed, and what it does with them is its own code.
+- **A WebRTC offer answered for the browser.** `answer_webrtc_offer()` hands the
+  provider the agent's tool list without starting a run, so no hook runs and nothing is
+  refused there. No tool of yours runs from it either: that takes a session, which is
+  refused.
 - **A provider tool switched on some other way.** The settings named above are the ones
   the gate knows. A model that searches or runs code by itself, or a setting not listed,
   is not seen.
