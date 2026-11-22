@@ -537,7 +537,7 @@ class TestGoogleAdkGate:
             in (responses["c1"]["error"])
         )
 
-    def test_the_walk_for_none_defaults_is_given_the_parameters_the_adk_injects(self):
+    def test_the_walk_for_none_defaults_is_given_the_parameters_the_adk_injects(self, example):
         """A decorator that holds a second wrapper taking ``tool_context`` is judged with
         the names the ADK injects, at both places the gate walks the tool: the walk that
         decides which ``None`` defaults to write must not refuse what the signature check
