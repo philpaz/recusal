@@ -8,43 +8,86 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
-- **Kernel: `recusal.invocation` refuses a wrapper that holds another wrapper it cannot
-  follow.** `reached_parameters` follows a wrapper to what it calls through `__wrapped__`.
-  A decorator that applies another decorator inside itself calls the result, held only in
+- **Kernel: `recusal.invocation` refuses a wrapper that holds another wrapper it does not
+  read.** `reached_parameters` follows a wrapper to what it calls through `__wrapped__`.
+  A decorator that applies another wrapper inside itself calls the result, held only in
   its closure, while `functools.wraps` sets its `__wrapped__` to the undecorated function,
   so the wrapper in between was never read. That wrapper could keep an argument for itself
-  (`wrapper(*args, timeout=30, **kwargs)`: the policy judged `timeout=5` and the function
+  (`guarded(*args, timeout=30, **kwargs)`: the policy judged `timeout=5` and the function
   ran with its own default) or fill a default of its own (`force=True`) with no policy
   judging it. The walk now raises the new public `recusal.invocation.HiddenWrapper`, a
-  subclass of `ValueError`, when a callable on the way holds, in its closure cells (a
-  function) or its instance attributes (a callable object, as a class-based decorator
-  keeps it), another callable that wraps the same function and that the walk does not
-  reach through `__wrapped__`. `unsupported_signature` uses the same walk and returns the
-  reason "a wrapper holds another wrapper of the function it wraps, which the walk does
-  not follow". A gate that already refuses on a `ValueError` or any exception from the
-  walk refuses these without a change. Nothing that was refused is now accepted. A
-  decorator that holds only the function it wraps, configuration and helpers that wrap
-  nothing is read as before; one that builds a second wrapper of the same function inside
-  itself, a `functools.lru_cache` included, is now refused. A wrapper held anywhere else
-  (a module global, a container, a `functools.partial`, a helper's own closure) is not
-  found by this check.
+  subclass of `ValueError`, and `unsupported_signature`, which uses the same walk, returns
+  the reason "a wrapper holds another wrapper of the function it wraps, which the walk
+  does not follow". A gate that already refuses on a `ValueError` or any exception from
+  the walk refuses these without a change. Nothing that 0.15.0 refused is now accepted.
+  - *Where it looks.* At each callable on the way that names a `__wrapped__`: the closure
+    cells of a function; for a callable object (a class-based decorator) its instance
+    attributes, the entries of its own class other than `__call__`, and the slots that
+    class declares. A held `staticmethod`, `classmethod` or `property` object, a bound
+    method and a `functools.partial` with no arguments are read as what they present.
+  - *What is refused.* A held callable that is not one the walk reads, that reaches one,
+    and that can take an argument of its own. It reaches one when its own `__wrapped__`
+    chain leads to it (the usual `functools.wraps` wrapper), or when, naming none, it
+    holds it one level in: in its own closure (a plain inner function, a lambda), in its
+    instance attributes (a callable object), in the object or the function of a bound
+    method, or in the arguments of a `functools.partial`. On a `__wrapped__` chain any
+    named parameter of any link counts, and so does a link that is a single-dispatch
+    function with more than its base registered. For a callable that only holds the
+    function, a parameter counts when it has a default or has the name of a parameter the
+    function takes. A callable whose parameters cannot be read this way (a class, a
+    built-in, a `functools.partial` that binds arguments, a `__call__` that is not a plain
+    function) counts, and so does a chain still going after 32 links.
+  - *What is not.* A decorator that holds the function it wraps, configuration, and
+    helpers; a second wrapper of the same function that only passes `(*args, **kwargs)`
+    on, `functools.lru_cache` included, since its signature can neither keep nor fill an
+    argument; a helper that holds the function but declares no default and no name the
+    function takes (`on_error(error)`); a per-instance wrapper that keeps the descriptor
+    it came from, when that descriptor's own call takes nothing by name.
+  - *What a library user will see.* A decorator whose inner function takes a parameter of
+    its own is refused even when that parameter is harmless: this check reads signatures,
+    not intent. So is a helper that holds the function and declares any default.
+  - *Nothing held is run.* A function can hold anything (a lazy proxy, a remote stub), so
+    a held value is never asked for `__class__` or for an attribute: its type is read with
+    `type()`, its attributes from the dictionaries of its class and its instance, and
+    values are compared by identity. The one exception is a descriptor a held value's
+    class declares for `__wrapped__` itself (a property), which is called directly.
+  - *Not found.* A second wrapper held anywhere else: a module global, a container, a
+    function's own attribute (`tool.aio`), a class other than the callable object's own, a
+    slot a base class declares, a held class. One the wrapper reaches only through two
+    callables that each name nothing as `__wrapped__`. One held by a callable that itself
+    names nothing as `__wrapped__` (a wrapper that copies the signature by hand). One that
+    takes arguments in its body alone (`kwargs.pop`), which no signature shows.
 - **Kernel: `recusal.invocation` refuses a function chosen at call time by the type of an
   argument.** A `functools.singledispatch` function names its base implementation as
   `__wrapped__`, so `reached_parameters` read the base only. An implementation registered
   for a type runs in its place when the first argument is of that type, and a default of
   its own (`skip_review=True`) ran with no policy judging it. The walk now raises the new
-  public `recusal.invocation.DispatchedAtCallTime`, a subclass of `ValueError`, when a
-  callable on the way is a single-dispatch function (a `registry` and a `dispatch`, as
-  `functools.singledispatch` builds them) whose registry names any type beside `object`,
-  the base implementation's. A `functools.singledispatchmethod` is refused the same way:
-  the callable it hands out at each access has no registry, so the descriptor it holds is
-  read for its dispatcher's (checked on Python 3.9 to 3.12). `unsupported_signature` uses
-  the same walk and returns the reason "the function that runs is chosen at call time by
-  the type of an argument, which the walk cannot read". The registry is read, never
-  called. A single-dispatch function or method with only its base implementation is walked
-  as before, and nothing that was refused is now accepted. Not found by this check: an
-  implementation registered after a gate has read the tool, a dispatch written by hand in
-  a function's body, and a dispatcher built by another library.
+  public `recusal.invocation.DispatchedAtCallTime`, a subclass of `ValueError`, and
+  `unsupported_signature` returns the reason "the function that runs is chosen at call
+  time by the type of an argument, which the walk cannot read". Nothing that 0.15.0
+  refused is now accepted.
+  - *What is refused.* A callable on the way that is a single-dispatch function as
+    `functools.singledispatch` builds one (a `mappingproxy` `registry` with an entry for
+    `object`, and a callable `dispatch`), unless `object` is the registry's only key and
+    its entry is, by identity, the function named as `__wrapped__`. So a registered
+    implementation is refused, and so is `register(object, ...)`, which replaces the base
+    and leaves the one key. A registry that cannot be listed is refused. A
+    `functools.singledispatchmethod`, or a subclass of it, is refused the same way: the
+    callable it hands out at each access has no registry, so the descriptor it holds is
+    read for its dispatcher's (checked on Python 3.9 to 3.12). A wrapper that names the
+    base function and calls a dispatcher it holds is refused as a `HiddenWrapper`.
+  - *What is not.* A single-dispatch function or method with only its base
+    implementation, which is walked as before; a wrapper that only carries the copy of
+    `registry` and `dispatch` that `functools.update_wrapper` makes (the dispatcher it
+    wraps is read in its turn); a callable with a `registry` or a `dispatch` of another
+    kind (a plain `dict`, a mapping with no entry for `object`); a dispatching helper a
+    wrapper merely holds.
+  - *How it is read.* By structure: `registry` and `dispatch` are found where they are
+    stored, without an attribute lookup, `dispatch` is never called, and only the
+    registry's items are listed.
+  - *Not found.* An implementation registered after a gate has read the tool, a dispatch
+    written by hand in a function's body, a dispatcher built by another library, and a
+    single-dispatch function called by a wrapper that names nothing as `__wrapped__`.
 
 ## [0.15.0] - 2026-11-21
 
