@@ -217,8 +217,9 @@ call id, and the gate always fails closed.
     `int | float`, a bare `list` or `dict`, an `Enum`, `Annotated[...]`, a dataclass or a
     model;
   - variadic (`*args`, `**kwargs`) and positional-only parameters;
-  - a `functools.partial` and a callable object (an instance with `__call__`), because
-    the kernel cannot read their annotations;
+  - a `functools.partial`, and a callable object (an instance with `__call__`) unless
+    its class annotates the names `__call__` takes (a dataclass whose fields are those
+    names, for example), because the kernel reads annotations from the class;
   - a `functools.wraps` wrapper that adds a parameter of its own to the function it
     wraps, and one that takes `*args, **kwargs` and also names a parameter the function
     has: either would run with a value the policy never judged.

@@ -244,6 +244,8 @@ def _check_values(record: dict) -> None:
         asked: dict[str, Any] = {"audit": _NoLog(), "surface": _CHECK_SURFACE, keyword: value}
         try:
             decide("recusal_openai", {}, _no_findings, **asked)
+        except RecursionError:  # the stack ran out, which says nothing about the value
+            raise
         except Exception as exc:  # noqa: BLE001, whatever decide raises, the value is refused
             raise ValueError(
                 f"Recusal refused the turn: {keyword}= is not a value recusal.decide "

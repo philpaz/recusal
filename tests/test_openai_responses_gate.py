@@ -2126,6 +2126,52 @@ class TestWhatCannotBeTiedToWhatRuns:
         assert out == "paid 1" and RAN == [("pay", 1, "acct-1")]
         assert [entry["action"]["tool_use_id"] for entry in log.entries] == ["c1"]
 
+    def test_judge_and_run_called_directly_answers_a_tool_error_only_when_asked(self, ex):
+        """The loops pass ``answer_tool_errors`` on themselves; called directly, the function
+        must too (review round four)."""
+
+        def boom(amount: int) -> str:
+            raise TimeoutError("upstream took too long")
+
+        policy = lambda n, a: []  # noqa: E731
+        with pytest.raises(TimeoutError):
+            ex.judge_and_run("boom", '{"amount": 1}', {"boom": boom}, policy)
+        with pytest.raises(TimeoutError):
+            ex.judge_and_run(
+                "boom", '{"amount": 1}', {"boom": boom}, policy, answer_tool_errors=False
+            )
+        out = ex.judge_and_run(
+            "boom", '{"amount": 1}', {"boom": boom}, policy, answer_tool_errors=True
+        )
+        assert out == "Tool `boom` raised TimeoutError"
+
+    def test_a_stack_that_runs_out_while_a_recording_value_is_checked_is_not_the_values_fault(
+        self, ex, tmp_path, monkeypatch
+    ):
+        """Near the recursion limit ``decide`` raised ``RecursionError`` and the gate said the
+        surface was not a value ``decide`` records (review round four). It fails closed
+        either way; the error is now the one that happened."""
+        import sys
+
+        from recusal.audit import AuditLog
+
+        def out_of_stack(*args, **kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(sys.modules[ex.judge_and_run.__module__], "decide", out_of_stack)
+        log = AuditLog(path=str(tmp_path / "log.jsonl"))
+        with pytest.raises(RecursionError):
+            ex.judge_and_run(
+                "pay",
+                '{"amount": 1}',
+                {"pay": _pay},
+                lambda n, a: [],
+                audit=log,
+                surface="my.loop",
+                tool_use_id="c1",
+            )
+        assert RAN == [] and log.entries == []
+
     @pytest.mark.parametrize("calls", [[], [("pay", {"amount": 1}, "c1")]], ids=["none", "one"])
     @pytest.mark.parametrize(
         "keyword, value, why",

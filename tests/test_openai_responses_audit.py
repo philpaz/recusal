@@ -1175,6 +1175,26 @@ class TestOpenAIResponsesAudit:
         assert judged == [] and gate.EXECUTED == []
 
     @SHAPES
+    def test_an_audited_function_takes_a_log_that_is_falsy(self, example, gate, tmp_path, chat):
+        """Only ``None`` is "no log": a log object that is falsy still records."""
+        from recusal.audit import AuditLog
+
+        class Quiet(AuditLog):
+            def __bool__(self):
+                return False
+
+        audited = example.audited_tool_calls if chat else example.audited_function_calls
+        shaped = (
+            gate.completion_with([gate.tool_call(*c) for c in THREE])
+            if chat
+            else gate.response_with([gate.function_call(*c) for c in THREE])
+        )
+        quiet = Quiet(path=str(tmp_path / "quiet.jsonl"))
+        assert not quiet
+        audited(shaped, gate.TOOLS, lambda n, a: [], quiet)
+        assert len(quiet.entries) == len(THREE)
+
+    @SHAPES
     @pytest.mark.parametrize("control", ["v1", ["policy"], 0])
     def test_a_control_that_is_not_a_dict_raises_and_writes_no_entry(
         self, example, gate, log, log_path, chat, control
