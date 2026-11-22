@@ -708,6 +708,82 @@ class TestPydanticAiAudit:
         assert refused["action"]["decision"] == "deny"
         assert refused["action"]["input_sha256"] == _sha({"table": "t"})
 
+    @ROUTES
+    def test_a_stack_the_gate_cannot_read_is_one_recorded_deny(
+        self, example, log, log_path, via_hooks
+    ):
+        """A wrapper that names a parameter over a function Pydantic AI calls by position, a
+        single-dispatch function with a registered implementation, and a value a partial
+        binds past a naming wrapper are refused before the policy by both audited forms:
+        nothing runs, the policy is not asked, and each refusal is exactly one entry, bound
+        to the call as the model sent it, with a reason that carries none of its text."""
+        import functools
+
+        ran, asked = [], []
+
+        def with_table_lock(function):
+            @functools.wraps(function)
+            def wrapper(table, *args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        @with_table_lock
+        def delete_rows(table: str, *ids: str, dry_run: bool = False) -> str:
+            """Delete rows."""
+            ran.append(("delete_rows", table, ids))
+            return "deleted"
+
+        @functools.singledispatch
+        def lookup(key: int | str, /, deep: bool = False) -> str:
+            """Lookup."""
+            ran.append(("lookup", key))
+            return "base"
+
+        @lookup.register(str)
+        def _lookup_text(key: str, /, deep: bool = False, skip_review: bool = True) -> str:
+            ran.append(("lookup", key, skip_review))
+            return "text"
+
+        def purge_all(table: str = "prod", limit: int = 10) -> str:
+            """Purge."""
+            ran.append(("purge", table, limit))
+            return "purged"
+
+        purge = functools.partial(with_table_lock(purge_all), "MARKER-tenant")
+        purge.__name__ = purge.__qualname__ = "purge"
+        purge.__doc__ = "Purge."
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
+        calls = [
+            ("delete_rows", {"table": "scratch", "ids": ["MARKER-customers", "1"]}, "c1"),
+            ("lookup", {"key": "MARKER-key"}, "c2"),
+            ("purge", {"limit": 5}, "c3"),
+        ]
+        responses, _ = example.run_calls(
+            calls, log, policy=policy, tools=[delete_rows, lookup, purge], via_hooks=via_hooks
+        )
+        assert ran == [] and asked == [] and len(log.entries) == 3
+        entries = self.by_id(log)
+        causes = {
+            "c1": "names `table` and also forwards, over a function that takes `*args`",
+            "c2": "the implementation that runs is chosen at call time",
+            "c3": "hands a value in by position past a wrapper that names a positional parameter",
+        }
+        for name, sent, call_id in calls:
+            outcome, reason = responses[call_id]
+            entry = entries[call_id]
+            assert outcome == "failed" and causes[call_id] in reason
+            assert reason.startswith(f"Recusal refused `{name}` [FAIL]")
+            assert entry["action"]["decision"] == "deny" and entry["decision"] == "FAIL"
+            assert entry["action"]["reason"] == reason and "MARKER" not in reason
+            assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+            assert entry["action"]["input_sha256"] == _sha(sent)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):

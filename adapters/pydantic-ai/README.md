@@ -87,29 +87,71 @@ the tool's schema from the innermost one and calls the outermost. Its validation
 in the innermost function's defaults, so the policy sees those. A wrapper on the way
 that has a parameter of its own is read by nothing, and whether its value reaches the
 function under it depends on the wrapper's body, which cannot be read. So all four forms
-of the gate (the two capabilities and the two hook functions) read every function the
-call reaches, following `__wrapped__`, bound methods, callable objects and
-`functools.partial`, and each wrapper must be one of these:
+of the gate (the two capabilities and the two hook functions) read the stack from the
+callable Pydantic AI calls down to the innermost function, following `__wrapped__`,
+bound methods, callable objects and `functools.partial`, and each wrapper on it must be
+one of these:
 
 - it takes only `*args` and `**kwargs` (a logging, timing, tracing or retry decorator
   that passes everything through);
-- it has a fixed signature that restates the function's own parameters, in order, each
-  with no default or the function's own default;
-- it forwards and also names a parameter that has no default on either side
-  (`def wrapper(table, **kwargs)`): a required parameter must be handed on, or the call
-  fails.
+- it restates the function's own named parameters: the same names, kinds and order,
+  each with no default or the function's own default. It has a fixed signature, or it
+  also restates the function's `**extra` under the same name; the second only over a
+  function that takes no `*args` and no positional-only parameter;
+- it forwards `**kwargs` and also names parameters (`def wrapper(table, **kwargs)`),
+  where a wrapper that kept one would fail the call, and where binding by name and by
+  position cannot differ. Each parameter it names is of the same kind as in the function
+  and has no default on either side; the positional ones are the function's first
+  parameters, in the function's order; and the function takes no `*args` and no
+  positional-only parameter, since Pydantic AI passes such a function's values by
+  position. Such a wrapper may forward `*args` as well
+  (`def wrapper(table, *args, **kwargs)`) only while no other wrapper on the stack
+  names more positional parameters than it does.
 
-Anything else is refused before the policy runs, with a reason that names the parameter:
-a wrapper with a keyword of its own (`def wrapper(*args, retries=3, **kwargs)`), a
-keyword it shares with the function, a default that differs from the function's, a
-parameter left out or reordered. Give such a wrapper its setting when it is built
-(`@retrying(times=3)`) and not as a parameter of the wrapper itself. Also refused:
+For a tool that takes the run context, a wrapper's first positional parameter is the
+context, whatever the wrapper calls it (`def wrapper(context, *args, **kwargs)`), unless
+it has the name of another parameter of the function. The context counts as the
+function's first parameter in these rules, so a wrapper that names it and forwards is
+refused over a function that takes `*args` or a positional-only parameter after the
+context.
+
+Anything else is refused before the policy runs, with a reason that says what the
+wrapper does and names the parameter: a wrapper with a keyword of its own
+(`def wrapper(*args, retries=3, **kwargs)`), a parameter it takes as another kind than
+the function does (`def wrapper(*args, table, **kwargs)` over `def f(table, limit=10)`
+takes `table` keyword-only), a default that differs from the function's, a parameter
+left out or reordered. Give such a wrapper its setting when it is built
+(`@retrying(times=3)`) and not as a parameter of the wrapper itself. The wrapper
+`beartype` generates has keywords of its own and is refused by this rule: call the
+type-checked function from a plain function and register that one. Also refused:
 
 - **A function that declares a signature of its own** (`__signature__`): the parameters
-  Python binds cannot be read. The decorators the `decorator` library builds do this.
+  Python binds cannot be read. The decorators the `decorator` library builds do this,
+  and so does Pydantic AI's own `tavily_search_tool` when it is given a search setting
+  to fix (`tavily_search_tool(client=client, include_domains=[...])`). Build that tool
+  without the fixed setting and hold the model to the value in your policy, which is
+  given each search argument the model can set, or call the Tavily client from a plain
+  function of your own that has the fixed value in its body.
 - **A decorator that cannot be inspected**: a class-based decorator that is also a
   descriptor, such as `cachetools.cached`, or a stack more than 31 decorators deep. Call
   the decorated function from a plain function and register that one.
+- **A single-dispatch function** (`functools.singledispatch`,
+  `functools.singledispatchmethod`) with an implementation registered beside its base
+  one: the implementation that runs is chosen at call time, by the type of an argument,
+  so its parameters and defaults cannot be read. Call it from a plain function and
+  register that one.
+- **A value bound by position past a wrapper that names a positional parameter**
+  (`def wrapper(tenant, *args, **kwargs)`), by a `functools.partial` with a positional
+  argument or by a bound method. The value is read as filling the function's leading
+  parameter, and the wrapper may keep it. Refused where a wrapper that kept it would
+  not fail the call: that parameter of the function has a default, or the function
+  takes `*args` or a positional-only parameter after it. An ordinary method decorator
+  (`def wrapper(self, *args, **kwargs)`) over a method whose other parameters are named
+  and not positional-only is not refused.
+- **A value for the function's `*args` that is not a list.** Pydantic AI hands the
+  function its items one by one, so a string would reach it letter by letter.
+  Validation makes the value a list; another one reaches the gate only where a hook of
+  yours skips validation (`SkipToolValidation`) or answers a validation error.
 
 **Defaults are judged.** A default of the innermost function that the arguments leave
 out is added, judged, and passed to the function written out. For a tool built from its
@@ -118,13 +160,18 @@ signature Pydantic AI has already done that. A tool given its schema by hand
 left out. Two more refusals follow from it:
 
 - **A default that is not plain data** (a logger, a client, a sentinel object) cannot be
-  shown to a policy; the refusal names the parameter. Give it a JSON default or `None`
-  and resolve the object inside the function. A positional-only parameter left out is
-  refused too, since its default cannot be written out by name.
-- **For a tool given its schema by hand, a function that takes `*args` or `**kwargs`**:
-  it can fill a value in in its own body, which cannot be read. The tools
+  shown to a policy. For a tool given its schema by hand the refusal names the
+  parameter. For a tool built from its signature Pydantic AI has already filled the
+  default in, and the call is refused as carrying arguments that are not plain data.
+  Give the parameter a JSON default or `None` and resolve the object inside the
+  function. For a tool given its schema by hand, a positional-only parameter with a
+  default that the model left out is refused too, since the default cannot be written
+  out by name.
+- **For a tool given its schema by hand, a function or a wrapper that takes `*args` or
+  `**kwargs`**: it can fill a value in in its own body, which cannot be read. The
+  refusal says whether it is the function or a wrapper around it. The tools
   `pydantic_ai.ext.langchain` builds are of this kind. Give the function named
-  parameters, or build the tool from its signature.
+  parameters (in a wrapper, restate them), or build the tool from its signature.
 
 A toolset runs after every capability hook, so one that runs other tools' calls itself
 could also change the arguments after the gate judged them. A run with one in its
@@ -270,12 +317,14 @@ path.
   provides none (its Temporal activity context), the gate relies on the check it makes
   when the run's toolsets are assembled, which does not see a wrapper another capability
   adds afterwards or one a dynamic toolset returns. It finds the function a tool runs
-  the same way, so there it completes no defaults either.
+  the same way, so there it completes no defaults and reads no wrappers either.
 - **What a function does in its own body.** A value a function sets itself, a wrapper
-  that restates the function's parameters and then does not pass one on, and a decorator
-  that applies another decorator inside itself (the gate follows the function a wrapper
-  says it wraps, `__wrapped__`, and that is not the one such a wrapper calls): the policy
-  judged the arguments, and what the code does with them is its own.
+  that restates the function's parameters and then does not pass one on (the function
+  runs on its own default for it), a function that calls a single-dispatch function,
+  and a decorator that applies another decorator inside itself (the gate follows the
+  function a wrapper says it wraps, `__wrapped__`, and that is not the one such a
+  wrapper calls): the policy judged the arguments, and what the code does with them is
+  its own.
 - **A default applied somewhere else.** A default an MCP server or a toolset of your own
   applies to a call it receives, and a decorator on an output function: for output
   functions the gate judges the value and does not read the function's wrappers.

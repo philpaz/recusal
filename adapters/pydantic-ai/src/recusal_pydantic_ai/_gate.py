@@ -41,7 +41,9 @@ What the hook cannot see:
 
 from __future__ import annotations
 
+import functools
 import inspect
+import types
 from collections import deque
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
@@ -615,10 +617,8 @@ def _variadic(parameter: Any) -> bool:
     return parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
 
 
-def _only_forwards(level: Any) -> bool:
-    """True for a callable whose only parameters are ``*args`` and ``**kwargs``: it binds
-    nothing itself, so everything it is called with goes on to what it wraps."""
-    return bool(level) and all(_variadic(parameter) for parameter in level.values())
+def _positional(parameter: Any) -> bool:
+    return parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
 
 
 def _same_value(left: Any, right: Any) -> bool:
@@ -630,40 +630,246 @@ def _same_value(left: Any, right: Any) -> bool:
         return False
 
 
-def _opaque(level: Any, inner: Any) -> Optional[str]:
-    """The parameter that keeps a wrapper from being transparent, or None if it is.
+def _as_bound(levels: list[Any], takes_ctx: bool) -> list[list[Any]]:
+    """Each level's parameters, with the run context of a context-taking tool under the
+    innermost function's name for it.
 
-    Transparent means that what the innermost function runs with can be read from the
-    arguments alone:
+    Pydantic AI passes the context positionally and first, so a wrapper's first positional
+    parameter is the context whatever the wrapper calls it and whether it is
+    positional-only or not, unless it carries the name of another parameter of the
+    function: that one a wrapper above can hand it by keyword, so it is read as the
+    parameter it names. The context is then one more leading positional-or-keyword
+    parameter, held to the same rules as any other."""
+    rows = [list(level.values()) for level in levels]
+    inner = rows[-1]
+    if not (takes_ctx and inner and _positional(inner[0])):
+        return rows
+    keyword = inspect.Parameter.POSITIONAL_OR_KEYWORD
+    others = {parameter.name for parameter in inner[1:]}
+    for row in rows:
+        if row and _positional(row[0]) and row[0].name not in others:
+            row[0] = row[0].replace(name=inner[0].name, kind=keyword)
+    return rows
+
+
+def _shape(parameters: list[Any]) -> list[tuple[str, Any]]:
+    return [(parameter.name, parameter.kind) for parameter in parameters]
+
+
+def _kind_differs(parameter: Any, other: Any) -> str:
+    return (
+        f"takes `{parameter.name}` as a {parameter.kind.description} parameter where the "
+        f"function takes it as a {other.kind.description} one, so the two can bind the same "
+        "call differently"
+    )
+
+
+def _opaque(level: list[Any], inner: list[Any], most: int) -> Optional[str]:
+    """What keeps a wrapper from being transparent, in the words that follow "a wrapper
+    around the function this tool runs", or None if it is transparent.
+
+    ``level`` is the wrapper's parameters and ``inner`` the innermost function's, as
+    ``_as_bound`` gives them; ``most`` is the largest number of positional parameters any
+    wrapper of the stack names. Transparent means that what the innermost function runs
+    with can be read from the arguments alone:
 
     - a wrapper that takes only ``*args`` and ``**kwargs`` binds nothing itself;
-    - a wrapper with a fixed signature (no ``*args`` or ``**kwargs``) that restates the
-      function's own parameters, in order, each with no default or the function's own
-      default, is handed every value and has no other to fall back on;
-    - a wrapper that forwards and also names a parameter is transparent only for a
-      parameter with no default on either side: a required one must be handed on, or the
-      call fails. With a default on either side the wrapper may keep the value it is given
-      while the function under it runs on its own."""
-    named = [(name, parameter) for name, parameter in level.items() if not _variadic(parameter)]
-    forwards = len(named) != len(level)
-    if not forwards and [name for name, _ in named] != [
-        name for name, parameter in inner.items() if not _variadic(parameter)
-    ]:
-        mismatch = next(
-            (name for name, _ in named if name not in inner),
-            next((name for name in inner if name not in level), ""),
-        )
-        return mismatch or (named[0][0] if named else "")
+    - a wrapper that restates the function's own named parameters (same names, kinds and
+      order, each with no default or the function's own default) is handed every value and
+      has no other to fall back on. It has a fixed signature, or it also restates the
+      function's ``**extra`` under the same name, and then only over a function that takes
+      no ``*args`` and no positional-only parameter;
+    - a wrapper that forwards (``**kwargs``) and also names a parameter is transparent only
+      when binding by name and by position cannot differ, and when a parameter it does not
+      hand on fails the call: the function takes no ``*args`` and no positional-only
+      parameter (so Pydantic AI passes every value by keyword), each named parameter has
+      the function's kind and no default on either side, and the positional-or-keyword
+      ones are the function's leading ones in the function's order. One that forwards
+      ``*args`` as well must name as many positional parameters as any other wrapper: a
+      wrapper above it that names more and passes them on by position fills that
+      ``*args``, and those values move up a place if this one keeps its own.
+    """
+    named = [parameter for parameter in level if not _variadic(parameter)]
+    if not named:
+        return None
+    theirs = [parameter for parameter in inner if not _variadic(parameter)]
+    function = {parameter.name: parameter for parameter in theirs}
+    for parameter in named:
+        if parameter.name not in function:
+            return (
+                f"takes `{parameter.name}`, which is not a named parameter of the function: "
+                "nothing reads the value it takes, and what the function then runs with "
+                "depends on the wrapper's body, which cannot be read"
+            )
     empty = inspect.Parameter.empty
-    for name, parameter in named:
-        other = inner.get(name)
-        if other is None or _variadic(other) or parameter.kind is not other.kind:
-            return name
-        if forwards:
-            if parameter.default is not empty or other.default is not empty:
-                return name
-        elif parameter.default is not empty and not _same_value(parameter.default, other.default):
-            return name
+    forwards = len(named) != len(level)
+    by_position = any(
+        parameter.kind in (parameter.VAR_POSITIONAL, parameter.POSITIONAL_ONLY)
+        for parameter in inner
+    )
+    if forwards:
+        restates = _shape(level) == _shape(inner) and not by_position
+    else:
+        restates = _shape(named) == _shape(theirs)
+    if restates:
+        for parameter in named:
+            if parameter.default is not empty and not _same_value(
+                parameter.default, function[parameter.name].default
+            ):
+                return (
+                    f"gives `{parameter.name}` a default that is not the function's own, so "
+                    "the wrapper has a value to fall back on that nothing reads"
+                )
+        return None
+    if not forwards:
+        taken = {parameter.name for parameter in named}
+        for parameter in theirs:
+            if parameter.name not in taken:
+                return (
+                    "has a fixed signature that leaves out the function's parameter "
+                    f"`{parameter.name}`, so the function cannot be handed the value the "
+                    "policy judged for it"
+                )
+        for parameter, other in zip(named, theirs):
+            if parameter.name != other.name:
+                return (
+                    "has a fixed signature that takes the function's parameters in another "
+                    f"order (`{parameter.name}` where the function has `{other.name}`), so a "
+                    "value passed on by position reaches another parameter"
+                )
+        differs = next((p for p in named if p.kind is not function[p.name].kind), named[0])
+        return _kind_differs(differs, function[differs.name])
+    variadic = next((p for p in level if p.kind is p.VAR_POSITIONAL), None)
+    if by_position:
+        return (
+            f"names `{named[0].name}` and also forwards, over a function that takes `*args` "
+            "or a positional-only parameter: Pydantic AI passes such a function's values by "
+            f"position, so `{named[0].name}` can be handed another parameter's value"
+        )
+    for parameter in named:
+        other = function[parameter.name]
+        if parameter.kind is not other.kind:
+            return _kind_differs(parameter, other)
+        if parameter.default is not empty or other.default is not empty:
+            return (
+                f"names `{parameter.name}` and also forwards, and `{parameter.name}` has a "
+                "default (the wrapper's or the function's): the wrapper may keep the value "
+                "it is given while the function under it runs on a default of its own"
+            )
+    ours = [p.name for p in named if p.kind is p.POSITIONAL_OR_KEYWORD]
+    if variadic is not None and 0 < len(ours) < most:
+        return (
+            f"names `{ours[0]}` and also forwards positional arguments (`*{variadic.name}`), "
+            "in a stack where another wrapper names more positional parameters: what that "
+            f"one passes on by position moves into the place of `{ours[0]}` if this one does "
+            "not hand it on, and the function runs with a value under another name than the "
+            "policy read it under"
+        )
+    leading = [p.name for p in theirs if p.kind is p.POSITIONAL_OR_KEYWORD]
+    for name, other_name in zip(ours, leading):
+        if name != other_name:
+            return (
+                f"names `{name}` and also forwards, and `{name}` is not where the function "
+                f"has it (the function has `{other_name}` there): handed on by position it "
+                "reaches another parameter"
+            )
+    return None
+
+
+#: How many callables ``_steps`` reads before it gives up. The kernel's walk stops at 32
+#: levels, and a level is at most a method, its function, a partial and what they wrap.
+_STEP_LIMIT = 256
+
+
+def _steps(function: Any) -> list[Any]:
+    """Every callable a call to ``function`` passes through, as the kernel's walk follows
+    them: a method's function, a partial's function, ``__wrapped__`` and a callable
+    object's ``__call__`` bound to the object. Raises ``ValueError`` for more than it
+    will read."""
+    found: list[Any] = []
+    pending = [function]
+    while pending:
+        if len(found) >= _STEP_LIMIT:
+            raise ValueError("too many callables to read")
+        step = pending.pop()
+        found.append(step)
+        if inspect.ismethod(step):
+            pending.append(step.__func__)
+        elif isinstance(step, functools.partial):
+            pending.append(step.func)
+        else:
+            wrapped = getattr(step, "__wrapped__", None)
+            if wrapped is not None:
+                pending.append(wrapped)
+            if not (inspect.isfunction(step) or inspect.isbuiltin(step) or isinstance(step, type)):
+                call = inspect.getattr_static(type(step), "__call__", None)
+                if inspect.isfunction(call):
+                    pending.append(types.MethodType(call, step))
+    return found
+
+
+def _dispatches(step: Any) -> bool:
+    """True for a single-dispatch function (``functools.singledispatch``: it has a
+    ``registry`` mapping and a ``dispatch`` callable) or method
+    (``functools.singledispatchmethod``, found behind the ``register`` its bound form
+    carries) with more than its base implementation."""
+    registry = getattr(step, "registry", None)
+    if isinstance(registry, Mapping) and callable(getattr(step, "dispatch", None)):
+        return len(registry) > 1
+    owner = getattr(getattr(step, "register", None), "__self__", None)
+    if isinstance(owner, functools.singledispatchmethod):
+        return len(owner.dispatcher.registry) > 1
+    return False
+
+
+def _bound_past_a_wrapper(step: Any) -> Optional[str]:
+    """The parameter that makes a bound positional argument unreadable, or None.
+
+    A ``functools.partial`` with positional arguments, and a bound method, hand values in
+    by position, and the kernel's walk reads them as bound to the innermost function's
+    leading parameters. Under a wrapper that names a positional parameter, that holds
+    only if the wrapper hands the value on. It is safe to assume where a wrapper that
+    keeps the value fails the call: each innermost parameter bound that way has no
+    default, and the innermost function takes nothing else by position (no ``*args``, no
+    further positional-only parameter), so no other value can move into its place."""
+    if isinstance(step, functools.partial) and step.args:
+        under, bound = _reached_parameters(step.func), len(step.args)
+    elif inspect.ismethod(step):
+        under, bound = _reached_parameters(step.__func__), 1
+    else:
+        return None
+    if not any(_positional(p) for level in under[:-1] for p in level.values()):
+        return None
+    for position, parameter in enumerate(under[-1].values()):
+        if position < bound:
+            if not _positional(parameter) or parameter.default is not parameter.empty:
+                return str(parameter.name)
+        elif parameter.kind in (parameter.VAR_POSITIONAL, parameter.POSITIONAL_ONLY):
+            return str(parameter.name)
+    return None
+
+
+def _unreadable_step(function: Any) -> Optional[str]:
+    """Why a callable on the way to the code that runs cannot be read from signatures, or
+    None. Raises what ``_steps`` and the kernel's walk raise."""
+    for step in _steps(function):
+        if _dispatches(step):
+            return (
+                "the function this tool runs is a single-dispatch function "
+                "(`functools.singledispatch` or `singledispatchmethod`) with more than its "
+                "base implementation: the implementation that runs is chosen at call time, "
+                "by the type of an argument, so its parameters and defaults cannot be "
+                "read; call it from a plain function and register that one"
+            )
+        name = _bound_past_a_wrapper(step)
+        if name is not None:
+            return (
+                "a `functools.partial` or a bound method hands a value in by position past "
+                "a wrapper that names a positional parameter: whether "
+                f"that value reaches the function's `{name}`, or the function runs on "
+                "another value there, depends on the wrapper's body, which cannot be read; "
+                "call it from a plain function and register that one"
+            )
     return None
 
 
@@ -678,7 +884,7 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     its value reaches the function under it depends on its body, which cannot be read.
 
     So a wrapper must be transparent (``_opaque`` says what that is), or the call is
-    refused. Every callable the call reaches is read (the kernel's walk over
+    refused. Every callable on the stack is read (the kernel's walk over
     ``__wrapped__``, bound methods, callable objects and ``functools.partial``, whose own
     signature states what a call binds: its keywords are the defaults, its positionals are
     gone). Then the arguments are those of the innermost one: a default they leave out (a
@@ -687,9 +893,14 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
 
     Refused as well: a default that is not plain data, which cannot be shown to a policy; a
     callable that declares a signature of its own (``__signature__``), which hides the
-    parameters Python binds; a stack that cannot be walked; and, for a tool that is not
-    validated, a function that takes ``*args`` or ``**kwargs`` (it can fill a value in in
-    its own body, as Pydantic AI's LangChain bridge does)."""
+    parameters Python binds; a stack that cannot be walked; a single-dispatch function with
+    more than its base implementation, which picks the code that runs at call time; a
+    positional argument bound past a naming wrapper where keeping it would not fail the
+    call (``_bound_past_a_wrapper``); a value for the function's ``*args`` that is not a
+    list (it reaches the hook only where a hook of the application's skipped validation,
+    and Pydantic AI spreads it); and, for a tool that is not validated, a function or
+    wrapper that takes ``*args`` or ``**kwargs`` (it can fill a value in in its own body,
+    as Pydantic AI's LangChain bridge does)."""
     function, takes_ctx, validated = _function_of(ctx, tool_name)
     if function is None or not isinstance(args, dict):
         return args, None
@@ -710,31 +921,50 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
             # a class or a builtin wraps nothing, and Pydantic AI validated its own signature
             return args, None
         return args, unread
+    try:
+        unreadable = _unreadable_step(function)
+    except Exception:  # noqa: BLE001, a step that cannot be read is not let through
+        return args, unread
+    if unreadable is not None:
+        return args, unreadable
     inner = levels[-1]
-    for level in levels[:-1]:
-        own = _opaque(level, inner)
-        if own is not None:
+    *wrappers, function_row = _as_bound(levels, takes_ctx)
+    most = max((sum(map(_positional, level)) for level in wrappers), default=0)
+    for level in wrappers:
+        cause = _opaque(level, function_row, most)
+        if cause is not None:
             return args, (
-                f"a wrapper around the function this tool runs takes `{own}` in a way of its "
-                "own: whether the function under it receives that value, or runs on a default "
-                "of its own, depends on the wrapper's body, which cannot be read. A wrapper "
-                "must take only `*args` and `**kwargs`, or restate the function's own "
-                "parameters"
+                f"a wrapper around the function this tool runs {cause}. A wrapper must take "
+                "only `*args` and `**kwargs`, or restate the function's own parameters"
             )
     if not validated:
         for level in levels:
             for name, parameter in level.items():
                 if _variadic(parameter):
+                    whose, fix = (
+                        ("its function", "give the function named parameters")
+                        if level is inner
+                        else (
+                            "a wrapper around its function",
+                            "restate the function's parameters in the wrapper",
+                        )
+                    )
                     return args, (
                         "this tool was given its schema by hand, so its arguments are not "
-                        f"validated, and its function takes `{name}` as a variadic parameter: "
-                        "a value it fills in itself cannot be read or judged; give the "
-                        "function named parameters, or build the tool from its signature"
+                        f"validated, and {whose} takes `{name}` as a variadic parameter: "
+                        f"a value it fills in itself cannot be read or judged; {fix}, or "
+                        "build the tool from its signature"
                     )
     missing: dict[str, Any] = {}
     for position, (name, parameter) in enumerate(inner.items()):
         if position == 0 and takes_ctx:
             continue
+        if parameter.kind is parameter.VAR_POSITIONAL and type(args.get(name, [])) is not list:
+            return args, (
+                f"the value for `*{name}` of the function this tool runs is not a list: "
+                "Pydantic AI hands the function its items one by one, so the function would "
+                "not run with the value the policy judged"
+            )
         if parameter.default is parameter.empty or name in args:
             continue
         if parameter.kind is parameter.POSITIONAL_ONLY:

@@ -58,12 +58,35 @@ All notable changes to this project are documented here. The format follows
   - A decorated tool is several functions, and a wrapper's own parameter was read by
     nothing: a decorator with `skip_review=True` in the middle of a stack ran the
     transfer with it, and a keyword a wrapper shared with the function let the model
-    send `refresh=False` while the function ran on its own `refresh=True`. Every
-    function a call reaches is now read, and a wrapper must be transparent (take only
-    `*args` and `**kwargs`, restate the function's own parameters, or forward and name
-    only required ones) or the call is refused before the policy runs. A function that
-    declares a signature of its own and a decorator that cannot be inspected (such as
-    `cachetools.cached`) are refused as well.
+    send `refresh=False` while the function ran on its own `refresh=True`. The stack
+    from the callable Pydantic AI calls down to the innermost function is now read, and
+    a wrapper must be transparent (take only `*args` and `**kwargs`, restate the
+    function's own parameters, or forward `**kwargs` and name required parameters where
+    name and position cannot differ) or the call is refused before the policy runs, with
+    a reason that says what the wrapper does. A function that declares a signature of
+    its own and a decorator that cannot be inspected (such as `cachetools.cached`) are
+    refused as well.
+  - Pydantic AI passes a function's values by position when the function takes `*args`
+    or a positional-only parameter, so a wrapper that names a parameter can be handed
+    another one's value: `wrapper(dst, *args, **kwargs)` over
+    `copy_file(src, dst, *flags)` was judged with `dst` under `/tmp` and wrote to the
+    path sent as `src`. A wrapper that names a parameter and also forwards is refused
+    over such a function; elsewhere the positional parameters it names must be the
+    function's first ones in order, and it may forward `*args` only while no other
+    wrapper names more positional parameters. For a tool that takes the run context, a
+    wrapper's first positional parameter is the context, whatever the wrapper calls it,
+    unless it has the name of another parameter of the function.
+  - A `functools.singledispatch` function picks the implementation that runs at call
+    time, and a registered implementation's own default ran unjudged. A single-dispatch
+    function or method with more than its base implementation is refused.
+  - A `functools.partial` with a positional argument, or a bound method, over a wrapper
+    that names a positional parameter was read as filling the function's first
+    parameter, which then ran on its own default when the wrapper kept the value:
+    `partial(scoped(purge), "acme")` was judged `{"limit": 5}` and ran `table="prod"`.
+    Refused where a wrapper that kept the value would not fail the call.
+  - Where a hook of the application's skips validation, a value for a function's `*args`
+    that is not a list was judged whole and handed to the function item by item. It is
+    refused.
   - The order check holds for output functions and `Choices` picks as for tool calls,
     and counts a `Hooks` subclass that writes a hook as a method. A container the
     search for held toolsets cannot finish (4,000 values) is refused instead of passed.
