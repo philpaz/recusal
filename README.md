@@ -195,17 +195,17 @@ certified security product, and it is provided under Apache-2.0 without warranty
 [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) says what is stable and what may still change.
 
 The adapters are at different stages of security review. Of the 8 adapters,
-2 have completed the in-depth review, 1 is in it now and 5 have had the first review only:
+2 have completed the in-depth review and 6 are in it now:
 
 | Package | Security review | Where it stands |
 |---|---|---|
 | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | In-depth review complete | Its fixes are released in 0.2.1. |
 | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | In-depth review complete | Its fixes are released in 0.2.0. |
-| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | First review only | The in-depth review has not started. |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | First review only | The first review closed an ungated `ToolNode` route, fixed in 0.2.0. The in-depth review has not started. |
-| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | First review only | The in-depth review has not started. |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | First review only | The in-depth review has not started. |
-| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | First review only | The in-depth review has not started. |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review under way | Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review under way | Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. |
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review under way | Its fixes are in [#296](https://github.com/philpaz/recusal/pull/296) and are not released yet. |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
+| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
 | [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. |
 
 What the two reviews are:

@@ -125,7 +125,7 @@ does not have raises `ModelBehaviorError` in the SDK, and nothing runs.
 
 ## Status
 
-**First review only.** The in-depth review has not started. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).

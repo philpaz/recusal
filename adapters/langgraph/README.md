@@ -179,7 +179,7 @@ weekly lane against the newest releases exists.
 
 ## Status
 
-**First review only.** The first review closed an ungated `ToolNode` route, fixed in 0.2.0. The in-depth review has not started. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).

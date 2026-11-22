@@ -277,10 +277,15 @@ def test_every_adapter_states_the_status_the_project_table_gives_it():
         for label in ("In-depth review complete", "In-depth review under way", "First review only")
     )
     assert done + now + first == len(rows) == 8
-    assert (
-        f"Of the {len(rows)} adapters,\n{done} have completed the in-depth review, {now} is in it "
-        f"now and {first} have had the first review only:"
-    ) in section
+    sentence = section.split("Of the 8 adapters,", 1)[1].split(":", 1)[0]
+    said = {
+        "completed the in-depth review": done,
+        "in it now": now,
+        "had the first review only": first,
+    }
+    for phrase, expected in said.items():
+        found = re.search(r"(\d+) (?:has|have|is|are) " + re.escape(phrase), sentence)
+        assert (int(found.group(1)) if found else 0) == expected, phrase
     for name, directory, status, detail in rows:
         assert name == directory
         page = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
