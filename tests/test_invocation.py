@@ -541,8 +541,13 @@ def test_a_hidden_wrapper_is_refused_wherever_the_wrapper_that_holds_it_stands()
         def __call__(self, *args, **kwargs):
             return self.guarded(*args, **kwargs)
 
+    class Derived(Resilient):
+        """Its instance dictionary is the accessor of the class it inherits from."""
+
     in_an_attribute = Resilient(_fetch())
     assert in_an_attribute("u", timeout=5) == 999999
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(Derived(_fetch()))
     for func in (
         _traced(tool),
         _traced(_traced(tool)),
@@ -974,6 +979,20 @@ def test_a_held_wrapper_is_judged_by_the_rule_and_the_code_that_judge_one_the_wa
         tool = _calling(_traced)(visible)
         assert _levels(tool) == [_FORWARD, level, ["query", "limit"]]
         assert why in unsupported_signature(tool)
+
+    # a name a wrapper the walk reads keeps counts against a held wrapper that takes it too:
+    # the finding involves the held one, whichever of the two is the forwarding wrapper
+    def keeping_and_holding(function):
+        copied = _copying(function)
+
+        @functools.wraps(function)
+        def wrapper(*args, limit=7, **kwargs):
+            return copied(*args, **kwargs)
+
+        return wrapper
+
+    with pytest.raises(HiddenWrapper, match="`limit` is taken by a wrapper"):
+        reached_parameters(keeping_and_holding(search))
     assert unsupported_signature(_copying(search)) is None
     assert "`verbose` is a parameter" in unsupported_signature(_calling(_renaming)(search))
     assert "`limit` is taken by a wrapper" in unsupported_signature(_calling(keeping_limit)(search))
@@ -1196,6 +1215,38 @@ def test_a_dictionary_that_is_not_a_plain_dict_is_not_listed():
     guarded.__dict__ = Attributes(guarded.__dict__)
     del _TOUCHED[:]
     assert _levels(_holding(guarded, fetch)) == [_FORWARD, _FETCH]
+    assert _TOUCHED == []
+
+
+def test_an_instance_dictionary_is_found_without_a_lookup_or_a_property():
+    """The instance dictionary of an object is reached through the C-level accessor of its
+    class, found by listing the class dictionaries: a key of a class is never compared, and
+    a ``__dict__`` the class answers itself (a property) is never called. Pinned on the
+    helper itself, since which objects it is used on differs by Python."""
+
+    class Key:
+        """Hashes like ``"__dict__"`` and compares unequal to it: any lookup of that name
+        in a dictionary that holds this key runs ``__eq__``."""
+
+        __hash__ = _touch("key __hash__", hash("__dict__"))
+        __eq__ = _touch("key __eq__", False)
+
+    keyed = type("Keyed", (), {Key(): None})()
+    keyed.held = 1
+    answering = type("Answering", (), {"__dict__": property(_touch("__dict__", {"held": 2}))})()
+
+    class Base:
+        pass
+
+    class Derived(Base):
+        pass
+
+    derived = Derived()
+    derived.held = 3
+    del _TOUCHED[:]
+    assert invocation._instance_attributes(keyed) == {"held": 1}
+    assert invocation._instance_attributes(answering) == {}
+    assert invocation._instance_attributes(derived) == {"held": 3}
     assert _TOUCHED == []
 
 
@@ -2034,6 +2085,13 @@ def test_the_single_dispatch_this_python_builds_is_recognised():
     assert not invocation._only_runs(built.dispatch, built)
     assert not invocation._only_runs(search, search)
 
+    # a function is a ``dispatch`` by its code object, not by a free variable called registry
+    def lookalike(base):
+        registry = {object: base}
+        return lambda cls: registry[object]
+
+    assert not invocation._only_runs(lookalike(search), search)
+
 
 def test_where_a_single_dispatch_method_keeps_its_registry_is_found():
     """Found at import by looking at one built there. It differs by Python: a closure cell
@@ -2199,6 +2257,13 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
     del nameless.__wrapped__
     with pytest.raises(DispatchedAtCallTime):
         reached_parameters(nameless)
+
+    # nor can one whose closure was emptied: it is refused as dispatch, not raised out of
+    emptied = functools.singledispatch(search)
+    cells = dict(zip(emptied.__code__.co_freevars, emptied.__closure__))
+    del cells["dispatch"].cell_contents
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(emptied)
 
 
 def test_a_dispatcher_a_wrapper_calls_in_place_of_its_base_is_refused():
