@@ -50,12 +50,14 @@ All notable changes to this project are documented here. The format follows
   - A tool given its schema by hand (`Tool.from_schema`) is not validated, so a
     parameter the model left out ran with the function's Python default, which no
     policy had seen: judged `{"table": "t"}`, ran `mode="hard"`. All four forms of the
-    gate (the two capabilities and the two hook functions) now complete the arguments
-    with the defaults the function Pydantic AI calls would fill in, judge those, and pass
+    gate (the two capabilities and the two hook functions) now read every function a
+    call reaches, a decorator's own keyword default included, complete the arguments
+    with each default that will reach the function it belongs to, judge those, and pass
     them written out. Where a default cannot be read or judged the call is refused: a
-    default that is not plain data, and, for a tool given its schema by hand, a function
-    that takes `*args` or `**kwargs` (the tools `pydantic_ai.ext.langchain` builds) or a
-    wrapper that hides a parameter with a default further in.
+    default that is not plain data, a wrapper that hides a parameter with a default
+    further in, a function that declares a signature of its own, and, for a tool given
+    its schema by hand, a function that takes `*args` or `**kwargs` (the tools
+    `pydantic_ai.ext.langchain` builds).
   - The order check holds for output functions and `Choices` picks as for tool calls,
     and counts a `Hooks` subclass that writes a hook as a method. A container the
     search for held toolsets cannot finish (4,000 values) is refused instead of passed.

@@ -664,6 +664,34 @@ class TestPydanticAiAudit:
         assert ran == [] and entry["action"]["decision"] == "deny"
         assert entry["action"]["input_sha256"] == _sha({"table": "t", "mode": "hard"})
 
+        # the hook hands back the arguments it judged, so the function runs with them
+        import asyncio
+        from types import SimpleNamespace
+
+        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.tools import ToolDefinition
+
+        def soft(table: str, mode: str = "soft") -> str:
+            return "ok"
+
+        schema_of = SimpleNamespace(
+            function=soft,
+            takes_ctx=False,
+            validator=SimpleNamespace(validate_python=lambda value: value),
+        )
+        record = SimpleNamespace(call_func=SimpleNamespace(__self__=schema_of))
+        ctx = SimpleNamespace(tool_manager=SimpleNamespace(tools={"soft": record}))
+        handed_back = asyncio.run(
+            hook(
+                ctx,
+                call=ToolCallPart("soft", {"table": "t"}, tool_call_id="c7"),
+                tool_def=ToolDefinition(name="soft"),
+                args={"table": "t"},
+            )
+        )
+        assert handed_back == {"table": "t", "mode": "soft"}
+        assert log.entries[-1]["action"]["input_sha256"] == _sha({"table": "t", "mode": "soft"})
+
         # a function whose defaults cannot be read is refused, and that is on the record
         def proxy(**kwargs):
             ran.append(kwargs)
@@ -676,7 +704,7 @@ class TestPydanticAiAudit:
             capabilities=[Hooks(before_tool_execute=hook)],
         ).run_sync("go")
         refused = log.entries[-1]
-        assert ran == [] and len(log.entries) == 2
+        assert ran == [] and len(log.entries) == 3
         assert refused["action"]["decision"] == "deny"
         assert refused["action"]["input_sha256"] == _sha({"table": "t"})
 

@@ -65,6 +65,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.set_metadata import SetMetadataToolset
 
 from recusal import Finding, decide
+from recusal.invocation import DeclaredSignature as _DeclaredSignature
 from recusal.invocation import detached as _detached
 from recusal.invocation import json_data as _json_data
 from recusal.invocation import reached_parameters as _reached_parameters
@@ -621,62 +622,83 @@ def _defaulted(level: Any, skip_first: bool) -> dict[str, Any]:
     return found
 
 
+def _takes_keywords(level: Any) -> bool:
+    return any(parameter.kind is parameter.VAR_KEYWORD for parameter in level.values())
+
+
 def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[str]]:
     """The arguments the function will run with, or why they cannot be known.
 
-    Python fills a default in when the function is called, after every hook. Pydantic AI's
-    validation has already filled in the defaults of the signature it built the tool from,
-    so what is left is:
+    Python fills a default in when a function is called, after every hook, and a decorated
+    tool is several functions: Pydantic AI builds the schema from the innermost one (it
+    follows ``__wrapped__``) and calls the outermost. Its validation has filled in the
+    innermost function's defaults; every wrapper on the way has defaults of its own that
+    nothing has read. So every callable the call reaches is read, outermost first, and for
+    each named parameter with a default that the arguments leave out:
 
-    - a default of the outermost callable itself that the arguments leave out: a decorator's
-      own keyword, or, for a tool given its schema by hand (``Tool.from_schema``, which is
-      not validated), any parameter the model left out. These are added, so the policy
-      judges them and the function is called with them written out. One that is not plain
-      data cannot be judged and is refused by name.
-    - for a tool that is not validated, what happens further in. A function that takes
-      ``*args`` or ``**kwargs`` can fill in a value in its own body (Pydantic AI's LangChain
-      bridge does), and a wrapper may or may not pass on a parameter the function it wraps
-      gives a default. Neither can be read, so both are refused."""
+    - on the outermost callable, Python fills it in at the call: it is added;
+    - further in, it is added when every callable above takes ``**kwargs`` and none names
+      it, so a value written out is carried down to it unchanged;
+    - further in and named by a callable above, that one's value is what is passed on, and
+      it was dealt with at its own level;
+    - otherwise it cannot be passed down or known, and the call is refused.
+
+    What is added is judged, and the function is called with it written out. A default
+    that is not plain data cannot be shown to a policy and is refused by name.
+
+    A tool given its schema by hand (``Tool.from_schema``) is not validated, so nothing has
+    filled in anything. There a function that takes ``*args`` or ``**kwargs`` can fill in a
+    value in its own body (Pydantic AI's LangChain bridge does), which cannot be read: it
+    is refused. A callable that declares a signature of its own (``__signature__``) hides
+    the parameters Python binds, and is refused for any tool."""
     function, takes_ctx, validated = _function_of(ctx, tool_name)
     if function is None or not isinstance(args, dict):
         return args, None
     try:
+        levels = _reached_parameters(function)
+    except _DeclaredSignature:
+        return args, (
+            "a function this tool runs declares a signature of its own (`__signature__`), so "
+            "the parameters Python binds, and their defaults, cannot be read"
+        )
+    except Exception:  # noqa: BLE001, a callable the kernel does not walk (a partial, an object)
+        unread = "the function this tool runs cannot be inspected for its defaults"
+        if not validated:
+            return args, unread
         try:
-            levels = _reached_parameters(function)
-        except Exception:  # noqa: BLE001, a wrapper the kernel does not read: the outer one
             levels = [inspect.signature(function, follow_wrapped=False).parameters]
-    except Exception:  # noqa: BLE001, nothing readable: the defaults cannot be known
-        return args, "the function this tool runs cannot be inspected for its defaults"
-    missing = {
-        name: default
-        for name, default in _defaulted(levels[0], takes_ctx).items()
-        if name not in args
-    }
-    for name, default in missing.items():
-        if not _json_data(default):
-            return args, (
-                f"parameter `{name}` of the function this tool runs has a default that is "
-                "not plain data, so the value the function would run with cannot be judged; "
-                "give it a JSON default (or None) and resolve the object inside the function"
-            )
+        except Exception:  # noqa: BLE001, nothing readable: the defaults cannot be known
+            return args, unread
     if not validated:
-        by_hand = "this tool was given its schema by hand, so its arguments are not validated"
         for level in levels:
             for name, parameter in level.items():
                 if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
                     return args, (
-                        f"{by_hand}, and its function takes `{name}` as a variadic parameter: "
+                        "this tool was given its schema by hand, so its arguments are not "
+                        f"validated, and its function takes `{name}` as a variadic parameter: "
                         "a value it fills in itself cannot be read or judged; give the "
                         "function named parameters, or build the tool from its signature"
                     )
-        for level in levels[1:]:
-            for name in _defaulted(level, False):
-                if name not in args and name not in levels[0]:
-                    return args, (
-                        f"{by_hand}, and a wrapper around its function hides `{name}`, which "
-                        "has a default further in: whether that default applies cannot be "
-                        "read; name the parameter on the wrapper"
-                    )
+    missing: dict[str, Any] = {}
+    for index, level in enumerate(levels):
+        above = levels[:index]
+        for name, default in _defaulted(level, takes_ctx and index == 0).items():
+            if name in args or name in missing or any(name in upper for upper in above):
+                continue
+            if not all(_takes_keywords(upper) for upper in above):
+                return args, (
+                    f"a wrapper around the function this tool runs hides `{name}`, which has "
+                    "a default further in: whether that default applies cannot be read; name "
+                    "the parameter on the wrapper, or let the wrapper pass `**kwargs` through"
+                )
+            if not _json_data(default):
+                return args, (
+                    f"parameter `{name}` of the function this tool runs has a default that is "
+                    "not plain data, so the value the function would run with cannot be "
+                    "judged; give it a JSON default (or None) and resolve the object inside "
+                    "the function"
+                )
+            missing[name] = default
     return ({**args, **missing} if missing else args), None
 
 

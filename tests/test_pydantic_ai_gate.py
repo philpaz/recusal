@@ -1784,8 +1784,10 @@ class TestPydanticAiGate:
         return SimpleNamespace(tool_manager=SimpleNamespace(tools={"t": record}))
 
     def test_what_is_completed_and_what_is_left_alone(self, example, adapter):
-        """Only the outermost callable's own defaults are completed: Python fills those in
-        when the function is called. Where there is no local function, nothing is done."""
+        """A default the arguments leave out is added when it will reach the function it
+        belongs to: on the outermost callable Python fills it in at the call, and further in
+        a value written out is carried down through ``**kwargs``. Where there is no local
+        function, nothing is done."""
         import functools
         from types import SimpleNamespace
 
@@ -1799,8 +1801,12 @@ class TestPydanticAiGate:
         validated = {"table": "x", "mode": "hard", "limit": 1}
         completed, reason = adapter._with_defaults(self._ctx_for(retrying), "t", validated)
         assert reason is None and completed == {**validated, "_retries": 3}
-        sent = {"table": "x", "_retries": 9}
+        sent = {"table": "x", "mode": "soft", "limit": 1, "_retries": 9}
         assert adapter._with_defaults(self._ctx_for(retrying), "t", sent) == (sent, None)
+        # arguments that reached the hook without validation: the inner defaults are added too
+        completed, reason = adapter._with_defaults(self._ctx_for(retrying), "t", {"table": "x"})
+        assert reason is None
+        assert completed == {"table": "x", "_retries": 3, "mode": "hard", "limit": 5}
         same = {"table": "x", "mode": "soft", "limit": 2}
         assert adapter._with_defaults(self._ctx_for(inner), "t", same) == (same, None)
         assert adapter._with_defaults(self._ctx_for(inner), "other", {}) == ({}, None)
@@ -1868,10 +1874,150 @@ class TestPydanticAiGate:
         assert adapter._with_defaults(unvalidated, "t", sent) == (sent, None)
         assert by_hand(naming) == ({"table": "x", "mode": "soft"}, None)
         assert by_hand(inner) == ({"table": "x", "mode": "hard"}, None)
-        # the same functions behind a validated tool are Pydantic AI's to complete
-        for function in (proxy, narrow):
-            assert adapter._with_defaults(self._ctx_for(function), "t", {"table": "x"})[1] is None
+        # behind a validated tool a function that takes **kwargs is read like any other, and
+        # a wrapper that hides a parameter is refused only when the arguments leave it out
+        assert adapter._with_defaults(self._ctx_for(proxy), "t", {"table": "x"})[1] is None
+        validated = {"table": "x", "mode": "hard"}
+        assert adapter._with_defaults(self._ctx_for(narrow), "t", validated) == (validated, None)
+        assert (
+            "hides `mode`" in adapter._with_defaults(self._ctx_for(narrow), "t", {"table": "x"})[1]
+        )
         assert adapter._validates(object()) is True
+
+        # an unvalidated tool is refused for either variadic kind, at any level
+        def only_positional(*args):
+            return "ok"
+
+        def takes_options(table, **options):
+            return "ok"
+
+        @functools.wraps(takes_options)
+        def named(table):
+            return takes_options(table)
+
+        assert "`args` as a variadic parameter" in by_hand(only_positional)[1]
+        assert "`options` as a variadic parameter" in by_hand(named)[1]
+
+    def test_which_inner_defaults_can_be_passed_down(self, example, adapter):
+        """A value written out reaches an inner function only through ``**kwargs``: a wrapper
+        that takes ``*args`` alone cannot carry a keyword, so the default it hides is
+        refused. A parameter a wrapper names itself is that wrapper's to pass on. Only the
+        outermost callable's first parameter is the run context."""
+        import functools
+
+        def inner(table: str, mode: str = "hard") -> str:
+            return "ok"
+
+        @functools.wraps(inner)
+        def positional_only_wrapper(*args):
+            return inner(*args)
+
+        @functools.wraps(inner)
+        def requires_mode(table, mode):
+            return inner(table, mode)
+
+        def first_has_default(first: str = "a", table: str = "x") -> str:
+            return "ok"
+
+        @functools.wraps(first_has_default)
+        def takes_context(ctx, **kwargs):
+            return first_has_default(**kwargs)
+
+        sent = {"table": "x"}
+        refused = adapter._with_defaults(self._ctx_for(positional_only_wrapper), "t", sent)
+        assert refused[0] == sent and "hides `mode`" in refused[1]
+        assert adapter._with_defaults(self._ctx_for(requires_mode), "t", sent) == (sent, None)
+        completed, reason = adapter._with_defaults(
+            self._ctx_for(takes_context, takes_ctx=True), "t", {}
+        )
+        assert reason is None and completed == {"first": "a", "table": "x"}
+
+    def test_a_default_on_a_decorator_in_the_middle_of_a_stack_is_judged(self, example):
+        """Pydantic AI builds a tool's schema from the innermost function and calls the
+        outermost, so a keyword default on a decorator between the two was read by nobody:
+        the policy was shown no ``skip_review`` and the transfer ran with
+        ``skip_review=True``. Where the function takes ``**options`` the model could send
+        the keyword (refused) or leave it out (ran). Every callable the call reaches is
+        read."""
+        import functools
+
+        from recusal import Finding
+
+        ran, seen = [], []
+
+        def fast_path(function):
+            @functools.wraps(function)
+            def wrapper(*args, skip_review=True, **kwargs):
+                ran.append(("skip_review", skip_review))
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def timed(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def policy(name, args):
+            seen.append(dict(args))
+            if args.get("skip_review"):
+                return [Finding.fail("review", severity="CRITICAL", message="review skipped")]
+            return []
+
+        @timed
+        @fast_path
+        def transfer(account: str, amount: int) -> str:
+            """Transfer."""
+            ran.append(("transfer", account, amount))
+            return "sent"
+
+        @timed
+        @fast_path
+        def transfer_with_options(account: str, amount: int, **options: bool) -> str:
+            """Transfer."""
+            ran.append(("transfer", account, amount))
+            return "sent"
+
+        for tool, sent in (
+            (transfer, {"account": "x", "amount": 5}),
+            (transfer_with_options, {"account": "x", "amount": 5}),
+            (transfer_with_options, {"account": "x", "amount": 5, "skip_review": True}),
+        ):
+            for capabilities in (
+                [example.RecusalGate(policy)],
+                [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))],
+            ):
+                ran.clear(), seen.clear()
+                agent = example.Agent(
+                    self._model_calling(example, tool.__name__, sent),
+                    tools=[tool],
+                    capabilities=capabilities,
+                )
+                answers = example.responses_of(agent.run_sync("go"))
+                assert seen == [{"account": "x", "amount": 5, "skip_review": True}]
+                assert ran == [] and "review skipped" in answers["c1"][1]
+
+    def test_a_function_that_declares_its_own_signature_is_refused(self, example, adapter):
+        """A callable with a ``__signature__`` shows parameters other than the ones Python
+        binds, so a keyword of its own with a default cannot be found: refused, for a
+        validated tool and one given its schema by hand alike."""
+        import functools
+        import inspect
+
+        def inner(table: str) -> str:
+            return "ok"
+
+        @functools.wraps(inner)
+        def traced(*args, sample=True, **kwargs):
+            return inner(*args, **kwargs)
+
+        traced.__signature__ = inspect.signature(inner)
+        for validated in (True, False):
+            ctx = self._ctx_for(traced, validated=validated)
+            same, reason = adapter._with_defaults(ctx, "t", {"table": "x"})
+            assert same == {"table": "x"} and "declares a signature of its own" in reason
 
     def test_a_function_that_cannot_be_inspected_is_refused(self, example, adapter, monkeypatch):
         def tool(table: str, mode: str = "hard") -> str:
@@ -1883,6 +2029,19 @@ class TestPydanticAiGate:
         monkeypatch.setattr(adapter, "_reached_parameters", unreadable)
         completed, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
         assert reason is None and completed == {"table": "x", "mode": "hard"}  # the fallback
+        # the fallback reads the callable itself, not what it wraps
+        import functools
+
+        @functools.wraps(tool)
+        def outer(*args, attempts=2, **kwargs):
+            return tool(*args, **kwargs)
+
+        completed, _ = adapter._with_defaults(self._ctx_for(outer), "t", {"table": "x"})
+        assert completed == {"table": "x", "attempts": 2}
+        # for a tool that is not validated there is nothing to fall back on
+        by_hand = self._ctx_for(tool, validated=False)
+        same, reason = adapter._with_defaults(by_hand, "t", {"table": "x"})
+        assert same == {"table": "x"} and "cannot be inspected" in reason
         monkeypatch.setattr(adapter.inspect, "signature", unreadable)
         same, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
         assert same == {"table": "x"} and "cannot be inspected" in reason
