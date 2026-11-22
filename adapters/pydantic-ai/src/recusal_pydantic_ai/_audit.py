@@ -108,28 +108,25 @@ class RecusalAuditedGate(RecusalGate):
     """The audited gate as a capability: ``RecusalAuditedGate(policy, log=log)``.
 
     A ``RecusalGate`` (so ``is_gated`` sees it, and it keeps the ``innermost`` position)
-    whose every decision is one entry on ``log``.
+    whose every decision is one entry on ``log``: a tool call (surface
+    ``pydantic_ai.before_tool_execute``), an output function
+    (``pydantic_ai.before_output_process``) and a call handed to the application to run
+    (``pydantic_ai.handle_deferred_tool_calls``). The plain gate's hooks make each decision;
+    this class only says how to record it, so there is one decision path.
     """
 
     log: AuditLog
     actor: Optional[str] = None
     control: Optional[dict[str, Any]] = None
 
-    async def before_tool_execute(
-        self,
-        ctx: RunContext[Any],
-        *,
-        call: ToolCallPart,
-        tool_def: ToolDefinition,
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
-        reason = _refusal(
-            call.tool_name,
-            args,
-            self.policy,
-            proposal=_proposal(call),
-            **_recording(call, self.actor, self.control, self.log),
-        )
-        if reason is not None:
-            raise ToolFailed(reason)
-        return args
+    def _record(self, tool_call_id: Optional[str], surface: str) -> dict[str, Any]:
+        return {
+            "audit": self.log,
+            "surface": surface,
+            "tool_use_id": tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None,
+            "actor": self.actor,
+            "control": self.control,
+        }
+
+    def _proposal(self, call: Optional[ToolCallPart]) -> Any:
+        return _proposal(call) if call is not None else None

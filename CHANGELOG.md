@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **`recusal-pydantic-ai` 0.2.0, unreleased: the gate judges what ran outside the tool
+  hook, and refuses a run whose toolsets could rewrite a call.** Found by the adapter
+  review of 2026-11-19 and reproduced on `pydantic-ai-slim` 2.67.0:
+  - An output function (`output_type=fn`) runs the application's function with values the
+    model chose, and ran with no policy asked. `RecusalGate` now judges it in
+    `before_output_process`, under the function's name, before it runs; a refusal asks
+    the model again and the function does not run.
+  - A `WrapperToolset` subclass whose `call_tool` changed the arguments ran after the gate
+    judged them: judged `force=False`, ran `force=True`. A toolset runs after every
+    capability hook, so a run with such a wrapper in its toolsets now has every call
+    refused, on the record; the wrappers Pydantic AI ships route a call and are not.
+  - A call handed to the application to run (an `ExternalToolset`, `CallDeferred`) left
+    the run with no policy asked. It is now judged in `handle_deferred_tool_calls`: a
+    refused one is answered with the refusal, an allowed one handed on as judged.
+  - `agent.override(spec=...)` with a spec naming capabilities replaces the gate, and
+    `is_gated` still said `True` while the tool ran unjudged; it now reads the
+    capabilities in effect.
+  - The audited gate records each of these on its own surface
+    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`), by
+    the plain gate's own decision. The README now says which tool name the policy is
+    given (the prefixed or renamed one) and corrects two sentences on ordering: another
+    `innermost` capability listed after the gate runs after it, and the plain `Hooks`
+    form is safe only where no `innermost` capability is added.
+
 ## [0.15.0] - 2026-11-21
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public

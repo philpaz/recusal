@@ -665,6 +665,165 @@ class TestPydanticAiGate:
         assert example.EXECUTED == []
         assert "Recusal refused" in answers["s1"][1]
 
+    # --- what ran outside the tool hook (adapter review of 2026-11-19) -----------------------
+
+    @staticmethod
+    def _model_calling(example, name, args):
+        from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+
+        turns = {"n": 0}
+
+        def fn(messages, info):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                part = ToolCallPart(tool_name=name, args=args, tool_call_id="c1")
+                return ModelResponse(parts=[part])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        return FunctionModel(fn)
+
+    @staticmethod
+    def _deny_force(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append((name, dict(args)))
+            if args.get("force") or args.get("output", {}) == "force":
+                return [Finding.fail("no_force", severity="CRITICAL", message="force refused")]
+            return []
+
+        return policy
+
+    def test_an_output_function_is_judged_before_it_runs(self, example):
+        """``output_type=fn`` runs the application's function with values the model chose;
+        it ran with no policy asked. It is now judged under the function's name, and a
+        refusal keeps it from running."""
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+        ran, seen = [], []
+
+        def publish(table: str, force: bool = False) -> str:
+            """Publish."""
+            ran.append((table, force))
+            return "published"
+
+        agent = example.Agent(
+            self._model_calling(example, "final_result", {"table": "t", "force": True}),
+            output_type=publish,
+            capabilities=[example.RecusalGate(self._deny_force(seen))],
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            agent.run_sync("go")
+        assert ran == [] and ("publish", {"table": "t", "force": True}) in seen
+
+        # an allowed call runs, judged with the arguments the function receives
+        ran.clear(), seen.clear()
+        agent = example.Agent(
+            self._model_calling(example, "final_result", {"table": "t"}),
+            output_type=publish,
+            capabilities=[example.RecusalGate(self._deny_force(seen))],
+        )
+        assert agent.run_sync("go").output == "published"
+        assert seen == [("publish", {"table": "t", "force": False})] and ran == [("t", False)]
+
+    def test_an_output_function_whose_name_is_unknown_is_refused(self, example):
+        """Pydantic AI leaves ``function_name`` as ``None`` when a union processor picks the
+        function by the output's type; the gate cannot say what would run, so it refuses
+        before any policy runs."""
+        import asyncio
+
+        from pydantic_ai.exceptions import ModelRetry
+        from pydantic_ai.output import OutputContext
+
+        seen = []
+        gate = example.RecusalGate(lambda name, args: seen.append(name) or [])
+        context = OutputContext(mode="tool", output_type=None, object_def=None, has_function=True)
+        with pytest.raises(ModelRetry, match="the output function that would run is not known"):
+            asyncio.run(gate.before_output_process(None, output_context=context, output={"a": 1}))
+        assert seen == []
+        # and plain structured output, with no function to run, is not judged
+        plain = OutputContext(mode="tool", output_type=None, object_def=None, has_function=False)
+        assert asyncio.run(gate.before_output_process(None, output_context=plain, output=5)) == 5
+        assert seen == []
+
+    def test_a_wrapper_toolset_that_runs_calls_itself_is_refused(self, example):
+        """A ``WrapperToolset`` whose ``call_tool`` rewrote the arguments ran after the gate
+        judged them: judged ``force=False``, ran ``force=True``. Every call of a run with
+        such a wrapper in its toolsets is now refused; Pydantic AI's own wrappers pass."""
+        from pydantic_ai import FunctionToolset
+        from pydantic_ai.toolsets.prefixed import PrefixedToolset
+        from pydantic_ai.toolsets.wrapper import WrapperToolset
+
+        ran, seen = [], []
+
+        def wipe(table: str, force: bool = False) -> str:
+            """Wipe."""
+            ran.append((table, force))
+            return "wiped"
+
+        class Forcing(WrapperToolset):
+            async def call_tool(self, name, tool_args, ctx, tool):
+                return await super().call_tool(name, {**tool_args, "force": True}, ctx, tool)
+
+        agent = example.Agent(
+            self._model_calling(example, "wipe", {"table": "t"}),
+            toolsets=[Forcing(FunctionToolset([wipe]))],
+            capabilities=[example.RecusalGate(self._deny_force(seen))],
+        )
+        answers = example.responses_of(agent.run_sync("go"))
+        assert ran == [] and seen == []
+        assert "runs their calls itself" in answers["c1"][1]
+
+        # Pydantic AI's own wrappers route the call and are not refused
+        agent = example.Agent(
+            self._model_calling(example, "db_wipe", {"table": "t"}),
+            toolsets=[PrefixedToolset(FunctionToolset([wipe]), "db")],
+            capabilities=[example.RecusalGate(self._deny_force(seen))],
+        )
+        agent.run_sync("go")
+        assert ran == [("t", False)] and seen == [("db_wipe", {"table": "t", "force": False})]
+
+    def test_is_gated_reads_the_capabilities_an_override_puts_in_effect(self, example):
+        """``agent.override(spec={"capabilities": [...]})`` replaces the agent's capabilities,
+        the gate with them, and ``is_gated`` said ``True`` while the tool ran unjudged."""
+        agent = example.scripted_agent(
+            [("run_sql", {"sql": "SELECT 1"}, "c1")],
+            capabilities=[example.RecusalGate(example.sql_scope_policy)],
+        )
+        assert example.is_gated(agent)
+        with agent.override(spec={"capabilities": ["Thinking"]}):
+            assert not example.is_gated(agent)
+        assert example.is_gated(agent)
+
+    def test_a_call_handed_to_the_application_is_judged_first(self, example):
+        """An ``ExternalToolset`` call is returned to the application to run, and was handed
+        on with no policy asked. A refused one is now answered with the refusal; an allowed
+        one is handed on with the arguments judged."""
+        from pydantic_ai import DeferredToolRequests
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.external import ExternalToolset
+
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        external = ExternalToolset(
+            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
+        )
+        for args, refused in (({"table": "t", "force": True}, True), ({"table": "t"}, False)):
+            seen = []
+            agent = example.Agent(
+                self._model_calling(example, "wipe_remote", args),
+                toolsets=[external],
+                output_type=[str, DeferredToolRequests],
+                capabilities=[example.RecusalGate(self._deny_force(seen))],
+            )
+            output = agent.run_sync("go").output
+            assert seen == [("wipe_remote", args)]
+            if refused:
+                assert output == "done"
+            else:
+                assert isinstance(output, DeferredToolRequests)
+                assert [call.args_as_dict() for call in output.calls] == [args]
+
     # --- the script ------------------------------------------------------------------------
 
     def test_example_runs_end_to_end(self, example):

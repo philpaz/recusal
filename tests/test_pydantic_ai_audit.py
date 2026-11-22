@@ -526,6 +526,58 @@ class TestPydanticAiAudit:
         assert ("run_sql", {"sql": DELETE}) in executed
         assert log.entries == []
 
+    # --- the decisions made outside the tool hook are on the record too ---------------------
+
+    @staticmethod
+    def _model_calling(name, args):
+        from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+
+        turns = {"n": 0}
+
+        def fn(messages, info):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                part = ToolCallPart(tool_name=name, args=args, tool_call_id="c1")
+                return ModelResponse(parts=[part])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        return FunctionModel(fn)
+
+    def test_an_output_function_and_an_external_call_are_recorded(self, example, log):
+        """The audited gate makes the plain gate's decisions on every hook, so an output
+        function and a call handed to the application are each one entry, labelled with the
+        hook that decided."""
+        from pydantic_ai import Agent, DeferredToolRequests
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.external import ExternalToolset
+
+        def publish(table: str) -> str:
+            """Publish."""
+            return "published"
+
+        allow = lambda name, args: []  # noqa: E731
+        Agent(
+            self._model_calling("final_result", {"table": "t"}),
+            output_type=publish,
+            capabilities=[example.RecusalAuditedGate(allow, log=log)],
+        ).run_sync("go")
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        external = ExternalToolset(
+            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
+        )
+        Agent(
+            self._model_calling("wipe_remote", {"table": "t"}),
+            toolsets=[external],
+            output_type=[str, DeferredToolRequests],
+            capabilities=[example.RecusalAuditedGate(allow, log=log)],
+        ).run_sync("go")
+        actions = [(e["action"]["tool"], e["action"]["surface"]) for e in log.entries]
+        assert actions == [
+            ("publish", "pydantic_ai.before_output_process"),
+            ("wipe_remote", "pydantic_ai.handle_deferred_tool_calls"),
+        ]
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):
