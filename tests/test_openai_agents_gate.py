@@ -1386,31 +1386,64 @@ class TestSecondReview:
         )
         assert ran == [SELECT]
 
-    def test_another_unreadable_callable_keeps_the_plain_reason(self, example):
-        """Too many wrappers is a ``ValueError`` of the walk's own, with no decorator object
-        on the chain: the reason about a class-based decorator would not be true of it."""
+    @staticmethod
+    def forwarding_stack(depth, decorate=None):
+        """``run_sql(sql)`` under ``depth`` wrappers that only forward, or under ``depth``
+        layers of ``decorate``."""
         import functools
 
         def run_sql(sql: str) -> str:
             """Record SQL text without connecting to a database."""
             return "recorded"
 
+        def forwards(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
         func = run_sql
-        for _ in range(40):
+        for _ in range(depth):
+            func = (decorate or forwards)(func)
+        return func
 
-            def forwards(fn):
-                @functools.wraps(fn)
-                def wrapper(*args, **kwargs):
-                    return fn(*args, **kwargs)
+    def test_too_many_wrappers_are_refused_for_that_reason(self, example):
+        """Too many wrappers is a ``ValueError`` of the walk's own, with no decorator object
+        on the chain: neither the reason about a class-based decorator nor "cannot be
+        inspected (ValueError)" would say what is wrong with it."""
+        import functools
 
-                return wrapper
-
-            func = forwards(func)
-        cached = functools.lru_cache(maxsize=None)(func)
-        for candidate in (func, cached):
+        expected = (
+            "Recusal cannot gate 'run_sql': the function it runs is under more wrappers than "
+            "the gate reads (a stack of more than 31 wrappers, or more than eight "
+            "`functools.lru_cache` layers one on another), so the functions under them cannot "
+            "be read. Call the wrapped function from a plain function and register that."
+        )
+        cache = functools.lru_cache(maxsize=None)
+        refused = [
+            self.forwarding_stack(32),
+            cache(self.forwarding_stack(40)),
+            self.forwarding_stack(9, cache),
+        ]
+        for candidate in refused:
             tool = example.function_tool(candidate, name_override="run_sql")
-            with pytest.raises(TypeError, match="cannot be inspected \\(ValueError\\)"):
+            with pytest.raises(TypeError) as refusal:
                 example.gate_tools([tool], example.sql_scope_policy)
+            assert str(refusal.value) == expected
+        for candidate in (self.forwarding_stack(31), self.forwarding_stack(8, cache)):
+            tool = example.function_tool(candidate, name_override="run_sql")
+            assert example.gate_tools([tool], example.sql_scope_policy)
+
+    def test_another_unreadable_callable_keeps_the_plain_reason(self, example, monkeypatch):
+        """A ``ValueError`` that is not the walk's own limit is still named for what it is."""
+
+        def unreadable(func):
+            raise ValueError("no signature found")
+
+        monkeypatch.setattr(_adapter(), "_reached_parameters", unreadable)
+        with pytest.raises(TypeError, match="cannot be inspected \\(ValueError\\)"):
+            example.gate_tools([example.run_sql], example.sql_scope_policy)
 
     # --- a mapping keyed by anything but str ----------------------------------------------------
 
@@ -1633,3 +1666,496 @@ class TestSecondReview:
         )
         agent = example.Agent(name="a", tools=[example.run_sql], model_settings=settings)
         assert example.is_gated(example.gated_agent(agent, example.sql_scope_policy))
+
+
+class Router:
+    """A callable service object that happens to have a ``dispatch`` method and a
+    ``registry`` attribute, as a ``functools.singledispatch`` function does."""
+
+    def __init__(self, ran):
+        self.ran = ran
+        self.registry = {"default": "db1"}
+
+    def dispatch(self, event):
+        return None
+
+    def __call__(self, sql: str, limit: int = 10) -> str:
+        """Record SQL text without connecting to a database."""
+        self.ran.append({"sql": sql, "limit": limit})
+        return "recorded"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestThirdReview:
+    """The third review of 2026-11-21. With ``agent.as_tool(parameters=Model)`` the parent's
+    policy judged the model's raw JSON while the sub-agent was handed the validated,
+    converted and defaulted input; three checks refused what they had no reason to (a
+    service object taken for a ``singledispatch`` function, a mapping keyed by a
+    ``Literal`` of strings, a stack of wrappers named as "cannot be inspected"); and three
+    mutations of the gate passed the suite."""
+
+    example = TestJudgedIsWhatRuns.example
+    Recording = TestEffectiveArguments.Recording
+
+    # --- an agent tool with a parameters model ------------------------------------------------
+
+    @staticmethod
+    def ask_model():
+        from pydantic import BaseModel
+
+        class Ask(BaseModel):
+            task: str
+            confirm: bool = False
+            rows: int = 1
+
+        return Ask
+
+    @staticmethod
+    def no_confirmed_or_large(name, args):
+        """Refuses a confirmed request and one for more than five rows."""
+        from recusal import Finding
+
+        if args.get("confirm") is True:
+            return [Finding.fail("no_confirm", severity="CRITICAL", message="not confirmed")]
+        if type(args.get("rows", 1)) is int and args.get("rows", 1) > 5:
+            return [Finding.fail("too_many", severity="CRITICAL", message="at most five rows")]
+        return []
+
+    def ask(self, example, arguments, *, parameters, policy=None, gated=True):
+        """A parent that calls ``ask_sub`` with ``arguments``: ``(what the parent's policy
+        was handed, the call's output, what the sub-agent was given or None)``."""
+        from agents.testing import ScriptedModel, assistant_message
+
+        sub_model = ScriptedModel([[assistant_message("sub done")]])
+        sub = example.gated_agent(
+            example.Agent(name="sub", model=sub_model, tools=[example.run_sql]),
+            lambda name, args: [],
+        )
+        keywords = {} if parameters is None else {"parameters": parameters}
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask the sub-agent.", **keywords)
+        parent_model = example.scripted_model([("ask_sub", arguments, "p1")])
+        parent = example.Agent(name="parent", model=parent_model, tools=[tool])
+        recording = self.Recording(policy or self.no_confirmed_or_large)
+        if gated:
+            parent = example.gated_agent(parent, recording)
+        asyncio.run(example.run_agent(parent))
+        given = None
+        if sub_model.first_call is not None:
+            given = [item["content"] for item in sub_model.first_call.input]
+        return recording.seen, example.tool_outputs(parent_model)["p1"], given
+
+    @pytest.mark.parametrize(
+        "arguments, judged",
+        [
+            (
+                {"task": "list", "confirm": False, "rows": 2},
+                {"task": "list", "confirm": False, "rows": 2},
+            ),
+            (
+                {"task": "list", "confirm": "false", "rows": "2"},
+                {"task": "list", "confirm": False, "rows": 2},
+            ),
+            ({"task": "list"}, {"task": "list", "confirm": False, "rows": 1}),
+            (
+                {"task": "list", "rows": 3, "force": True},
+                {"task": "list", "confirm": False, "rows": 3},
+            ),
+        ],
+        ids=["typed", "strings-the-sdk-converts", "defaults-left-out", "a-key-the-model-drops"],
+    )
+    def test_the_parent_policy_is_handed_what_the_sub_agent_is_given(
+        self, example, arguments, judged
+    ):
+        import json
+
+        seen, output, given = self.ask(example, arguments, parameters=self.ask_model())
+        assert seen == [("ask_sub", judged)]
+        assert output == "sub done"
+        assert [json.loads(text) for text in given] == [judged]
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"task": "list", "confirm": "true"}, {"task": "list", "rows": "9"}],
+        ids=["confirm-as-a-string", "rows-as-a-string"],
+    )
+    def test_the_parent_policy_refuses_the_converted_value_it_now_sees(self, example, arguments):
+        seen, output, given = self.ask(example, arguments, parameters=self.ask_model())
+        assert output.startswith("Recusal refused `ask_sub` [FAIL]: ")
+        assert given is None, "the sub-agent was never started"
+
+    def test_negative_control_ungated_the_sub_agent_is_given_the_converted_values(self, example):
+        import json
+
+        arguments = {"task": "list", "confirm": "true", "rows": "9", "force": True}
+        _, _, given = self.ask(example, arguments, parameters=self.ask_model(), gated=False)
+        assert [json.loads(text) for text in given] == [
+            {"task": "list", "confirm": True, "rows": 9}
+        ]
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"task": "list", "rows": "many"}, {"confirm": True}, {}],
+        ids=["a-value-of-another-type", "a-required-field-left-out", "nothing"],
+    )
+    def test_arguments_the_parameters_model_does_not_accept_are_refused_before_the_policy(
+        self, example, arguments
+    ):
+        seen, output, given = self.ask(example, arguments, parameters=self.ask_model())
+        assert output == (
+            "Recusal refused `ask_sub`: the input the sub-agent would be given cannot be "
+            "judged (the arguments do not validate against its parameters)"
+        )
+        assert seen == [] and given is None
+
+    def test_the_default_as_tool_is_judged_by_the_arguments_as_proposed(self, example):
+        arguments = {"input": "tidy the log", "note": "kept"}
+        seen, output, given = self.ask(example, arguments, parameters=None)
+        assert seen == [("ask_sub", arguments)]
+        assert given == ["tidy the log"]
+
+    @staticmethod
+    def unreadable_parameters():
+        """``parameters`` types whose validated input the gate cannot work out without
+        running code of the type's own, by the name of what makes them so."""
+        import dataclasses
+        import datetime
+
+        from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator
+
+        class Validated(BaseModel):
+            task: str
+
+            @field_validator("task")
+            @classmethod
+            def upper(cls, value):
+                return value.upper()
+
+        class Serialized(BaseModel):
+            task: str
+
+            @field_serializer("task")
+            def upper(self, value):
+                return value.upper()
+
+        class Computed(BaseModel):
+            task: str
+
+            @computed_field  # type: ignore[prop-decorator]
+            @property
+            def shout(self) -> str:
+                return self.task.upper()
+
+        class Inner(BaseModel):
+            task: str
+
+        class Nested(BaseModel):
+            inner: Inner
+
+        class Dated(BaseModel):
+            when: datetime.date
+
+        class Built(BaseModel):
+            tags: typing.List[str] = Field(default_factory=lambda: ["all"])
+
+        @dataclasses.dataclass
+        class Plain:
+            task: str
+
+        return {
+            "a-validator": Validated,
+            "a-serializer": Serialized,
+            "a-computed-field": Computed,
+            "a-nested-model": Nested,
+            "a-date": Dated,
+            "a-default-factory": Built,
+            "a-dataclass": Plain,
+        }
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "a-validator",
+            "a-serializer",
+            "a-computed-field",
+            "a-nested-model",
+            "a-date",
+            "a-default-factory",
+            "a-dataclass",
+        ],
+    )
+    def test_a_parameters_type_that_runs_its_own_code_is_refused_at_setup(self, example, case):
+        parameters = self.unreadable_parameters()[case]
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=parameters)
+        expected = (
+            "Recusal cannot gate agent tool 'ask_sub': its `parameters` type is one the gate "
+            "cannot work out the sub-agent's input for without running code of the type's own"
+        )
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value).startswith(expected)
+        with pytest.raises(TypeError) as refusal:
+            example.gated_agent(example.Agent(name="p", tools=[tool]), example.sql_scope_policy)
+        assert str(refusal.value).startswith(expected)
+
+    def test_a_refused_parameters_type_is_refused_on_a_call_too(self, example):
+        """Should the tool reach a call another way than through ``gate_tools``."""
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        tool = sub.as_tool(
+            tool_name="ask_sub",
+            tool_description="Ask.",
+            parameters=self.unreadable_parameters()["a-validator"],
+        )
+        policy = self.Recording(lambda name, args: [])
+        reason = _adapter()._function_tool_refusal("ask_sub", '{"task": "x"}', policy, tool)
+        assert reason.startswith("Recusal refused `ask_sub`: its `parameters` type is one")
+        assert policy.seen == []
+
+    def test_negative_control_a_validator_gives_the_sub_agent_what_no_policy_saw(self, example):
+        import json
+
+        parameters = self.unreadable_parameters()["a-validator"]
+        _, _, given = self.ask(example, {"task": "list"}, parameters=parameters, gated=False)
+        assert [json.loads(text) for text in given] == [{"task": "LIST"}]
+
+    def test_an_agent_tool_without_the_sdks_adapter_is_refused(self, example):
+        """An agent tool the gate cannot read the SDK's adapter from is refused, never
+        judged by its raw arguments."""
+        import dataclasses
+
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.")
+
+        async def invoke(ctx, arguments):
+            return "ran"
+
+        rebuilt = dataclasses.replace(tool, on_invoke_tool=invoke)
+        rebuilt._is_agent_tool = True
+        rebuilt._agent_instance = sub
+        with pytest.raises(TypeError, match="does not expose the adapter the SDK validates"):
+            example.gate_tools([rebuilt], example.sql_scope_policy)
+
+    def test_a_crash_inside_decide_fails_closed_for_an_agent_tool(self, example, monkeypatch):
+        def crashing_decide(*args, **kwargs):
+            raise RuntimeError("decide crashed")
+
+        monkeypatch.setattr(_adapter(), "decide", crashing_decide)
+        for parameters in (None, self.ask_model()):
+            arguments = {"input": "go"} if parameters is None else {"task": "list"}
+            _, output, given = self.ask(example, arguments, parameters=parameters)
+            assert (
+                output
+                == "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR (RuntimeError)"
+            )
+            assert given is None, "the sub-agent was never started"
+
+    # --- a sub-agent is gated only by Recusal's own guardrail ---------------------------------
+
+    def test_a_sub_agent_whose_tool_carries_only_another_guardrail_is_not_gated(self, example):
+        import dataclasses
+
+        @_adapter().tool_input_guardrail
+        def logging_only(data):
+            return _adapter().ToolGuardrailFunctionOutput.allow()
+
+        foreign = dataclasses.replace(example.run_sql, tool_input_guardrails=[logging_only])
+        sub_model = example.scripted_model([("run_sql", {"sql": DELETE}, "s1")])
+        sub = example.Agent(name="sub", model=sub_model, tools=[foreign])
+        assert not example.is_gated(sub)
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask the sub-agent.")
+        with pytest.raises(TypeError, match="its agent's own tool calls are not gated"):
+            example.gated_agent(example.Agent(name="p", tools=[tool]), example.sql_scope_policy)
+        (gated,) = example.gate_tools([foreign], example.sql_scope_policy)
+        assert example.is_gated(example.Agent(name="sub", tools=[gated]))
+
+    # --- empty argument text -------------------------------------------------------------------
+
+    def test_empty_argument_text_is_judged_as_no_arguments(self, example):
+        """The SDK reads empty argument text as no arguments, and so does the gate."""
+        ran: list = []
+
+        @example.function_tool
+        def tidy(limit: int = 10) -> str:
+            """Record a tidy; contacts nothing."""
+            ran.append(limit)
+            return "recorded"
+
+        policy = self.Recording(lambda name, args: [])
+        outputs, _ = example.run_calls([("tidy", "", "c1")], policy=policy, tools=[tidy])
+        assert outputs == {"c1": "recorded"}
+        assert policy.seen == [("tidy", {"limit": 10})]
+        assert ran == [10]
+
+    # --- what is and is not a singledispatch function -----------------------------------------
+
+    def test_a_service_object_with_a_dispatch_method_and_a_registry_is_gated(self, example):
+        ran: list = []
+        tool = example.function_tool(Router(ran), name_override="run_sql")
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, _ = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1"), ("run_sql", {"sql": DELETE}, "c2")],
+            policy=policy,
+            tools=[tool],
+        )
+        assert policy.seen[0] == ("run_sql", {"sql": SELECT, "limit": 10})
+        assert ran == [{"sql": SELECT, "limit": 10}]
+        assert outputs["c2"].startswith("Recusal refused `run_sql` [FAIL]")
+
+    def test_reading_for_a_singledispatch_function_runs_no_code_of_the_object(self, example):
+        """``registry`` and ``dispatch`` are read without calling a property or a
+        ``__getattr__`` of the tool's own."""
+        import types
+
+        touched: list = []
+
+        class Lazy:
+            @property
+            def registry(self):
+                touched.append("registry")
+                return {}
+
+            @property
+            def dispatch(self):
+                touched.append("dispatch")
+                return lambda event: None
+
+            def __call__(self, sql: str) -> str:
+                """Record SQL text without connecting to a database."""
+                return "recorded"
+
+        tool = example.function_tool(Lazy(), name_override="lazy")
+        assert example.gate_tools([tool], example.sql_scope_policy)
+        assert touched == []
+
+        class Registered(Lazy):
+            # what ``functools.singledispatch`` sets, with a ``dispatch`` that is not one
+            registry = types.MappingProxyType({})
+
+        tool = example.function_tool(Registered(), name_override="lazy")
+        assert example.gate_tools([tool], example.sql_scope_policy)
+        assert touched == []
+
+    def test_a_singledispatch_function_with_nothing_registered_is_gated(self, example):
+        import functools
+
+        ran: list = []
+
+        @functools.singledispatch
+        def lookup(key: str, force: bool = False) -> str:
+            """Record a lookup; contacts nothing."""
+            ran.append({"key": key, "force": force})
+            return "recorded"
+
+        tool = example.function_tool(lookup, strict_mode=False)
+        policy = self.Recording(lambda name, args: [])
+        (gated,) = example.gate_tools([tool], policy)
+        outputs, _ = example.run_calls([("lookup", {"key": "k"}, "c1")], gated=False, tools=[gated])
+        assert outputs == {"c1": "recorded"}
+        assert policy.seen == [("lookup", {"key": "k", "force": False})]
+        assert ran == [{"key": "k", "force": False}]
+
+        # an implementation registered after the tool was gated is refused on the next call
+        @lookup.register
+        def _(key: str, force: bool = False, include_deleted: bool = True) -> str:
+            ran.append({"key": key, "include_deleted": include_deleted})
+            return "recorded"
+
+        outputs, _ = example.run_calls([("lookup", {"key": "k"}, "c2")], gated=False, tools=[gated])
+        assert outputs["c2"].startswith(
+            "Recusal refused `lookup`: it is a `functools.singledispatch` function"
+        )
+        assert len(ran) == 1 and len(policy.seen) == 1
+
+    def test_a_registry_whose_base_is_another_function_is_refused(self, example):
+        """``registry[object]`` that is not the function ``__wrapped__`` names counts as
+        an implementation registered."""
+        import functools
+
+        @functools.singledispatch
+        def lookup(key: str, force: bool = False) -> str:
+            """Record a lookup; contacts nothing."""
+            return "recorded"
+
+        @lookup.register(object)
+        def _(key, force: bool = False, include_deleted: bool = True) -> str:
+            return "recorded"
+
+        assert len(lookup.registry) == 1
+        tool = example.function_tool(lookup, strict_mode=False)
+        with pytest.raises(TypeError, match="it is a `functools.singledispatch` function"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    # --- a mapping keyed by a Literal of strings -------------------------------------------------
+
+    def test_a_mapping_keyed_by_a_literal_of_strings_is_gated_and_judged(self, example):
+        annotation = typing.Dict[typing.Literal["a", "b"], int]
+        tool = TestJudgedIsWhatRuns.typed_tool(example, annotation)
+        policy = self.Recording(lambda name, args: [])
+        calls = [
+            ("typed", {"value": {"a": 1}}, "c1"),
+            ("typed", {"value": {"c": 1}}, "c2"),
+        ]
+        outputs, executed = example.run_calls(calls, policy=policy, tools=[tool])
+        assert policy.seen == [("typed", {"value": {"a": 1}})]
+        assert executed == [("typed", {"value": {"a": 1}})]
+        assert outputs["c2"] == (
+            "Recusal refused `typed`: the arguments the tool would execute cannot be judged: "
+            "they do not validate against the tool's parameters"
+        )
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            typing.Dict[typing.Literal[1, 2], int],
+            typing.Dict[typing.Literal["a", 1], int],
+            typing.Dict[typing.Literal[True], int],
+        ],
+        ids=["integers", "a-string-and-an-integer", "a-boolean"],
+    )
+    def test_a_mapping_keyed_by_any_other_literal_is_still_refused(self, example, annotation):
+        tool = TestJudgedIsWhatRuns.typed_tool(example, annotation)
+        expected = (
+            "cannot gate 'typed': parameter `value` is a mapping whose key type is not `str` "
+            "\\(or a `Literal` of strings\\)"
+        )
+        with pytest.raises(TypeError, match=expected):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    # --- the refusal names the abstract collections ---------------------------------------------
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [typing.Sequence[str], typing.Iterable[str]],
+        ids=["sequence", "iterable"],
+    )
+    def test_a_sequence_or_an_iterable_is_refused_and_named(self, example, annotation):
+        tool = TestJudgedIsWhatRuns.typed_tool(example, annotation)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert "parameter `value` has a type or a validation" in str(refusal.value)
+        assert "a Sequence or an Iterable" in str(refusal.value)
+
+    # --- an error of the interpreter inside the guardrail ---------------------------------------
+
+    def test_a_recursion_error_inside_the_guardrail_stops_the_run_and_nothing_runs(
+        self, example, monkeypatch
+    ):
+        """Under a recursion limit too small for the walk over the arguments the guardrail
+        raises. The SDK then stops the run: the tool does not run."""
+
+        def out_of_stack(value, depth=0):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(_adapter(), "_too_deep", out_of_stack)
+        policy = self.Recording(lambda name, args: [])
+        with pytest.raises(Exception, match="maximum recursion depth exceeded"):
+            example.run_calls([("run_sql", {"sql": SELECT}, "c1")], policy=policy)
+        assert example.EXECUTED == [] and policy.seen == []

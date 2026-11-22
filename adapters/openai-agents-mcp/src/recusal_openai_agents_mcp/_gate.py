@@ -22,9 +22,12 @@ listed input schema is the only statement of that, so the gate also wraps ``list
 in place, to keep each tool's listed schema, and before the policy runs the arguments
 must be valid against the whole of that schema as they stand, and every default the
 schema lists for a property they leave out, at any depth, is written into them
-(``_schema.Listed.complete``). Arguments the gate cannot check or complete are refused.
+(``_schema.Listed.complete``). Arguments the gate cannot check or complete are refused,
+and so is a string that holds JSON text where the schema allows another type than
+string, which the MCP Python SDK's server would decode and run as that value.
 The policy judges the completed arguments and the server is sent the completed arguments,
-with one exception: a listed default that is not valid against its own property schema is
+with one exception: a listed default the server would not run with if it were sent (one
+that is not valid against its own property schema, or text the server would decode) is
 judged and not sent. A parameter left out that has no listed default, and whatever a
 server does beyond what its schema says, is not seen.
 
@@ -137,11 +140,14 @@ def _judged_call(
     copied as JSON data, validated against the whole schema and completed with every
     default it lists (``_schema.Listed.complete``); the policy judges a copy of the
     completed arguments and the server is sent the completed arguments, so a policy that
-    writes to what it was handed changes its copy and not the call. A listed default that
-    is not valid against its own property schema is judged and not sent. Refused before the
+    writes to what it was handed changes its copy and not the call. A listed default the
+    server would not run with if it were sent (one that is not valid against its own
+    property schema, or text the server would decode) is judged and not sent. Refused before the
     policy runs: a non-mapping, arguments that are not JSON data or are nested too deeply,
     a tool the server does not list, arguments that are not valid against the schema as
-    they stand, and a schema the gate cannot check or complete them against.
+    they stand, a string a server may read as JSON for another value, arguments that
+    cost more to check than the gate allows, and a schema the gate cannot check or
+    complete them against.
 
     ``record`` goes straight to ``decide``, which then writes the decision to an audit
     log; the entry of a judged call carries the fingerprint of the arguments as judged,
@@ -251,7 +257,12 @@ def gate_mcp_server(
     The server's ``list_tools`` is wrapped too, in place, and only to read: it returns what
     the server listed and keeps each tool's input schema, which :func:`_judged_call`
     checks and completes the arguments against. Each listing replaces the one before, so a
-    tool the server no longer lists is no longer known. A call to a tool that is not in
+    tool the server no longer lists is no longer known. Where the server object keeps its
+    listing as it was before any ``tool_filter`` (``cached_tools``, which the SDK's own
+    servers do), that whole listing is what the gate keeps, so agents that share the
+    server under different filters share one set of schemas; a server object that keeps
+    none leaves the gate with the tools of the latest listing as filtered. A call to a
+    tool that is not in
     the most recent listing makes the gate call ``list_tools()`` itself, with no run
     context and no agent, once for that call; a tool that is still not listed is refused.
     """
@@ -284,8 +295,7 @@ def gate_mcp_server(
     #: tool name -> the input schema in the server's most recent listing
     listed: dict[str, Any] = {}
 
-    async def gated_list_tools(*args: Any, **kwargs: Any) -> Any:
-        tools = await original_list_tools(*args, **kwargs)
+    def keep(tools: Any) -> None:
         latest = {}
         for tool in tools:
             schema = getattr(tool, "input_schema", None)
@@ -294,6 +304,29 @@ def gate_mcp_server(
             latest[tool.name] = _Listed(copy.deepcopy(schema))
         listed.clear()  # a tool the server withdrew is no longer listed
         listed.update(latest)
+
+    def whole_listing() -> Any:
+        """The server's most recent listing before any ``tool_filter``, where the server
+        object keeps one (the SDK's own servers do, as ``cached_tools``), or None."""
+        try:
+            return server.cached_tools
+        except Exception:  # noqa: BLE001, a server object without one keeps none
+            return None
+
+    async def gated_list_tools(*args: Any, **kwargs: Any) -> Any:
+        try:
+            tools = await original_list_tools(*args, **kwargs)
+        except Exception:
+            # the SDK fetches the listing and then filters it: a filter that raises (a
+            # dynamic one asked without an agent) leaves the fetched listing to read
+            whole = whole_listing()
+            if whole is not None:
+                keep(whole)
+            raise
+        whole = whole_listing()
+        # a ``tool_filter`` hides tools from one agent; the schemas are the server's, so
+        # the gate keeps the whole listing and two agents with two filters share it
+        keep(tools if whole is None else whole)
         return tools
 
     async def listed_schema(tool_name: str) -> Any:

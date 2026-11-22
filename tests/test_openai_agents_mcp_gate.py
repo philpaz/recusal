@@ -2174,13 +2174,15 @@ def _in_order(calls):
 #: A server built with the MCP Python SDK's own server class, run over stdio. It writes
 #: what each tool function received, after the SDK's own validation, to a file.
 STDIO_SERVER = """
+import datetime
 import json
 import os
 import threading
-from typing import Literal, Optional, Union
+from pathlib import Path
+from typing import Annotated, Literal, Optional, Union
 
 from mcp.server.mcpserver import MCPServer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 app = MCPServer("files")
 LOG = os.environ["RECUSAL_TEST_SERVER_LOG"]
@@ -2278,6 +2280,43 @@ def pay(amount: float) -> str:
 @app.tool()
 def tagged(src: str, tags: list[str] = Field(default_factory=lambda: ["all"])) -> str:
     return record("tagged", src=src, tags=tags)
+
+
+@app.tool()
+def scoped(scope: Optional[str] = "tmp", confirm: bool = False) -> str:
+    return record("scoped", scope=scope, confirm=confirm)
+
+
+@app.tool()
+def scoped_required(scope: Optional[str]) -> str:
+    return record("scoped_required", scope=scope)
+
+
+@app.tool()
+def limited(limit: Union[int, str, None] = 10) -> str:
+    return record("limited", limit=limit)
+
+
+@app.tool()
+def moded(mode: Optional[str] = "null") -> str:
+    return record("moded", mode=mode)
+
+
+@app.tool()
+def since(day: datetime.date, at: Optional[datetime.datetime] = None) -> str:
+    return record("since", day=day.isoformat(), at=None if at is None else at.isoformat())
+
+
+@app.tool()
+def located(q: Optional[Path] = None) -> str:
+    return record("located", q=None if q is None else q.as_posix())
+
+
+@app.tool()
+def named(
+    name: Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True)] = "X ",
+) -> str:
+    return record("named", name=name)
 
 
 def swap_v1(path: str, recursive: bool = False) -> str:
@@ -2567,14 +2606,15 @@ class TestARealServerRunsWhatWasJudged:
     def test_what_a_server_does_beyond_its_listed_schema_is_not_seen(self, stdio):
         """The README's list of what the gate does not see, kept true by a test. The MCP
         Python SDK's server lists ``type: string`` for a parameter without an annotation
-        and then parses the string; it parses JSON text for a parameter whose schema allows
-        a string beside an object; a float parameter rounds an integer above 2**53; and a
-        ``default_factory`` default is in no schema."""
+        and then parses the string (a schema that allows only strings keeps every string,
+        so this one is not refused); a float parameter rounds an integer above 2**53; and
+        a ``default_factory`` default is in no schema. ``TestThirdReview`` holds the JSON
+        text the gate does refuse: for a parameter whose schema allows another type."""
         found = stdio(
             [
                 [
                     ("wipe", {"prefix": "null"}),
-                    ("either", {"v": '{"a": 1}'}),
+                    ("wipe", {"prefix": "[]"}),
                     ("pay", {"amount": 9007199254740993}),
                     ("tagged", {"src": "a"}),
                 ]
@@ -2585,7 +2625,7 @@ class TestARealServerRunsWhatWasJudged:
         assert "default" not in found.schemas["tagged"]["tags"]
         sent = [
             ("wipe", {"prefix": "null"}),
-            ("either", {"v": '{"a": 1}'}),
+            ("wipe", {"prefix": "[]"}),
             ("pay", {"amount": 9007199254740993}),
             ("tagged", {"src": "a"}),
         ]
@@ -2593,7 +2633,7 @@ class TestARealServerRunsWhatWasJudged:
         assert _in_order(found.ran) == _in_order(
             [
                 ("wipe", {"prefix": None}),
-                ("either", {"v": {"a": 1}}),
+                ("wipe", {"prefix": []}),
                 ("pay", {"amount": 9007199254740992.0}),
                 ("tagged", {"src": "a", "tags": ["all"]}),
             ]
@@ -2626,3 +2666,1351 @@ class TestARealServerRunsWhatWasJudged:
             "Recusal refused `legacy`: the server lists no tool of this name"
         )
         assert [name for name, _ in found.wire].count("legacy") == 1, "not sent for again"
+
+
+DRAFT_07 = "http://json-schema.org/draft-07/schema#"
+
+#: What ``zod-to-json-schema`` publishes for ``z.boolean().default(true)``.
+ZOD_FLAG = {"type": "boolean", "default": True}
+
+#: What pydantic publishes for ``where: Union[And, Or, Leaf]``, three models of which two
+#: (``And`` and ``Or``) hold a list of the same union.
+EXPRESSION = {
+    "type": "object",
+    "properties": {"where": {"$ref": "#/$defs/Expr"}},
+    "required": ["where"],
+    "$defs": {
+        "Expr": {
+            "anyOf": [
+                {"$ref": "#/$defs/And"},
+                {"$ref": "#/$defs/Or"},
+                {"$ref": "#/$defs/Leaf"},
+            ]
+        },
+        "And": {
+            "type": "object",
+            "properties": {
+                "args": {"type": "array", "items": {"$ref": "#/$defs/Expr"}},
+                "strict": {"type": "boolean", "default": True},
+            },
+            "required": ["args"],
+        },
+        "Or": {
+            "type": "object",
+            "properties": {
+                "args": {"type": "array", "items": {"$ref": "#/$defs/Expr"}},
+                "strict": {"type": "boolean", "default": True},
+            },
+            "required": ["args"],
+        },
+        "Leaf": {
+            "type": "object",
+            "properties": {"field": {"type": "string"}, "eq": {"type": "string"}},
+            "required": ["field", "eq"],
+        },
+    },
+}
+
+#: What pydantic publishes for a model with ``child: Optional[Node] = None``.
+TREE = {
+    "type": "object",
+    "properties": {"node": {"$ref": "#/$defs/Node"}},
+    "required": ["node"],
+    "$defs": {
+        "Node": {
+            "type": "object",
+            "properties": {
+                "keep": {"type": "boolean", "default": True},
+                "child": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}], "default": None},
+            },
+        }
+    },
+}
+
+_JSON_TEXT = (
+    "is a string that holds JSON text (null, a list or an object) where the "
+    "server's schema allows another JSON type than string; a server may read the text as "
+    "JSON and run with that value, not with the string the policy judged. Send the value as "
+    "JSON, not as text."
+)
+
+
+def _nested(depth, leaf):
+    """``leaf`` under ``depth`` levels of ``{"args": [...]}``."""
+    value = leaf
+    for _ in range(depth):
+        value = {"args": [value]}
+    return {"where": value}
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestThirdReview:
+    """The third review of 2026-11-21. A default listed inside an alternative of a
+    property's own ``anyOf`` or ``allOf`` (what zod publishes for
+    ``z.boolean().default(true).nullable()``) was neither written nor refused; JSON text
+    for a parameter that may also be null ran as null on the MCP Python SDK's server; a
+    model could hang the agent's process with a few hundred bytes of nested arguments; and
+    ordinary servers were refused for a legal chain of a recursive model, a pattern Python
+    cannot compile, an ``https`` spelling of a draft and a ``tool_filter`` shared by two
+    agents."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    stdio = TestARealServerRunsWhatWasJudged.stdio
+    judged = TestTheWholeListedSchema.judged
+
+    @staticmethod
+    def schema_module():
+        import importlib
+
+        _adapter()
+        return importlib.import_module("recusal_openai_agents_mcp._schema")
+
+    # --- a default listed inside an alternative of the property's own schema ------------------
+
+    @pytest.mark.parametrize(
+        "listed, written",
+        [
+            ({"anyOf": [ZOD_FLAG, {"type": "null"}]}, True),
+            (
+                {
+                    "anyOf": [{**ZOD_FLAG, "description": "d"}, {"type": "null"}],
+                    "description": "d",
+                },
+                True,
+            ),
+            ({"allOf": [ZOD_FLAG, {"type": "boolean"}]}, True),
+            ({"anyOf": [ZOD_FLAG, {"type": "string"}]}, True),
+            ({"anyOf": [{"type": "string"}, ZOD_FLAG]}, True),
+            ({"oneOf": [ZOD_FLAG, {"type": "null"}]}, True),
+            ({"anyOf": [{"anyOf": [ZOD_FLAG, {"type": "null"}]}, {"type": "string"}]}, True),
+            ({"anyOf": [{"$ref": "#/$defs/Flag"}, {"type": "null"}]}, True),
+            ({"allOf": [{"$ref": "#/$defs/Nullable"}]}, True),
+            ({"anyOf": [ZOD_FLAG, {"type": ["boolean", "null"], "default": True}]}, True),
+            (
+                {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"force": ZOD_FLAG},
+                            "additionalProperties": False,
+                            "default": {},
+                        },
+                        {"type": "null"},
+                    ]
+                },
+                {"force": True},
+            ),
+            (
+                {"anyOf": [{"type": "array", "default": [1, {"a": 1}]}, {"type": "null"}]},
+                [1, {"a": 1}],
+            ),
+        ],
+        ids=[
+            "nullable",
+            "described-then-nullable",
+            "piped",
+            "a-union",
+            "a-union-the-other-way",
+            "one-of",
+            "an-alternative-of-an-alternative",
+            "an-alternative-that-is-a-ref",
+            "a-member-that-is-a-ref-to-alternatives",
+            "two-alternatives-one-default",
+            "an-object-default-completed-in-turn",
+            "a-list-default",
+        ],
+    )
+    def test_a_default_listed_by_an_alternative_is_written_judged_and_sent(
+        self, example, listed, written
+    ):
+        schema = {
+            "$schema": DRAFT_07,
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "recursive": listed},
+            "required": ["path"],
+            "additionalProperties": False,
+            "$defs": {"Flag": ZOD_FLAG, "Nullable": {"anyOf": [ZOD_FLAG, {"type": "null"}]}},
+        }
+        completed = {"path": "/data", "recursive": written}
+        assert self.judged({"path": "/data"}, schema) == (completed, completed, None)
+        # a value that is sent is judged and sent as it is
+        given = {"path": "/data", "recursive": None}
+        if "null" in str(listed):
+            assert self.judged(given, schema) == (given, given, None)
+
+    @pytest.mark.parametrize(
+        "wrap",
+        [
+            lambda leaf: {"anyOf": [leaf, {"type": "null"}]},
+            lambda leaf: {"anyOf": [{"type": "null"}, leaf]},
+            lambda leaf: {"oneOf": [leaf, {"type": "null"}]},
+            lambda leaf: {"allOf": [leaf, {}]},
+            lambda leaf: {"allOf": [{}, leaf]},
+            lambda leaf: {"anyOf": [{"anyOf": [leaf, {"type": "null"}]}, {"type": "null"}]},
+            lambda leaf: {"allOf": [{"anyOf": [leaf, {"type": "null"}]}]},
+            lambda leaf: {"anyOf": [{"allOf": [leaf, {}]}, {"type": "null"}]},
+            lambda leaf: {"anyOf": [leaf, {**leaf, "title": "again"}]},
+        ],
+        ids=[
+            "nullable",
+            "null-first",
+            "one-of",
+            "all-of",
+            "all-of-last",
+            "nullable-twice",
+            "all-of-over-any-of",
+            "any-of-over-all-of",
+            "listed-twice",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "leaf",
+        [
+            {"type": "boolean", "default": True},
+            {"type": "boolean", "default": False},
+            {"type": "string", "default": "s"},
+            {"type": "number", "default": 7},
+            {"type": "integer", "default": 0},
+            {"type": "array", "items": {"type": "string"}, "default": ["x"]},
+            {"type": "string", "enum": ["a", "b"], "default": "a"},
+        ],
+        ids=["true", "false", "a-string", "a-number", "zero", "a-list", "an-enum"],
+    )
+    def test_every_spelling_of_one_default_writes_that_default(self, example, wrap, leaf):
+        """A differential over the ways a schema can carry one default for a property: for
+        each, the gate writes the value a server reading the default would run with."""
+        schema = {"type": "object", "properties": {"p": wrap(leaf)}}
+        completed = {"p": leaf["default"]}
+        seen, sent, reason = self.judged({}, schema)
+        assert reason is None
+        assert seen == completed and sent == completed
+        assert type(seen["p"]) is type(leaf["default"])
+
+    @pytest.mark.parametrize(
+        "listed",
+        [
+            {"anyOf": [ZOD_FLAG, {"type": "string", "default": "other"}]},
+            {"anyOf": [ZOD_FLAG, {"type": "boolean", "default": False}]},
+            {"anyOf": [{"type": "integer", "default": 1}, ZOD_FLAG]},
+            {"anyOf": [{"type": "integer", "default": 1}, {"type": "number", "default": 1.0}]},
+            {"anyOf": [{"default": [1]}, {"default": [True]}]},
+            {"anyOf": [{"default": {"a": 1}}, {"default": {"a": True}}]},
+            {"allOf": [{"default": 1}, {"default": 2}]},
+            {"anyOf": [{"$ref": "#/$defs/Flag"}, {"type": "boolean", "default": False}]},
+        ],
+        ids=[
+            "two-types",
+            "true-and-false",
+            "one-and-true",
+            "one-and-one-point-zero",
+            "inside-a-list",
+            "inside-an-object",
+            "all-of",
+            "a-ref-and-another",
+        ],
+    )
+    def test_alternatives_that_list_different_defaults_for_a_left_out_property_are_refused(
+        self, example, listed
+    ):
+        schema = {"properties": {"recursive": listed}, "$defs": {"Flag": ZOD_FLAG}}
+        assert self.judged({}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: argument `recursive` is left out, and the alternatives "
+            "the server's schema lists for it list different defaults, so the gate cannot tell "
+            "what the server would run with",
+        )
+        # sent, nothing is left to tell
+        for value in (True, 1, "x", [1], {"a": 1}):
+            seen, sent, reason = self.judged({"recursive": value}, schema)
+            assert reason is None or "left out" not in reason
+
+    def test_the_propertys_own_default_is_the_one(self, example):
+        """Over the default the schema its ``$ref`` names lists, and over the defaults of
+        its alternatives."""
+        schema = {
+            "properties": {
+                "a": {"$ref": "#/$defs/Flag", "default": False},
+                "b": {"anyOf": [ZOD_FLAG, {"type": "null"}], "default": None},
+                "c": {"allOf": [{"default": 1}, {"default": 2}], "default": 3},
+            },
+            "$defs": {"Flag": ZOD_FLAG},
+        }
+        completed = {"a": False, "b": None, "c": 3}
+        assert self.judged({}, schema) == (completed, completed, None)
+
+    def test_a_default_of_an_alternative_that_cannot_be_sent_is_judged_and_not_sent(self, example):
+        schema = {"properties": {"q": {"anyOf": [{"type": "string", "default": 5}]}}}
+        assert self.judged({}, schema) == ({"q": 5}, {}, None)
+
+    def test_an_item_left_out_whose_alternative_lists_a_default_is_refused(self, example):
+        entry = {"anyOf": [ZOD_FLAG, {"type": "null"}]}
+        schema = {"properties": {"t": {"prefixItems": [{"type": "integer"}, entry]}}}
+        assert (
+            "leaves out an item the server's schema lists a default for"
+            in (self.judged({"t": [5]}, schema)[2])
+        )
+
+    def test_two_parts_of_the_schema_that_list_different_defaults_for_one_place_are_refused(
+        self, example
+    ):
+        one = {"properties": {"depth": {"type": "integer", "default": 1}}}
+        other = {"properties": {"depth": {"type": "integer", "default": 2}}}
+        schema = {"properties": {"opts": {"type": "object", "allOf": [one, other]}}}
+        assert self.judged({"opts": {}}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: argument `opts.depth` is left out, and the server's "
+            "schema lists different defaults for it, so the gate cannot tell what the server "
+            "would run with",
+        )
+        # alternatives that list one default, which only one of them could be sent, differ
+        typed = {"properties": {"q": {"type": "string", "default": 5}}}
+        untyped = {"properties": {"q": {"default": 5}}}
+        schema = {"properties": {"opts": {"type": "object", "anyOf": [typed, untyped]}}}
+        assert "matches more than one of the alternatives" in self.judged({"opts": {}}, schema)[2]
+        same = {"properties": {"opts": {"type": "object", "allOf": [one, dict(one)]}}}
+        assert self.judged({"opts": {}}, same) == (
+            {"opts": {"depth": 1}},
+            {"opts": {"depth": 1}},
+            None,
+        )
+
+    @staticmethod
+    def zod_like_server(example, ran):
+        """A server that lists what zod publishes for
+        ``z.object({path: z.string(), recursive: z.boolean().default(true).nullable()})``
+        and runs as ``schema.parse`` would: a ``recursive`` left out is ``true``."""
+        from mcp.types import Tool
+
+        schema = {
+            "$schema": DRAFT_07,
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "recursive": {"anyOf": [ZOD_FLAG, {"type": "null"}]},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        }
+
+        class ZodLike(example.InProcessMCPServer):
+            async def list_tools(self, run_context=None, agent=None):
+                return [Tool(name="z_delete", description="Delete.", inputSchema=dict(schema))]
+
+            async def call_tool(self, tool_name, arguments, meta=None):
+                ran.append({"recursive": True, **(arguments or {})})
+                return await super().call_tool(tool_name, arguments, meta)
+
+        return ZodLike(name="files", tools=("z_delete",))
+
+    def test_a_server_that_fills_the_alternatives_default_runs_what_the_policy_judged(
+        self, example
+    ):
+        from recusal import Finding
+
+        def no_recursive(name, args):
+            if args.get("recursive") is not False:
+                return [Finding.fail("no_recursive", severity="CRITICAL", message="not that")]
+            return []
+
+        ran: list = []
+        policy = self.Recording(no_recursive)
+        server = example.gate_mcp_server(self.zod_like_server(example, ran), policy)
+        refused = asyncio.run(server.call_tool("z_delete", {"path": "/data"}))
+        assert refused.content[0].text == "Recusal refused `z_delete` [FAIL]: not that"
+        assert ran == [], "the server never ran with the default no policy would have seen"
+        asyncio.run(server.call_tool("z_delete", {"path": "/data", "recursive": False}))
+        assert policy.seen == [
+            ("z_delete", {"path": "/data", "recursive": True}),
+            ("z_delete", {"path": "/data", "recursive": False}),
+        ]
+        assert ran == [{"path": "/data", "recursive": False}]
+
+    def test_negative_control_ungated_the_server_fills_the_default_no_policy_saw(self, example):
+        ran: list = []
+        server = self.zod_like_server(example, ran)
+        asyncio.run(server.call_tool("z_delete", {"path": "/data"}))
+        assert ran == [{"path": "/data", "recursive": True}]
+
+    # --- a default where the gate does not read one refuses the schema ------------------------
+
+    @pytest.mark.parametrize(
+        "schema, keyword",
+        [
+            (
+                {"$schema": DRAFT_07, "dependencies": {"a": {"properties": {"b": ZOD_FLAG}}}},
+                "dependencies",
+            ),
+            ({"not": {"properties": {"b": ZOD_FLAG}}}, "not"),
+            ({"if": {"properties": {"b": ZOD_FLAG}}}, "if"),
+            ({"if": {"required": ["zz"]}, "else": {"properties": {"b": ZOD_FLAG}}}, "else"),
+            ({"properties": {"a": {"contains": ZOD_FLAG}}}, "contains"),
+            ({"propertyNames": {"default": "x"}}, "propertyNames"),
+            ({"unevaluatedProperties": ZOD_FLAG}, "unevaluatedProperties"),
+            ({"properties": {"a": {"unevaluatedItems": ZOD_FLAG}}}, "unevaluatedItems"),
+            (
+                {"properties": {"a": {"contentSchema": {"properties": {"b": ZOD_FLAG}}}}},
+                "contentSchema",
+            ),
+        ],
+        ids=[
+            "dependencies",
+            "not",
+            "if",
+            "else",
+            "contains",
+            "property-names",
+            "unevaluated-properties",
+            "unevaluated-items",
+            "content-schema",
+        ],
+    )
+    def test_a_default_under_a_keyword_the_walk_does_not_follow_is_refused(
+        self, example, schema, keyword
+    ):
+        assert self.judged({"x": 1}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} lists a default under `{keyword}`, where the "
+            "gate cannot tell whether the server would apply it",
+        )
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"x-shape": ZOD_FLAG},
+            {"properties": {"a": {"x-shape": {"properties": {"b": ZOD_FLAG}}}}},
+            {"properties": {"a": {"futureOf": [{"type": "string"}, ZOD_FLAG]}}},
+            {"properties": {"a": {"type": "string", "x-ui": {"widget": {"default": "big"}}}}},
+        ],
+        ids=["at-the-root", "under-a-property", "in-a-list", "deep-in-data"],
+    )
+    def test_a_default_under_a_keyword_the_gate_does_not_know_is_refused(self, example, schema):
+        assert self.judged({"a": "x"}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} lists a default under a keyword the gate "
+            "does not read, where it cannot tell whether the server would apply it",
+        )
+
+    def test_a_member_named_default_in_data_refuses_nothing(self, example):
+        """``const``, ``enum``, ``examples`` and a ``default`` hold data, which may have a
+        member named ``default``; so may the arguments, and a property may be named so."""
+        schema = {
+            "properties": {
+                "a": {"const": {"default": 1}},
+                "b": {"enum": [{"default": 1}, {"default": 2}]},
+                "c": {"type": "object", "examples": [{"default": 1}], "example": {"default": 1}},
+                "d": {"type": "object", "default": {"default": 1}},
+                "default": {"type": "integer", "default": 3},
+                "e": {"type": "string", "x-ui": {"widget": "big"}, "discriminator": {"k": "v"}},
+            }
+        }
+        given = {"a": {"default": 1}, "b": {"default": 2}, "c": {"default": 5}}
+        completed = {**given, "d": {"default": 1}, "default": 3}
+        assert self.judged(given, schema) == (completed, completed, None)
+
+    def test_a_default_where_a_value_is_always_present_is_never_applied(self, example):
+        """On the schema of the arguments themselves, of the items of a list and of
+        ``additionalProperties``: JSON cannot send a member or an item without a value."""
+        schema = {
+            "type": "object",
+            "default": {"path": "/"},
+            "properties": {
+                "flags": {"type": "array", "items": ZOD_FLAG},
+                "by": {"type": "object", "additionalProperties": ZOD_FLAG},
+            },
+        }
+        given = {"flags": [False], "by": {"a": False}}
+        assert self.judged(given, schema) == (given, given, None)
+        assert self.judged({}, schema) == ({}, {}, None)
+        assert self.judged(None, schema) == ({}, {}, None)
+
+    # --- JSON text a server may read as another value -----------------------------------------
+
+    NULLABLE = [
+        {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        {"type": ["string", "null"]},
+        {"oneOf": [{"type": "string"}, {"type": "null"}]},
+        {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}], "default": 10},
+        {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        {"anyOf": [{"type": "object"}, {"type": "string"}]},
+        {"$ref": "#/$defs/Nullable"},
+        {"allOf": [{"$ref": "#/$defs/Nullable"}]},
+        {},
+        {"title": "Anything"},
+    ]
+
+    @pytest.mark.parametrize("text", ["null", "[]", "{}", '{"a": 1}', "[true]", " null\n"])
+    @pytest.mark.parametrize("listed", NULLABLE, ids=[str(n) for n in range(len(NULLABLE))])
+    def test_json_text_for_a_property_that_allows_another_type_is_refused(
+        self, example, listed, text
+    ):
+        schema = {
+            "properties": {"scope": listed},
+            "$defs": {"Nullable": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+        }
+        assert self.judged({"scope": text}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: argument `scope` {_JSON_TEXT}",
+        )
+
+    @pytest.mark.parametrize("text", ["true", "false", " true\n"])
+    @pytest.mark.parametrize("listed", NULLABLE, ids=[str(n) for n in range(len(NULLABLE))])
+    def test_text_for_a_boolean_is_judged_and_sent_as_the_string_it_is(self, example, listed, text):
+        """The MCP Python SDK's server keeps the text of a boolean a string (to its check
+        a ``bool`` is an ``int``, which it skips), so what runs is the string judged."""
+        schema = {
+            "properties": {"scope": listed},
+            "$defs": {"Nullable": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+        }
+        given = {"scope": text}
+        assert self.judged(given, schema) == (given, given, None)
+
+    @pytest.mark.parametrize(
+        "text", ["tmp", "", "500", "1e3", "-0.5", '"quoted"', "nul", "{", "[1,", "NaN", "None"]
+    )
+    def test_text_that_is_a_number_a_string_or_not_json_is_judged_as_sent(self, example, text):
+        schema = {"properties": {"scope": {"anyOf": [{"type": "string"}, {"type": "null"}]}}}
+        given = {"scope": text}
+        assert self.judged(given, schema) == (given, given, None)
+
+    STRINGS_ONLY = [
+        {"type": "string"},
+        {"type": "string", "format": "date-time"},
+        {"type": "string", "minLength": 1, "title": "Scope"},
+        {"$ref": "#/$defs/Text"},
+        {"allOf": [{"$ref": "#/$defs/Text"}]},
+        {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/Text"}]},
+        {"enum": ["null", "[]", "{}", "true"]},
+        {"const": "null"},
+        {"type": ["string"]},
+        {"allOf": [{"type": ["string", "null"]}, {"type": "string"}]},
+    ]
+
+    @pytest.mark.parametrize("listed", STRINGS_ONLY, ids=[str(n) for n in range(len(STRINGS_ONLY))])
+    def test_a_property_that_allows_only_strings_keeps_every_string(self, example, listed):
+        schema = {"properties": {"scope": listed}, "$defs": {"Text": {"type": "string"}}}
+        for text in ("null", "[]", "{}", "true"):
+            if "const" in listed and text != "null":
+                continue
+            given = {"scope": text}
+            assert self.judged(given, schema) == (given, given, None)
+
+    def test_in_draft_07_a_ref_is_read_alone(self, example):
+        """Draft-07 does not apply the keywords beside a ``$ref``, so they do not make a
+        property a string-only one."""
+        schema = {
+            "$schema": DRAFT_07,
+            "properties": {"scope": {"$ref": "#/definitions/Nullable", "type": "string"}},
+            "definitions": {"Nullable": {"type": ["string", "null"]}},
+        }
+        assert _JSON_TEXT in self.judged({"scope": "null"}, schema)[2]
+        modern = {**schema, "$schema": "https://json-schema.org/draft/2020-12/schema"}
+        assert self.judged({"scope": "null"}, modern) == (
+            {"scope": "null"},
+            {"scope": "null"},
+            None,
+        )
+
+    def test_json_text_is_looked_for_in_the_named_arguments_only(self, example):
+        """The MCP Python SDK's server decodes the text of the arguments its function
+        names, at the top; a string further in, or under a name the schema does not list,
+        is judged and sent as it is."""
+        schema = {
+            "properties": {
+                "opts": {
+                    "type": "object",
+                    "properties": {"scope": {"type": ["string", "null"]}},
+                },
+                "tags": {"type": "array", "items": {"type": ["string", "null"]}},
+            }
+        }
+        given = {"opts": {"scope": "null"}, "tags": ["null", "[]"], "note": "null"}
+        assert self.judged(given, schema) == (given, given, None)
+
+    def test_a_value_of_another_type_keeps_its_own_reason(self, example):
+        """Text for a property that allows no string is refused for its type, as before."""
+        schema = {"properties": {"opts": {"anyOf": [{"type": "object"}, {"type": "null"}]}}}
+        assert self.judged({"opts": "{}"}, schema)[2] == (
+            "Recusal refused `purge`: argument `opts` is of JSON type string where the "
+            f"server's schema declares object or null; {_SEND_THE_TYPE}"
+        )
+
+    def test_a_default_that_is_json_text_a_server_would_decode_is_judged_and_not_sent(
+        self, example
+    ):
+        """The server runs with its own default as the string it is, and would decode it
+        if the gate sent it: so it is judged, and it is not sent. A default the server
+        would not decode (text for a boolean, one for a property that allows only
+        strings, one further in) is written and sent."""
+        nullable = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        schema = {
+            "properties": {
+                "mode": {**nullable, "default": "null"},
+                "flag": {**nullable, "default": "true"},
+                "tags": {"type": ["string", "array"], "default": "[]"},
+                "plain": {"type": "string", "default": "null"},
+                "name": {**nullable, "default": "tmp"},
+                "opts": {
+                    "type": "object",
+                    "properties": {"mode": {**nullable, "default": "null"}},
+                    "default": {},
+                },
+            }
+        }
+        assert self.judged({}, schema) == (
+            {
+                "mode": "null",
+                "flag": "true",
+                "tags": "[]",
+                "plain": "null",
+                "name": "tmp",
+                "opts": {"mode": "null"},
+            },
+            {"flag": "true", "plain": "null", "name": "tmp", "opts": {"mode": "null"}},
+            None,
+        )
+
+    def test_on_a_real_server_a_default_that_is_json_text_runs_as_the_string_judged(self, stdio):
+        found = stdio([[("moded", {}), ("moded", {"mode": "fast"})]], schemas=("moded",))
+        assert found.schemas["moded"]["mode"]["default"] == "null"
+        judged = [("moded", {"mode": "null"}), ("moded", {"mode": "fast"})]
+        assert _in_order(found.judged) == _in_order(judged)
+        assert _in_order(found.ran) == _in_order(judged), "the server ran the string, not None"
+        assert _in_order(found.wire) == _in_order([("moded", {}), ("moded", {"mode": "fast"})])
+
+    def test_negative_control_the_real_server_decodes_that_default_when_it_is_sent(self, stdio):
+        found = stdio([[("moded", {"mode": "null"})]], gated=False)
+        assert found.ran == [("moded", {"mode": None})]
+
+    def test_on_a_real_server_json_text_for_a_nullable_parameter_never_runs(self, stdio):
+        calls = [
+            ("scoped", {"scope": "null"}),
+            ("limited", {"limit": "null"}),
+            ("since", {"day": "2024-01-01", "at": "null"}),
+            ("located", {"q": "null"}),
+            ("scoped_required", {"scope": "null"}),
+            ("either", {"v": '{"a": 1}'}),
+            ("scoped", {"scope": "[]"}),
+        ]
+        found = stdio([calls])
+        assert found.ran == [] and found.wire == [] and found.judged == []
+        names = ["scope", "limit", "at", "q", "scope", "v", "scope"]
+        for number, ((tool, _), name) in enumerate(zip(calls, names), 1):
+            assert found.outputs[f"c{number}"] == (
+                f"Recusal refused `{tool}`: argument `{name}` {_JSON_TEXT}"
+            )
+
+    def test_on_a_real_server_an_ordinary_string_runs_as_the_string_that_was_judged(self, stdio):
+        calls = [
+            ("scoped", {"scope": "archive"}),
+            ("scoped", {"scope": None}),
+            ("limited", {"limit": "500"}),
+            ("limited", {"limit": 5}),
+            ("scoped_required", {"scope": "nul"}),
+            ("either", {"v": "plain text"}),
+            ("either", {"v": {"a": 1}}),
+            ("scoped_required", {"scope": "true"}),
+            ("limited", {"limit": "false"}),
+        ]
+        found = stdio([calls])
+        judged = [
+            ("scoped_required", {"scope": "true"}),
+            ("limited", {"limit": "false"}),
+            ("scoped", {"scope": "archive", "confirm": False}),
+            ("scoped", {"scope": None, "confirm": False}),
+            ("limited", {"limit": "500"}),
+            ("limited", {"limit": 5}),
+            ("scoped_required", {"scope": "nul"}),
+            ("either", {"v": "plain text"}),
+            ("either", {"v": {"a": 1}}),
+        ]
+        assert _in_order(found.judged) == _in_order(judged)
+        assert _in_order(found.wire) == _in_order(judged)
+        assert _in_order(found.ran) == _in_order(judged)
+
+    def test_negative_control_ungated_the_real_server_runs_json_text_as_null(self, stdio):
+        found = stdio(
+            [[("scoped", {"scope": "null"}), ("scoped_required", {"scope": "null"})]], gated=False
+        )
+        assert _in_order(found.ran) == _in_order(
+            [("scoped", {"scope": None, "confirm": False}), ("scoped_required", {"scope": None})]
+        )
+
+    def test_what_a_real_servers_validators_do_to_a_string_is_not_seen(self, stdio):
+        """The README's examples of what a schema does not say, kept true by a test: a
+        numeric string runs as a date, and a constraint that strips and lowers a string
+        changes the value that is sent, a default the gate wrote included (the server
+        itself would not have validated its own default)."""
+        found = stdio(
+            [
+                [
+                    ("since", {"day": "0"}),
+                    ("named", {"name": "  /ETC "}),
+                    ("named", {}),
+                ]
+            ],
+            schemas=("named",),
+        )
+        assert found.schemas["named"] == {
+            "name": {"default": "X ", "title": "Name", "type": "string"}
+        }
+        sent = [
+            ("since", {"day": "0", "at": None}),
+            ("named", {"name": "  /ETC "}),
+            ("named", {"name": "X "}),
+        ]
+        assert _in_order(found.judged) == _in_order(found.wire) == _in_order(sent)
+        assert _in_order(found.ran) == _in_order(
+            [
+                ("since", {"day": "1970-01-01", "at": None}),
+                ("named", {"name": "/etc"}),
+                ("named", {"name": "x"}),
+            ]
+        )
+
+    def test_negative_control_ungated_the_real_server_does_not_validate_its_own_default(
+        self, stdio
+    ):
+        found = stdio([[("named", {})]], gated=False)
+        assert found.ran == [("named", {"name": "X "})]
+
+    # --- the work is bounded --------------------------------------------------------------------
+
+    def spent(self, arguments, schema):
+        """``(steps spent, steps allowed, the result or the reason it was refused)``."""
+        module = self.schema_module()
+        made: list = []
+        original = module._Work.__init__
+
+        def remembering(work, allowed):
+            original(work, allowed)
+            made.append(work)
+
+        module._Work.__init__ = remembering
+        try:
+            try:
+                result = module.Listed(schema).complete(arguments)
+            except module.Refused as refused:
+                result = refused.reason
+        finally:
+            module._Work.__init__ = original
+        return made[-1].steps, made[-1].allowed, result
+
+    def test_a_schema_that_refers_to_itself_costs_in_proportion_to_the_arguments(self, example):
+        """The reviewer's case: two alternatives of a recursive ``anyOf`` both validate.
+        The cost more than doubled with every level: twelve took over a minute."""
+        costs = {}
+        for depth in (4, 8, 16, 31):
+            arguments = _nested(depth, {"args": []})
+            steps, allowed, result = self.spent(arguments, EXPRESSION)
+            assert type(result) is tuple, result
+            assert result[0]["where"]["strict"] is True
+            costs[depth] = steps
+            assert steps * 20 < allowed
+        assert costs[16] - costs[8] == 2 * (costs[8] - costs[4]), "each level costs the same"
+        assert costs[31] < 4 * costs[8]
+
+    def test_arguments_that_fail_deep_inside_cost_in_proportion_too(self, example):
+        costs = {}
+        for depth in (4, 8, 16, 31):
+            steps, allowed, result = self.spent(_nested(depth, {"args": 5}), EXPRESSION)
+            assert result == (
+                "argument `where` matches none of the alternatives the server's schema lists "
+                f"there; {_AS_THEY_STAND}"
+            )
+            costs[depth] = steps
+            assert steps * 20 < allowed
+        assert costs[31] < 4 * costs[8]
+
+    def test_the_arguments_of_the_deepest_legal_recursive_call_are_completed(self, example):
+        arguments = _nested(31, {"args": []})
+        assert not _adapter()._too_deep(arguments)
+        seen, sent, reason = self.judged(arguments, EXPRESSION)
+        assert reason is None and seen == sent
+        level = seen["where"]
+        for _ in range(32):
+            assert level["strict"] is True
+            level = level["args"][0] if level["args"] else None
+        assert level is None
+
+    def test_the_allowance_grows_with_the_arguments(self, example):
+        module = self.schema_module()
+        schema = {
+            "type": "object",
+            "properties": {"files": {"type": "array", "items": OPTIONS}},
+        }
+        for count in (1, 500, 5000):
+            arguments = {"files": [{} for _ in range(count)]}
+            steps, allowed, result = self.spent(arguments, schema)
+            assert allowed == module._STEPS + module._STEPS_PER_VALUE * (count + 2)
+            assert type(result) is tuple and result[0]["files"][-1] == FILLED
+            assert steps * 20 < allowed
+
+    def test_arguments_too_costly_to_check_are_refused_before_the_policy(
+        self, example, monkeypatch
+    ):
+        module = self.schema_module()
+        monkeypatch.setattr(module, "_STEPS", 50)
+        monkeypatch.setattr(module, "_STEPS_PER_VALUE", 1)
+        reason = f"Recusal refused `purge`: the arguments are too costly to check against {_SCHEMA}"
+        assert self.judged(_nested(16, {"args": []}), EXPRESSION) == (None, None, reason)
+        assert self.judged(_nested(16, {"args": 5}), EXPRESSION) == (None, None, reason)
+        small = {"where": {"field": "a", "eq": "b"}}
+        assert self.judged(small, EXPRESSION) == (small, small, None)
+
+    def test_every_step_is_counted_and_the_count_is_left_behind(self, example, monkeypatch):
+        """A step past the allowance stops the work at once, whatever is being checked,
+        and the next call starts from nothing."""
+        module = self.schema_module()
+        steps, allowed, _ = self.spent(_nested(8, {"args": []}), EXPRESSION)
+        monkeypatch.setattr(module, "_STEPS_PER_VALUE", 0)
+        monkeypatch.setattr(module, "_STEPS", steps - 1)
+        over, limit, result = self.spent(_nested(8, {"args": []}), EXPRESSION)
+        assert (over, limit) == (steps, steps - 1)
+        assert result == f"the arguments are too costly to check against {_SCHEMA}"
+        monkeypatch.setattr(module, "_STEPS", steps)
+        again, _, result = self.spent(_nested(8, {"args": []}), EXPRESSION)
+        assert again == steps and type(result) is tuple
+        assert module._WORK.get() is None
+
+    def test_no_keyword_is_run_twice_for_one_schema_and_one_value(self, example):
+        """A schema that reaches itself twice at every level, through two members of an
+        ``allOf``: checked once for each value, a valid chain costs in proportion to its
+        length, where checking it afresh through each member would double at every level."""
+        again = {"properties": {"child": {"$ref": "#/$defs/Node"}}}
+        schema = {
+            "properties": {"node": {"$ref": "#/$defs/Node"}},
+            "$defs": {"Node": {"type": "object", "allOf": [again, dict(again)]}},
+        }
+        costs = {}
+        for length in (5, 10, 20, 40):
+            steps, allowed, result = self.spent(self.chain(length), schema)
+            assert type(result) is tuple, result
+            costs[length] = steps
+            assert steps * 5 < allowed
+        assert costs[40] < 5 * costs[10]
+
+    # --- a recursive model nested to the limit of the arguments -------------------------------
+
+    @staticmethod
+    def chain(length):
+        value: dict = {}
+        for _ in range(length):
+            value = {"child": value}
+        return {"node": value}
+
+    def test_a_chain_of_a_recursive_model_is_completed_to_the_depth_limit(self, example):
+        """Refused at 43 levels as a schema that "refers to itself without end": the walk
+        counted schema steps, about three for each level of the arguments."""
+        deepest = self.chain(63)
+        assert not _adapter()._too_deep(deepest) and _adapter()._too_deep(self.chain(64))
+        seen, sent, reason = self.judged(deepest, TREE)
+        assert reason is None
+        level, levels = seen["node"], 0
+        while level is not None:
+            assert level["keep"] is True
+            level, levels = level["child"], levels + 1
+        assert levels == 64
+        assert self.judged(self.chain(64), TREE)[2] == (
+            "Recusal refused `purge`: arguments are nested too deeply"
+        )
+
+    def test_the_chain_runs_through_a_gated_server_inside_an_event_loop(self, example):
+        from mcp.types import Tool
+
+        class Trees(example.InProcessMCPServer):
+            async def list_tools(self, run_context=None, agent=None):
+                return [Tool(name="purge", description="Purge.", inputSchema=dict(TREE))]
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(Trees(name="files", tools=("purge",)), policy)
+        example.CALLED.clear()
+        result = asyncio.run(server.call_tool("purge", self.chain(63)))
+        assert not result.model_dump(by_alias=True).get("isError")
+        assert len(example.CALLED) == 1 and len(policy.seen) == 1
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"$ref": "#"},
+            {"anyOf": [{"type": "null"}, {"$ref": "#"}]},
+            {"properties": {"a": {"allOf": [{"$ref": "#/properties/a"}]}}},
+            {"properties": {"a": {"not": {"$ref": "#/properties/a"}}}},
+            {"properties": {"a": {"if": {"$ref": "#/properties/a"}}}},
+            {
+                "properties": {"a": {"$ref": "#/$defs/A"}},
+                "$defs": {"A": {"oneOf": [{"$ref": "#/$defs/B"}]}, "B": {"$ref": "#/$defs/A"}},
+            },
+        ],
+        ids=["a-ref", "any-of", "all-of", "not", "if", "through-two-definitions"],
+    )
+    def test_a_schema_that_leads_back_to_itself_with_no_value_between_is_refused(
+        self, example, schema
+    ):
+        assert self.judged({"a": 1}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} refers to itself without end",
+        )
+
+    def test_a_recursion_error_while_checking_names_the_interpreters_limit(
+        self, example, monkeypatch
+    ):
+        module = self.schema_module()
+
+        def out_of_stack(self, validator, instance):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(module.Listed, "_validate", out_of_stack)
+        assert self.judged({"node": {}}, TREE) == (
+            None,
+            None,
+            "Recusal refused `purge`: the arguments are nested too deeply to check against "
+            f"{_SCHEMA} within the interpreter's recursion limit",
+        )
+
+    # --- a pattern Python cannot read -----------------------------------------------------------
+
+    def test_a_pattern_python_cannot_compile_is_not_asserted(self, example):
+        schema = {
+            "properties": {
+                "name": {"type": "string", "pattern": "^\\p{L}+$"},
+                "code": {"type": "string", "pattern": "^[a-z]+$"},
+            }
+        }
+        given = {"name": "anything 123", "code": "abc"}
+        assert self.judged(given, schema) == (given, given, None)
+        # a pattern Python does read is still asserted
+        assert self.judged({"code": "ABC"}, schema)[2] == (
+            "Recusal refused `purge`: argument `code` does not meet `pattern` in the server's "
+            f"schema; {_AS_THEY_STAND}"
+        )
+        # and a type beside an unreadable pattern still is
+        assert "is of JSON type integer" in self.judged({"name": 5}, schema)[2]
+
+    def test_a_pattern_python_cannot_compile_is_not_asserted_for_member_names(self, example):
+        schema = {"propertyNames": {"pattern": "^\\p{L}+$"}}
+        given = {"any name": 1}
+        assert self.judged(given, schema) == (given, given, None)
+
+    def test_members_named_by_a_pattern_python_cannot_compile_refuse_the_schema(self, example):
+        schema = {"patternProperties": {"^\\p{L}+$": {"type": "integer"}}}
+        assert self.judged({"a": 1}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} names members by a `patternProperties` "
+            "pattern that Python's `re` cannot read, so the gate cannot tell which members it "
+            "governs",
+        )
+
+    # --- the spellings of the drafts the gate reads ---------------------------------------------
+
+    @pytest.mark.parametrize("fragment", ["", "#"], ids=["bare", "with-a-fragment"])
+    @pytest.mark.parametrize("scheme", ["http", "https"])
+    @pytest.mark.parametrize(
+        "dialect", ["draft-07/schema", "draft/2019-09/schema", "draft/2020-12/schema"]
+    )
+    def test_every_common_spelling_of_a_supported_draft_is_read(
+        self, example, dialect, scheme, fragment
+    ):
+        declared = f"{scheme}://json-schema.org/{dialect}{fragment}"
+        tuple_keyword = "prefixItems" if "2020-12" in dialect else "items"
+        schema = {
+            "$schema": declared,
+            "properties": {
+                "t": {"type": "array", tuple_keyword: [{"type": "integer"}, OPTIONS]},
+                "n": {"type": "integer", "default": 1},
+            },
+        }
+        completed = {"t": [1, FILLED], "n": 1}
+        assert self.judged({"t": [1, {}]}, schema) == (completed, completed, None)
+        assert "is of JSON type string" in self.judged({"t": ["1", {}]}, schema)[2]
+
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            "ftp://json-schema.org/draft-07/schema#",
+            "http://json-schema.org/draft-07/schema##",
+            "http://json-schema.org/draft-07/schema/",
+            "json-schema.org/draft-07/schema",
+            "http://json-schema.org/draft-06/schema#",
+            "https://json-schema.org/draft/next/schema",
+        ],
+    )
+    def test_any_other_spelling_is_still_a_draft_the_gate_does_not_read(self, example, declared):
+        assert (
+            "declares a JSON Schema draft the gate does not read"
+            in (self.judged({}, {"$schema": declared})[2])
+        )
+
+    # --- what the README says of ordinary schemas -----------------------------------------------
+
+    def test_an_openapi_nullable_keyword_does_not_allow_null(self, example):
+        """``nullable: true`` is OpenAPI, not JSON Schema: the gate reads the declared
+        type, so a ``null`` is refused. The README says so."""
+        schema = {"properties": {"a": {"type": "string", "nullable": True}}}
+        assert self.judged({"a": None}, schema)[2] == (
+            "Recusal refused `purge`: argument `a` is of JSON type null where the server's "
+            f"schema declares string; {_SEND_THE_TYPE}"
+        )
+        assert self.judged({"a": "x"}, schema) == ({"a": "x"}, {"a": "x"}, None)
+
+    def test_a_union_of_two_models_with_defaults_refuses_what_both_accept(self, example):
+        """Two ordinary Pydantic models (extra members ignored, every field defaulted)
+        both accept any object, so their different defaults are ambiguous; a
+        discriminator or ``additionalProperties: false`` tells them apart."""
+        by_path = {"type": "object", "properties": {"path": {"type": "string", "default": "/"}}}
+        by_name = {"type": "object", "properties": {"name": {"type": "string", "default": "n"}}}
+        loose = {"properties": {"target": {"anyOf": [by_path, by_name]}}}
+        assert "matches more than one of the alternatives" in self.judged({"target": {}}, loose)[2]
+        assert "matches more than one" in self.judged({"target": {"path": "/x"}}, loose)[2]
+        both = {"target": {"path": "/x", "name": "y"}}
+        assert self.judged(both, loose) == (both, both, None), "nothing is left out"
+        strict = {
+            "properties": {
+                "target": {
+                    "anyOf": [
+                        {**by_path, "additionalProperties": False},
+                        {**by_name, "additionalProperties": False},
+                    ]
+                }
+            }
+        }
+        completed = {"target": {"path": "/x"}}
+        assert self.judged({"target": {"path": "/x"}}, strict) == (completed, completed, None)
+        assert "matches more than one" in self.judged({"target": {}}, strict)[2]
+        tagged = {
+            "properties": {
+                "target": {
+                    "oneOf": [
+                        {
+                            **by_path,
+                            "properties": {**by_path["properties"], "kind": {"const": "p"}},
+                            "required": ["kind"],
+                        },
+                        {
+                            **by_name,
+                            "properties": {**by_name["properties"], "kind": {"const": "n"}},
+                            "required": ["kind"],
+                        },
+                    ]
+                }
+            }
+        }
+        completed = {"target": {"kind": "n", "name": "n"}}
+        assert self.judged({"target": {"kind": "n"}}, tagged) == (completed, completed, None)
+
+    def test_a_tuple_with_a_defaulted_member_refuses_a_call_that_leaves_it_out(self, example):
+        """What Pydantic publishes for a ``NamedTuple`` whose last member has a default."""
+        schema = {
+            "properties": {
+                "pt": {
+                    "type": "array",
+                    "prefixItems": [{"type": "integer"}, {"type": "integer", "default": 0}],
+                    "minItems": 1,
+                    "maxItems": 2,
+                }
+            }
+        }
+        assert (
+            "leaves out an item the server's schema lists a default for"
+            in (self.judged({"pt": [1]}, schema)[2])
+        )
+        assert self.judged({"pt": [1, 2]}, schema) == ({"pt": [1, 2]}, {"pt": [1, 2]}, None)
+
+    # --- the listing the gate keeps -------------------------------------------------------------
+
+    @staticmethod
+    def filtering_server(example, *, keeps_listing, fails_without_agent=False):
+        """A server that lists ``purge`` to the agent named ``writer`` and ``legacy`` to
+        any other, as a dynamic ``tool_filter`` would; with ``keeps_listing`` it shows the
+        whole listing as ``cached_tools``, as the SDK's own servers do."""
+        from mcp.types import Tool
+
+        whole = [
+            Tool(name="purge", description="Purge.", inputSchema=dict(PURGE_SCHEMA)),
+            Tool(name="legacy", description="Legacy.", inputSchema={"type": "object"}),
+        ]
+
+        class Filtering(example.InProcessMCPServer):
+            fetched = None
+
+            @property
+            def cached_tools(self):
+                return self.fetched if keeps_listing else None
+
+            async def list_tools(self, run_context=None, agent=None):
+                self.fetched = list(whole)
+                if agent is None and fails_without_agent:
+                    raise RuntimeError("a dynamic tool filter needs an agent")
+                wanted = "purge" if getattr(agent, "name", None) == "writer" else "legacy"
+                return [tool for tool in whole if tool.name == wanted]
+
+        return Filtering(name="files", tools=("purge", "legacy"))
+
+    def test_two_agents_with_two_filters_share_the_servers_whole_listing(self, example):
+        from types import SimpleNamespace
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(self.filtering_server(example, keeps_listing=True), policy)
+        writer, reader = SimpleNamespace(name="writer"), SimpleNamespace(name="reader")
+        listed = asyncio.run(server.list_tools(None, writer))
+        assert [tool.name for tool in listed] == ["purge"], "the listing is returned as filtered"
+        asyncio.run(server.list_tools(None, reader))
+        example.CALLED.clear()
+        for name in ("purge", "legacy"):
+            result = asyncio.run(server.call_tool(name, {}))
+            assert not result.model_dump(by_alias=True).get("isError"), name
+        assert [name for name, _ in policy.seen] == ["purge", "legacy"]
+        assert policy.seen[0][1] == {"path": "/", "recursive": True, "dry_run": False}
+
+    def test_on_a_real_server_two_agents_with_a_dynamic_filter_both_reach_their_tools(
+        self, example, tmp_path
+    ):
+        """The reviewer's sequence on the SDK's own stdio server: a dynamic ``tool_filter``
+        lists one tool to each agent, each listing replaced the other's, and the gate's
+        own listing (with no agent) raised inside the filter."""
+        pytest.importorskip("mcp.server.mcpserver", reason="the MCP SDK's server is not installed")
+        import json
+        import os
+
+        from agents import RunContextWrapper
+        from agents.mcp import MCPServerStdio
+
+        script = tmp_path / "stdio_server.py"
+        script.write_text(STDIO_SERVER, encoding="utf-8")
+        server_log = tmp_path / "server.jsonl"
+        env = {"RECUSAL_TEST_SERVER_LOG": str(server_log)}
+        if "SYSTEMROOT" in os.environ:
+            env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+
+        def per_agent(context, tool):
+            return tool.name == ("count" if context.agent.name == "reader" else "scoped")
+
+        policy = self.Recording()
+        listed: dict = {}
+
+        async def go():
+            params = {"command": sys.executable, "args": [str(script)], "env": env}
+            async with MCPServerStdio(
+                params=params, client_session_timeout_seconds=60, tool_filter=per_agent
+            ) as server:
+                example.gate_mcp_server(server, policy)
+                run_context = RunContextWrapper(context=None)
+                for name in ("reader", "writer"):
+                    agent = example.Agent(name=name)
+                    tools = await server.list_tools(run_context, agent)
+                    listed[name] = [tool.name for tool in tools]
+                return [
+                    await server.call_tool("count", {"n": 3}),
+                    await server.call_tool("scoped", {"scope": "archive"}),
+                    await server.call_tool("purge_opt", {}),
+                ]
+
+        results = asyncio.run(asyncio.wait_for(go(), 180))
+        assert listed == {"reader": ["count"], "writer": ["scoped"]}
+        for result in results:
+            assert not result.model_dump(by_alias=True).get("isError"), result.content[0].text
+        judged = [
+            ("count", {"n": 3, "ratio": 1}),
+            ("scoped", {"scope": "archive", "confirm": False}),
+            ("purge_opt", {"path": "/", "recursive": True, "dry_run": None}),
+        ]
+        assert policy.seen == judged
+        ran = [tuple(json.loads(line)) for line in server_log.read_text("utf-8").splitlines()]
+        assert ran == judged
+
+    def test_a_filter_that_cannot_run_without_an_agent_leaves_the_fetched_listing(self, example):
+        """The gate asks for a listing itself, with no agent, when a tool is not in the
+        one it holds. A dynamic filter raises then, after the SDK fetched the tools."""
+        policy = self.Recording()
+        server = example.gate_mcp_server(
+            self.filtering_server(example, keeps_listing=True, fails_without_agent=True), policy
+        )
+        result = asyncio.run(server.call_tool("purge", {}))
+        assert not result.model_dump(by_alias=True).get("isError")
+        assert policy.seen == [("purge", {"path": "/", "recursive": True, "dry_run": False})]
+        with pytest.raises(RuntimeError, match="needs an agent"):
+            asyncio.run(server.list_tools())
+
+    def test_a_server_object_that_keeps_no_listing_holds_the_latest_one_as_filtered(self, example):
+        """The limit the README states: without ``cached_tools`` the latest listing, as
+        filtered for one agent, replaces the one before."""
+        from types import SimpleNamespace
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(
+            self.filtering_server(example, keeps_listing=False, fails_without_agent=True), policy
+        )
+        asyncio.run(server.list_tools(None, SimpleNamespace(name="writer")))
+        asyncio.run(server.list_tools(None, SimpleNamespace(name="reader")))
+        refused = asyncio.run(server.call_tool("purge", {}))
+        assert refused.content[0].text.startswith(
+            "Recusal refused `purge`: the server lists no tool of this name"
+        )
+        assert (
+            not asyncio.run(server.call_tool("legacy", {})).model_dump(by_alias=True).get("isError")
+        )
+
+    def test_a_listing_that_fails_leaves_the_one_before(self, example):
+        from mcp.types import Tool
+
+        class Flaky(example.InProcessMCPServer):
+            listings = 0
+
+            async def list_tools(self, run_context=None, agent=None):
+                self.listings += 1
+                if self.listings > 1:
+                    raise RuntimeError("connection lost")
+                return [Tool(name="purge", description="Purge.", inputSchema=dict(PURGE_SCHEMA))]
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(Flaky(name="files", tools=("purge",)), policy)
+        asyncio.run(server.list_tools())
+        with pytest.raises(RuntimeError, match="connection lost"):
+            asyncio.run(server.list_tools())
+        result = asyncio.run(server.call_tool("purge", {"dry_run": True}))
+        assert not result.model_dump(by_alias=True).get("isError")
+        assert policy.seen == [("purge", {"dry_run": True, "path": "/", "recursive": True})]
+
+    @pytest.mark.parametrize("attribute", ["input_schema", "inputSchema"])
+    def test_the_schema_is_read_under_either_name_the_sdk_has_given_it(self, example, attribute):
+        from types import SimpleNamespace
+
+        class Listing(example.InProcessMCPServer):
+            async def list_tools(self, run_context=None, agent=None):
+                return [SimpleNamespace(name="purge", **{attribute: dict(PURGE_SCHEMA)})]
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(Listing(name="files", tools=("purge",)), policy)
+        asyncio.run(server.call_tool("purge", {}))
+        assert policy.seen == [("purge", {"path": "/", "recursive": True, "dry_run": False})]
+
+    # --- hosted MCP: the tool's own callback may be a coroutine function -----------------------
+
+    def test_a_hosted_callback_that_is_a_coroutine_function_is_awaited(self, example):
+        from agents import HostedMCPTool
+
+        async def existing(request):
+            await asyncio.sleep(0)
+            return {"approve": False, "reason": "the app said no"}
+
+        hosted = HostedMCPTool(
+            tool_config={
+                "type": "mcp",
+                "server_label": "db",
+                "server_url": "https://example.invalid/mcp",
+            },
+            on_approval_request=existing,
+        )
+        gated = example.gate_hosted_mcp(hosted, example.sql_scope_policy)
+        request = example.approval_request("run_sql", {"sql": SELECT}, "r1")
+        answer = asyncio.run(gated.on_approval_request(SimpleRequest(request)))
+        assert answer == {"approve": False, "reason": "the app said no"}
+
+    # --- what earlier reviews fixed and no test held --------------------------------------------
+
+    @pytest.mark.parametrize(
+        "listed, value",
+        [
+            ({"const": 1}, True),
+            ({"const": 1}, 1.0),
+            ({"const": True}, 1),
+            ({"const": [1]}, [True]),
+            ({"const": {"a": 1}}, {"a": 1.0}),
+            ({"enum": [[1, 2]]}, [1, True]),
+            ({"enum": [[1, 2]]}, [1.0, 2]),
+            ({"enum": [{"a": 1}]}, {"a": True}),
+            ({"enum": [{"a": [0]}]}, {"a": [False]}),
+        ],
+        ids=[
+            "const-true",
+            "const-float",
+            "const-one",
+            "const-in-a-list",
+            "const-in-an-object",
+            "enum-in-a-list",
+            "enum-float-in-a-list",
+            "enum-in-an-object",
+            "enum-deep",
+        ],
+    )
+    def test_a_fixed_or_listed_value_is_matched_by_json_type_all_the_way_down(
+        self, example, listed, value
+    ):
+        schema = {"properties": {"mode": listed}}
+        keyword = "the value the server's schema fixes" if "const" in listed else "one of"
+        assert keyword in self.judged({"mode": value}, schema)[2]
+        exact = listed.get("const", (listed.get("enum") or [None])[0])
+        assert self.judged({"mode": exact}, schema) == ({"mode": exact}, {"mode": exact}, None)
+
+    def test_a_list_under_alternatives_is_followed(self, example):
+        schema = {
+            "properties": {
+                "targets": {"anyOf": [{"type": "array", "items": OPTIONS}, {"type": "null"}]}
+            }
+        }
+        completed = {"targets": [FILLED, {"recursive": False, "dry_run": False}]}
+        assert self.judged({"targets": [{}, {"recursive": False}]}, schema) == (
+            completed,
+            completed,
+            None,
+        )
+
+    def test_additional_properties_complete_only_the_members_no_other_keyword_names(self, example):
+        schema = {
+            "properties": {
+                "by": {
+                    "type": "object",
+                    "properties": {"plain": {"type": "object"}},
+                    "patternProperties": {"^x_": {"type": "object"}},
+                    "additionalProperties": OPTIONS,
+                }
+            }
+        }
+        given = {"by": {"plain": {}, "x_a": {}, "other": {}}}
+        completed = {"by": {"plain": {}, "x_a": {}, "other": FILLED}}
+        assert self.judged(given, schema) == (completed, completed, None)
+
+    @pytest.mark.parametrize(
+        "name, ref",
+        [
+            ("a b", "#/$defs/a%20b"),
+            ("a/b", "#/$defs/a~1b"),
+            ("a~b", "#/$defs/a~0b"),
+            ("a~1b", "#/$defs/a~01b"),
+        ],
+        ids=["percent-escaped", "a-slash", "a-tilde", "a-tilde-then-one"],
+    )
+    def test_a_ref_token_is_decoded_as_a_json_pointer(self, example, name, ref):
+        schema = {"properties": {"opts": {"$ref": ref}}, "$defs": {name: OPTIONS}}
+        assert self.judged({"opts": {}}, schema) == ({"opts": FILLED}, {"opts": FILLED}, None)
+        assert "is of JSON type string" in self.judged({"opts": {"dry_run": "no"}}, schema)[2]
+
+    def test_a_ref_can_step_through_a_list(self, example):
+        schema = {
+            "properties": {
+                "first": {"anyOf": [OPTIONS, {"type": "null"}]},
+                "second": {"$ref": "#/properties/first/anyOf/0"},
+            }
+        }
+        completed = {"second": FILLED}
+        assert self.judged({"second": {}}, schema) == (completed, completed, None)
+        beyond = {
+            "properties": {"a": {"$ref": "#/properties/first/anyOf/2"}, **schema["properties"]}
+        }
+        assert "has a `$ref` that does not resolve" in self.judged({}, beyond)[2]
+
+
+class SimpleRequest:
+    """The approval request the SDK hands ``on_approval_request``: the item under ``data``."""
+
+    def __init__(self, data):
+        self.data = data

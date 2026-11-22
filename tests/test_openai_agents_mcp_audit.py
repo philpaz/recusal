@@ -402,8 +402,42 @@ class TestOpenAIAgentsMcpAudit:
                 {"a": "MARKER"},
                 "the server's listed schema for this tool has a `$ref` that does not resolve",
             ),
+            (
+                {"properties": {"scope": {"type": ["string", "null"]}}},
+                {"scope": '["MARKER"]'},
+                "argument `scope` is a string that holds JSON text",
+            ),
+            (
+                {
+                    "properties": {
+                        "note": {"type": "string"},
+                        "recursive": {
+                            "anyOf": [
+                                {"type": "boolean", "default": True},
+                                {"type": "string", "default": "no"},
+                            ]
+                        },
+                    }
+                },
+                {"note": "MARKER"},
+                "argument `recursive` is left out, and the alternatives the server's schema "
+                "lists for it list different defaults",
+            ),
+            (
+                {"properties": {"a": {"type": "string", "x-shape": {"default": "MARKER"}}}},
+                {"a": "MARKER"},
+                "the server's listed schema for this tool lists a default under a keyword the "
+                "gate does not read",
+            ),
         ],
-        ids=["an-alternative", "a-member-the-schema-does-not-name", "a-schema-it-cannot-check"],
+        ids=[
+            "an-alternative",
+            "a-member-the-schema-does-not-name",
+            "a-schema-it-cannot-check",
+            "json-text-a-server-may-read",
+            "alternatives-with-different-defaults",
+            "a-default-under-an-unknown-keyword",
+        ],
     )
     def test_arguments_the_whole_schema_does_not_allow_are_one_recorded_deny(
         self, example, gate, log, log_path, schema, arguments, plain
@@ -422,6 +456,37 @@ class TestOpenAIAgentsMcpAudit:
         assert entry["action"]["decision"] == "deny"
         assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
         assert plain in entry["action"]["reason"] == _text(outputs["c1"])
+        assert entry["action"]["input_sha256"] == _sha(arguments)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    def test_arguments_too_costly_to_check_are_one_recorded_deny(
+        self, example, gate, log, log_path, monkeypatch
+    ):
+        schema_module = importlib.import_module("recusal_openai_agents_mcp._schema")
+        monkeypatch.setattr(schema_module, "_STEPS", 3)
+        monkeypatch.setattr(schema_module, "_STEPS_PER_VALUE", 0)
+        seen = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        arguments = {"path": "MARKER", "recursive": False, "dry_run": True}
+        outputs, called = example.run_calls(
+            [("purge", arguments, "c1")], log, policy=policy, server=_purge_server(gate)
+        )
+        assert called == [] and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny"
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert (
+            entry["action"]["reason"]
+            == _text(outputs["c1"])
+            == (
+                "Recusal refused `purge` [FAIL]: the arguments are too costly to check against the "
+                "server's listed schema for this tool"
+            )
+        )
         assert entry["action"]["input_sha256"] == _sha(arguments)
         assert "MARKER" not in log_path.read_text(encoding="utf-8")
 

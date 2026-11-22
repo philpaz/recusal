@@ -406,3 +406,72 @@ def test_jsonschema_has_the_surface_the_gate_validates_with():
     assert list(error.absolute_path) == ["a", 1]
     assert error.validator == "type" and error.validator_value == "integer"
     assert error.instance == "x"
+
+
+# --- the third review of 2026-11-21 -------------------------------------------------------------
+
+
+def test_a_server_object_shows_its_whole_listing_as_cached_tools(ex):
+    """A ``tool_filter`` is applied to what ``list_tools`` returns, for one agent. The gate
+    keeps the listing before the filter where the server object shows it: ``cached_tools``,
+    a property every ``MCPServer`` has, ``None`` on the base class and the last fetched
+    listing on the SDK's own session servers
+    (``tests/test_openai_agents_mcp_gate.py`` runs two filtered agents on a real one)."""
+    from agents.mcp import MCPServer, MCPServerStdio
+
+    assert isinstance(inspect.getattr_static(MCPServer, "cached_tools"), property)
+    assert ex.InProcessMCPServer().cached_tools is None
+    held = inspect.getattr_static(MCPServerStdio, "cached_tools")
+    assert isinstance(held, property) and held is not MCPServer.__dict__["cached_tools"]
+    never_started = MCPServerStdio(params={"command": "never-started"})
+    assert never_started.cached_tools is None
+
+
+def test_jsonschema_has_the_surface_the_gate_counts_and_reads_patterns_with():
+    """What the third review added to the gate's use of ``jsonschema``: every keyword
+    function is replaced by one that counts, called as ``(validator, value, instance,
+    schema)``; a schema is checked with a format checker that leaves ``regex`` out, since
+    ``jsonschema`` refuses a ``pattern`` Python cannot compile as an invalid schema and
+    raises on one when it validates."""
+    jsonschema = pytest.importorskip("jsonschema", reason="jsonschema is not installed")
+    import re
+
+    from jsonschema import validators
+    from jsonschema.exceptions import SchemaError
+
+    for draft in (
+        validators.Draft7Validator,
+        validators.Draft201909Validator,
+        validators.Draft202012Validator,
+    ):
+        assert "regex" in draft.FORMAT_CHECKER.checkers
+        for keyword in ("anyOf", "oneOf", "pattern", "enum", "const", "$ref", "properties"):
+            assert callable(draft.VALIDATORS[keyword]), keyword
+        unreadable = {"properties": {"name": {"type": "string", "pattern": "^\\p{L}+$"}}}
+        with pytest.raises(SchemaError):
+            draft.check_schema(unreadable)
+        formats = jsonschema.FormatChecker(())
+        formats.checkers = {
+            name: check for name, check in draft.FORMAT_CHECKER.checkers.items() if name != "regex"
+        }
+        draft.check_schema(unreadable, format_checker=formats)
+        with pytest.raises(re.error):
+            list(draft(unreadable).iter_errors({"name": "x"}))
+
+    called = []
+
+    def counted(validator, value, instance, schema):
+        called.append((value, instance, schema))
+        return ()
+
+    latest = validators.Draft202012Validator
+    counting = validators.extend(latest, validators={"type": counted})
+    schema = {"type": "string"}
+    assert counting(schema).is_valid(5) and called == [("string", 5, schema)]
+    # ``descend`` hands a keyword the very subschema object, which the gate keys its work by
+    inner = {"type": "boolean"}
+    list(counting({"properties": {"a": inner}}).iter_errors({"a": 1}))
+    assert called[-1][2] is inner
+    referred = {"$defs": {"Flag": inner}, "properties": {"a": {"$ref": "#/$defs/Flag"}}}
+    list(counting(referred).iter_errors({"a": 1}))
+    assert called[-1][2] is inner, "a `$ref` resolves to the object in the schema, not a copy"

@@ -12,7 +12,10 @@ call id, and a SHA-256 fingerprint of the arguments, never the arguments themsel
 What each entry is bound to:
 
 - a call that is judged: the arguments the tool is called with, as the SDK prepares them
-  from the tool's schema, defaults included;
+  from the tool's schema, defaults included; for a call to an agent tool
+  (``agent.as_tool(...)``), the input the sub-agent is given, which with
+  ``as_tool(parameters=Model)`` is the arguments as the SDK's adapter for the model
+  validates them and writes them back out;
 - a call refused before judgment (arguments that do not validate against the tool's
   parameters, a prepared value that is not JSON data): the arguments as proposed;
 - a call whose arguments are not a JSON object, hold a non-finite number or are nested
@@ -25,9 +28,10 @@ execute, after any approval, so a call a person rejected has no entry. Under the
 a call then has an entry before a person decides, and a second one if it is approved.
 
 What is not on the log: a call the SDK rejects before the guardrail runs (a tool the agent
-does not have, a reused or a blank tool call id, arguments nested about a thousand levels
-deep: each raises inside the SDK), and anything ``gated_agent`` refuses to gate at
-construction, which raises before any agent runs.
+does not have, a tool call id reused for another call or a blank one, arguments nested
+about a thousand levels deep), a call the model repeats under the id and with the
+arguments of one that already ran, which the SDK does not run again, and anything
+``gated_agent`` refuses to gate at construction, which raises before any agent runs.
 """
 
 from __future__ import annotations

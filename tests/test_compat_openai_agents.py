@@ -443,3 +443,81 @@ def test_a_class_based_descriptor_decorator_has_no_signature_to_read(oa):
     with pytest.raises(ValueError):
         inspect.signature(decorated, follow_wrapped=False)
     assert oa.function_tool(decorated).name == "run_sql"
+
+
+# --- an agent tool's parameters (the third review of 2026-11-21) ------------------------------
+
+
+def test_an_agent_tool_holds_the_adapter_its_input_is_validated_and_written_with(oa):
+    """With ``as_tool(parameters=Model)`` the SDK validates the arguments with a
+    ``TypeAdapter`` over the model and hands the sub-agent the result written back out as
+    JSON. The gate reads that adapter from the SDK's own invocation function and makes
+    the same two calls; the default ``as_tool`` holds one over ``AgentAsToolInput``."""
+    import inspect
+
+    from agents.agent_tool_input import AgentAsToolInput
+    from agents.testing import ScriptedModel, assistant_message
+    from pydantic import BaseModel
+
+    class Ask(BaseModel):
+        task: str
+        confirm: bool = False
+        rows: int = 1
+
+    def adapter_of(tool):
+        implementation = tool.on_invoke_tool._invoke_tool_impl
+        return inspect.getclosurevars(implementation).nonlocals["params_adapter"]
+
+    sub_model = ScriptedModel([[assistant_message("sub done")]])
+    sub = oa.Agent(name="sub", model=sub_model, tools=[oa.echo])
+    plain = sub.as_tool(tool_name="ask_sub", tool_description="Ask.")
+    assert adapter_of(plain).core_schema["cls"] is AgentAsToolInput
+    tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Ask)
+    adapter = adapter_of(tool)
+    assert adapter.core_schema["type"] == "model" and adapter.core_schema["cls"] is Ask
+    proposed = {"task": "list", "confirm": "true", "rows": "9", "extra": 1}
+    written = adapter.dump_python(adapter.validate_python(proposed), mode="json")
+    assert written == {"task": "list", "confirm": True, "rows": 9}
+    with pytest.raises(ValueError):
+        adapter.validate_python({"rows": "many"})
+
+    parent = _agent(oa, [("ask_sub", proposed, "p1")], [tool])
+    _run_route(oa, parent, "run")
+    assert [json.loads(item["content"]) for item in sub_model.first_call.input] == [written]
+
+
+def test_what_the_sdk_does_with_an_unknown_tool_and_a_repeated_call_id(oa):
+    """The README's account of calls no guardrail runs for. An unknown tool raises unless
+    the run asks for the error to go to the model; a call id reused for another call
+    raises in a later turn as it does within one response; a call repeated under the id
+    and with the arguments of one that already ran is not run again."""
+    import agents.exceptions
+
+    seen = Seen(oa.sql_scope_policy)
+    agent = oa.gated_agent(_agent(oa, [("drop_all", {}, "c1")], [oa.run_sql]), seen)
+    config = oa.RunConfig(tracing_disabled=True, tool_not_found_behavior="return_error_to_model")
+    oa.EXECUTED.clear()
+    asyncio.run(oa.Runner.run(agent, "go", run_config=config))
+    assert oa.tool_outputs(agent.model) == {"c1": "Tool 'drop_all' not found."}
+    assert seen.calls == [] and oa.EXECUTED == []
+
+    def two_turns(second):
+        from agents.testing import ScriptedModel, assistant_message, function_call
+
+        turns = [
+            [function_call("run_sql", json.dumps({"sql": SELECT}), call_id="c1")],
+            [function_call("run_sql", json.dumps({"sql": second}), call_id="c1")],
+            [assistant_message("done")],
+        ]
+        seen = Seen(oa.sql_scope_policy)
+        gated = oa.gated_agent(_agent(oa, [], [oa.run_sql], model=ScriptedModel(turns)), seen)
+        oa.EXECUTED.clear()
+        return gated, seen
+
+    gated, seen = two_turns("SELECT 2")
+    with pytest.raises(agents.exceptions.ModelBehaviorError, match="reused a completed tool call"):
+        _run_route(oa, gated, "run")
+    assert len(seen.calls) == 1 and len(oa.EXECUTED) == 1, "only the first turn's call"
+    gated, seen = two_turns(SELECT)
+    _run_route(oa, gated, "run")
+    assert len(seen.calls) == 1 and len(oa.EXECUTED) == 1, "the repeated call is not run again"

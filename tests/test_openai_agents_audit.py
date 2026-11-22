@@ -422,6 +422,59 @@ class TestOpenAIAgentsAudit:
         assert entry["action"]["reason"] == reason
         assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
 
+    # --- an agent tool with a parameters model: the entry is bound to what the sub-agent gets --
+
+    def ask(self, example, gate, log, arguments):
+        """An audited parent calls ``ask_sub(task, confirm=False, rows=1)`` with
+        ``arguments``: ``(the call's output, whether the sub-agent was started)``."""
+        from agents.testing import ScriptedModel, assistant_message
+        from pydantic import BaseModel
+
+        class Ask(BaseModel):
+            task: str
+            confirm: bool = False
+            rows: int = 1
+
+        sub_model = ScriptedModel([[assistant_message("sub done")]])
+        sub = gate.gated_agent(
+            gate.Agent(name="sub", model=sub_model, tools=[gate.run_sql]), lambda *_: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Ask)
+        parent_model = gate.scripted_model([("ask_sub", arguments, "p1")])
+        parent = example.audited_agent(
+            gate.Agent(name="parent", model=parent_model, tools=[tool]), lambda *_: [], log
+        )
+        asyncio.run(gate.run_agent(parent))
+        return gate.tool_outputs(parent_model)["p1"], sub_model.first_call is not None
+
+    def test_an_agent_tool_call_is_recorded_at_the_input_the_sub_agent_is_given(
+        self, example, gate, log
+    ):
+        output, started = self.ask(example, gate, log, {"task": "list", "rows": "3", "x": 1})
+        assert output == "sub done" and started
+        entry = self.by_id(log)["p1"]
+        assert entry["action"]["decision"] != "deny"
+        assert entry["action"]["input_sha256"] == _sha(
+            {"task": "list", "confirm": False, "rows": 3}
+        )
+
+    def test_agent_tool_arguments_that_do_not_validate_are_one_recorded_deny(
+        self, example, gate, log, log_path
+    ):
+        proposed = {"task": "MARKER", "rows": "many"}
+        output, started = self.ask(example, gate, log, proposed)
+        assert not started
+        assert output == (
+            "Recusal refused `ask_sub` [FAIL]: the input the sub-agent would be given cannot "
+            "be judged (the arguments do not validate against its parameters)"
+        )
+        assert len(log.entries) == 1
+        entry = self.by_id(log)["p1"]
+        assert entry["action"]["decision"] == "deny" and entry["action"]["reason"] == output
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha(proposed)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
     # --- approvals, and what the guardrail never sees, as the example says ------------------
 
     @pytest.mark.parametrize("approve", [True, False], ids=["approved", "rejected"])

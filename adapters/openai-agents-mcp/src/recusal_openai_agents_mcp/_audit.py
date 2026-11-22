@@ -12,9 +12,11 @@ under its own surface label:
   carry none. The server's name is recorded as ``control.mcp_server``, and the entry of a
   judged call is bound to the arguments as judged: the call, completed with every default
   the server's listed schema gives for what it leaves out. That is what the server is
-  sent, except for a listed default its own property schema does not allow, which is
-  judged and not sent. A call refused before judgment (arguments that are not valid
-  against the listed schema, a schema the gate cannot check, a tool the server does not
+  sent, except for a listed default the server would not run with if it were sent
+  (one its own property schema does not allow, or text the server would decode), which
+  is judged and not sent. A call refused before judgment (arguments that are not valid
+  against the listed schema, JSON text a server may read as another value, arguments
+  too costly to check, a schema the gate cannot check, a tool the server does not
   list, arguments that are not JSON data) is one entry too, bound to the arguments as the
   SDK handed them, or, when those are not JSON data and so have no fingerprint, to the
   text the gate writes them as, under the key ``input``;
