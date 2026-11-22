@@ -82,12 +82,24 @@ messages, so pass `choice=<list position>`; without it the gate refuses the comp
 before anything runs.
 
 Each proposed call gets exactly one answer under its own id: the tool's result, or
-Recusal's reason. A policy that raises refuses the call (fail closed).
+Recusal's reason. A policy that raises refuses the call (fail closed). The gate always
+fails closed: `fail_closed` is not a keyword it takes.
 
 The gate calls your tools synchronously, so each tool is an ordinary function. An
 `async def` tool and a generator function (one whose body has a `yield`) are refused with
-a reason before the policy runs, so the policy is not consulted for them. An ordinary
-function that returns a coroutine or a generator is answered as not run.
+a reason before the policy runs, so the policy is not consulted for them. The gate reads
+how a tool is declared through a `functools.partial`, a `staticmethod`, a bound method
+and `functools.lru_cache`. It does not look through a wrapper of your own,
+`functools.wraps` included, because such a wrapper may await or consume what it wraps:
+that tool is judged and called like any other.
+
+What a tool returns is answered as its `str`, with two exceptions. If it returns a
+coroutine, the answer says so and that the gate did not run the coroutine. If it returns
+a generator or any other iterator (an async generator, `iter(...)`, `map(...)`, an open
+file), the answer is `` Tool `name` ran and returned a generator, which this gate does
+not consume: its result is not available `` (`an iterator` or `an async generator` for
+the other kinds). The function's own body ran, with whatever side effects it has, so the
+answer never says the tool did not run. Return a list or a string instead.
 
 A tool that raises: by default the exception reaches your loop, as it always has. Calls
 earlier in the turn have already run and their answers are lost with it; calls later in
@@ -118,11 +130,27 @@ refused, is one hash-chained entry labeled `openai.responses.function_call` or
 `openai.chat_completions.tool_call` with the API's own call id and a SHA-256 fingerprint
 of the arguments (never the arguments). A refusal's reason on the log never quotes an
 argument's key or value: a call that does not bind names the parameters the tool declares
-and counts the arguments it does not take. The tool's name is on the entry as the model
-sent it. If the log cannot be written the call is refused.
+and counts the arguments it does not take. A tool you have is on the entry under the
+name you gave it. A name you have no tool for is the model's text: it is on the entry,
+and in the reason, as sent only if it is 1 to 64 printable characters with no backtick,
+and otherwise as a description of its length, such as
+`<a tool name of 1000000 characters, not shown>`. If the log cannot be written the call
+is refused.
 Check the log with `recusal audit verify decisions.jsonl`.
 
-The audited functions call the plain ones, so there is one decision path.
+The audited functions call the plain ones, so there is one decision path:
+`audited_function_calls(response, tools, policy, log)` is
+`gate_function_calls(response, tools, policy, audit=log, surface="openai.responses.function_call")`,
+and both forms take `actor=` and `control=` for the entry. Called directly, the plain
+functions also take `allow_on_pass=True`, which records a passing call as `allow`
+instead of `defer` and changes nothing about what runs.
+
+`audit=None` is the plain gate: nothing is recorded, so a loop whose log is optional can
+pass `audit=maybe_log`. `surface=`, `actor=` or `control=` with a value and no `audit=`,
+and `audit=` with no `surface=`, raise `TypeError` before anything is judged, so a loop
+that believes it is recording is never silently not recording. `tool_use_id=` and
+`fail_closed=` are not taken and raise the same way: each call is recorded under its own
+call id, and the gate always fails closed.
 
 ## What the gate refuses, and what it does not see
 
@@ -135,9 +163,10 @@ The audited functions call the plain ones, so there is one decision path.
   - *A call that is not finished.* A Responses `function_call` item whose `status` is
     anything but `completed` (`in_progress`, `incomplete`); an item with no `status`
     passes. Every function call of a response whose own `status` is anything but
-    `completed` (`incomplete`, `failed`, `cancelled`, `in_progress`, `queued`), the
-    finished items in it included; a response with no `status` passes. Every tool call
-    of a Chat Completions choice whose `finish_reason` is anything but `stop`,
+    `completed` (`incomplete`, `failed`, `cancelled`, `in_progress`, `queued`, a value
+    a later SDK adds), the finished items in it included; a response with no `status`
+    passes. Every tool call of a Chat Completions choice whose `finish_reason` is
+    anything but `stop`,
     `tool_calls` or `function_call`: that is `length` (the message was cut off at the
     token limit), `content_filter` and a missing `finish_reason`. Request the turn again
     with a higher token limit instead of running a call that may have been cut off.
@@ -146,15 +175,22 @@ The audited functions call the plain ones, so there is one decision path.
     pass and the name the policy sees are bare names, so the gate could not tell two
     functions of the same name in different namespaces apart. Declare such functions
     without a namespace, under names that are unique.
-  - *The tool.* A tool the application does not have, arguments that do not bind to the
-    tool, an `async def` tool, a generator function, and a tool whose signature cannot
-    be judged by name: see the next point.
+  - *The tool.* A tool the application does not have (a name that is not a string is
+    one), arguments that do not bind to the tool, an `async def` tool, a generator
+    function, a `functools.lru_cache` tool handed a list or an object, and a tool whose
+    signature cannot be judged by name: see the next point.
 - **Which tools the gate can judge.** A tool is a plain function, a bound method or a
   `functools.lru_cache` of one, whose every parameter can be passed by name
   and is annotated with a supported data type: `str`, `int`, `float`, `bool`, `Optional`
   of a supported type (also written `T | None`), `list[T]`, and `dict[str, T]`, where
   `T` is a supported type in turn (`list[dict[str, int]]` is supported). Every default
-  must be JSON data. Everything else is refused with a reason, among them:
+  must be JSON data. A tool cached with `functools.lru_cache` (or `functools.cache`)
+  needs arguments the cache can hash: a call that hands it a list or an object, for a
+  `list[T]` or `dict[str, T]` parameter or in place of a `str`, is refused with a reason
+  before the policy runs. Give a cached tool `str`, `int`, `float` and `bool` parameters
+  only. A cache behind a wrapper of your own is not seen: there such a call raises
+  `TypeError` as any tool that raises does (see `answer_tool_errors` above). Everything
+  else is refused with a reason, among them:
   - a parameter with no annotation, `Any`, `Literal[...]`, a union of two types such as
     `int | float`, a bare `list` or `dict`, an `Enum`, `Annotated[...]`, a dataclass or a
     model;
@@ -171,14 +207,24 @@ The audited functions call the plain ones, so there is one decision path.
   object with a function that closes over what it needs. The annotations decide only
   whether the gate can judge the tool: the gate binds arguments by name and does not
   check or convert a value's type.
+- **The tool's name in a refusal.** A refusal names a tool you have by the name you
+  gave it. A name you have no tool for is quoted only if it is 1 to 64 printable
+  characters with no backtick. Any other (longer, empty, or holding a backtick, a
+  newline, a control or formatting character or a lone surrogate) is described by its
+  length, in the answer and on the audit log, as
+  `<a tool name of 70 characters, not shown>`, and a name that is not a string as
+  `<a tool name that is not a string>`. So a tool name cannot close the backticks a
+  refusal sets it in, start a new line, or put more than 64 characters of the model's
+  text into an answer or an entry.
 - **Refused by raising, before anything in the turn runs:** an output item or tool call
   of a type the gate does not handle (`custom_tool_call`, the provider's record of a
   hosted tool call, a type a later SDK adds), a Chat Completions message that carries
   the legacy `function_call` field (alone or beside `tool_calls`; the gate reads
   `tool_calls` only, so declare functions with `tools`, not `functions`), a call without
-  an id, a duplicate id, and a keyword argument the gate does not know (`TypeError`
-  naming it, whether or not the turn has calls). A turn refused this way writes no
-  audit entry.
+  an id, a duplicate id, and a keyword argument the gate does not take (`TypeError`
+  naming it, whether or not the turn has calls): a mistyped one, `fail_closed`,
+  `tool_use_id`, `surface`, `actor` or `control` with a value and no `audit`, and
+  `audit` with no `surface`. A turn refused this way writes no audit entry.
 - **No state between turns.** Within one turn a duplicate or empty call id raises. The
   gate remembers nothing from one turn to the next, so a call id used again in a later
   turn is not detected: each turn is judged, answered and recorded on its own.
@@ -199,11 +245,16 @@ The audited functions call the plain ones, so there is one decision path.
   sends an `mcp_approval_request` for your loop to answer. This gate does not judge it:
   it raises, with or without `allow_hosted_records`, so the call is never approved
   through this gate.
+- **Not read: `async` and `caller`.** A Responses `function_call` item can be marked
+  `async` and can carry a `caller` of type `program`. The gate reads neither field: such
+  a call is judged by your policy and run like any other.
 - **After the decision.** An audit entry records the gate's decision, not what the tool
-  then did. A call the gate allowed whose tool raised, or returned a coroutine that
-  nothing ran, is on the log as allowed. The async check reads how a tool is declared; a
-  wrapper that hides an `async def` behind an ordinary function is caught only by what
-  it returns, after the policy has allowed the call.
+  then did. A call the gate allowed whose tool raised, returned a coroutine that nothing
+  ran, or returned an iterator the gate did not consume, is on the log as allowed. The
+  async and generator checks read how a tool is declared; a wrapper of your own that
+  hides an `async def` or a generator function behind an ordinary function is caught
+  only by what it returns, after the policy has allowed the call and the wrapper has
+  been called.
 
 ## Status
 

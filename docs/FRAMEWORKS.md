@@ -171,17 +171,29 @@ parameters the tool declares and counts the arguments it does not take, never qu
 key or a value the model sent).
 Arguments that are not a string, invalid JSON (`NaN` and `Infinity` included), a number
 that is not finite (`1e999`), arguments nested more than 64 levels deep, non-object
-arguments, an unknown tool and a raising policy are refused, never run. So is a call that
+arguments, an unknown tool and a raising policy are refused, never run (the gate always
+fails closed: it does not take `fail_closed`). A refusal names a tool the application has
+by its name; any other name is quoted only if it is 1 to 64 printable characters with no
+backtick, and is otherwise described by its length, in the answer and on the audit log.
+Also refused: a call that
 is not finished (a `function_call` item or a response whose `status` is not `completed`,
 a Chat Completions choice whose `finish_reason` is not `stop`, `tool_calls` or
 `function_call`) and a `function_call` item that carries a `namespace`. An output item or
 tool call of a type the adapter does not handle raises, naming it, as does a Chat
 Completions message with the legacy `function_call` field and a keyword argument the gate
-does not know, and a call without an id is refused because the SDK's answer types do not
-require one. The gate keeps no state between turns and has no helper for streaming: it
-takes a complete response.
+does not take (a mistyped one, `fail_closed`, `tool_use_id`, `surface`, `actor` or
+`control` without `audit`, `audit` without `surface`), and a call without an id is refused
+because the SDK's answer types do not require one. `audit=None` is the plain gate. The
+gate keeps no state between turns and has no helper for streaming: it takes a complete
+response.
 The gate calls tools synchronously: an `async def` tool and a generator function are
-refused before the policy runs. A tool that raises reaches the application by default, and with
+refused before the policy runs, read through a `functools.partial`, a `staticmethod`, a
+bound method and `functools.lru_cache` but not through a wrapper the application wrote.
+A tool that returns a generator or another iterator is answered as having run with no
+result available, never as not run. A `functools.lru_cache` tool handed a list or an
+object, which the cache cannot hash, is refused before the policy runs. A function call
+marked `async`, or whose `caller` is a program, is judged and run like any other. A tool
+that raises reaches the application by default, and with
 `answer_tool_errors=True` is answered with its exception's class name under its own id
 while the rest of the turn is judged and run. Hosted tools (web search, file search, code
 interpreter, image generation, remote MCP) run on the provider's side, so the gate never
@@ -197,8 +209,9 @@ hash-chained `AuditLog` entry labeled `openai.responses.function_call` or
 `openai.chat_completions.tool_call` with the API's call id and a fingerprint of the bound
 invocation, defaults included, before the call runs or is refused, and an unwritable log
 refuses the call. A call refused before judgment is one entry too. A turn refused as a
-whole (an unhandled item type, a legacy `function_call`, a missing or duplicate id, an
-unknown keyword) raises before anything is judged, so it runs nothing and writes no entry.
+whole (an unhandled item type, a legacy `function_call`, a missing or duplicate id, a
+keyword the gate does not take) raises before anything is judged, so it runs nothing and
+writes no entry.
 
 ## Google ADK
 

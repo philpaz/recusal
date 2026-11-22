@@ -9,9 +9,8 @@ All notable changes to this project are documented here. The format follows
 ### Security
 
 - **`recusal-openai` 0.2.2 (unreleased): the gate refuses what it cannot tie to what
-  would run, and both loops refuse it the same way.** Found by the adapter review of
-  2026-11-21 and reproduced on `openai` 3.49.0. Each change refuses something that ran or
-  raised; nothing that was refused is accepted now.
+  would run, tells the model the truth about what ran, and both loops decide the same
+  way.** Found by the adapter review of 2026-11-21 and reproduced on `openai` 3.49.0.
   - Arguments were parsed with Python's JSON defaults, which read `NaN`, `Infinity` and
     `-Infinity` and turn `1e999` into infinity. A policy written as `if amount > 100:
     refuse` let `{"amount": NaN}` and `{"amount": -Infinity}` run in the plain loop,
@@ -48,18 +47,50 @@ All notable changes to this project are documented here. The format follows
     is parsed now; an empty string is still a call with no arguments.
   - A generator function used as a tool was answered with the generator's `repr`, its
     body never ran, and the log said allowed. It is now refused before the policy runs,
-    as an `async def` tool is, and a generator returned by an ordinary function is
-    answered as not run.
+    as an `async def` tool is. Both are read through a `functools.partial`, a
+    `staticmethod`, a bound method and `functools.lru_cache`; a wrapper the application
+    wrote (`functools.wraps` included) is not looked through, because it may await or
+    consume what it wraps. An ordinary function that returned a generator or any other
+    iterator (an async generator, `iter(...)`, `map(...)`) was answered with the
+    object's `repr` too. Its own body has run by then, so it is now answered as having
+    run, with its result not available because the gate does not consume it, and never
+    as not run.
   - A Chat Completions message carrying only the legacy `function_call` field was
     skipped without a word. It now raises `TypeError` before anything runs, alone or
     beside `tool_calls`, as every other shape the gate does not handle does.
   - A mistyped keyword such as `allow_hosted_record=True` was reported as a policy error
     on every call and accepted silently when the turn had no calls. A keyword the gate
-    does not know now raises `TypeError` naming it, before anything is judged.
+    does not take now raises `TypeError` naming it, before anything is judged.
+  - With `audit=` and `fail_closed=False`, a policy that raised let the tool run. The
+    loops and `judge_and_run` no longer take `fail_closed`: the gate always fails closed.
+  - A model-chosen tool name was written raw between the backticks of a refusal and onto
+    the audit entry, with no bound: a name could close the backticks and add text that
+    read as a verdict, and a 1 MB name gave a 1 MB answer and a 2 MB entry. A refusal now
+    names a tool the application has by its name. Any other name is used as sent only if
+    it is 1 to 64 printable characters with no backtick, and is otherwise described by
+    its length (`<a tool name of 1000000 characters, not shown>`), in the answer and on
+    the entry.
+  - A tool name that is a list or a dict, on an item the SDK did not validate, raised
+    `TypeError` out of the turn after earlier calls in it had run. A name that is not a
+    string is now an unknown tool: one refusal under the call's own id, and one audit
+    entry.
+  - A `functools.lru_cache` tool handed a list or an object, which the cache cannot
+    hash, raised `TypeError` out of the turn. That call is now refused with a reason
+    before the policy runs.
+
+  One change accepts what was refused:
+  - Any recording keyword without a log (`audit=None`, `actor=`, `surface=`, `control=`,
+    `allow_on_pass=`) refused every call as a "policy error" although no policy had run,
+    so a loop with an optional log (`audit=maybe_log`) ran nothing. `audit=None` is now
+    the plain gate. `surface=`, `actor=` or `control=` with a value and no `audit=`,
+    `audit=` with no `surface=`, and a caller's own `tool_use_id=` (each call is recorded
+    under its own id) raise `TypeError` before anything is judged, whether or not the
+    turn has calls.
 
   The README now also says which tools and annotations the gate can judge and what to
-  write instead, that the gate keeps no state between turns, and that it has no helper
-  for streaming.
+  write instead, that the gate keeps no state between turns, that it has no helper
+  for streaming, and that a function call marked `async` or made by a program is judged
+  and run like any other.
 
 ## [0.15.0] - 2026-11-21
 
