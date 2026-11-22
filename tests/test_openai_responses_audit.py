@@ -287,12 +287,24 @@ class TestOpenAIResponsesAudit:
         calls = [
             ("run_sql", {"sql": secret}, "s1"),
             ("echo", {"text": "MARKER-echo-text"}, "s2"),
+            # a key is the model's text too: an argument the tool does not take is counted
+            # in the refusal, never quoted
+            ("echo", {"text": "x", "MARKER-key password=hunter2": 1}, "s3"),
+            ("echo", {"MARKER-only-key": "MARKER-value"}, "s4"),
         ]
-        example.run_calls(calls, log, chat=chat)
+        answers, _ = example.run_calls(calls, log, chat=chat)
         text = log_path.read_text(encoding="utf-8")
         assert "MARKER" not in text
-        assert "customers" not in text
+        assert "customers" not in text and "hunter2" not in text
+        assert "MARKER" not in answers["s3"] + answers["s4"]
         entries = self.by_id(log)
+        assert entries["s3"]["reasons"] == (
+            "arguments do not bind to the tool (1 argument the tool does not take)"
+        )
+        assert entries["s4"]["reasons"] == (
+            "arguments do not bind to the tool "
+            "(missing required `text`; 1 argument the tool does not take)"
+        )
         for _, args, call_id in calls:
             assert entries[call_id]["action"]["input_sha256"] == _sha(args)
             assert entries[call_id]["action"]["control"]["recusal_version"]
@@ -350,19 +362,29 @@ class TestOpenAIResponsesAudit:
         def variadic(*args: str) -> str:
             return "ran"
 
+        def rows(sql: str):
+            yield sql
+
+        nan = '{"sql": NaN, "m": "MARKER-nan"}'
+        infinite = '{"sql": 1e999, "m": "MARKER-inf"}'
+        deep = '{"sql": "MARKER-deep", "m": ' + "[" * 600 + "]" * 600 + "}"
         seen = []
 
         def policy(name, args):
             seen.append(name)
             return []
 
-        tools = dict(gate.TOOLS, variadic=variadic)
+        tools = dict(gate.TOOLS, variadic=variadic, rows=rows)
         calls = [
             ("run_sql", "{not json MARKER-raw", "bad_json"),
             ("run_sql", ["MARKER-list"], "not_object"),
             ("drop_db", {"name": "MARKER-prod"}, "unknown"),
             ("variadic", {"x": "MARKER-variadic"}, "signature"),
-            ("run_sql", {"sql": SELECT, "surprise": "MARKER-extra"}, "unbound"),
+            ("run_sql", {"sql": SELECT, "MARKER-key": "MARKER-extra"}, "unbound"),
+            ("run_sql", nan, "nan"),
+            ("run_sql", infinite, "infinite"),
+            ("run_sql", deep, "deep"),
+            ("rows", {"sql": "MARKER-rows"}, "generator"),
         ]
         answers, executed = example.run_calls(calls, log, policy=policy, tools=tools, chat=chat)
         assert executed == [] and seen == []
@@ -374,9 +396,14 @@ class TestOpenAIResponsesAudit:
             "unknown": ("unknown tool", {"name": "MARKER-prod"}),
             "signature": ("its signature cannot be judged", {"x": "MARKER-variadic"}),
             "unbound": (
-                "arguments do not bind to the tool",
-                {"sql": SELECT, "surprise": "MARKER-extra"},
+                "arguments do not bind to the tool (1 argument the tool does not take)",
+                {"sql": SELECT, "MARKER-key": "MARKER-extra"},
             ),
+            # refused for what the text is: bound to the text as sent
+            "nan": ("arguments are not valid JSON", {"input": nan}),
+            "infinite": ("a number in the arguments is not finite", {"input": infinite}),
+            "deep": ("arguments are nested too deeply", {"input": deep}),
+            "generator": ("it is a generator function", {"sql": "MARKER-rows"}),
         }
         for call_id, (detail, proposal) in expected.items():
             entry = entries[call_id]
@@ -627,3 +654,204 @@ class TestOpenAIResponsesAudit:
         )
         assert [o["call_id"] for o in outs] == ["c1"]
         assert [e["action"]["tool_use_id"] for e in log.entries] == ["c1"]
+
+    # --- what cannot be tied to what runs: one recorded deny each (0.2.2) -------------------
+
+    @SHAPES
+    @pytest.mark.parametrize("levels", [65, 600, 5000])
+    def test_a_call_nested_too_deeply_is_one_recorded_deny_and_its_neighbours_run(
+        self, example, log, chat, levels
+    ):
+        """At about 600 levels the copy for the policy raised inside the gate: the refusal
+        was not on the log and read "policy error". At about 5000 the parser raised out of
+        the turn after the first call had run."""
+        ran = []
+
+        def nest(path: str, extra: list[str] = None) -> str:  # type: ignore[assignment]
+            ran.append(path)
+            return "nested"
+
+        seen = []
+        deep = '{"path": "p", "extra": ' + "[" * levels + "]" * levels + "}"
+        answers, _ = example.run_calls(
+            [("nest", {"path": "a"}, "c1"), ("nest", deep, "c2"), ("nest", {"path": "z"}, "c3")],
+            log,
+            policy=lambda n, a: seen.append(a["path"]) or [],
+            tools={"nest": nest},
+            chat=chat,
+        )
+        assert ran == ["a", "z"] and seen == ["a", "z"]
+        assert [(e["action"]["tool_use_id"], e["action"]["decision"]) for e in log.entries] == [
+            ("c1", "defer"),
+            ("c2", "deny"),
+            ("c3", "defer"),
+        ]
+        entry = self.by_id(log)["c2"]
+        assert answers["c2"] == "Recusal refused `nest` [FAIL]: arguments are nested too deeply"
+        assert entry["action"]["reason"] == answers["c2"] and "policy error" not in answers["c2"]
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha({"input": deep})
+
+    @SHAPES
+    @pytest.mark.parametrize(
+        "arguments, detail",
+        [
+            ('{"amount": NaN}', "arguments are not valid JSON"),
+            ('{"amount": -Infinity}', "arguments are not valid JSON"),
+            ('{"amount": 1e999}', "a number in the arguments is not finite"),
+            ('{"amount": -1e999}', "a number in the arguments is not finite"),
+        ],
+    )
+    def test_both_loops_refuse_a_number_that_is_not_json_the_same_way(
+        self, example, gate, log, chat, arguments, detail
+    ):
+        """The plain loop ran these and the audited loop refused them."""
+        from recusal import Finding
+
+        ran = []
+
+        def pay(amount: float) -> str:
+            ran.append(amount)
+            return "paid"
+
+        def limit(name, args):
+            if args["amount"] > 100:
+                return [Finding.fail("limit", severity="CRITICAL", message="over limit")]
+            return []
+
+        calls = [("pay", arguments, "c1")]
+        plain, _ = self.plain(gate, calls, chat=chat, policy=limit, tools={"pay": pay})
+        answers, _ = example.run_calls(calls, log, policy=limit, tools={"pay": pay}, chat=chat)
+        assert plain["c1"] == f"Recusal refused `pay`: {detail}"
+        assert answers["c1"] == f"Recusal refused `pay` [FAIL]: {detail}"
+        assert ran == [] and len(log.entries) == 1
+        entry = self.by_id(log)["c1"]
+        assert entry["action"]["decision"] == "deny"
+        assert entry["action"]["input_sha256"] == _sha({"input": arguments})
+
+    def test_a_namespaced_call_is_one_recorded_deny_bound_to_the_arguments_as_sent(
+        self, example, gate, log
+    ):
+        ran = []
+
+        def delete(path: str) -> str:
+            ran.append(path)
+            return "deleted"
+
+        seen = []
+        call = dict(gate.function_call("delete", {"path": "x"}, "c1"), namespace="prod_db")
+        response = gate.response_with([call, gate.function_call("delete", {"path": "y"}, "c2")])
+        outs = example.audited_function_calls(
+            response, {"delete": delete}, lambda n, a: seen.append(a) or [], log
+        )
+        assert outs[0]["output"] == (
+            "Recusal refused `delete` [FAIL]: it carries a namespace, and namespaced function "
+            "calls are not supported"
+        )
+        assert outs[1]["output"] == "deleted" and ran == ["y"] and seen == [{"path": "y"}]
+        entries = self.by_id(log)
+        assert set(entries) == {"c1", "c2"} and len(log.entries) == 2
+        entry = entries["c1"]
+        assert entry["decision"] == "FAIL" and entry["action"]["decision"] == "deny"
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["reason"] == outs[0]["output"]
+        assert entry["action"]["input_sha256"] == _sha({"input": call["arguments"]})
+        assert "prod_db" not in json.dumps(entry)
+
+    @pytest.mark.parametrize("where", ["item", "response"])
+    def test_an_unfinished_function_call_is_one_recorded_deny(self, example, gate, log, where):
+        ran = []
+
+        def pay(amount: float = 5.0) -> str:
+            ran.append(amount)
+            return "paid"
+
+        call = gate.function_call("pay", "", "c1")
+        if where == "item":
+            call["status"] = "incomplete"
+        response = gate.response_with([call])
+        if where == "response":
+            response.status = "incomplete"
+        outs = example.audited_function_calls(response, {"pay": pay}, lambda n, a: [], log)
+        what = "call" if where == "item" else "response"
+        assert outs[0]["output"] == (
+            f"Recusal refused `pay` [FAIL]: the {what} is not finished "
+            "(its status is not `completed`)"
+        )
+        assert ran == [] and len(log.entries) == 1
+        entry = self.by_id(log)["c1"]
+        assert entry["action"]["decision"] == "deny"
+        assert entry["action"]["reason"] == outs[0]["output"]
+        assert entry["action"]["input_sha256"] == _sha({"input": ""})
+
+    def test_an_unfinished_chat_message_is_one_recorded_deny_per_call(self, example, gate, log):
+        ran = []
+
+        def pay(amount: float = 5.0) -> str:
+            ran.append(amount)
+            return "paid"
+
+        completion = gate.completion_with(
+            [gate.tool_call("pay", {"amount": 1}, "k1"), gate.tool_call("pay", "", "k2")]
+        )
+        completion.choices[0].finish_reason = "length"
+        outs = example.audited_tool_calls(completion, {"pay": pay}, lambda n, a: [], log)
+        assert all("the message is not finished" in o["content"] for o in outs)
+        assert ran == []
+        assert [(e["action"]["tool_use_id"], e["action"]["decision"]) for e in log.entries] == [
+            ("k1", "deny"),
+            ("k2", "deny"),
+        ]
+        entries = self.by_id(log)
+        assert entries["k1"]["action"]["input_sha256"] == _sha({"input": '{"amount": 1}'})
+        assert entries["k2"]["action"]["input_sha256"] == _sha({"input": ""})
+
+    def test_arguments_that_are_not_a_string_are_one_recorded_deny(self, example, log):
+        from types import SimpleNamespace
+
+        ran = []
+
+        def pay(amount: float = 5.0) -> str:
+            ran.append(amount)
+            return "paid"
+
+        response = SimpleNamespace(
+            output=[SimpleNamespace(type="function_call", call_id="c1", name="pay", arguments=None)]
+        )
+        outs = example.audited_function_calls(response, {"pay": pay}, lambda n, a: [], log)
+        assert outs[0]["output"] == "Recusal refused `pay` [FAIL]: arguments are not a string"
+        assert ran == [] and len(log.entries) == 1
+        entry = self.by_id(log)["c1"]
+        assert entry["action"]["decision"] == "deny"
+        assert entry["action"]["input_sha256"] == _sha({"input": None})
+
+    def test_an_invocation_that_cannot_be_detached_is_one_recorded_deny(
+        self, example, log, monkeypatch
+    ):
+        module = importlib.import_module("recusal_openai._gate")
+
+        def refuse(value):
+            raise RecursionError("too deep")
+
+        monkeypatch.setattr(module, "_detached", refuse)
+        answers, executed = example.run_calls(
+            [("echo", {"text": "x"}, "c1")], log, policy=lambda n, a: []
+        )
+        assert answers["c1"] == (
+            "Recusal refused `echo` [FAIL]: the invocation cannot be copied as JSON data for "
+            "the policy"
+        )
+        assert executed == [] and len(log.entries) == 1
+        entry = self.by_id(log)["c1"]
+        assert entry["action"]["decision"] == "deny"
+        assert entry["action"]["input_sha256"] == _sha({"text": "x"})
+
+    def test_a_legacy_function_call_raises_and_writes_no_entry(self, example, gate, log):
+        from openai.types.chat.chat_completion_message import FunctionCall
+
+        completion = gate.completion_with([gate.tool_call("echo", {"text": "x"}, "k1")])
+        completion.choices[0].message.function_call = FunctionCall(name="echo", arguments="{}")
+        gate.EXECUTED.clear()
+        with pytest.raises(TypeError, match="legacy `function_call` field"):
+            example.audited_tool_calls(completion, gate.TOOLS, lambda n, a: [], log)
+        assert log.entries == [] and gate.EXECUTED == []

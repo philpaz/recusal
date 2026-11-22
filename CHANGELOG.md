@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **`recusal-openai` 0.2.2 (unreleased): the gate refuses what it cannot tie to what
+  would run, and both loops refuse it the same way.** Found by the adapter review of
+  2026-11-21 and reproduced on `openai` 3.49.0. Each change refuses something that ran or
+  raised; nothing that was refused is accepted now.
+  - Arguments were parsed with Python's JSON defaults, which read `NaN`, `Infinity` and
+    `-Infinity` and turn `1e999` into infinity. A policy written as `if amount > 100:
+    refuse` let `{"amount": NaN}` and `{"amount": -Infinity}` run in the plain loop,
+    while the audited loop refused them. Both loops now refuse these before the policy
+    runs: the three tokens as arguments that are not valid JSON, and a number that is
+    not finite by that name. The copy the policy judges is now made by the kernel's
+    `recusal.invocation.detached`.
+  - In the audited loop, a call to a known tool with arguments nested about 600 deep was
+    refused without an audit entry, with a reason that said "policy error" although the
+    policy never ran. At about 5000 levels the parser raised out of the whole turn after
+    an earlier call in it had run, so that call's answer was lost. Arguments nested more
+    than 64 levels below the arguments object (the line the kernel draws for JSON data), or
+    too deeply to parse, are now refused as that one call, with a reason that says so, and
+    are one audit entry. Arguments nested between 65 and a few hundred levels ran
+    before and are refused now.
+  - A Responses function call can carry a `namespace`. The gate read only the bare name,
+    so a call to `delete` in namespace `prod_db` ran the application's `delete` and the
+    policy saw `delete`. A function call that carries a namespace is now refused before
+    the policy runs: namespaced calls are not supported.
+  - The refusal for arguments that do not bind quoted Python's own message, which quotes
+    an unexpected argument's key. That key is the model's text, and it was written into
+    the audit log's reasons. The refusal now names only parameters the tool declares and
+    counts the arguments it does not take.
+  - A call that was not finished ran: a `function_call` item whose `status` was
+    `in_progress` or `incomplete`, a call in a response whose `status` was `incomplete`,
+    and a tool call in a Chat Completions choice whose `finish_reason` was `length`.
+    Empty arguments are a call with no arguments, so a call cut off before its arguments
+    ran on the tool's defaults. A `function_call` item or a response whose `status` is
+    anything but `completed` (no status passes), and a choice whose `finish_reason` is
+    anything but `stop`, `tool_calls` or `function_call`, now refuse their calls before
+    the policy runs.
+  - Arguments that are not a string (`None`, `0`, `False`, a list, a dict, bytes) on an
+    item the SDK did not validate were read as no arguments, or as JSON. Only a string
+    is parsed now; an empty string is still a call with no arguments.
+  - A generator function used as a tool was answered with the generator's `repr`, its
+    body never ran, and the log said allowed. It is now refused before the policy runs,
+    as an `async def` tool is, and a generator returned by an ordinary function is
+    answered as not run.
+  - A Chat Completions message carrying only the legacy `function_call` field was
+    skipped without a word. It now raises `TypeError` before anything runs, alone or
+    beside `tool_calls`, as every other shape the gate does not handle does.
+  - A mistyped keyword such as `allow_hosted_record=True` was reported as a policy error
+    on every call and accepted silently when the turn had no calls. A keyword the gate
+    does not know now raises `TypeError` naming it, before anything is judged.
+
+  The README now also says which tools and annotations the gate can judge and what to
+  write instead, that the gate keeps no state between turns, and that it has no helper
+  for streaming.
+
 ## [0.15.0] - 2026-11-21
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public

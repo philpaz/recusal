@@ -12,11 +12,22 @@ which makes it the place to put the gate:
 For every call the model proposes, the gate decodes the arguments the way the tool would
 receive them, judges the call with ``recusal.decide``, runs the tool only if it is not
 denied, and returns exactly one answer carrying that call's own id. Arguments that are not
-valid JSON or not a JSON object, a tool the application does not have, and a policy that
-raises are all refused with a reason, never run.
+a string, not valid JSON (``NaN`` and ``Infinity`` are not JSON), not a JSON object, that
+hold a number Python reads as infinity or are nested more than 64 levels deep, a tool the
+application does not have, and a policy that raises are all refused with a reason, never
+run. An empty string is a call with no arguments.
+
+A call that is not finished is refused the same way, before the policy runs: a
+``function_call`` item whose ``status`` is not ``completed`` (an item with no status
+passes), every function call of a response whose ``status`` is not ``completed`` (a
+response with no status passes), and every tool call of a Chat Completions choice whose
+``finish_reason`` is not ``stop``, ``tool_calls`` or ``function_call``. So is a
+``function_call`` item that carries a ``namespace``: the tools are keyed by bare name, so
+the gate could not tell two functions of the same name apart.
 
 The gate calls tools synchronously. An ``async def`` tool is refused with a reason before
-the policy runs, because calling it would only create a coroutine that nothing awaits.
+the policy runs, because calling it would only create a coroutine that nothing awaits. A
+generator function is refused for the same reason: calling it runs none of its body.
 
 A tool that raises: by default the exception leaves the gate, as it always has. Calls
 earlier in the turn have run and their answers are lost with it, and calls later in the
@@ -27,9 +38,13 @@ named is the exception's nearest built-in one, so no name an application chose i
 
 Default-deny on what the loop does not understand: an output item or tool call of a type
 this gate does not handle (``custom_tool_call``, a hosted tool call, a type added in a later
-SDK release) raises, naming the type, instead of being skipped. The SDK's answer types do
-not require a call id, so the gate refuses a call without one and checks that every call
-got exactly one answer.
+SDK release) raises, naming the type, instead of being skipped. So does a Chat Completions
+message that carries the legacy ``function_call`` field, which this gate does not read.
+The SDK's answer types do not require a call id, so the gate refuses a call without one
+and checks that every call got exactly one answer. A keyword argument the gate does not
+know raises ``TypeError`` before anything is judged.
+
+The gate keeps no state between turns: a call id is checked within one turn only.
 
 Hosted tools (web search, file search, code interpreter, image generation, remote MCP) run
 on the provider's side, so nothing here can gate them. What reaches this loop is the
@@ -42,17 +57,18 @@ gate does not judge: it raises, so the call is never approved by this loop.
 
 from __future__ import annotations
 
-import copy
 import functools
 import inspect
 import json
 import logging
+import math
 from typing import Any, Callable, List, Optional
 
 from openai.types.chat import ChatCompletion
 from openai.types.responses import Response
 
 from recusal import Finding, decide
+from recusal.invocation import detached as _detached
 from recusal.invocation import unsupported_signature as _unsupported_signature
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
@@ -89,7 +105,70 @@ HOSTED_RECORD_TYPES = frozenset(
 #: record and raises even with ``allow_hosted_records=True``.
 HOSTED_RECORD_FINISHED = frozenset({None, "completed", "failed", "incomplete"})
 
+#: The ``status`` values of a ``function_call`` item, and of a response, that is finished.
+#: ``None`` is one that carries no status. Anything else (``in_progress``, ``incomplete``,
+#: ``failed``, ``cancelled``, ``queued``, a value a later SDK adds) is not finished, and a
+#: function call that is not finished is refused: its arguments may have been cut off.
+_FUNCTION_CALL_FINISHED = frozenset({None, "completed"})
+
+#: The ``finish_reason`` values of a Chat Completions choice whose tool calls are finished.
+#: ``length`` (cut off at the token limit), ``content_filter`` (content omitted) and
+#: anything else, a missing reason included, refuse every tool call of the choice.
+_CHAT_FINISHED = frozenset({"stop", "tool_calls", "function_call"})
+
+#: The keywords the gate passes on to ``recusal.decide``. Any other keyword raises
+#: ``TypeError`` before anything is judged, so a mistyped one is never swallowed.
+_RECORD_KEYWORDS = frozenset(
+    {"audit", "surface", "tool_use_id", "actor", "control", "allow_on_pass", "fail_closed"}
+)
+
+#: How many levels below the arguments object a value may sit. The kernel's ``json_data``
+#: draws the same line for a default from 0.15.0; the gate holds its own so that it
+#: refuses the same calls on every kernel release it supports.
+_MAX_DEPTH = 64
+
+_TOO_DEEP = "arguments are nested too deeply"
+
 _LOG = logging.getLogger("recusal_openai")
+
+
+def _check_record(record: dict) -> None:
+    """Raise ``TypeError`` for a keyword that is neither the gate's own nor ``decide``'s."""
+    unknown = sorted(set(record) - _RECORD_KEYWORDS)
+    if unknown:
+        raise TypeError(
+            f"Recusal refused the turn: unexpected keyword argument {unknown[0]!r}; the "
+            f"keywords passed on to recusal.decide are {', '.join(sorted(_RECORD_KEYWORDS))}"
+        )
+
+
+class _NotFinite(ValueError):
+    """A JSON number Python reads as infinity (``1e999``)."""
+
+
+def _finite(token: str) -> float:
+    """``json.loads``'s ``parse_float``: the float, or ``_NotFinite`` for an infinite one."""
+    number = float(token)
+    if not math.isfinite(number):
+        raise _NotFinite
+    return number
+
+
+def _too_deep(value: Any, depth: int = 0) -> bool:
+    """Whether decoded arguments hold a value more than ``_MAX_DEPTH`` levels down."""
+    if depth > _MAX_DEPTH:
+        return True
+    if type(value) is dict:
+        return any(_too_deep(item, depth + 1) for item in value.values())
+    if type(value) is list:
+        return any(_too_deep(item, depth + 1) for item in value)
+    return False
+
+
+def _not_json(token: str) -> Any:
+    """``json.loads``'s ``parse_constant``: ``NaN``, ``Infinity`` and ``-Infinity`` are
+    tokens Python accepts and JSON does not have."""
+    raise ValueError(f"{token} is not JSON")
 
 
 def _is_async(func: Callable[..., Any]) -> bool:
@@ -109,14 +188,29 @@ def _is_async(func: Callable[..., Any]) -> bool:
     return inspect.iscoroutinefunction(call) or inspect.isasyncgenfunction(call)
 
 
+def _is_generator(func: Callable[..., Any]) -> bool:
+    """Whether ``func`` is declared as a generator function, so calling it would run nothing.
+
+    Read the way ``_is_async`` reads ``async def``. A wrapper that hides the declaration is
+    not seen here; what it returns is (``_answer``).
+    """
+    target: Any = func
+    while isinstance(target, (functools.partial, staticmethod)):
+        target = target.func if isinstance(target, functools.partial) else target.__func__
+    call = getattr(type(target), "__call__", None)
+    return inspect.isgeneratorfunction(target) or inspect.isgeneratorfunction(call)
+
+
 def _answer(name: str, result: Any) -> str:
     """The text for what an allowed tool returned.
 
     A coroutine or an async generator is not a result: the gate did not run it, and says
     so instead of answering with the object's ``repr``. One that was never started is
     closed, which runs none of its code and only spares the "never awaited" warning. One
-    that has started belongs to whoever is running it and is left alone. Any other value,
-    a future or another awaitable included, is answered as its ``str``, as before.
+    that has started belongs to whoever is running it and is left alone. A generator is
+    not a result either: none of its body has run, and it is answered as not run and left
+    alone. Any other value, a future or another awaitable included, is answered as its
+    ``str``, as before.
     """
     if inspect.iscoroutine(result) or inspect.isasyncgen(result):
         if inspect.iscoroutine(result) and inspect.getcoroutinestate(result) == "CORO_CREATED":
@@ -125,7 +219,29 @@ def _answer(name: str, result: Any) -> str:
             f"Tool `{name}` returned a coroutine, not a result: "
             "this gate calls tools synchronously and did not run it"
         )
+    if inspect.isgenerator(result):
+        return f"Tool `{name}` returned a generator, not a result: this gate did not run it"
     return str(result)
+
+
+def _unbound(parameters: Any, args: dict) -> str:
+    """Why ``args`` do not bind to a tool with ``parameters``, in the tool's own words.
+
+    ``inspect``'s own message quotes an unexpected argument's key, which the model chose.
+    This names only parameters the tool declares, and counts the arguments it does not.
+    """
+    missing = [
+        f"`{name}`"
+        for name, parameter in parameters.items()
+        if name not in args and parameter.default is parameter.empty
+    ]
+    extra = sum(1 for key in args if key not in parameters)
+    parts = []
+    if missing:
+        parts.append(f"missing required {', '.join(missing)}")
+    if extra:
+        parts.append(f"{extra} argument{'s' if extra != 1 else ''} the tool does not take")
+    return f"arguments do not bind to the tool ({'; '.join(parts)})"
 
 
 def _raised(exc: Exception) -> str:
@@ -166,7 +282,7 @@ def _unjudgeable(name: str, plain: str, detail: str, proposal: Any, record: dict
 
 def judge_and_run(
     name: str,
-    arguments: str | None,
+    arguments: str,
     tools: Tools,
     policy: Policy,
     *,
@@ -182,12 +298,23 @@ def judge_and_run(
     called with exactly those bound arguments, so a default the model omitted is judged at
     the value the function would use. A tool whose signature cannot be judged by name
     (variadic or positional-only parameters, an unsupported annotation, a default outside
-    the JSON domain) is refused, as is a call that does not bind (an unknown or missing
-    parameter; the refusal names the parameter, never a value).
+    the JSON domain) is refused, as is a call that does not bind (the refusal names a
+    missing required parameter and counts the arguments the tool does not take; it never
+    quotes a key or a value the model sent).
 
-    The tool is called synchronously. An async tool is refused before the policy runs,
-    and a coroutine returned by an ordinary function is answered as not run. A tool that
-    raises propagates by default. With ``answer_tool_errors=True`` it is answered with
+    ``arguments`` is the JSON text of the call. Only a string is parsed, and an empty
+    string is a call with no arguments; anything else is refused. So are ``NaN``,
+    ``Infinity`` and ``-Infinity`` (not JSON), a number Python reads as infinity
+    (``1e999``), and arguments nested more than 64 levels below the arguments object or
+    too deeply to parse. The copy the policy judges is made with
+    ``recusal.invocation.detached``, so a policy that writes to it cannot change what the
+    tool receives.
+
+    The tool is called synchronously. An async tool and a generator function are refused
+    before the policy runs, and a coroutine or a generator returned by an ordinary
+    function is answered as not run.
+
+    A tool that raises propagates by default. With ``answer_tool_errors=True`` it is answered with
     ``Tool `name` raised <ExceptionClass>``, where the class is the exception's nearest
     built-in one: never its message, and never a name an application chose. The traceback
     goes to the ``recusal_openai`` logger; a logging handler that fails does not change
@@ -197,12 +324,30 @@ def judge_and_run(
     so a loop that puts the decision on a log (``audited_function_calls``) decides,
     and refuses, exactly as this one does. The entry for a judged call carries the
     fingerprint of the bound invocation the tool is called with, defaults included; the
-    entry for a call refused before judgment is bound to the arguments as proposed.
+    entry for a call refused before judgment is bound to the arguments as proposed: the
+    decoded object, or the text as sent when it is the text that was refused.
+
+    A keyword in ``record`` that ``decide`` does not take raises ``TypeError``.
     """
+    _check_record(record)
+    if not isinstance(arguments, str):
+        detail = "arguments are not a string"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, arguments, record)
     try:
-        args = json.loads(arguments or "{}")
+        args = json.loads(arguments or "{}", parse_constant=_not_json, parse_float=_finite)
+    except _NotFinite:
+        detail = "a number in the arguments is not finite"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, arguments, record)
+    except RecursionError:
+        detail = _TOO_DEEP
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, arguments, record)
     except ValueError:
         detail = "arguments are not valid JSON"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, arguments, record)
+    # nothing nested deeper is fingerprinted, copied or handed to a policy, each of which
+    # walks the arguments and would fail at a depth that depends on the caller's stack
+    if _too_deep(args):
+        detail = _TOO_DEEP
         return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, arguments, record)
     if not isinstance(args, dict):
         detail = "arguments are not a JSON object"
@@ -215,21 +360,28 @@ def judge_and_run(
     if _is_async(func):
         detail = "it is declared async, and this gate calls tools synchronously"
         return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
+    if _is_generator(func):
+        detail = "it is a generator function, and calling it would run none of its body"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
     why = _unsupported_signature(func)
     if why is not None:
         detail = f"its signature cannot be judged ({why})"
         return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
+    signature = inspect.signature(func)
     try:
-        bound = inspect.signature(func).bind(**args)
-    except TypeError as exc:  # the message names parameters only, never values
-        detail = f"arguments do not bind to the tool ({exc})"
+        bound = signature.bind(**args)
+    except TypeError:  # its text can quote a key the model chose, so it is not used
+        detail = _unbound(signature.parameters, args)
         return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
     bound.apply_defaults()
     invocation = dict(bound.arguments)
     try:
-        decision, reason = decide(
-            name, copy.deepcopy(invocation), policy, safe_errors=True, **record
-        )
+        judged = _detached(invocation)
+    except (TypeError, RecursionError):  # the policy has not run: a refusal, on the record
+        detail = "the invocation cannot be copied as JSON data for the policy"
+        return _unjudgeable(name, f"Recusal refused `{name}`: {detail}", detail, args, record)
+    try:
+        decision, reason = decide(name, judged, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
     if decision == "deny":
@@ -244,6 +396,30 @@ def judge_and_run(
         except Exception:  # noqa: BLE001, a broken log handler must not unanswer the call
             pass
         return f"Tool `{name}` raised {_raised(exc)}"
+
+
+def _answer_call(
+    name: str,
+    arguments: Any,
+    refused: Optional[str],
+    tools: Tools,
+    policy: Policy,
+    answer_tool_errors: bool,
+    record: dict,
+) -> str:
+    """The answer for one call of a turn: the refusal the loop found while reading it
+    (``refused``: a namespace, a call that is not finished), or ``judge_and_run``.
+
+    A refusal found by the loop is made before the arguments are read, so on the record it
+    is bound to them as sent.
+    """
+    if refused is not None:
+        return _unjudgeable(
+            name, f"Recusal refused `{name}`: {refused}", refused, arguments, record
+        )
+    return judge_and_run(
+        name, arguments, tools, policy, answer_tool_errors=answer_tool_errors, **record
+    )
 
 
 def _require_id(call_id: Any, what: str) -> str:
@@ -287,8 +463,12 @@ def gate_function_calls(
 ) -> list[dict[str, Any]]:
     """Responses API: judge every ``function_call`` item; return ``function_call_output`` items.
 
-    Raises TypeError for an output item type this adapter does not handle, and ValueError for
-    a call without an id. Pass the returned list as the next request's ``input``.
+    Raises TypeError for an output item type this adapter does not handle or a keyword it
+    does not know, and ValueError for a call without an id. Pass the returned list as the
+    next request's ``input``. A ``function_call`` item that carries a ``namespace``, one
+    whose ``status`` is not ``completed`` (no status passes), and every function call of
+    a response whose ``status`` is not ``completed`` (no status passes) are refused with a
+    reason under their own ids, before the policy runs.
     ``allow_hosted_records=True`` lets a finished item of a type in ``HOSTED_RECORD_TYPES``
     pass: the provider produced it on its own side, this loop can neither judge nor stop
     it, so it is not answered and not put on the record. ``answer_tool_errors=True``
@@ -298,9 +478,11 @@ def gate_function_calls(
     each call is recorded under its own ``call_id``. A turn refused as a whole raises
     before anything is judged, so it runs nothing and writes no entry.
     """
+    _check_record(record)
+    unfinished = getattr(response, "status", None) not in _FUNCTION_CALL_FINISHED
     # pass 1: every item is one this adapter handles and carries a usable, unique id;
     # nothing runs until the whole turn has passed, so a refused turn has run nothing
-    calls: list[tuple[str, str, Any]] = []
+    calls: list[tuple[str, str, Any, Optional[str]]] = []
     for item in response.output:
         item_type = getattr(item, "type", None)
         if item_type in PASSIVE_OUTPUT_TYPES:
@@ -328,24 +510,33 @@ def gate_function_calls(
         # use to narrow the SDK's union of output items; from here it is a function call
         call: Any = item
         call_id = _require_id(getattr(call, "call_id", None), f"function_call {call.name!r}")
-        calls.append((call_id, call.name, call.arguments))
-    call_ids = [call_id for call_id, _, _ in calls]
+        refused = None
+        if getattr(call, "namespace", None):
+            # the tools and the policy know a function by its bare name only
+            refused = "it carries a namespace, and namespaced function calls are not supported"
+        elif unfinished:
+            refused = "the response is not finished (its status is not `completed`)"
+        elif getattr(call, "status", None) not in _FUNCTION_CALL_FINISHED:
+            refused = "the call is not finished (its status is not `completed`)"
+        calls.append((call_id, call.name, call.arguments, refused))
+    call_ids = [call_id for call_id, _, _, _ in calls]
     _check_ids(call_ids)
     # pass 2: judge and run each call, answering it under its own id
     outputs = [
         {
             "type": "function_call_output",
             "call_id": call_id,
-            "output": judge_and_run(
+            "output": _answer_call(
                 name,
                 arguments,
+                refused,
                 tools,
                 policy,
-                answer_tool_errors=answer_tool_errors,
-                **_for_call(record, call_id),
+                answer_tool_errors,
+                _for_call(record, call_id),
             ),
         }
-        for call_id, name, arguments in calls
+        for call_id, name, arguments, refused in calls
     ]
     _check_answered_once(call_ids, [o["call_id"] for o in outputs])
     return outputs
@@ -398,13 +589,29 @@ def gate_tool_calls(
     the completion has exactly one choice. A completion with several choices (``n > 1``)
     and no ``choice`` is refused before anything is judged: the choices are alternative
     messages, and only the one the application selects is dispatched. Raises TypeError for
-    a tool call type this adapter does not handle (``custom``) or a non-int ``choice``, and
-    ValueError for a call without an id, no choices, or an out-of-range ``choice``. Append
-    the returned messages after the chosen assistant message in the next request.
+    a tool call type this adapter does not handle (``custom``), a chosen message that
+    carries the legacy ``function_call`` field, a keyword it does not know or a non-int
+    ``choice``, and ValueError for a call without an id, no choices, or an out-of-range
+    ``choice``. Append the returned messages after the chosen assistant message in the
+    next request. When the chosen choice's ``finish_reason`` is not ``stop``,
+    ``tool_calls`` or ``function_call`` (``length``: the message was cut off), every tool
+    call in it is refused with a reason under its own id, before the policy runs.
     ``record`` is the recording arguments for the turn, and ``answer_tool_errors`` the
     same keyword, as in ``gate_function_calls``.
     """
+    _check_record(record)
     chosen = _chosen(completion, choice)
+    if getattr(chosen.message, "function_call", None):
+        raise TypeError(
+            "Recusal refused the message: it carries the legacy `function_call` field; "
+            "this adapter handles `tool_calls` only"
+        )
+    refused = None
+    if getattr(chosen, "finish_reason", None) not in _CHAT_FINISHED:
+        refused = (
+            "the message is not finished (its finish_reason is not `stop`, `tool_calls` "
+            "or `function_call`)"
+        )
     calls: list[tuple[str, str, Any]] = []
     for call in chosen.message.tool_calls or []:
         if call.type != "function":
@@ -420,13 +627,14 @@ def gate_tool_calls(
         {
             "role": "tool",
             "tool_call_id": call_id,
-            "content": judge_and_run(
+            "content": _answer_call(
                 name,
                 arguments,
+                refused,
                 tools,
                 policy,
-                answer_tool_errors=answer_tool_errors,
-                **_for_call(record, call_id),
+                answer_tool_errors,
+                _for_call(record, call_id),
             ),
         }
         for call_id, name, arguments in calls

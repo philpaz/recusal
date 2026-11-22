@@ -85,8 +85,9 @@ Each proposed call gets exactly one answer under its own id: the tool's result, 
 Recusal's reason. A policy that raises refuses the call (fail closed).
 
 The gate calls your tools synchronously, so each tool is an ordinary function. An
-`async def` tool is refused with a reason before the policy runs, so the policy is not
-consulted for it. An ordinary function that returns a coroutine is answered as not run.
+`async def` tool and a generator function (one whose body has a `yield`) are refused with
+a reason before the policy runs, so the policy is not consulted for them. An ordinary
+function that returns a coroutine or a generator is answered as not run.
 
 A tool that raises: by default the exception reaches your loop, as it always has. Calls
 earlier in the turn have already run and their answers are lost with it; calls later in
@@ -115,22 +116,77 @@ answers = audited_function_calls(response, tools, policy, log)
 `audited_tool_calls` is the Chat Completions form. Each call the model proposes, run or
 refused, is one hash-chained entry labeled `openai.responses.function_call` or
 `openai.chat_completions.tool_call` with the API's own call id and a SHA-256 fingerprint
-of the arguments (never the arguments). If the log cannot be written the call is refused.
+of the arguments (never the arguments). A refusal's reason on the log never quotes an
+argument's key or value: a call that does not bind names the parameters the tool declares
+and counts the arguments it does not take. The tool's name is on the entry as the model
+sent it. If the log cannot be written the call is refused.
 Check the log with `recusal audit verify decisions.jsonl`.
 
 The audited functions call the plain ones, so there is one decision path.
 
 ## What the gate refuses, and what it does not see
 
-- **Refused with a reason, never run:** arguments that are not valid JSON or not a JSON
-  object, a tool the application does not have, arguments that do not bind to the tool,
-  a tool whose signature cannot be judged by name (variadic or positional-only
-  parameters, an unsupported annotation, a default that is not JSON data), and an
-  `async def` tool.
+- **Refused with a reason, never run.** Each of these is answered under the call's own
+  id before the policy runs, and is one entry on the audit log in the audited loop:
+  - *The arguments.* Arguments that are not a string (an empty string is a call with no
+    arguments), not valid JSON, or not a JSON object. `NaN`, `Infinity` and `-Infinity`
+    are not JSON and are refused. So are a number Python reads as infinity (`1e999`) and
+    arguments nested more than 64 levels below the arguments object.
+  - *A call that is not finished.* A Responses `function_call` item whose `status` is
+    anything but `completed` (`in_progress`, `incomplete`); an item with no `status`
+    passes. Every function call of a response whose own `status` is anything but
+    `completed` (`incomplete`, `failed`, `cancelled`, `in_progress`, `queued`), the
+    finished items in it included; a response with no `status` passes. Every tool call
+    of a Chat Completions choice whose `finish_reason` is anything but `stop`,
+    `tool_calls` or `function_call`: that is `length` (the message was cut off at the
+    token limit), `content_filter` and a missing `finish_reason`. Request the turn again
+    with a higher token limit instead of running a call that may have been cut off.
+  - *A namespaced function call.* A Responses `function_call` item that carries a
+    non-empty `namespace` is refused: namespaced calls are not supported. The tools you
+    pass and the name the policy sees are bare names, so the gate could not tell two
+    functions of the same name in different namespaces apart. Declare such functions
+    without a namespace, under names that are unique.
+  - *The tool.* A tool the application does not have, arguments that do not bind to the
+    tool, an `async def` tool, a generator function, and a tool whose signature cannot
+    be judged by name: see the next point.
+- **Which tools the gate can judge.** A tool is a plain function, a bound method or a
+  `functools.lru_cache` of one, whose every parameter can be passed by name
+  and is annotated with a supported data type: `str`, `int`, `float`, `bool`, `Optional`
+  of a supported type (also written `T | None`), `list[T]`, and `dict[str, T]`, where
+  `T` is a supported type in turn (`list[dict[str, int]]` is supported). Every default
+  must be JSON data. Everything else is refused with a reason, among them:
+  - a parameter with no annotation, `Any`, `Literal[...]`, a union of two types such as
+    `int | float`, a bare `list` or `dict`, an `Enum`, `Annotated[...]`, a dataclass or a
+    model;
+  - variadic (`*args`, `**kwargs`) and positional-only parameters;
+  - a `functools.partial` and a callable object (an instance with `__call__`), because
+    the kernel cannot read their annotations;
+  - with `recusal` 0.15.0 or later, a `functools.wraps` wrapper that adds a parameter of
+    its own to the function it wraps.
+
+  What to do instead: write a plain function with supported annotations and resolve
+  richer types inside its body. Take a `str` and check it against the allowed values in
+  place of `Literal` or an `Enum`, pick `float` in place of `int | float`, write
+  `dict[str, str]` in place of `dict`, and replace a `functools.partial` or a callable
+  object with a function that closes over what it needs. The annotations decide only
+  whether the gate can judge the tool: the gate binds arguments by name and does not
+  check or convert a value's type.
 - **Refused by raising, before anything in the turn runs:** an output item or tool call
   of a type the gate does not handle (`custom_tool_call`, the provider's record of a
-  hosted tool call, a type a later SDK adds), a call without an id, and a duplicate id. A
-  turn refused this way writes no audit entry.
+  hosted tool call, a type a later SDK adds), a Chat Completions message that carries
+  the legacy `function_call` field (alone or beside `tool_calls`; the gate reads
+  `tool_calls` only, so declare functions with `tools`, not `functions`), a call without
+  an id, a duplicate id, and a keyword argument the gate does not know (`TypeError`
+  naming it, whether or not the turn has calls). A turn refused this way writes no
+  audit entry.
+- **No state between turns.** Within one turn a duplicate or empty call id raises. The
+  gate remembers nothing from one turn to the next, so a call id used again in a later
+  turn is not detected: each turn is judged, answered and recorded on its own.
+- **No helper for streaming.** The gate takes a complete `Response` or `ChatCompletion`.
+  An application that streams must assemble the complete response first (the SDK's
+  stream helpers return it once the stream ends: `get_final_response()` for Responses,
+  `get_final_completion()` for Chat Completions), then hand it to the gate, and must not
+  run a function call from a stream event.
 - **Never judged: hosted tools.** Web search, file search, code interpreter, image
   generation and remote MCP run on the provider's side. What arrives in your loop is the
   provider's record of the call (`web_search_call`, `mcp_call` and the others in

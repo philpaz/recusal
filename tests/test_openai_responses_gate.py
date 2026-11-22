@@ -1206,21 +1206,34 @@ class TestBoundInvocation:
         assert received == [(5, ["a"])]
 
     @pytest.mark.parametrize(
-        "arguments, fragment",
+        "arguments, detail",
         [
-            ('{"sql": "x", "nope": 1}', "unexpected keyword argument 'nope'"),
-            ("{}", "missing a required argument: 'sql'"),
+            ('{"sql": "x", "nope": 1}', "1 argument the tool does not take"),
+            ('{"sql": "x", "nope": 1, "nada": 2}', "2 arguments the tool does not take"),
+            ("{}", "missing required `sql`"),
+            ('{"nope": 1}', "missing required `sql`; 1 argument the tool does not take"),
         ],
     )
     def test_a_call_that_does_not_bind_is_refused_naming_the_parameter_only(
-        self, ex, arguments, fragment
+        self, ex, arguments, detail
     ):
+        """The refusal names parameters the tool declares and counts the arguments it does
+        not take. A key the model chose is never quoted (0.2.2)."""
         ex.EXECUTED.clear()
         out = ex.judge_and_run("run_sql", arguments, ex.TOOLS, lambda n, a: [])
-        assert (
-            out.startswith("Recusal refused `run_sql`: arguments do not bind") and fragment in out
-        )
+        assert out == f"Recusal refused `run_sql`: arguments do not bind to the tool ({detail})"
+        assert "nope" not in out and "nada" not in out
         assert ex.EXECUTED == []
+
+    def test_a_missing_parameter_with_a_default_is_not_named_as_required(self, ex):
+        def two(a: int, b: int, c: int = 3) -> str:
+            return "ran"
+
+        out = ex.judge_and_run("two", '{"x": 1}', {"two": two}, lambda n, a: [])
+        assert out == (
+            "Recusal refused `two`: arguments do not bind to the tool "
+            "(missing required `a`, `b`; 1 argument the tool does not take)"
+        )
 
     def test_a_signature_that_cannot_be_judged_by_name_is_refused(self, ex):
         import enum
@@ -1285,3 +1298,543 @@ class TestBoundInvocation:
         ex.EXECUTED.clear()
         ex.dispatch_ungated(ex.response_with([ex.function_call("charge", {}, "c1")]), ex.TOOLS)
         assert ex.EXECUTED == [("charge", {"amount": 100})]
+
+
+RAN: list = []
+
+
+def _pay(amount: float, to: str = "acct-1") -> str:
+    RAN.append(("pay", amount, to))
+    return f"paid {amount}"
+
+
+def _nest(path: str, extra: list[str] = None) -> str:  # type: ignore[assignment]
+    RAN.append(("nest", path))
+    return "nested"
+
+
+def _deep(levels: int) -> str:
+    """Arguments for ``_nest`` whose ``extra`` is ``levels`` lists inside one another."""
+    return '{"path": "p", "extra": ' + "[" * levels + "]" * levels + "}"
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="the OpenAI SDK requires Python 3.10+")
+class TestWhatCannotBeTiedToWhatRuns:
+    """recusal-openai 0.2.2: where the gate cannot tie what it judged to what would run, it
+    refuses before the policy runs, and each proposed call still gets its one answer."""
+
+    @pytest.fixture
+    def ex(self):
+        pytest.importorskip("openai", reason="the openai package is not installed")
+        spec = importlib.util.spec_from_file_location("recusal_responses_tied_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        RAN.clear()
+        return module
+
+    @staticmethod
+    def over_100(seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append((name, args))
+            if name == "pay" and args["amount"] > 100:
+                return [Finding.fail("limit", severity="CRITICAL", message="over limit")]
+            return []
+
+        return policy
+
+    @staticmethod
+    def turn(ex, shape, calls, tools, policy, **kwargs):
+        """One turn; the answers in call order."""
+        if shape == "responses":
+            response = ex.response_with([ex.function_call(*c) for c in calls])
+            return [o["output"] for o in ex.gate_function_calls(response, tools, policy, **kwargs)]
+        completion = ex.completion_with([ex.tool_call(*c) for c in calls])
+        return [o["content"] for o in ex.gate_tool_calls(completion, tools, policy, **kwargs)]
+
+    @staticmethod
+    def loose_response(*items, **fields):
+        """A response the SDK did not validate, as ``model_construct`` or a hand-built
+        object gives: its items can carry anything."""
+        return SimpleNamespace(
+            output=[SimpleNamespace(type="function_call", **item) for item in items], **fields
+        )
+
+    @staticmethod
+    def loose_completion(*calls, **fields):
+        fields.setdefault("finish_reason", "tool_calls")
+        tool_calls = [
+            SimpleNamespace(
+                type="function",
+                id=call_id,
+                function=SimpleNamespace(name=name, arguments=arguments),
+            )
+            for name, arguments, call_id in calls
+        ]
+        message = SimpleNamespace(tool_calls=tool_calls)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, **fields)])
+
+    # --- F1: numbers that are not JSON, or not finite --------------------------------------
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    @pytest.mark.parametrize(
+        "arguments, detail",
+        [
+            ('{"amount": NaN}', "arguments are not valid JSON"),
+            ('{"amount": Infinity}', "arguments are not valid JSON"),
+            ('{"amount": -Infinity}', "arguments are not valid JSON"),
+            ('{"amount": 1, "to": [NaN]}', "arguments are not valid JSON"),
+            ('{"amount": 1e999}', "a number in the arguments is not finite"),
+            ('{"amount": -1e999}', "a number in the arguments is not finite"),
+            ('{"amount": 1, "to": {"deep": [1e999]}}', "a number in the arguments is not finite"),
+            ("[1e999]", "a number in the arguments is not finite"),
+        ],
+    )
+    def test_a_number_that_is_not_json_or_not_finite_is_refused_before_the_policy(
+        self, ex, shape, arguments, detail
+    ):
+        seen: list = []
+        answers = self.turn(
+            ex, shape, [("pay", arguments, "c1")], {"pay": _pay}, self.over_100(seen)
+        )
+        assert answers == [f"Recusal refused `pay`: {detail}"]
+        assert seen == [] and RAN == []
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    def test_finite_numbers_are_judged_and_run_as_the_floats_and_ints_they_are(self, ex, shape):
+        seen: list = []
+        answers = self.turn(
+            ex,
+            shape,
+            [("pay", '{"amount": 1.5}', "a"), ("pay", '{"amount": 1e2}', "b"), ("pay", "{}", "c")],
+            {"pay": _pay},
+            self.over_100(seen),
+        )
+        assert answers[:2] == ["paid 1.5", "paid 100.0"]
+        assert (
+            answers[2]
+            == "Recusal refused `pay`: arguments do not bind to the tool (missing required `amount`)"
+        )
+        assert [type(args["amount"]) for _, args in seen] == [float, float]
+        assert RAN == [("pay", 1.5, "acct-1"), ("pay", 100.0, "acct-1")]
+
+    def test_negative_control_python_json_reads_what_json_does_not_have(self):
+        import math
+
+        assert math.isnan(json.loads('{"amount": NaN}')["amount"])
+        assert json.loads('{"amount": -1e999}')["amount"] == float("-inf")
+        assert not float("nan") > 100 and not float("-inf") > 100
+
+    # --- F2, F3: arguments nested too deeply -----------------------------------------------
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    @pytest.mark.parametrize("levels", [65, 600, 5000, 200000])
+    def test_arguments_nested_too_deeply_refuse_that_one_call_and_the_turn_keeps_its_answers(
+        self, ex, shape, levels
+    ):
+        seen: list = []
+        answers = self.turn(
+            ex,
+            shape,
+            [
+                ("nest", {"path": "a"}, "c1"),
+                ("nest", _deep(levels), "c2"),
+                ("nest", {"path": "z"}, "c3"),
+            ],
+            {"nest": _nest},
+            lambda n, a: seen.append(a["path"]) or [],
+        )
+        assert answers == [
+            "nested",
+            "Recusal refused `nest`: arguments are nested too deeply",
+            "nested",
+        ]
+        assert seen == ["a", "z"] and RAN == [("nest", "a"), ("nest", "z")]
+
+    def test_the_depth_limit_is_64_levels_as_the_kernels_is_for_json_data(self, ex):
+        """64 levels below the arguments object pass; the 65th is refused. The kernel's
+        ``json_data`` draws the same line, read here so a change to either is seen."""
+        from recusal.invocation import json_data
+
+        assert json_data(json.loads(_deep(64))) and not json_data(json.loads(_deep(65)))
+        wide = json.dumps({"path": "p", "extra": [[], {"k": json.loads("[" * 64 + "]" * 64)}]})
+        assert ex.judge_and_run("nest", wide, {"nest": _nest}, lambda n, a: []) == (
+            "Recusal refused `nest`: arguments are nested too deeply"
+        )
+        assert RAN == []
+        assert ex.judge_and_run("nest", _deep(64), {"nest": _nest}, lambda n, a: []) == "nested"
+        assert RAN == [("nest", "p")]
+        out = ex.judge_and_run("nest", "[" * 66 + "]" * 66, {"nest": _nest}, lambda n, a: [])
+        assert out == "Recusal refused `nest`: arguments are nested too deeply"
+
+    # --- F8b: only a string is parsed -----------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "arguments", [None, 0, False, [], {}, {"path": "a"}, b'{"path": "a"}', 1.5]
+    )
+    def test_arguments_that_are_not_a_string_are_refused(self, ex, arguments):
+        def defaulted(path: str = "DEFAULT") -> str:
+            RAN.append(path)
+            return "ran"
+
+        seen: list = []
+        policy = lambda n, a: seen.append(a) or []  # noqa: E731
+        tools = {"t": defaulted}
+        expected = "Recusal refused `t`: arguments are not a string"
+        assert ex.judge_and_run("t", arguments, tools, policy) == expected
+        response = self.loose_response({"call_id": "c1", "name": "t", "arguments": arguments})
+        outs = ex.gate_function_calls(response, tools, policy)
+        assert outs == [{"type": "function_call_output", "call_id": "c1", "output": expected}]
+        completion = self.loose_completion(("t", arguments, "k1"))
+        outs = ex.gate_tool_calls(completion, tools, policy)
+        assert outs == [{"role": "tool", "tool_call_id": "k1", "content": expected}]
+        assert seen == [] and RAN == []
+
+    def test_an_empty_string_is_still_a_call_with_no_arguments(self, ex):
+        def defaulted(path: str = "DEFAULT") -> str:
+            RAN.append(path)
+            return "ran"
+
+        seen: list = []
+        out = ex.judge_and_run("t", "", {"t": defaulted}, lambda n, a: seen.append(a) or [])
+        assert out == "ran" and seen == [{"path": "DEFAULT"}] and RAN == ["DEFAULT"]
+
+    # --- F4: a namespaced function call ---------------------------------------------------
+
+    @pytest.mark.parametrize("namespace", ["prod_db", "scratch", " "])
+    def test_a_namespaced_function_call_is_refused_before_the_policy(self, ex, namespace):
+        from openai.types.responses import ResponseFunctionToolCall
+
+        def delete(path: str) -> str:
+            RAN.append(("delete", path))
+            return "deleted"
+
+        seen: list = []
+        response = ex.response_with(
+            [
+                dict(ex.function_call("delete", {"path": "x"}, "c1"), namespace=namespace),
+                ex.function_call("delete", {"path": "y"}, "c2"),
+            ]
+        )
+        assert isinstance(response.output[0], ResponseFunctionToolCall)
+        assert response.output[0].namespace == namespace
+        outs = ex.gate_function_calls(
+            response, {"delete": delete}, lambda n, a: seen.append(a) or []
+        )
+        assert outs == [
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": "Recusal refused `delete`: it carries a namespace, and namespaced "
+                "function calls are not supported",
+            },
+            {"type": "function_call_output", "call_id": "c2", "output": "deleted"},
+        ]
+        assert namespace.strip() == "" or namespace not in outs[0]["output"]
+        assert seen == [{"path": "y"}] and RAN == [("delete", "y")]
+
+    @pytest.mark.parametrize("namespace", [None, ""])
+    def test_a_function_call_with_no_namespace_is_judged_as_before(self, ex, namespace):
+        response = ex.response_with(
+            [dict(ex.function_call("echo", {"text": "x"}, "c1"), namespace=namespace)]
+        )
+        assert ex.gate_function_calls(response, ex.TOOLS, lambda n, a: [])[0]["output"] == "x"
+
+    # --- F6: the legacy function_call field -----------------------------------------------
+
+    @pytest.mark.parametrize("with_tool_calls", [False, True])
+    def test_a_legacy_function_call_raises_before_anything_runs(self, ex, with_tool_calls):
+        from openai.types.chat import ChatCompletion
+
+        message: dict = {
+            "role": "assistant",
+            "content": None,
+            "function_call": {"name": "pay", "arguments": '{"amount": 1}'},
+        }
+        if with_tool_calls:
+            message["tool_calls"] = [ex.tool_call("pay", {"amount": 1}, "k1")]
+        completion = ChatCompletion.model_validate(
+            {
+                "id": "c",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "offline",
+                "choices": [{"index": 0, "finish_reason": "function_call", "message": message}],
+            }
+        )
+        assert completion.choices[0].message.function_call is not None
+        seen: list = []
+        with pytest.raises(TypeError, match="legacy `function_call` field"):
+            ex.gate_tool_calls(completion, {"pay": _pay}, lambda n, a: seen.append(a) or [])
+        assert seen == [] and RAN == []
+
+    def test_only_the_chosen_message_is_checked_for_a_legacy_function_call(self, ex):
+        completion = ex.completion_with(
+            [ex.tool_call("pay", {"amount": 1}, "k1")], [ex.tool_call("pay", {"amount": 2}, "k2")]
+        )
+        from openai.types.chat.chat_completion_message import FunctionCall
+
+        completion.choices[1].message.function_call = FunctionCall(name="pay", arguments="{}")
+        outs = ex.gate_tool_calls(completion, {"pay": _pay}, lambda n, a: [], choice=0)
+        assert [o["content"] for o in outs] == ["paid 1"]
+        with pytest.raises(TypeError, match="legacy `function_call` field"):
+            ex.gate_tool_calls(completion, {"pay": _pay}, lambda n, a: [], choice=1)
+        assert RAN == [("pay", 1, "acct-1")]
+
+    # --- F8a: a call that is not finished -------------------------------------------------
+
+    @pytest.mark.parametrize("status", ["in_progress", "incomplete", "a_later_status"])
+    def test_an_unfinished_function_call_item_is_refused_and_the_finished_one_runs(
+        self, ex, status
+    ):
+        seen: list = []
+        policy = lambda n, a: seen.append(a) or []  # noqa: E731
+        if status == "a_later_status":
+            response = self.loose_response(
+                {"call_id": "c1", "name": "pay", "arguments": "", "status": status},
+                {"call_id": "c2", "name": "pay", "arguments": '{"amount": 2}'},
+            )
+        else:
+            response = ex.response_with(
+                [
+                    dict(ex.function_call("pay", "", "c1"), status=status),
+                    ex.function_call("pay", {"amount": 2}, "c2"),
+                ]
+            )
+            assert response.output[0].status == status
+        outs = ex.gate_function_calls(response, {"pay": _pay}, policy)
+        assert [o["output"] for o in outs] == [
+            "Recusal refused `pay`: the call is not finished (its status is not `completed`)",
+            "paid 2",
+        ]
+        assert [o["call_id"] for o in outs] == ["c1", "c2"]
+        assert seen == [{"amount": 2, "to": "acct-1"}] and RAN == [("pay", 2, "acct-1")]
+
+    def test_a_function_call_item_with_no_status_is_judged(self, ex):
+        item = ex.function_call("pay", {"amount": 2}, "c1")
+        del item["status"]
+        response = ex.response_with([item])
+        assert response.output[0].status is None and response.status is None
+        assert ex.gate_function_calls(response, {"pay": _pay}, lambda n, a: [])[0]["output"] == (
+            "paid 2"
+        )
+
+    @pytest.mark.parametrize(
+        "status", ["incomplete", "in_progress", "failed", "cancelled", "queued"]
+    )
+    def test_every_function_call_of_an_unfinished_response_is_refused(self, ex, status):
+        from openai.types.responses import Response
+
+        seen: list = []
+        finished = ex.response_with(
+            [ex.function_call("pay", {"amount": 1}, "c1"), ex.function_call("pay", "", "c2")]
+        )
+        response = Response.model_validate({**finished.model_dump(), "status": status})
+        assert response.status == status and response.output[0].status == "completed"
+        outs = ex.gate_function_calls(response, {"pay": _pay}, lambda n, a: seen.append(a) or [])
+        refusal = (
+            "Recusal refused `pay`: the response is not finished (its status is not `completed`)"
+        )
+        assert [(o["call_id"], o["output"]) for o in outs] == [("c1", refusal), ("c2", refusal)]
+        assert seen == [] and RAN == []
+
+    def test_a_completed_response_is_judged(self, ex):
+        from openai.types.responses import Response
+
+        finished = ex.response_with([ex.function_call("pay", {"amount": 1}, "c1")])
+        response = Response.model_validate({**finished.model_dump(), "status": "completed"})
+        assert response.status == "completed"
+        assert ex.gate_function_calls(response, {"pay": _pay}, lambda n, a: [])[0]["output"] == (
+            "paid 1"
+        )
+
+    @pytest.mark.parametrize("finish_reason", ["length", "content_filter", None, "a_later_one"])
+    def test_every_tool_call_of_an_unfinished_chat_message_is_refused(self, ex, finish_reason):
+        seen: list = []
+        policy = lambda n, a: seen.append(a) or []  # noqa: E731
+        calls = [("pay", '{"amount": 1}', "k1"), ("pay", "", "k2")]
+        if finish_reason in ("length", "content_filter"):
+            completion = ex.completion_with([ex.tool_call(*c) for c in calls])
+            completion.choices[0].finish_reason = finish_reason
+        else:
+            completion = self.loose_completion(*calls, finish_reason=finish_reason)
+        outs = ex.gate_tool_calls(completion, {"pay": _pay}, policy)
+        refusal = (
+            "Recusal refused `pay`: the message is not finished (its finish_reason is not "
+            "`stop`, `tool_calls` or `function_call`)"
+        )
+        assert [(o["tool_call_id"], o["content"]) for o in outs] == [
+            ("k1", refusal),
+            ("k2", refusal),
+        ]
+        assert seen == [] and RAN == []
+
+    def test_a_chat_choice_with_no_finish_reason_at_all_is_refused(self, ex):
+        completion = self.loose_completion(("pay", '{"amount": 1}', "k1"))
+        del completion.choices[0].finish_reason
+        outs = ex.gate_tool_calls(completion, {"pay": _pay}, lambda n, a: [])
+        assert "the message is not finished" in outs[0]["content"] and RAN == []
+
+    @pytest.mark.parametrize("finish_reason", ["stop", "tool_calls", "function_call"])
+    def test_a_finished_chat_message_is_judged(self, ex, finish_reason):
+        completion = ex.completion_with([ex.tool_call("pay", {"amount": 1}, "k1")])
+        completion.choices[0].finish_reason = finish_reason
+        outs = ex.gate_tool_calls(completion, {"pay": _pay}, lambda n, a: [])
+        assert [o["content"] for o in outs] == ["paid 1"]
+
+    # --- F8c: a generator function --------------------------------------------------------
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    @pytest.mark.parametrize(
+        "kind", ["function", "method", "staticmethod", "partial", "callable_object"]
+    )
+    def test_a_generator_function_tool_is_refused_before_the_policy(self, ex, shape, kind):
+        import functools
+
+        def rows(path: str):
+            RAN.append(path)
+            yield path
+
+        class Reader:
+            def rows(self, path: str):
+                RAN.append(path)
+                yield path
+
+            def __call__(self, path: str):
+                RAN.append(path)
+                yield path
+
+        tool = {
+            "function": rows,
+            "method": Reader().rows,
+            "staticmethod": staticmethod(rows),
+            "partial": functools.partial(rows),
+            "callable_object": Reader(),
+        }[kind]
+        seen: list = []
+        answers = self.turn(
+            ex,
+            shape,
+            [("rows", {"path": "a"}, "c1")],
+            {"rows": tool},
+            lambda n, a: seen.append(a) or [],
+        )
+        assert answers == [
+            "Recusal refused `rows`: it is a generator function, and calling it would run "
+            "none of its body"
+        ]
+        assert seen == [] and RAN == []
+
+    def test_a_generator_hidden_by_a_wrapper_is_answered_as_not_run(self, ex):
+        import functools
+        import inspect
+
+        made = []
+
+        def rows(path: str):
+            RAN.append(path)
+            yield path
+
+        @functools.wraps(rows)
+        def wrapper(*args, **kwargs):
+            made.append(rows(*args, **kwargs))
+            return made[-1]
+
+        out = ex.judge_and_run("rows", '{"path": "a"}', {"rows": wrapper}, lambda n, a: [])
+        assert out == "Tool `rows` returned a generator, not a result: this gate did not run it"
+        assert "generator object" not in out
+        assert inspect.getgeneratorstate(made[0]) == "GEN_CREATED" and RAN == []
+
+    def test_an_ordinary_function_is_not_mistaken_for_a_generator(self, ex):
+        class Plain:
+            def __call__(self, path: str) -> str:
+                return "called"
+
+        tools = {"f": lambda: "ok", "m": Plain().__call__, "i": lambda: iter(())}
+        assert ex.judge_and_run("f", "", tools, lambda n, a: []) == "ok"
+        assert ex.judge_and_run("m", '{"path": "a"}', tools, lambda n, a: []) == "called"
+        assert "iterator object" in ex.judge_and_run("i", "", tools, lambda n, a: [])
+
+    # --- F8d: a keyword the gate does not know --------------------------------------------
+
+    @pytest.mark.parametrize("calls", [[], [("pay", {"amount": 1}, "c1")]], ids=["none", "one"])
+    @pytest.mark.parametrize("keyword", ["allow_hosted_record", "answer_tool_error", "safe_errors"])
+    def test_an_unknown_keyword_raises_naming_it_whether_or_not_the_turn_has_calls(
+        self, ex, calls, keyword
+    ):
+        seen: list = []
+        policy = lambda n, a: seen.append(a) or []  # noqa: E731
+        for shape in ("responses", "chat"):
+            with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+                self.turn(ex, shape, calls, {"pay": _pay}, policy, **{keyword: True})
+        with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+            ex.judge_and_run("pay", '{"amount": 1}', {"pay": _pay}, policy, **{keyword: True})
+        assert seen == [] and RAN == []
+
+    def test_the_keywords_passed_on_are_exactly_the_ones_decide_takes(self):
+        """The drift lock for the list: ``decide``'s keywords, less ``safe_errors``, which
+        the gate sets itself."""
+        import importlib
+        import inspect
+
+        pytest.importorskip("openai", reason="the openai package is not installed")
+        from recusal import decide
+
+        module = importlib.import_module("recusal_openai._gate")
+        keywords = {
+            name
+            for name, parameter in inspect.signature(decide).parameters.items()
+            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        assert module._RECORD_KEYWORDS == keywords - {"safe_errors"}
+
+    # --- the copy the policy judges -------------------------------------------------------
+
+    def test_the_policy_judges_a_copy_made_by_the_kernels_detached(self, ex, monkeypatch):
+        import importlib
+
+        from recusal import invocation
+
+        module = importlib.import_module("recusal_openai._gate")
+        assert module._detached is invocation.detached
+        handed = []
+
+        def spy(value):
+            handed.append(value)
+            return invocation.detached(value)
+
+        monkeypatch.setattr(module, "_detached", spy)
+        seen: list = []
+
+        def mutate(name, args):
+            seen.append(args)
+            args["to"] = "attacker"
+            return []
+
+        out = ex.judge_and_run("pay", '{"amount": 5}', {"pay": _pay}, mutate)
+        assert out == "paid 5" and RAN == [("pay", 5, "acct-1")]
+        assert handed == [{"amount": 5, "to": "acct-1"}] and seen[0] is not handed[0]
+
+    @pytest.mark.parametrize("error", [TypeError("x"), RecursionError("x")])
+    def test_an_invocation_that_cannot_be_detached_is_refused_not_a_policy_error(
+        self, ex, monkeypatch, error
+    ):
+        import importlib
+
+        module = importlib.import_module("recusal_openai._gate")
+
+        def refuse(value):
+            raise error
+
+        monkeypatch.setattr(module, "_detached", refuse)
+        seen: list = []
+        out = ex.judge_and_run(
+            "pay", '{"amount": 5}', {"pay": _pay}, lambda n, a: seen.append(a) or []
+        )
+        assert out == (
+            "Recusal refused `pay`: the invocation cannot be copied as JSON data for the policy"
+        )
+        assert seen == [] and RAN == []
