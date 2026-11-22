@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`recusal-google-adk` 0.2.1: every function is annotated, and its page shows where the
+  project stands.** No change to the gate: it is the one 0.2.0 shipped. The three
+  functions that had no annotations have them (the `Finding` contract, the callback's
+  return type and the SDK's own `BeforeToolCallback`), and CI now checks the installed
+  wheel with `--disallow-untyped-defs --disallow-incomplete-defs`, so the package's
+  inline types are complete. Thanks to @hananbahi527 for the work (#301). The README,
+  which is the PyPI page, carries the website and OpenSSF Scorecard badges and a Status
+  section that says what review the adapter has had.
+
 ### Security
 
 - **`recusal-openai` 0.2.2: the gate refuses what it cannot tie to what
