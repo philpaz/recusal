@@ -11,7 +11,8 @@ and they are decisions about data, not about any framework:
 - whether every parameter of a callable can be judged by name
   (:func:`unsupported_signature`), counting every callable a call reaches
   (:func:`reached_parameters`), and refusing a wrapper that holds another wrapper the walk
-  cannot follow (:class:`HiddenWrapper`);
+  cannot follow (:class:`HiddenWrapper`) and a function chosen at call time by the type of
+  an argument (:class:`DispatchedAtCallTime`);
 - how to hand a policy a copy it can write to without reaching what executes
   (:func:`detached`).
 
@@ -114,6 +115,8 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
         return "it declares a signature that is not its own"
     except HiddenWrapper:
         return _HIDDEN_WRAPPER
+    except DispatchedAtCallTime:
+        return _DISPATCHED_AT_CALL_TIME
     except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
         return "its signature cannot be inspected"
     for level in reached:
@@ -158,6 +161,18 @@ class HiddenWrapper(ValueError):
 
 _HIDDEN_WRAPPER = (
     "a wrapper holds another wrapper of the function it wraps, which the walk does not follow"
+)
+
+
+class DispatchedAtCallTime(ValueError):
+    """A callable on the way is a single-dispatch function with an implementation
+    registered beside its base one: which of them runs is chosen at call time by the type
+    of an argument, so the walk cannot read the parameters the call reaches."""
+
+
+_DISPATCHED_AT_CALL_TIME = (
+    "the function that runs is chosen at call time by the type of an argument, which the "
+    "walk cannot read"
 )
 
 #: Wrappers that pass every argument through unchanged and declare no parameters of their
@@ -244,7 +259,17 @@ def _refuse_hidden_wrapper(func: Any) -> None:
     nothing of ``func``'s are not: a logger, a clock, a callback, configuration.
     """
     followed = _wrapped_chain(func)
-    held = []
+    for value in _held(func):
+        if value is func or any(value is seen for seen in followed) or not callable(value):
+            continue
+        if any(inner is seen for inner in _wrapped_chain(value) for seen in followed):
+            raise HiddenWrapper(_HIDDEN_WRAPPER)
+
+
+def _held(func: Any) -> List[Any]:
+    """What ``func`` holds: the contents of its closure cells (a function) or its instance
+    attributes (a callable object). Never raises."""
+    held: List[Any] = []
     if inspect.isfunction(func):
         for cell in func.__closure__ or ():
             try:
@@ -255,12 +280,40 @@ def _refuse_hidden_wrapper(func: Any) -> None:
         try:
             held.extend(vars(func).values())
         except Exception:  # noqa: BLE001, no instance attributes to read
-            return
-    for value in held:
-        if value is func or any(value is seen for seen in followed) or not callable(value):
-            continue
-        if any(inner is seen for inner in _wrapped_chain(value) for seen in followed):
-            raise HiddenWrapper(_HIDDEN_WRAPPER)
+            pass
+    return held
+
+
+def _registers_beside_the_base(func: Any) -> bool:
+    """True for a single-dispatch function, as ``functools.singledispatch`` builds one (a
+    ``registry`` mapping and a callable ``dispatch``), whose registry names a type other
+    than ``object``, the base implementation's. Read by structure: ``dispatch`` is not
+    called and no attribute lookup of ``func``'s own runs."""
+    registry = inspect.getattr_static(func, "registry", None)
+    dispatch = inspect.getattr_static(func, "dispatch", None)
+    if type(registry) is not types.MappingProxyType or not callable(dispatch):
+        return False
+    return any(key is not object for key in registry)
+
+
+def _refuse_call_time_dispatch(func: Any) -> None:
+    """Raise :class:`DispatchedAtCallTime` if a call to ``func`` picks what runs by type.
+
+    A ``functools.singledispatch`` function names its base implementation as
+    ``__wrapped__``, which is all the walk follows; an implementation registered for a
+    type runs in its place when the first argument is of that type, with defaults of its
+    own that no policy saw. With only the base registered the base is what runs, and the
+    function is walked like any wrapper. A ``functools.singledispatchmethod`` hands out a
+    new callable at each access with no registry of its own; it holds the descriptor, in a
+    closure cell or an instance attribute, and the descriptor's dispatcher is read the same
+    way.
+    """
+    dispatchers = [func]
+    for value in _held(func):
+        if isinstance(value, functools.singledispatchmethod):
+            dispatchers.append(inspect.getattr_static(value, "dispatcher", None))
+    if any(_registers_beside_the_base(dispatcher) for dispatcher in dispatchers):
+        raise DispatchedAtCallTime(_DISPATCHED_AT_CALL_TIME)
 
 
 def _next_callables(func: Any) -> List[Any]:
@@ -281,7 +334,10 @@ def _next_callables(func: Any) -> List[Any]:
     ``__wrapped__`` is the only link from a wrapper to what it calls that is followed. A
     wrapper that holds another wrapper of the same function, in its closure or its instance
     attributes, raises :class:`HiddenWrapper` (:func:`_refuse_hidden_wrapper`): what it
-    calls cannot be read from it.
+    calls cannot be read from it. A single-dispatch function or method with an
+    implementation registered beside its base one raises :class:`DispatchedAtCallTime`
+    (:func:`_refuse_call_time_dispatch`): ``__wrapped__`` names the base, and which
+    implementation runs is not known until the call.
     """
     # a ``staticmethod`` (Python 3.10+) shows its function as ``__wrapped__``, taken below
     if inspect.ismethod(func):
@@ -291,6 +347,7 @@ def _next_callables(func: Any) -> List[Any]:
             functools.partial(inner, *func.args, **func.keywords)
             for inner in _next_callables(func.func)
         ]
+    _refuse_call_time_dispatch(func)
     found = []
     wrapped = getattr(func, "__wrapped__", None)
     if wrapped is not None:
@@ -314,8 +371,10 @@ def reached_parameters(func: Any) -> List[Any]:
     function, every ``__wrapped__`` and a callable object's ``__call__``. Raises
     :class:`DeclaredSignature`, :class:`HiddenWrapper` (a ``ValueError``: a wrapper on the
     way holds another wrapper of the function it wraps, which ``__wrapped__`` does not
-    name), ``TypeError`` or ``ValueError`` for a callable it cannot read, which a gate turns
-    into a refusal.
+    name), :class:`DispatchedAtCallTime` (a ``ValueError``: a ``functools.singledispatch``
+    function or ``singledispatchmethod`` on the way has an implementation registered beside
+    its base one, and which runs is chosen at call time), ``TypeError`` or ``ValueError``
+    for a callable it cannot read, which a gate turns into a refusal.
     """
     found = [own_parameters(func)]
     pending = _next_callables(func)

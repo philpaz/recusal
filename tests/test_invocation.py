@@ -17,6 +17,7 @@ import pytest
 from recusal.invocation import (
     SCALARS,
     DeclaredSignature,
+    DispatchedAtCallTime,
     HiddenWrapper,
     detached,
     json_data,
@@ -645,8 +646,8 @@ def test_ordinary_decorators_are_walked_as_before():
     def span():
         yield
 
+    # with only its base implementation, which is what then runs
     dispatched = functools.singledispatch(search)
-    dispatched.register(int, lambda query, limit=5: "int")
 
     for func, expected in (
         (_traced(search), [forward, own]),
@@ -791,6 +792,161 @@ def test_a_cycle_of_wrapped_ends_and_is_never_a_hidden_wrapper():
     with pytest.raises(ValueError, match="too many wrappers") as refused:
         reached_parameters(looped)
     assert not isinstance(refused.value, HiddenWrapper)
+
+
+# --- a function chosen at call time --------------------------------------------------------
+
+_AT_CALL_TIME = (
+    "the function that runs is chosen at call time by the type of an argument, which the "
+    "walk cannot read"
+)
+
+
+def _dispatching():
+    """A single-dispatch function whose ``int`` implementation has a default of its own."""
+    import functools
+
+    @functools.singledispatch
+    def lookup(key: str, deep: bool = False) -> str:
+        return "base"
+
+    @lookup.register(int)
+    def lookup_int(key: int, deep: bool = False, skip_review: bool = True) -> str:
+        return f"int, skip_review={skip_review}"
+
+    return lookup
+
+
+def test_a_single_dispatch_function_with_a_registered_implementation_is_refused():
+    """``functools.singledispatch`` names its base function as ``__wrapped__``, so the walk
+    read the base only. The implementation registered for ``int`` ran in its place with its
+    own ``skip_review=True``, which no policy judged."""
+    lookup = _dispatching()
+    assert list(inspect_signature(lookup)) == ["key", "deep"]
+    assert lookup(1) == "int, skip_review=True"  # a parameter nothing declared
+    with pytest.raises(DispatchedAtCallTime) as refused:
+        reached_parameters(lookup)
+    assert str(refused.value) == _AT_CALL_TIME  # names no function, type or parameter
+    assert unsupported_signature(lookup) == _AT_CALL_TIME
+
+
+def test_the_dispatch_refusal_is_a_value_error_so_a_gate_that_catches_one_refuses():
+    assert issubclass(DispatchedAtCallTime, ValueError)
+    assert not issubclass(DispatchedAtCallTime, HiddenWrapper)
+
+
+def test_a_dispatching_function_is_refused_wherever_it_stands_on_the_walk():
+    """Behind tracers, a ``functools.partial``, ``functools.lru_cache``, as a method, and
+    as a coroutine function."""
+    import functools
+
+    lookup = _dispatching()
+
+    class Holder:
+        find = lookup
+
+    @functools.singledispatch
+    async def lookup_async(key: str, deep: bool = False) -> str:
+        return "base"
+
+    @lookup_async.register(int)
+    async def lookup_async_int(key: int, deep: bool = False, skip_review: bool = True) -> str:
+        return "int"
+
+    for func in (
+        _traced(lookup),
+        _traced(_traced(lookup)),
+        functools.partial(lookup),
+        functools.partial(_traced(lookup), 1),
+        functools.lru_cache(maxsize=None)(lookup),
+        Holder().find,
+        lookup_async,
+        _traced(lookup_async),
+    ):
+        with pytest.raises(DispatchedAtCallTime):
+            reached_parameters(func)
+    for func in (_traced(lookup), lookup_async):
+        assert unsupported_signature(func) == _AT_CALL_TIME, func
+
+
+def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
+    """``functools.singledispatchmethod`` hands out a new function at each access. It has
+    no registry of its own; it holds the descriptor, whose dispatcher has one."""
+    import functools
+
+    class Holder:
+        @functools.singledispatchmethod
+        def lookup(self, key: str, deep: bool = False) -> str:
+            return "base"
+
+        @lookup.register(int)
+        def lookup_int(self, key: int, deep: bool = False, skip_review: bool = True) -> str:
+            return f"int, skip_review={skip_review}"
+
+        @functools.singledispatchmethod
+        def plain(self, key: str, deep: bool = False) -> str:
+            return "base"
+
+    assert Holder().lookup(1) == "int, skip_review=True"
+    assert not hasattr(Holder().lookup, "registry")
+    for func in (
+        Holder().lookup,
+        Holder.lookup,
+        _traced(Holder().lookup),
+        functools.partial(Holder().lookup),
+    ):
+        with pytest.raises(DispatchedAtCallTime):
+            reached_parameters(func)
+    assert unsupported_signature(Holder().lookup, skip=("self",)) == _AT_CALL_TIME
+    # with only the base registered the base is what runs, and it is walked as before
+    assert _levels(Holder().plain) == [["args", "kwargs"], ["self", "key", "deep"]]
+    assert unsupported_signature(Holder().plain, skip=("self",)) is None
+
+    # a callable object that holds the descriptor in an instance attribute, not a cell
+    class Access:
+        def __init__(self, descriptor, function):
+            functools.update_wrapper(self, function)
+            self.descriptor = descriptor
+
+        def __call__(self, *args, **kwargs):
+            return self.descriptor.dispatcher.dispatch(type(args[0]))(*args, **kwargs)
+
+    def base(key: str, deep: bool = False) -> str:
+        return "base"
+
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(Access(vars(Holder)["lookup"], base))
+    assert _levels(Access(vars(Holder)["plain"], base)) == [
+        ["args", "kwargs"],
+        ["args", "kwargs"],
+        ["key", "deep"],
+    ]
+
+
+def test_only_a_registry_with_more_than_the_base_is_dispatch_at_call_time():
+    """The base alone is what runs, so it is walked. A function that merely carries a
+    ``registry`` or a ``dispatch`` of some other kind is not a single-dispatch function."""
+    import functools
+    import types
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    levels = [["args", "kw"], ["query", "limit"]]
+    base_only = functools.singledispatch(search)
+    assert list(base_only.registry) == [object]
+    assert _levels(base_only) == levels
+    assert _levels(_traced(base_only)) == [["args", "kwargs"], *levels]
+    assert unsupported_signature(base_only) is None
+
+    plain = [["args", "kwargs"], ["query", "limit"]]
+    plugins = _traced(search)
+    plugins.registry = types.MappingProxyType({"csv": print})  # a registry, no dispatch
+    assert _levels(plugins) == plain
+
+    routed = _traced(search)
+    routed.registry, routed.dispatch = ["csv"], print  # a dispatch, no registry of types
+    assert _levels(routed) == plain
 
 
 def inspect_signature(func):

@@ -28,6 +28,23 @@ All notable changes to this project are documented here. The format follows
   itself, a `functools.lru_cache` included, is now refused. A wrapper held anywhere else
   (a module global, a container, a `functools.partial`, a helper's own closure) is not
   found by this check.
+- **Kernel: `recusal.invocation` refuses a function chosen at call time by the type of an
+  argument.** A `functools.singledispatch` function names its base implementation as
+  `__wrapped__`, so `reached_parameters` read the base only. An implementation registered
+  for a type runs in its place when the first argument is of that type, and a default of
+  its own (`skip_review=True`) ran with no policy judging it. The walk now raises the new
+  public `recusal.invocation.DispatchedAtCallTime`, a subclass of `ValueError`, when a
+  callable on the way is a single-dispatch function (a `registry` and a `dispatch`, as
+  `functools.singledispatch` builds them) whose registry names any type beside `object`,
+  the base implementation's. A `functools.singledispatchmethod` is refused the same way:
+  the callable it hands out at each access has no registry, so the descriptor it holds is
+  read for its dispatcher's (checked on Python 3.9 to 3.12). `unsupported_signature` uses
+  the same walk and returns the reason "the function that runs is chosen at call time by
+  the type of an argument, which the walk cannot read". The registry is read, never
+  called. A single-dispatch function or method with only its base implementation is walked
+  as before, and nothing that was refused is now accepted. Not found by this check: an
+  implementation registered after a gate has read the tool, a dispatch written by hand in
+  a function's body, and a dispatcher built by another library.
 
 ## [0.15.0] - 2026-11-21
 
