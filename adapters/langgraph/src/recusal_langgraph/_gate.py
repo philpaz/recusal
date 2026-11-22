@@ -54,15 +54,19 @@ import functools
 import inspect
 import math
 import sys
+import typing
 import uuid
 import weakref
 from typing import Any, Callable, List
 
+from langchain_core.callbacks import BaseCallbackManager
+from langchain_core.callbacks.manager import BaseRunManager
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import run_in_executor
-from langchain_core.tools import BaseTool, StructuredTool, Tool, ToolException
+from langchain_core.tools import BaseTool, InjectedToolArg, StructuredTool, Tool, ToolException
 from langchain_core.tools.base import FILTERED_ARGS, _get_runnable_config_param
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from pydantic import BaseModel, ValidationError
 
@@ -246,6 +250,64 @@ _HOLDER_TAKES = frozenset(
 )
 
 
+#: The one parameter name ToolNode fills whatever the parameter's annotation says: it puts
+#: its runtime object under a parameter called ``runtime``. ``tests/test_compat_langgraph.py``
+#: pins that against the framework.
+_NODE_NAMES = frozenset({"runtime"})
+
+#: The parameter names LangChain or ToolNode reserve: the ones they may write their own
+#: value under, keep for themselves or drop from a schema, whatever the parameter's
+#: annotation or default. It is the union of the gate's by-name authorities and nothing
+#: else: :data:`_RESERVED` (``run_manager``, ``callbacks``), :data:`_HOLDER_TAKES`
+#: (``config``, ``run_manager``) and :data:`_NODE_NAMES` (``runtime``). Used by the
+#: forwarder rule only (:func:`_its_own`).
+_RESERVED_NAMES = _RESERVED | _HOLDER_TAKES | _NODE_NAMES
+
+#: The types that mark a parameter as one the framework or the host fills: a callback
+#: manager, a run manager, and every injected-argument marker (``InjectedState``,
+#: ``InjectedStore``, ``InjectedToolCallId`` and a custom one all subclass
+#: ``InjectedToolArg``). ``RunnableConfig`` and ``ToolRuntime`` are matched by identity or
+#: as a base. The names are for an annotation that is still text (PEP 563).
+_FILLED_TYPES = (BaseCallbackManager, BaseRunManager, InjectedToolArg)
+_FILLED_TYPE_NAMES = ("RunnableConfig", "ToolRuntime", "Injected", "CallbackManager", "RunManager")
+
+
+def _mentions_a_filled_type(annotation, _depth: int = 0) -> bool:
+    """Whether ``annotation`` mentions, anywhere inside it (``Optional``, a union,
+    ``Annotated`` and its metadata, a generic's arguments), a type that marks a parameter
+    as the framework's or the host's to fill."""
+    if _depth > 16:
+        return True
+    if isinstance(annotation, str):
+        return any(name in annotation for name in _FILLED_TYPE_NAMES)
+    if annotation is RunnableConfig or isinstance(annotation, _FILLED_TYPES):
+        return True
+    if isinstance(annotation, type) and issubclass(annotation, (*_FILLED_TYPES, ToolRuntime)):
+        return True
+    origin = typing.get_origin(annotation)
+    if origin is not None and _mentions_a_filled_type(origin, _depth + 1):
+        return True
+    return any(_mentions_a_filled_type(inner, _depth + 1) for inner in typing.get_args(annotation))
+
+
+def _its_own(name: str, parameter, injected: frozenset[str]) -> bool:
+    """Whether a named parameter counts as the callable's own in the forwarder rule
+    (:func:`_read_to_the_end`), and there only.
+
+    It does not when its name is reserved (:data:`_RESERVED_NAMES`), whatever its
+    annotation or default; when the tool marks it injected, by its schema or its function
+    (``injected``, :func:`_host_keys`); or when its annotation mentions a type the
+    framework or the host fills (:func:`_mentions_a_filled_type`). Such a parameter says
+    nothing about what the callable does with the model's arguments:
+    ``def _run(self, *args, config: Optional[RunnableConfig] = None, **kwargs)`` forwards
+    exactly as ``def _run(self, *args, **kwargs)`` does, whether or not LangChain fills
+    ``config`` there.
+    """
+    return not (
+        name in _RESERVED_NAMES or name in injected or _mentions_a_filled_type(parameter.annotation)
+    )
+
+
 def _variadic(parameter) -> bool:
     return parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
 
@@ -308,7 +370,7 @@ def _stacked(func) -> int:
 def _read_to_the_end(
     levels: list,
     fields: frozenset[str],
-    filled: frozenset[str] = frozenset(),
+    injected: frozenset[str] = frozenset(),
     closed: bool = False,
 ) -> None:
     """Raise ``TypeError`` when the innermost callable hands on an argument the gate must
@@ -330,10 +392,11 @@ def _read_to_the_end(
     own name accounts for a field only on a callable that also names a parameter
     (``def f(q, **kwargs)``).
 
-    A parameter the framework or the host fills (``filled``: ``run_manager``,
-    ``callbacks``, the ``RunnableConfig`` parameter, the injected names) is not a parameter
-    of the callable's own for this purpose: ``def wrapper(*args, config: RunnableConfig,
-    **kwargs)`` forwards exactly as ``def wrapper(*args, **kwargs)`` does. The one such
+    A parameter with a reserved name, an injected one, or one annotated with a type the
+    framework or the host fills is not a parameter of the callable's own for this purpose
+    (:func:`_its_own`): ``def wrapper(*args, config: RunnableConfig, **kwargs)`` forwards
+    exactly as ``def wrapper(*args, **kwargs)`` does, and so does the same wrapper with
+    ``config: Optional[RunnableConfig] = None`` or a bare ``config=None``. The one such
     callable that is let through is one under a schema the model can put nothing through
     (``closed``, :func:`_closed_to_the_model`): the call then carries no value the model
     chose, and what the function does with nothing is its own body.
@@ -343,11 +406,12 @@ def _read_to_the_end(
         return
     unread = sorted(fields - innermost.keys())
     forwards_everything = all(
-        _variadic(parameter) or name in filled for name, parameter in innermost.items()
+        _variadic(parameter) or not _its_own(name, parameter, injected)
+        for name, parameter in innermost.items()
     )
     if not unread and forwards_everything and not closed:
         kept = ", ".join(f"`{name}`" for name, p in innermost.items() if not _variadic(p))
-        besides = f" (and {kept}, which LangChain or the host fills)" if kept else ""
+        besides = f" (and {kept}, which LangChain or the host reserves)" if kept else ""
         raise TypeError(
             f"the tool's innermost callable takes only `*args` or `**kwargs`{besides}, so it "
             "passes every argument on to code the gate cannot read; name the arguments in "
@@ -538,8 +602,7 @@ def _completed(
     to_a_server = _calls_an_mcp_server(func)
     framework_keys = _framework_keys(func)
     if not to_a_server:
-        filled = framework_keys | _host_keys(tool) | _node_fills(tool)
-        _read_to_the_end(levels, fields, filled, _closed_to_the_model(tool))
+        _read_to_the_end(levels, fields, _host_keys(tool), _closed_to_the_model(tool))
     named = [{n for n, p in level.items() if not _variadic(p)} for level in levels]
     completed = dict(kwargs)
     for index, level in enumerate(levels):
@@ -585,10 +648,19 @@ def _completed(
             "cannot be passed to a tool"
         )
     if _runs_on_a_thread(tool, is_async):
-        clash = ", ".join(f"`{k}`" for k in sorted(completed) if k in _THREAD_TAKES)
-        if clash:
+        clashing = sorted(k for k in completed if k in _THREAD_TAKES)
+        own = ", ".join(f"`{k}`" for k in clashing if any(k in level for level in levels))
+        sent = ", ".join(f"`{k}`" for k in clashing if not any(k in level for level in levels))
+        if own:
             raise TypeError(
-                f"the invocation sets {clash}, a parameter of the function LangChain runs "
+                f"the tool's own parameter {own} has the name of a parameter of the "
+                "function LangChain runs this tool with on a thread (the tool has no `_arun` "
+                "of its own), so the judged value cannot be passed to it on the async "
+                "routes; rename the parameter or define `_arun`"
+            )
+        if sent:
+            raise TypeError(
+                f"the invocation sets {sent}, a parameter of the function LangChain runs "
                 "this tool with on a thread (the tool has no `_arun` of its own), so "
                 "the call could not be made; an argument of that name cannot be passed to "
                 "this tool on the async routes"

@@ -252,14 +252,25 @@ does not run, and an audited gate records it as one entry:
   it passes those arguments on, and whatever receives them fills its own defaults after
   the policy has judged. The call is refused, naming one such field. And if that function
   takes nothing but `*args` and `**kwargs`, the call is refused, with the one exception
-  given below. A parameter that LangChain or the host fills is not a parameter of the
-  function's own here: `run_manager`, `callbacks`, the function's `RunnableConfig`
-  parameter, and an injected one (`ToolRuntime`, `InjectedState`, `InjectedStore`,
-  `InjectedToolArg`, `InjectedToolCallId`). So
-  `def wrapper(*args, config: RunnableConfig, **kwargs)` and
-  `def _run(self, *args, run_manager=None, **kwargs)` are forwarders like
-  `def wrapper(*args, **kwargs)`, and the refusal names the parameter it set aside.
-  This refuses:
+  given below. For this rule, and for this rule only, three kinds of parameter never
+  count as the function's own:
+  - one named `run_manager`, `callbacks`, `config` or `runtime`, whatever its
+    annotation or default. These are the names LangChain or ToolNode reserve: the ones
+    they may write their own value under, keep for themselves or leave out of a schema;
+  - one the tool marks injected, in its `args_schema` or in its function;
+  - one whose annotation mentions, anywhere inside it (`Optional[...]`, `... | None`,
+    `Annotated[...]`), `RunnableConfig`, `ToolRuntime`, an injected-argument marker
+    (`InjectedState`, `InjectedStore`, `InjectedToolArg`, `InjectedToolCallId`) or a
+    callback or run manager type.
+
+  So `def wrapper(*args, config: RunnableConfig, **kwargs)`,
+  `def _run(self, *args, config: Optional[RunnableConfig] = None, **kwargs)`,
+  `def _run(self, config=None, **kwargs)` and
+  `def _run(self, *args, run_manager=None, **kwargs)` are all forwarders like
+  `def wrapper(*args, **kwargs)`, whether or not LangChain fills that parameter there. A
+  tool whose only parameter of its own is one of these is refused, and the refusal names
+  the parameter it set aside. Give the node a function of your own that names the
+  arguments and calls the tool. This refuses:
   - a decorator built without `functools.wraps` (`def wrapper(*args, **kwargs)`), under
     an explicit `args_schema` and under the schema `@tool` infers from the wrapper, whose
     fields are the wrapper's own `args` and `kwargs`. A `functools.wraps` decorator over
@@ -273,12 +284,20 @@ does not run, and an audited gate records it as one entry:
     `(**kwargs)`, `(*args)` or `(*args, run_manager=None, **kwargs)`, with an
     `args_schema` that declares fields or with no `args_schema` at all; and a function
     of your own written as `def call(**arguments)`, `@tool def call(**kwargs)`
-    included. Among published tools this is the shape of langchain-community's
-    `SlackGetChannel` (no `args_schema`; `_run(self, *args, run_manager=None)`), and of
-    its AINetwork tools (`AINBaseTool`), its `ConneryAction` and langchain-ibm's
-    `WatsonxTool` whenever their schema declares a field, which their `_run` does not
-    name. The gate cannot tell such a function from a decorator that forwards. Give the
-    node a function that names the parameters and calls the tool
+    included. Among published tools (read from their source, and checked on tools built
+    to the same signatures and schemas, not by installing them) this is the shape of:
+    langchain-community's `SlackGetChannel` (no `args_schema`;
+    `_run(self, *args, run_manager=None)`); its AINetwork tools (`AINBaseTool`), its
+    `ConneryAction` and langchain-ibm's `WatsonxTool` whenever their schema declares a
+    field, which their `_run` does not name; toolbox-langchain's `ToolboxTool` and
+    `AsyncToolboxTool`, which is every tool Google's MCP Toolbox client loads
+    (`_run(self, **kwargs)`); langchain-anchorbrowser's tools (`_run(self, **kwargs)`
+    under schemas with fields); and langchain-writer's `NoCodeAppTool`
+    (`_run(self, *args, **kwargs)`, no `args_schema`). Two that take no input run under
+    the exception below, because their schema declares no field: langchain-aws's
+    `NovaSystemTool` and langchain-cohere's `DirectlyAnswerTool`. The gate cannot tell
+    such a function from a decorator that forwards. Give the node a function that names
+    the parameters and calls the tool
     (`async def read_file(path: str, depth: int = 2): return await
     other_tool.ainvoke({"path": path, "depth": depth})` under `@tool`). One exception
     is the function `langchain-mcp-adapters` defines for its tools (see "MCP tools"
@@ -293,7 +312,11 @@ does not run, and an audited gate records it as one entry:
   not, whatever its `properties` and `additionalProperties` say, because LangChain
   validates nothing against a dict and passes every key on; the schema inferred from a
   forwarder does not (it declares `args` and `kwargs`); and a `BaseTool` subclass with
-  no `args_schema` does not.
+  no `args_schema` does not. One consequence of such a schema applies to any function
+  under it, forwarder or not: LangChain drops what ToolNode injected as well, so a
+  `state`, `store` or `runtime` parameter of the function receives the function's own
+  default, not the host's value, and the policy is not shown that default. It is a
+  constant of the code, the same with no gate, and nothing the model can change.
 
   A function that takes `**kwargs` and also names every schema field runs: the variadic
   then carries only keys the schema does not declare (the ones an `extra="allow"` schema
@@ -333,11 +356,16 @@ does not run, and an audited gate records it as one entry:
   subclass whose method for that route (`_run`, or its own `_arun`) names it. Where
   the function does receive the value, the call is judged with it: `callbacks` that
   reaches a function through `**kwargs`, and `callbacks` on a `BaseTool` subclass's
-  `_run`. Two more names are refused because the call could not be made at all:
-  `self` (LangChain passes the arguments as keywords to a method of the tool object,
-  and Python raises for a second `self`), and `func` or `executor_or_config` on
-  `ainvoke` and `astream` of a `BaseTool` subclass that has no `_arun` of its own
-  (LangChain runs `_run` through `run_in_executor`, which takes those two names).
+  `_run`. Two more names are refused because of a collision in the call itself. A
+  call that sets `self` could not be made at all: LangChain passes the arguments as
+  keywords to a method of the tool object, and Python raises for a second `self`. And
+  on `ainvoke` and `astream` of a `BaseTool` subclass that has no `_arun` of its own,
+  LangChain runs `_run` through `run_in_executor`, which takes `func` and
+  `executor_or_config` for itself: a call that sets one of them could not be made, and
+  a tool whose `_run` names one of them as its own parameter is refused there on every
+  call, because the gate hands the function each judged value by name and that name
+  cannot be passed (with no gate such a tool runs while the model leaves the parameter
+  out, and fails when it sends one). Rename the parameter, or define `_arun`.
   All of this applies only when the key reaches the gate's judging step, which depends
   on the schema. A Pydantic schema that does not declare the name drops the key before
   that: under the schema `@tool` infers, a call that sets `self`, `config` or
@@ -351,15 +379,27 @@ does not run, and an audited gate records it as one entry:
   around the runnable's own `invoke(input, config)`. Write a function that calls the
   runnable and give the node that
   (`def shout(text: str) -> str: return runnable.invoke(text)` under `@tool`).
-- A parameter annotated `Optional[RunnableConfig]`. LangChain fills only a parameter
-  annotated exactly `RunnableConfig`; any other annotation leaves it an ordinary
-  parameter, which the schema then omits, and the call is refused under the rule above
-  for a parameter the schema omits. The four no-input browser tools of langchain-aws
-  (`ThreadAwareNavigateBackTool`, `ThreadAwareExtractTextTool`,
-  `ThreadAwareExtractHyperlinksTool`, `ThreadAwareCurrentWebPageTool`) are written
-  `_run(self, config: Optional[RunnableConfig] = None, **_)` and are refused for it.
-  Give the node a function of your own that calls the tool
-  (`def navigate_back() -> str: return aws_tool.invoke({})` under `@tool`).
+- A `config` parameter that is not annotated exactly `RunnableConfig`
+  (`Optional[RunnableConfig]`, `RunnableConfig | None`, no annotation). LangChain fills
+  `config` only under the exact annotation, so it never passes a run configuration to
+  such a parameter. What the gate then does depends on the tool's schema. Under an
+  explicit `args_schema` that does not declare `config`, it is a parameter the schema
+  omits, and the call is refused under that rule above. Under the schema LangChain
+  infers for a `BaseTool` subclass with no `args_schema`, `config` is a declared field
+  the model can set, and the call is judged with it, unless `config` is the tool's only
+  parameter besides `*args` and `**kwargs`: then the tool is a forwarder and is refused
+  under the rule above, because `config` is a reserved name. All eleven browser tools
+  of langchain-aws are written this way and are refused (read from their source, and
+  checked on tools built to the same signatures and schemas): the four that take no
+  input, `ThreadAwareNavigateBackTool`, `ThreadAwareExtractTextTool`,
+  `ThreadAwareExtractHyperlinksTool` and `ThreadAwareCurrentWebPageTool`
+  (`_run(self, config: Optional[RunnableConfig] = None, **_)`), and the seven that take
+  input, `ThreadAwareNavigateTool`, `ThreadAwareClickTool`, `ThreadAwareGetElementsTool`,
+  `ThreadAwareScreenshotTool`, `ThreadAwareScrollTool`, `ThreadAwareTypeTool` and
+  `ThreadAwareWaitForElementTool` (for example
+  `_run(self, url: str, config: Optional[RunnableConfig] = None, **_)`). Give the node
+  a function of your own that names the arguments and calls the tool
+  (`def navigate(url: str) -> str: return aws_tool.invoke({"url": url})` under `@tool`).
 - A parameter named `runtime` with a plain type such as `str`: ToolNode puts its runtime
   object under that name, so the input does not validate. Rename the parameter.
 - A Pydantic v1 `args_schema`: the gate reads no fields from it, so it cannot hold the

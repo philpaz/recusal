@@ -1034,6 +1034,51 @@ class TestLangChainAgentGate:
         assert messages[0].status == "success", messages[0].content
         assert seen == [("export_rows", {})] and ran == [("users", 1000000)]
 
+    # --- review round 5 ----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("is_async", [False, True], ids=["invoke", "ainvoke"])
+    def test_a_schemaless_tool_that_names_only_a_config_langchain_does_not_fill_is_refused(
+        self, example, is_async
+    ):
+        """A ``BaseTool`` with no ``args_schema`` whose ``_run`` is ``(*args, config:
+        Optional[RunnableConfig] = None, **kwargs)``: LangChain fills ``config`` only under
+        the exact annotation, so it was read as the tool's own parameter. The policy judged
+        ``{'config': None}`` and the function behind ran the limit the model chose."""
+        from typing import Any, Optional
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool
+
+        ran, seen = [], []
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "Export rows of a table."
+
+            def _run(
+                self, *args: Any, config: Optional[RunnableConfig] = None, **kwargs: Any
+            ) -> str:
+                return export_rows(*args, **kwargs)
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        kwargs = {"policy": recording, "tools": [Export()]}
+        calls = [self.call("export", {"limit": 5})]
+        if is_async:
+            messages, _ = asyncio.run(example.arun_calls(calls, **kwargs))
+        else:
+            messages, _ = example.run_calls(calls, **kwargs)
+        assert ran == [] and seen == []
+        assert "(and `config`, which LangChain or the host reserves)" in str(messages[0].content)
+        example.run_calls(calls, gated=False, tools=[Export()])
+        assert ran == [("users", 5)], "ungated, the model's limit reaches the function"
+
     # --- the tool shapes the LangGraph gate takes, through the middleware -----------------
 
     @pytest.mark.parametrize("route", ["sync", "async"])

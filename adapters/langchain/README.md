@@ -140,19 +140,25 @@ In short, before the policy runs:
   forwarding decorator names that the function it wraps names too;
 - a function that hands its arguments on to code the gate cannot read: the innermost
   function the gate reaches takes `*args` or `**kwargs` and does not name every field of
-  the schema, or takes nothing but `*args`, `**kwargs` and parameters LangChain or the
-  host fills (`run_manager`, `callbacks`, a `RunnableConfig`, a `ToolRuntime`, an
-  injected argument). That is a decorator built without `functools.wraps`
+  the schema, or takes nothing but `*args`, `**kwargs` and parameters that never count
+  as its own. Those are: a parameter named `run_manager`, `callbacks`, `config` or
+  `runtime`, whatever its annotation or default; one the tool marks injected; and one
+  whose annotation mentions `RunnableConfig`, `ToolRuntime`, an injected-argument
+  marker or a callback manager type anywhere inside it. A tool whose only own parameter
+  is one of these is refused. That is a decorator built without `functools.wraps`
   (`def wrapper(*args, **kwargs)` or `def wrapper(*args, config: RunnableConfig,
   **kwargs)`, under a JSON schema dict or the schema `@tool` infers from it), a
   `BaseTool` whose `_arun(*args, **kwargs)` hands the call to `_run` (under `ainvoke`),
   a `BaseTool` with no `args_schema` whose `_run` is `(*args, run_manager=None,
-  **kwargs)`, and a function that takes only `**kwargs`,
+  **kwargs)` or `(*args, config: Optional[RunnableConfig] = None, **kwargs)`, and a
+  function that takes only `**kwargs`,
   `RunnableLambda(...).as_tool(args_schema=...)` for one. Give the agent a function of
   your own that names the parameters and calls the tool. Two exceptions: a tool
   `langchain-mcp-adapters` built, below; and a forwarder under an explicit Pydantic
   `args_schema` that declares no field and does not allow extras, through which the
-  model can send nothing, so the call is judged as `{}` and runs;
+  model can send nothing, so the call is judged as `{}` and runs (such a schema also
+  makes LangChain drop the `state`, `store` or `runtime` the agent injected, so a
+  function under it runs its own default for that parameter, unseen);
 - a function that declares `__signature__`, which LangSmith's `@traceable` and
   `decorator.decorator` set (apply `@traceable` inside the tool's function, or trace at
   the graph level), and one Python cannot inspect, which `cachetools.cached` returns
@@ -165,7 +171,9 @@ In short, before the policy runs:
   `args_schema`, a schema with `extra="allow"`): `config` or `run_manager` on a `@tool`
   or `StructuredTool`, `callbacks` on one whose function names a parameter `callbacks`,
   `self` on any of them, and `func` or `executor_or_config` under `ainvoke` on a
-  `BaseTool` subclass with no `_arun` of its own. Under a Pydantic schema that does not
+  `BaseTool` subclass with no `_arun` of its own (a tool whose `_run` names one of
+  those two as its own parameter is refused there on every call: rename it or define
+  `_arun`). Under a Pydantic schema that does not
   declare the name, the schema `@tool` infers included, LangChain drops the key first:
   the call runs, judged without it, and the function never receives it;
 - a function parameter named `config` that is not the function's `RunnableConfig`.

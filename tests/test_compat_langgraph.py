@@ -1162,3 +1162,29 @@ def test_a_tool_with_no_async_function_still_runs_through_run_in_executor(lg):
         with pytest.raises(TypeError, match=f"multiple values for argument '{key}'"):
             asyncio.run(Loose().arun({"q": "x", key: "m"}))
     assert asyncio.run(Loose().arun({"q": "x", "other": "m"})) == "ok"
+
+
+def test_toolnode_still_fills_a_parameter_named_runtime_whatever_its_annotation(lg):
+    """The gate's forwarder rule counts ``runtime`` among the reserved parameter names
+    (``_NODE_NAMES``) because ToolNode fills a parameter of that name by name alone. This
+    pins it: the private helper names ``runtime`` as the runtime parameter of a function
+    whose ``runtime`` has no annotation, and of one that annotates it ``str``."""
+    from langchain_core.tools import StructuredTool
+
+    helper = _private_helper("langgraph.prebuilt.tool_node", "_get_all_injected_args")
+
+    def untyped(q: str, runtime=None) -> str:
+        return q
+
+    def mistyped(q: str, runtime: str = "") -> str:
+        return q
+
+    def elsewhere(q: str, rt=None) -> str:
+        return q
+
+    def built(func):
+        return StructuredTool.from_function(func=func, name="t", description="d")
+
+    assert helper(built(untyped)).runtime == "runtime"
+    assert helper(built(mistyped)).runtime == "runtime"
+    assert helper(built(elsewhere)).runtime is None, "negative control: another name is not filled"

@@ -4306,7 +4306,7 @@ class TestAForwarderThatNamesOnlyWhatOthersFill:
         assert ran == [] and seen == [], "refused before the policy, and not run"
         assert self.ONLY_VARIADICS in messages[0].content
         named = "runtime" if kept == "untyped_runtime" else kept
-        assert f"(and `{named}`, which LangChain or the host fills)" in messages[0].content
+        assert f"(and `{named}`, which LangChain or the host reserves)" in messages[0].content
         self.run(example, route, [tool], calls, None, gated=False)
         assert ran == [("users", 1000000)], "ungated, the default nobody judged runs"
 
@@ -4494,7 +4494,7 @@ class TestAForwarderThatNamesOnlyWhatOthersFill:
         assert ran == [] and seen == []
         assert "the callable's parameter `config` is absent from the argument schema" in by_id["a"]
         assert self.ONLY_VARIADICS in by_id["b"]
-        assert "(and `run_manager`, which LangChain or the host fills)" in by_id["b"]
+        assert "(and `run_manager`, which LangChain or the host reserves)" in by_id["b"]
 
         @tool
         def navigate_back() -> str:
@@ -4746,3 +4746,526 @@ class TestAForwarderThatNamesOnlyWhatOthersFill:
         )
         assert messages[0].status == "success", messages[0].content
         assert seen == [("lookup", {"q": "x"})] and ran == ["x"]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
+class TestAReservedNameIsNeverAParameterOfItsOwn:
+    """Review round 5 of the package (2026-11): the third forwarder with one more inert
+    named parameter (``config: Optional[RunnableConfig] = None`` on a schemaless
+    ``BaseTool``). The family is closed by rule: in the forwarder rule a parameter with a
+    reserved name, an injected one, or one annotated with a type the framework or the host
+    fills is never the callable's own. Plus the low items and six checks no test pinned."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("langgraph")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_langgraph_round5_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    call = staticmethod(TestWhatRunsIsWhatWasJudged.call)
+    no_delete = staticmethod(TestWhatRunsIsWhatWasJudged.no_delete)
+    run = TestWhatRunsIsWhatWasJudged.run
+    ROUTES = TestWhatRunsIsWhatWasJudged.ROUTES
+    limit_under = staticmethod(TestWhatTheGateCannotReadIsRefused.limit_under)
+
+    ONLY_VARIADICS = "the tool's innermost callable takes only `*args` or `**kwargs`"
+
+    # --- finding 1: a `config` LangChain does not fill ------------------------------------------
+
+    @staticmethod
+    def schemaless_forwarder(ran, shape):
+        """A ``BaseTool`` with no ``args_schema`` whose ``_run`` hands the call to
+        ``export_rows(table="users", limit=1000000)`` and names only ``config``."""
+        from typing import Optional
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        if shape == "optional":
+
+            def _run(self, *args: Any, config: Optional[RunnableConfig] = None, **kwargs: Any):
+                return export_rows(*args, **kwargs)
+
+        elif shape == "pipe":
+
+            def _run(self, *args: Any, config: RunnableConfig | None = None, **kwargs: Any):
+                return export_rows(*args, **kwargs)
+
+        elif shape == "unannotated":
+
+            def _run(self, *args: Any, config=None, **kwargs: Any):
+                return export_rows(*args, **kwargs)
+
+        elif shape == "wrong":
+
+            def _run(self, *args: Any, config: str = "x", **kwargs: Any):
+                return export_rows(*args, **kwargs)
+
+        else:  # the shape of langchain-aws's no-input tools, without their schema
+
+            def _run(self, config: Optional[RunnableConfig] = None, **_: Any):
+                return export_rows(**_)
+
+        body = _run
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "Export rows of a table."
+            _run = body
+
+        tool = Export()
+        assert tool.args_schema is None
+        return tool
+
+    @pytest.mark.parametrize("shape", ["optional", "pipe", "unannotated", "wrong", "aws"])
+    @ROUTES
+    def test_a_forwarder_whose_only_parameter_has_a_reserved_name_is_refused(
+        self, example, route, shape
+    ):
+        """LangChain fills ``config`` only when it is annotated exactly ``RunnableConfig``.
+        Any other ``config`` was read as a parameter of the tool's own: the policy judged
+        ``{'config': None}`` and the function behind ran ``limit=1000000``, or whatever
+        limit the model sent."""
+        ran, seen = [], []
+        tool = self.schemaless_forwarder(ran, shape)
+        calls = [self.call("export", {}, "a"), self.call("export", {"limit": 5}, "b")]
+        messages = self.run(example, route, [tool], calls, self.limit_under(1000, seen))
+        assert ran == [] and seen == [], "refused before the policy, and not run"
+        for message in messages:
+            assert self.ONLY_VARIADICS in message.content
+            assert "(and `config`, which LangChain or the host reserves)" in message.content
+        self.run(example, route, [tool], calls, None, gated=False)
+        assert sorted(ran) == [("users", 5), ("users", 1000000)], "ungated, the model sets it"
+
+    # --- the rule, stated once -----------------------------------------------------------------
+
+    def test_the_reserved_names_are_the_union_of_the_gates_authorities(self, example):
+        adapter = _adapter()
+        assert adapter._RESERVED_NAMES == (
+            adapter._RESERVED | adapter._HOLDER_TAKES | adapter._NODE_NAMES
+        )
+        assert adapter._RESERVED_NAMES == {"run_manager", "callbacks", "config", "runtime"}
+
+    def test_which_parameters_are_never_a_forwarders_own(self, example):
+        import inspect
+        from typing import Annotated, Optional
+
+        from langchain_core.callbacks import (
+            AsyncCallbackManagerForToolRun,
+            CallbackManagerForToolRun,
+            Callbacks,
+        )
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import InjectedToolArg, InjectedToolCallId
+        from langgraph.prebuilt import InjectedState, InjectedStore, ToolRuntime
+
+        its_own = _adapter()._its_own
+
+        def parameter(name, annotation=inspect.Parameter.empty, default=inspect.Parameter.empty):
+            kind = inspect.Parameter.KEYWORD_ONLY
+            return inspect.Parameter(name, kind, annotation=annotation, default=default)
+
+        # a reserved name, whatever its annotation or default
+        for name in ("run_manager", "callbacks", "config", "runtime"):
+            for annotation in (inspect.Parameter.empty, str, Optional[RunnableConfig], dict):
+                for default in (inspect.Parameter.empty, None):
+                    assert not its_own(name, parameter(name, annotation, default), frozenset())
+        # a type the framework or the host fills, anywhere inside the annotation
+        filled = [
+            RunnableConfig,
+            Optional[RunnableConfig],
+            RunnableConfig | None,
+            Annotated[RunnableConfig, "note"],
+            Annotated[Optional[RunnableConfig], "note"],
+            ToolRuntime,
+            Optional[ToolRuntime],
+            CallbackManagerForToolRun,
+            Optional[AsyncCallbackManagerForToolRun],
+            Callbacks,
+            Annotated[dict, InjectedState],
+            Annotated[str, InjectedState("role")],
+            Annotated[Any, InjectedStore()],
+            Annotated[str, InjectedToolCallId],
+            Optional[Annotated[str, InjectedToolArg]],
+            ToolRuntime[dict, dict],
+            Optional[ToolRuntime[dict, dict]],
+            "Optional[RunnableConfig]",
+            "ToolRuntime",
+            "Annotated[dict, InjectedState]",
+            "Optional[CallbackManagerForToolRun]",
+        ]
+        for annotation in filled:
+            assert not its_own("x", parameter("x", annotation), frozenset()), annotation
+        # a name the tool marks injected, by its schema or its function
+        assert not its_own("tenant", parameter("tenant", str), frozenset({"tenant"}))
+        # an annotation nested deeper than the gate reads is not taken for the callable's own
+        deep: Any = str
+        for _ in range(20):
+            deep = list[deep]
+        assert not its_own("x", parameter("x", deep), frozenset())
+        assert its_own("x", parameter("x", list[list[list[str]]]), frozenset())
+        # everything else is the callable's own
+        for annotation in (
+            inspect.Parameter.empty,
+            str,
+            Optional[str],
+            dict,
+            Annotated[str, "n"],
+            "str",
+        ):
+            assert its_own("x", parameter("x", annotation), frozenset()), annotation
+
+    @pytest.mark.parametrize(
+        "kept",
+        ["schema_marked", "untyped_runtime", "state", "optional_run_manager", "optional_runtime"],
+    )
+    def test_a_forwarder_is_refused_for_every_way_a_parameter_is_not_its_own(self, example, kept):
+        """One per branch of the rule: injected by the schema only, reserved by name only,
+        injected by annotation, and a filled type inside ``Optional``. The second and
+        third on a ``BaseTool`` subclass, which has no function for ToolNode to read."""
+        from typing import Annotated, Optional
+
+        from langchain_core.callbacks import CallbackManagerForToolRun
+        from langchain_core.tools import BaseTool, InjectedToolArg, StructuredTool
+        from langgraph.prebuilt import InjectedState, ToolRuntime
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        if kept == "schema_marked":
+
+            class Args(BaseModel):
+                tenant: Annotated[str, InjectedToolArg] = "t"
+
+            def forward(tenant: str = "t", **kwargs: Any) -> str:
+                return export_rows(**kwargs)
+
+            tool = StructuredTool(name="export", description="d", func=forward, args_schema=Args)
+            named = "tenant"
+        elif kept == "optional_run_manager":
+
+            def forward(rm: Optional[CallbackManagerForToolRun] = None, **kwargs: Any) -> str:
+                return export_rows(**kwargs)
+
+            schema = {"type": "object"}
+            tool = StructuredTool(name="export", description="d", func=forward, args_schema=schema)
+            named = "rm"
+        else:
+            if kept == "untyped_runtime":
+
+                def _run(self, runtime=None, **kwargs: Any) -> str:
+                    return export_rows(**kwargs)
+
+                named = "runtime"
+            elif kept == "state":
+
+                def _run(self, state: Annotated[dict, InjectedState] = None, **kwargs: Any) -> str:  # type: ignore[assignment]
+                    return export_rows(**kwargs)
+
+                named = "state"
+            else:
+
+                def _run(self, rt: Optional[ToolRuntime] = None, **kwargs: Any) -> str:
+                    return export_rows(**kwargs)
+
+                named = "rt"
+            body = _run
+
+            class Export(BaseTool):
+                name: str = "export"
+                description: str = "d"
+                _run = body
+
+            tool = Export()
+        messages = self.run(
+            example, "sync", [tool], [self.call("export", {})], self.limit_under(1000, seen)
+        )
+        assert ran == [] and seen == []
+        assert self.ONLY_VARIADICS in messages[0].content
+        assert f"(and `{named}`, which LangChain or the host reserves)" in messages[0].content
+
+    def test_a_schema_field_the_host_fills_must_still_be_named_by_a_forwarder(self, example):
+        """Pins Y17: a field the schema declares and the innermost callable does not name
+        is handed on, whoever fills it."""
+        from typing import Annotated
+
+        from langchain_core.tools import StructuredTool
+        from langgraph.prebuilt import InjectedState
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class Args(BaseModel):
+            q: str
+            state: Annotated[dict, InjectedState]
+
+        def forward(q: str, **kwargs: Any) -> str:
+            ran.append((q, sorted(kwargs)))
+            return "ok"
+
+        tool = StructuredTool(name="lookup", description="d", func=forward, args_schema=Args)
+        messages = self.run(
+            example, "sync", [tool], [self.call("lookup", {"q": "x"})], self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert "takes `*args` or `**kwargs` and does not name `state`" in messages[0].content
+
+    # --- the closed-schema exception, pinned further ---------------------------------------------
+
+    def test_a_pure_forwarder_under_a_schema_with_no_fields_runs(self, example):
+        """Pins Y04 and Y05: the exception covers a callable of nothing but variadics, and
+        a schema that sets ``extra="ignore"`` explicitly is as closed as one that leaves the
+        default."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, ConfigDict
+
+        ran, seen = [], []
+
+        class Ignores(BaseModel):
+            model_config = ConfigDict(extra="ignore")
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        def forward(*args: Any, **kwargs: Any) -> str:
+            return export_rows(*args, **kwargs)
+
+        tool = StructuredTool(name="export", description="d", func=forward, args_schema=Ignores)
+        assert _adapter()._closed_to_the_model(tool) is True
+        calls = [self.call("export", {"limit": 5, "table": "secrets"})]
+        messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("export", {})] and ran == [("users", 1000000)]
+
+    def test_limitation_a_schema_with_no_fields_drops_what_the_host_injects_too(self, example):
+        """Documented in the package README under the closed-schema exception: LangChain
+        hands the function only declared fields, so the state ToolNode injected is dropped
+        with everything else, and the function runs its own default for that parameter.
+        The value is a constant of the code, the same ungated; the policy is not shown it."""
+        from typing import Annotated
+
+        from langchain_core.tools import StructuredTool
+        from langgraph.prebuilt import InjectedState
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class NoInput(BaseModel):
+            pass
+
+        def current(state: Annotated[dict, InjectedState] = None, **kwargs: Any) -> str:  # type: ignore[assignment]
+            ran.append((state, kwargs))
+            return "ok"
+
+        tool = StructuredTool(name="current", description="d", func=current, args_schema=NoInput)
+        calls = [self.call("current", {"limit": 5})]
+        messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("current", {})] and ran == [(None, {})]
+        ran.clear()
+        self.run(example, "sync", [tool], calls, None, gated=False)
+        assert ran == [(None, {})], "ungated, the injected state is dropped the same way"
+
+    # --- the thread runner's names, pinned further -----------------------------------------------
+
+    @staticmethod
+    def threaded(ran, kind):
+        from langchain_core.tools import BaseTool
+        from pydantic import BaseModel, ConfigDict
+
+        class Allows(BaseModel):
+            model_config = ConfigDict(extra="allow")
+            q: str
+
+        if kind == "own":
+
+            class Tool(BaseTool):
+                name: str = "t"
+                description: str = "Its own parameter is called func."
+
+                def _run(self, q: str, func: str = "sum") -> str:
+                    ran.append((q, func))
+                    return "ok"
+
+        else:
+            schema: Any = Allows if kind == "allow" else {"type": "object", "properties": {"q": {}}}
+
+            class Tool(BaseTool):  # type: ignore[no-redef]
+                name: str = "t"
+                description: str = "A schema that lets extra keys through."
+                args_schema: Any = schema
+
+                def _run(self, q: str, **extra: Any) -> str:
+                    ran.append((q, extra))
+                    return "ok"
+
+        return Tool()
+
+    def test_a_tools_own_parameter_named_like_the_thread_runners_is_refused_as_that(self, example):
+        """Pins Y10, and makes the reason true. The model sent only ``q``; the gate
+        completed ``func`` from the tool's own default, and the refusal said "the
+        invocation sets `func`". The collision is with the tool's own parameter: ungated,
+        the call runs while the model leaves ``func`` out and raises when it sends one."""
+        ran, seen = [], []
+        calls = [self.call("t", {"q": "x"}, "a"), self.call("t", {"q": "x", "func": "max"}, "b")]
+        messages = self.run(
+            example, "async", [self.threaded(ran, "own")], calls, self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        for message in messages:
+            assert "the tool's own parameter `func` has the name of a parameter" in message.content
+            assert "rename the parameter or define `_arun`" in message.content
+            assert "the invocation sets" not in message.content
+        self.run(example, "async", [self.threaded(ran, "own")], calls[:1], None, gated=False)
+        assert ran == [("x", "sum")], "ungated, the default is filled inside the thread"
+        ran.clear()
+        with pytest.raises(TypeError, match="multiple values for argument 'func'"):
+            self.run(example, "async", [self.threaded(ran, "own")], calls[1:], None, gated=False)
+        messages = self.run(
+            example, "sync", [self.threaded(ran, "own")], calls, self.no_delete(seen)
+        )
+        assert [m.status for m in messages] == ["success", "success"]
+        assert sorted(ran) == [("x", "max"), ("x", "sum")]
+        assert sorted(seen, key=str) == [
+            ("t", {"q": "x", "func": "max"}),
+            ("t", {"q": "x", "func": "sum"}),
+        ]
+
+    @pytest.mark.parametrize("kind", ["dict", "allow"])
+    def test_a_thread_runner_name_is_refused_under_any_schema_that_lets_it_through(
+        self, example, kind
+    ):
+        """Pins Y09: the refusal was tested only on a tool with no ``args_schema``."""
+        ran, seen = [], []
+        calls = [self.call("t", {"q": "x", "func": "m"})]
+        messages = self.run(
+            example, "async", [self.threaded(ran, kind)], calls, self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert "the invocation sets `func`, a parameter of the function LangChain runs" in (
+            messages[0].content
+        )
+        messages = self.run(
+            example, "sync", [self.threaded(ran, kind)], calls, self.no_delete(seen)
+        )
+        assert messages[0].status == "success" and ran == [("x", {"func": "m"})]
+
+    # --- the published tools the census found, by their signatures and schemas ----------------
+
+    def test_the_shapes_of_more_census_tools(self, example):
+        """Signatures and schemas replicated from the packages' source (not imported):
+        langchain-aws ``ThreadAwareNavigateTool`` (one of the seven with input),
+        toolbox-langchain ``ToolboxTool``, langchain-writer ``NoCodeAppTool`` and a
+        langchain-anchorbrowser task tool are refused; langchain-aws ``NovaSystemTool`` and
+        langchain-cohere ``DirectlyAnswerTool`` run under the closed-schema exception."""
+        from typing import Optional
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class NavigateToolInput(BaseModel):
+            url: str
+
+        class TaskListInputSchema(BaseModel):
+            page: str = "1"
+            limit: str = "10"
+
+        class EmptyInput(BaseModel):
+            pass
+
+        class Navigate(BaseTool):
+            name: str = "navigate_browser"
+            description: str = "d"
+            args_schema: type[BaseModel] = NavigateToolInput
+
+            def _run(self, url: str, config: Optional[RunnableConfig] = None, **_: Any) -> str:
+                ran.append("navigate")
+                return "ok"
+
+        class Toolbox(BaseTool):
+            name: str = "toolbox"
+            description: str = "d"
+            args_schema: type[BaseModel] = NavigateToolInput
+
+            def _run(self, **kwargs: Any) -> str:
+                ran.append("toolbox")
+                return "ok"
+
+        class NoCodeApp(BaseTool):
+            name: str = "no_code_app"
+            description: str = "d"
+
+            def _run(self, *args: Any, **kwargs: Any) -> str:
+                ran.append("app")
+                return "ok"
+
+        class AnchorTaskList(BaseTool):
+            name: str = "anchor_task_list"
+            description: str = "d"
+            args_schema: type[BaseModel] = TaskListInputSchema
+
+            def _run(self, **kwargs: Any) -> str:
+                ran.append("anchor")
+                return "ok"
+
+        class NovaSystem(BaseTool):
+            name: str = "nova_system"
+            description: str = "d"
+            args_schema: type[BaseModel] = EmptyInput
+
+            def _run(self, **kwargs: Any) -> str:
+                ran.append("nova")
+                return "ok"
+
+        class DirectlyAnswer(BaseTool):
+            name: str = "directly_answer"
+            description: str = "d"
+            args_schema: type[BaseModel] = EmptyInput
+
+            def _run(self, *args: Any, **kwargs: Any) -> str:
+                ran.append("answer")
+                return "ok"
+
+        tools = [
+            Navigate(),
+            Toolbox(),
+            NoCodeApp(),
+            AnchorTaskList(),
+            NovaSystem(),
+            DirectlyAnswer(),
+        ]
+        calls = [
+            self.call("navigate_browser", {"url": "u"}, "navigate"),
+            self.call("toolbox", {"url": "u"}, "toolbox"),
+            self.call("no_code_app", {}, "app"),
+            self.call("anchor_task_list", {}, "anchor"),
+            self.call("nova_system", {"x": 1}, "nova"),
+            self.call("directly_answer", {"x": 1}, "answer"),
+        ]
+        messages = self.run(example, "sync", tools, calls, self.no_delete(seen))
+        by_id = {m.tool_call_id: m for m in messages}
+        assert "parameter `config` is absent from the argument schema" in by_id["navigate"].content
+        assert "does not name `url`" in by_id["toolbox"].content
+        assert self.ONLY_VARIADICS in by_id["app"].content
+        assert "does not name `limit`" in by_id["anchor"].content
+        assert by_id["nova"].status == by_id["answer"].status == "success"
+        assert sorted(ran) == ["answer", "nova"]
+        assert sorted(seen) == [("directly_answer", {}), ("nova_system", {})]
