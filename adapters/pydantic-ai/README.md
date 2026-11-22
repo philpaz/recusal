@@ -108,6 +108,19 @@ path.
   judged. Models, dataclasses, Enum members and other objects are refused before the
   policy runs. Declare a `str` or `int` and resolve application types inside the tool.
 
+## Status
+
+**In security review.** The fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
+development: it is not a finished or certified security product, and it is provided under
+Apache-2.0 without warranty.
+[What "security reviewed" means, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
+
+**Help make it better.** Read the code, test this adapter against your own stack and tell
+us what you find. Reviews, bug reports and pull requests are all welcome:
+[how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues).
+Please report a security gap [privately](https://github.com/philpaz/recusal/security/advisories/new), not in a public
+issue.
+
 ## Compatibility
 
 This package is outside the kernel's frozen perimeter (`STABILITY.md`, Integrations). Its

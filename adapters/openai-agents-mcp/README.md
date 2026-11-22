@@ -128,6 +128,19 @@ cannot be written the call is refused. Check the log with
 - **Handoffs, an ungated sub-agent behind `as_tool`, and `Agent` subclasses.**
   `gated_agent` raises for these at construction.
 
+## Status
+
+**Not yet security reviewed.** It is tested against its framework in CI; its review has not started. Recusal is a Beta (`0.x`) open-source project in active
+development: it is not a finished or certified security product, and it is provided under
+Apache-2.0 without warranty.
+[What "security reviewed" means, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
+
+**Help make it better.** Read the code, test this adapter against your own stack and tell
+us what you find. Reviews, bug reports and pull requests are all welcome:
+[how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues).
+Please report a security gap [privately](https://github.com/philpaz/recusal/security/advisories/new), not in a public
+issue.
+
 ## Compatibility
 
 This package is outside the kernel's frozen perimeter (`STABILITY.md`, Integrations). Its

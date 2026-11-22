@@ -121,7 +121,7 @@ def test_every_place_says_the_adapters_are_on_pypi_and_installs_them_by_name():
 def test_the_contents_line_links_sections_that_exist_in_this_order():
     line = README.split("**Contents:**", 1)[1].split("\n\n", 1)[0]
     anchors = re.findall(r"\]\(#([a-z0-9-]+)\)", line)
-    assert len(anchors) == 11 and len(set(anchors)) == 11
+    assert len(anchors) == 12 and len(set(anchors)) == 12
     headings = re.findall(r"^## (.+)$", README, re.M)
     slugs = [
         re.sub(r"[^\w\- ]", "", re.sub(r"[`*]", "", h).lower()).replace(" ", "-") for h in headings
@@ -251,3 +251,31 @@ def test_every_adapter_page_carries_the_website_and_scorecard_badges():
         text = page.read_text(encoding="utf-8")
         assert text.count(website) == 1, page
         assert text.count(scorecard) == 1, page
+
+
+def test_every_adapter_states_the_status_the_project_table_gives_it():
+    """The kernel README's "Project status" table says where each adapter stands in security
+    review, and each adapter's own page says the same in its "Status" section, with the
+    invitation to help and the private route for a security gap. The table has one row per
+    adapter package, so a new adapter cannot ship without a status, and a status changed in
+    one place and not the other fails here."""
+    section = README.split("\n## Project status\n", 1)[1].split("\n## ", 1)[0]
+    assert "not a finished or\ncertified security product" in section
+    assert "not a third-party audit" in section
+    assert "https://github.com/philpaz/recusal/security/advisories/new" in section
+    rows = re.findall(
+        r"^\| \[`recusal-([a-z-]+)`\]\(https://github\.com/philpaz/recusal/tree/main/adapters/([a-z-]+)\) \| (.+?) \| (.+?) \|$",
+        section,
+        re.M,
+    )
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert [directory for _, directory, _, _ in rows] == directories
+    for name, directory, status, detail in rows:
+        assert name == directory
+        assert status in ("Security reviewed", "In security review", "Not yet security reviewed")
+        page = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
+        own = page.split("\n## Status\n", 1)[1].split("\n## ", 1)[0]
+        assert own.lstrip("\n").startswith(f"**{status}.** {detail} "), directory
+        assert "**Help make it better.**" in own
+        assert "https://github.com/philpaz/recusal/security/advisories/new" in own
+        assert "https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md" in own

@@ -21,6 +21,10 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 
 **Website: [recusal.io](https://recusal.io)**, with an interactive demo of the gate.
 
+**Status:** Beta (`0.x`) and in active development, not a finished or certified security
+product. The adapters are at different stages of security review, and help is welcome:
+[project status](#project-status).
+
 [![Website](https://img.shields.io/badge/website-recusal.io-2453c4)](https://recusal.io)
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -31,6 +35,7 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 
 **Contents:** [See it refuse](#see-it-refuse-20-seconds-no-api-key-no-clone) ·
 [Works with](#works-with) · [Adapters](#the-kernel-and-its-adapters) ·
+[Status](#project-status) ·
 [Install](#install) · [Policies](#write-the-policy-two-postures-one-principle) ·
 [MCP](#mcp-tools-the-same-gate) · [Audit](#tamper-evident-audit) ·
 [How it works](#how-it-works) · [CI](#gate-your-ci) ·
@@ -181,6 +186,39 @@ Each is on PyPI under its own name. Install the one for your framework:
 ```bash
 pip install recusal-pydantic-ai
 ```
+
+## Project status
+
+Recusal is a Beta (`0.x`) open-source project in active development, built in the open to
+help teams develop and evolve security controls for AI agents. It is not a finished or
+certified security product, and it is provided under Apache-2.0 without warranty.
+[`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) says what is stable and what may still change.
+
+The adapters are at different stages of security review:
+
+| Package | Security review | Where it stands |
+|---|---|---|
+| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | Security reviewed | The fixes from the review are released in 0.2.1. |
+| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | Security reviewed | The fixes from the review are released in 0.2.0. |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
+| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | Not yet security reviewed | It is tested against its framework in CI; its review has not started. |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In security review | The fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. |
+
+"Security reviewed" means the adapter went through repeated adversarial review against a
+stated threat model: the model is untrusted, and the application's own code is trusted
+but ordinary. Each finding was reproduced, fixed and pinned by a test, and the rounds
+continued until one found no way for a model to get a call past the gate. It is the
+project's own review, not a third-party audit, and a review finds what it looks for: a
+reviewed adapter can still have gaps. Each adapter's README says what its gate refuses
+and what it does not see.
+
+**Help make it better.** Read the code, test an adapter against your own stack and tell
+us what you find. Reviews, bug reports and pull requests are all welcome:
+[how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues). Please report a
+security gap [privately](https://github.com/philpaz/recusal/security/advisories/new), not in a public issue.
 
 ## The problem
 
