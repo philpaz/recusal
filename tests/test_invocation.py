@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from recusal import invocation
 from recusal.invocation import (
     SCALARS,
     DeclaredSignature,
@@ -394,6 +395,14 @@ def test_a_call_that_is_not_a_plain_method_and_a_class_are_refused():
 _UNFOLLOWED = (
     "a wrapper holds another wrapper of the function it wraps, which the walk does not follow"
 )
+_KEPT = (
+    "`timeout` is taken by a wrapper and by the function it wraps, which can then run with a "
+    "value no policy judged"
+)
+_ADDED = (
+    "`force` is a parameter of a function the call reaches that the tool does not declare, so "
+    "it would run with a value no policy judged"
+)
 _FORWARD, _FETCH = ["args", "kwargs"], ["url", "timeout"]
 
 
@@ -470,8 +479,10 @@ def test_a_wrapper_applied_inside_another_keeps_an_argument_and_is_refused():
     assert tool("u", timeout=5) == 999999  # the value judged is not the value run
     with pytest.raises(HiddenWrapper) as refused:
         reached_parameters(tool)
-    assert str(refused.value) == _UNFOLLOWED  # names no function, parameter or value
-    assert unsupported_signature(tool) == _UNFOLLOWED
+    # the reason is the one a wrapper the walk reads gets: it names the parameter, no value
+    assert str(refused.value) == _KEPT
+    assert unsupported_signature(tool) == _KEPT
+    assert unsupported_signature(_with_timeout(fetch)) == _KEPT  # the same wrapper, read
 
 
 def test_the_refusal_is_a_value_error_so_a_gate_that_catches_one_refuses():
@@ -487,9 +498,11 @@ def test_a_default_of_a_wrapper_applied_inside_another_is_refused():
 
     tool = _calling(_forcing)(wipe)
     assert list(inspect_signature(tool)) == ["table"]
-    with pytest.raises(HiddenWrapper):
+    with pytest.raises(HiddenWrapper) as refused:
         reached_parameters(tool)
-    assert unsupported_signature(tool) == _UNFOLLOWED
+    assert str(refused.value) == _ADDED
+    assert unsupported_signature(tool) == _ADDED
+    assert unsupported_signature(_forcing(wipe)) == _ADDED  # the same wrapper, read
 
 
 def test_a_hidden_wrapper_is_refused_wherever_the_wrapper_that_holds_it_stands():
@@ -545,7 +558,7 @@ def test_a_hidden_wrapper_is_refused_wherever_the_wrapper_that_holds_it_stands()
         with pytest.raises(HiddenWrapper):
             reached_parameters(func)
     for func in (_traced(tool), Holder().fetch, fetch_async):
-        assert unsupported_signature(func) == _UNFOLLOWED, func
+        assert unsupported_signature(func, skip=("self",)) == _KEPT, func
 
 
 def _receiving(function):
@@ -870,6 +883,234 @@ def test_ordinary_decorators_are_walked_as_before():
         assert unsupported_signature(func) is None, func
 
 
+# --- one rule for a wrapper the walk reads and for one a callable holds --------------------
+
+
+def _copying(function):
+    """A wrapper that copies the function's own parameters, as the signature-preserving
+    decorators of several libraries generate one."""
+    import functools
+
+    def search(query, limit=5):
+        return function(query, limit)
+
+    return functools.update_wrapper(search, function)
+
+
+def _renaming(function):
+    import functools
+
+    def search(query, limit=5, verbose=False):
+        return function(query, limit)
+
+    return functools.update_wrapper(search, function)
+
+
+def test_a_held_wrapper_is_judged_by_the_rule_and_the_code_that_judge_one_the_walk_reads():
+    """A wrapper gets the same verdict, for the same reason, held inside a decorator and
+    applied directly: one function decides both."""
+    import functools
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def with_context(function):
+        @functools.wraps(function)
+        def wrapper(*args, tool_context=None, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def keeping_limit(function):
+        @functools.wraps(function)
+        def wrapper(*args, limit=1, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    for make, skip in (
+        (_traced, ()),
+        (_copying, ()),  # names only what the tool declares, and passes nothing else on
+        (_renaming, ()),  # a name the tool does not declare
+        (_forcing, ()),
+        (keeping_limit, ()),  # a forwarding wrapper that keeps a name the function takes
+        (with_context, ()),
+        (with_context, ("tool_context",)),  # a name the framework injects
+        (lambda f: _traced(_copying(f)), ()),
+        (lambda f: _traced(keeping_limit(f)), ()),
+    ):
+        read = unsupported_signature(make(search), skip)
+        held = unsupported_signature(_calling(make)(search), skip)
+        assert held == read, (make, read, held)
+        if read is None:
+            levels = reached_parameters(_calling(make)(search), skip)
+            assert [list(level) for level in levels] == [_FORWARD, ["query", "limit"]]
+        else:
+            with pytest.raises(HiddenWrapper) as refused:
+                reached_parameters(_calling(make)(search), skip)
+            assert str(refused.value) == read
+    # a wrapper the walk reads is not judged as a held one: it stays a level of the walk,
+    # also when the same callable holds a harmless second wrapper
+    for visible, level, why in (
+        (_forcing(search), ["args", "force", "kwargs"], _ADDED),
+        (keeping_limit(search), ["args", "limit", "kwargs"], "`limit` is taken by a wrapper"),
+    ):
+        tool = _calling(_traced)(visible)
+        assert _levels(tool) == [_FORWARD, level, ["query", "limit"]]
+        assert why in unsupported_signature(tool)
+    assert unsupported_signature(_copying(search)) is None
+    assert "`verbose` is a parameter" in unsupported_signature(_calling(_renaming)(search))
+    assert "`limit` is taken by a wrapper" in unsupported_signature(_calling(keeping_limit)(search))
+    assert unsupported_signature(_calling(with_context)(search)) is not None
+    assert unsupported_signature(_calling(with_context)(search), ("tool_context",)) is None
+
+
+def test_a_bound_receiver_is_not_a_parameter_and_a_keyword_behind_it_is():
+    import types
+
+    fetch = _fetch()
+    # the wrapper takes its receiver through ``*args``: nothing is bound by name
+    keeping = types.MethodType(_with_timeout(fetch), object())
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(_holding(keeping, fetch))
+    assert _levels(_holding(types.MethodType(_traced(fetch), object()), fetch)) == [
+        _FORWARD,
+        _FETCH,
+    ]
+
+
+def test_a_held_wrapper_of_anything_the_walk_reads_is_found():
+    """What the walk reads is every callable it took the parameters of: the function a
+    callable object names as ``__wrapped__``, that object's own ``__call__``, the function
+    of a method or a ``functools.partial`` on the way."""
+    import functools
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def keeping_limit(function):
+        @functools.wraps(function)
+        def wrapper(*args, limit=1, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    class Decorator:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    class Tool:
+        def __call__(self, query: str, limit: int = 5) -> str:
+            return query
+
+    def holding(guarded, wrapped):
+        @functools.wraps(wrapped)
+        def wrapper(*args, **kwargs):
+            return guarded(*args, **kwargs)
+
+        return wrapper
+
+    through_an_object = Decorator(search)
+    tool = Tool()
+    for guarded, wrapped in (
+        (keeping_limit(search), through_an_object),  # read through the object's __wrapped__
+        (keeping_limit(through_an_object), through_an_object),
+        (keeping_limit(tool.__call__), tool),  # the object's own __call__
+        (keeping_limit(search), functools.partial(search)),
+        (keeping_limit(functools.partial(search)), search),
+    ):
+        with pytest.raises(HiddenWrapper):
+            reached_parameters(holding(guarded, wrapped))
+
+    # an equal callable is not the one the walk reads
+    class Alike(Tool):
+        __eq__ = _touch("__eq__", True)
+        __hash__ = _touch("__hash__", 0)
+
+    one, other = Tool(), Alike()
+    del _TOUCHED[:]
+    reached_parameters(holding(keeping_limit(other), one))
+    assert _TOUCHED == []
+
+
+def test_a_dictionary_another_thread_changes_does_not_break_the_walk():
+    """An attribute set or removed on another thread while the walk lists a dictionary must
+    not raise out of it. Every live dictionary is listed in one step before any loop."""
+    import functools
+    import sys as system
+    import threading
+    import time
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    class Decorator:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    inner = _traced(search)
+    cached = functools.lru_cache(maxsize=None)(search)
+    instance = Decorator(search)
+    shapes = (
+        (instance, instance, [_FORWARD, _FORWARD, ["query", "limit"]]),
+        (_holding(inner, search), inner, [_FORWARD, ["query", "limit"]]),
+        (_holding(cached, search), cached, [_FORWARD, ["query", "limit"]]),
+    )
+    stop = threading.Event()
+
+    def churn(target):
+        names = [f"extra_{index}" for index in range(64)]
+        while not stop.is_set():
+            for name in names:
+                setattr(target, name, None)
+            for name in names:
+                delattr(target, name)
+
+    interval = system.getswitchinterval()
+    system.setswitchinterval(1e-6)
+    workers = [
+        threading.Thread(target=churn, args=(target,), daemon=True) for _, target, _ in shapes
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        deadline = time.monotonic() + 2.0
+        walks = 0
+        while walks < 400 and time.monotonic() < deadline:
+            for tool, _, expected in shapes:
+                assert _levels(tool) == expected
+            walks += 1
+    finally:
+        stop.set()
+        for worker in workers:
+            worker.join(timeout=5)
+        system.setswitchinterval(interval)
+    assert walks > 0
+
+
+def test_a_dictionary_that_is_not_a_plain_dict_is_not_listed():
+    """A function's ``__dict__`` can be replaced by a subclass of ``dict``, whose listing
+    runs code. Such a function names nothing the check reads."""
+    fetch = _fetch()
+
+    class Attributes(dict):
+        items = _touch("items", raises=RuntimeError)
+        values = _touch("values", raises=RuntimeError)
+        __iter__ = _touch("__iter__", raises=RuntimeError)
+
+    guarded = _with_timeout(fetch)
+    guarded.__dict__ = Attributes(guarded.__dict__)
+    del _TOUCHED[:]
+    assert _levels(_holding(guarded, fetch)) == [_FORWARD, _FETCH]
+    assert _TOUCHED == []
+
+
 # --- the stated limits: accepted, on purpose ------------------------------------------------
 
 _SLOT = []
@@ -1117,6 +1358,8 @@ def test_nothing_a_callable_holds_is_run(name, value):
     def search(query: str, limit: int = 5) -> str:
         return query
 
+    search.label = object()  # an attribute for a class-based decorator to copy
+
     def tool(query: str, limit: int = 5) -> str:  # no decorator at all
         return query + str(type(value))
 
@@ -1286,8 +1529,10 @@ def test_a_dispatching_function_is_refused_wherever_it_stands_on_the_walk():
 
 def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
     """``functools.singledispatchmethod`` hands out a new function at each access. It has
-    no registry of its own; its closure holds the descriptor, whose dispatcher has one."""
+    no registry of its own; where it keeps the way to one is found once, at import."""
     import functools
+
+    _needs_method_access()
 
     class Recording(functools.singledispatchmethod):
         """A subclass, which records every attribute asked of it."""
@@ -1345,9 +1590,16 @@ def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
     assert _TOUCHED == []  # the descriptor is known by its type and read where it is stored
     assert unsupported_signature(Holder().lookup, skip=("self",)) == _AT_CALL_TIME
 
-    # a subclass that answers ``__dict__`` itself is not read: its property is not run
+    # a subclass that answers ``__dict__`` itself cannot be read, so it is refused; its
+    # property is not run, and neither is the ``__eq__`` of a key of its class
+    class Key:
+        __hash__ = _touch("key __hash__", hash("__dict__"))
+        __eq__ = _touch("key __eq__", True)
+
     class Opaque(functools.singledispatchmethod):
         __dict__ = property(_touch("__dict__", {}))  # type: ignore[assignment]
+
+    keyed = type("Keyed", (functools.singledispatchmethod,), {Key(): None})
 
     class Other:
         @Opaque
@@ -1358,9 +1610,15 @@ def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
         def lookup_int(self, key: int, deep: bool = False, skip_review: bool = True) -> str:
             return "int"
 
-    opaque = Other().lookup
+        @keyed
+        def find(self, key: str, deep: bool = False) -> str:
+            return "base"
+
+    opaque, find = Other().lookup, Other().find
     del _TOUCHED[:]
-    assert _levels(opaque) == [_FORWARD, ["self", "key", "deep"]]
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(opaque)
+    assert _levels(find) == [_FORWARD, ["self", "key", "deep"]]
     assert _TOUCHED == []
     # with only the base registered the base is what runs, and it is walked as before
     own = ["self", "key", "deep"]
@@ -1369,12 +1627,17 @@ def test_a_single_dispatch_method_with_a_registered_implementation_is_refused():
     assert _levels(functools.lru_cache(maxsize=None)(Holder().plain)) == [_FORWARD, _FORWARD, own]
 
 
+def _registry_cell(dispatcher):
+    """The closure cell that holds the real registry of a single-dispatch function."""
+    dispatch = dispatcher.dispatch
+    return dict(zip(dispatch.__code__.co_freevars, dispatch.__closure__))["registry"]
+
+
 def test_a_replaced_base_is_refused_by_identity():
     """``register(object, ...)`` replaces the base implementation and leaves ``object`` the
     only key: the base alone runs only when that one entry is, by identity, the function
     ``__wrapped__`` names, under the key that is, by identity, ``object``."""
     import functools
-    import types
 
     @functools.singledispatch
     def lookup(key: str, deep: bool = False) -> str:
@@ -1395,7 +1658,10 @@ def test_a_replaced_base_is_refused_by_identity():
 
     assert list(lookup.registry) == [object]
     assert lookup("k") == Holder().lookup("k") == "replacement, skip_review=True"
-    for func in (lookup, _traced(lookup), Holder().lookup):
+    replaced = [lookup, _traced(lookup)]
+    if invocation._METHOD_ACCESS is not None:
+        replaced.append(Holder().lookup)
+    for func in replaced:
         with pytest.raises(DispatchedAtCallTime):
             reached_parameters(func)
     assert unsupported_signature(lookup) == _AT_CALL_TIME
@@ -1403,9 +1669,12 @@ def test_a_replaced_base_is_refused_by_identity():
     def search(query: str, limit: int = 5) -> str:
         return query
 
-    def dispatcher_with(registry, wrapped=search):
+    def dispatcher_with(entries, wrapped=search):
         built = functools.singledispatch(search)
-        built.registry, built.__wrapped__ = types.MappingProxyType(registry), wrapped
+        registry = _registry_cell(built).cell_contents
+        registry.clear()
+        registry.update(entries)
+        built.__wrapped__ = wrapped
         return built
 
     class Alike(type):
@@ -1428,11 +1697,29 @@ def test_a_replaced_base_is_refused_by_identity():
     assert _TOUCHED == []
 
 
-def test_a_registry_that_is_not_over_a_plain_dict_is_refused_unread():
-    """The mapping behind a registry is found without touching it. Behind anything but a
-    plain ``dict`` the registry is refused as dispatch, and none of its code runs."""
+def test_the_registry_read_is_the_real_one_not_the_attribute():
+    """``functools.update_wrapper`` copies the base function's attributes onto the
+    dispatcher, so a base that carries a ``registry`` or a ``dispatch`` of its own
+    overwrites the dispatcher's. What is read is the registry in the closure, which nothing
+    overwrites. One that is not a plain ``dict`` is refused, and none of its code runs."""
     import functools
     import types
+
+    def base(key: str, deep: bool = False) -> str:
+        return "base"
+
+    base.registry, base.dispatch = {}, "sync"  # type: ignore[attr-defined]
+    masked = functools.singledispatch(base)
+    masked.register(int, lambda key, deep=False, skip_review=True: "int")
+    assert masked.registry == {} and masked(1) == "int"
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(masked)
+
+    # and a registry attribute that claims the base alone changes nothing
+    claimed = _dispatching()
+    claimed.registry = types.MappingProxyType({object: claimed.__wrapped__})
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(claimed)
 
     def search(query: str, limit: int = 5) -> str:
         return query
@@ -1446,7 +1733,7 @@ def test_a_registry_that_is_not_over_a_plain_dict_is_refused_unread():
         __contains__ = _touch("__contains__", True)
 
     odd = functools.singledispatch(search)
-    odd.registry = types.MappingProxyType(Mapping({object: search}))
+    _registry_cell(odd).cell_contents = Mapping({object: search})
     del _TOUCHED[:]
     with pytest.raises(DispatchedAtCallTime):
         reached_parameters(odd)
@@ -1454,10 +1741,78 @@ def test_a_registry_that_is_not_over_a_plain_dict_is_refused_unread():
     assert _TOUCHED == []
 
 
+def test_the_single_dispatch_this_python_builds_is_recognised():
+    """The dispatcher is known by the code object of the ``wrapper`` that
+    ``functools.singledispatch`` defines, and its registry by the closure of its
+    ``dispatch``. If a Python builds it another way the check finds nothing there: this
+    test fails first, loudly, so that is a decision and not a silence."""
+    import functools
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    built = functools.singledispatch(search)
+    assert invocation._WRAPPER_CODE is not None and built.__code__ is invocation._WRAPPER_CODE
+    assert built.dispatch.__code__ is invocation._DISPATCH_CODE
+    assert invocation._cell(built, "dispatch") is built.dispatch
+    registry = invocation._cell(built.dispatch, "registry")
+    assert type(registry) is dict and list(registry.items()) == [(object, search)]
+    assert invocation._only_runs(built.dispatch, search)
+    assert not invocation._only_runs(built.dispatch, built)
+    assert not invocation._only_runs(search, search)
+
+
+def _needs_method_access():
+    """Skip where the callable ``functools.singledispatchmethod`` hands out does not keep
+    the way to its registry anywhere the walk reads. On the Pythons where it is known to
+    (3.9 to 3.12, in a closure cell), not finding it is a failure, not a skip."""
+    if invocation._METHOD_ACCESS is None:
+        assert sys.version_info >= (3, 13), "single-dispatch methods are no longer read"
+        pytest.skip("this Python hands out a single-dispatch method in a way that is not read")
+
+
+def test_where_a_single_dispatch_method_keeps_its_registry_is_found():
+    import functools
+
+    _needs_method_access()
+    kind, code, name, is_descriptor = invocation._METHOD_ACCESS
+
+    class Holder:
+        @functools.singledispatchmethod
+        def lookup(self, key: str, deep: bool = False) -> str:
+            return "base"
+
+        @functools.singledispatchmethod
+        @classmethod
+        def make(cls, key: str, deep: bool = False) -> str:
+            return "base"
+
+        @functools.singledispatchmethod
+        @staticmethod
+        def plain(key: str, deep: bool = False) -> str:
+            return "base"
+
+    handed = Holder().lookup
+    assert type(handed) is kind
+    assert code is None or handed.__code__ is code
+    if sys.version_info < (3, 13):
+        assert (kind.__name__, name, is_descriptor) == ("function", "self", True)
+    # with only its base, each flavour is read as before, which is not always a walk:
+    # never a refusal as dispatch (on Python 3.9 the function handed out for a classmethod
+    # names the function inside it as ``__wrapped__``, not the classmethod the registry has)
+    for func in (Holder().lookup, Holder.make, Holder().make, Holder.plain, Holder().plain):
+        try:
+            reached_parameters(func)
+        except DispatchedAtCallTime:
+            raise
+        except (TypeError, ValueError):
+            pass
+
+
 def test_what_only_looks_like_a_dispatcher_is_walked():
-    """The check is for exactly what ``functools.singledispatch`` builds: a plain function
-    whose own attributes are a ``mappingproxy`` ``registry``, a callable ``dispatch`` and
-    ``register``. It is made on the callable the walk stands on, and on nothing it holds."""
+    """Attributes do not make a dispatcher: ``functools.update_wrapper`` copies
+    ``registry``, ``dispatch`` and ``register`` onto every wrapper of one. The check is made
+    on the function ``functools.singledispatch`` itself returned, and on nothing held."""
     import functools
     import types
 
@@ -1466,28 +1821,17 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
 
     own = ["query", "limit"]
     entries = {object: search, int: print}
-
-    def carrying(**attributes):
-        tool = _traced(search)
-        vars(tool).update(attributes)
-        return tool
-
     everything = dict(registry=types.MappingProxyType(entries), dispatch=print, register=print)
-    with pytest.raises(DispatchedAtCallTime):
-        reached_parameters(carrying(**everything))
-    for attributes in (
-        dict(everything, registry=dict(entries)),  # a plain mapping, not a mappingproxy
-        dict(everything, dispatch="by name"),  # a dispatch that cannot be called
-        {name: value for name, value in everything.items() if name != "register"},
-        {name: value for name, value in everything.items() if name != "dispatch"},
-    ):
-        assert _levels(carrying(**attributes)) == [_FORWARD, own]
-    cached = functools.lru_cache(maxsize=None)(search)  # not a plain function
+
+    carrying = _traced(search)
+    vars(carrying).update(everything)
+    assert _levels(carrying) == [_FORWARD, own]
+    cached = functools.lru_cache(maxsize=None)(search)
     vars(cached).update(everything)
     assert _levels(cached) == [own, own]
 
     class Router:
-        """A callable object with all three: not a function ``singledispatch`` built."""
+        """A callable object with all three."""
 
         def __init__(self):
             vars(self).update(everything)
@@ -1503,9 +1847,21 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
     assert _levels(Router()) == [own, own]
     assert "registry" not in _TOUCHED and "dispatch" not in _TOUCHED
 
-    # a wrapper only carries a copy of the attributes of the dispatcher it wraps
+    # every wrapper of a dispatcher with only its base carries the copy, and is walked
     base_only = functools.singledispatch(search)
     dispatch = [["args", "kw"], own]
+
+    class Decorator:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    class Service:
+        find = base_only
+
+    bound = functools.update_wrapper(functools.partial(base_only), base_only)
     assert _levels(_traced(base_only)) == [_FORWARD, *dispatch]
     assert _levels(functools.lru_cache(maxsize=None)(base_only)) == [["args", "kw"], *dispatch]
     assert _levels(_traced(functools.lru_cache(maxsize=None)(base_only))) == [
@@ -1513,20 +1869,17 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
         ["args", "kw"],
         *dispatch,
     ]
-
-    class Service:
-        find = base_only
-
+    assert _levels(_traced(Decorator(base_only))) == [_FORWARD, _FORWARD, _FORWARD, *dispatch]
+    assert _levels(_traced(bound)) == [_FORWARD, *dispatch]
     assert _levels(_traced(Service().find)) == [_FORWARD, ["args", "kw"], ["limit"]]
-    # a copy is known by the identity of the registry, not by its contents
-    alike = carrying(**everything)
-    alike.__wrapped__ = carrying(registry=types.MappingProxyType(dict(entries)))
-    with pytest.raises(DispatchedAtCallTime):
-        reached_parameters(alike)
+    # and the same wrappers of one with an implementation registered are refused, when the
+    # walk reaches the dispatcher itself
+    lookup = _dispatching()
+    for wrapper in (_traced(Decorator(lookup)), _traced(functools.partial(lookup))):
+        with pytest.raises(DispatchedAtCallTime):
+            reached_parameters(wrapper)
 
     # a dispatcher, or a single-dispatch method, that is merely held is not on the way
-    lookup = _dispatching()
-
     def closing(query: str, limit: int = 5) -> str:
         return query + lookup(1)
 
@@ -1541,22 +1894,37 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
 
         def __init__(self):
             self.lookup = lookup
+            self.dispatch = lookup.dispatch
+            self.descriptor = vars(Tool)["render"]
 
         def __call__(self, query: str, limit: int = 5) -> str:
             return query
 
-    class Decorator(Tool):
+    class Decorated(Tool):
         def __init__(self, function):
+            Tool.__init__(self)
             functools.update_wrapper(self, function)
-            self.lookup = lookup
 
         def __call__(self, *args, **kwargs):
             return self.__wrapped__(*args, **kwargs)
 
+    descriptor = vars(Tool)["render"]
+
+    def holding_the_descriptor(query: str, limit: int = 5) -> str:
+        return query + str(descriptor) + str(lookup.dispatch)
+
     assert _levels(closing) == [own]
+    assert _levels(holding_the_descriptor) == [own]
     assert _levels(_holding(lookup, search)) == [_FORWARD, own]
+    assert _levels(_holding(descriptor, search)) == [_FORWARD, own]
     assert _levels(Tool()) == [own, own]
-    assert _levels(Decorator(search)) == [_FORWARD, _FORWARD, own]
+    assert _levels(Decorated(search)) == [_FORWARD, _FORWARD, own]
+
+    # a dispatcher that no longer names its base cannot be shown to run the base alone
+    nameless = functools.singledispatch(search)
+    del nameless.__wrapped__
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(nameless)
 
 
 def test_a_dispatcher_a_wrapper_calls_in_place_of_its_base_is_refused():
