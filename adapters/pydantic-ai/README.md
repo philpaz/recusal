@@ -43,7 +43,7 @@ Install it from PyPI:
 pip install recusal-pydantic-ai
 ```
 
-Requires Python 3.11+ (Pydantic AI's minimum), `recusal>=0.14.0` and
+Requires Python 3.11+ (Pydantic AI's minimum), `recusal>=0.15.0` and
 `pydantic-ai-slim>=2.67.0`. It is tested on every pull request against exactly
 `pydantic-ai-slim==2.67.0`, and weekly against the newest release.
 
@@ -90,7 +90,10 @@ function under it depends on the wrapper's body, which cannot be read. So all fo
 of the gate (the two capabilities and the two hook functions) read the stack from the
 callable Pydantic AI calls down to the innermost function, following `__wrapped__`,
 bound methods, callable objects and `functools.partial`, and each wrapper on it must be
-one of these:
+one of these (the wrappers under a `functools.partial` that binds keywords are held to
+this twice, as the partial shows them and as they are written, because a partial with a
+keyword shows every later parameter as keyword-only and would make a wrapper that takes
+a parameter as another kind than the function look like one that restates it):
 
 - it takes only `*args` and `**kwargs` (a logging, timing, tracing or retry decorator
   that passes everything through);
@@ -105,15 +108,17 @@ one of these:
   parameters, in the function's order; and the function takes no `*args` and no
   positional-only parameter, since Pydantic AI passes such a function's values by
   position. Such a wrapper may forward `*args` as well
-  (`def wrapper(table, *args, **kwargs)`) only while no other wrapper on the stack
-  names more positional parameters than it does.
+  (`def wrapper(table, *args, **kwargs)`) only while no wrapper above it on the stack
+  names more positional parameters than it does: one above could pass them on by
+  position. A wrapper under it that names more does not count.
 
 For a tool that takes the run context, a wrapper's first positional parameter is the
 context, whatever the wrapper calls it (`def wrapper(context, *args, **kwargs)`), unless
 it has the name of another parameter of the function. The context counts as the
 function's first parameter in these rules, so a wrapper that names it and forwards is
 refused over a function that takes `*args` or a positional-only parameter after the
-context.
+context. A logging wrapper of that form above one that restates the function's
+parameters is an ordinary pair and is not refused; under it, it is.
 
 Anything else is refused before the policy runs, with a reason that says what the
 wrapper does and names the parameter: a wrapper with a keyword of its own
@@ -135,19 +140,40 @@ type-checked function from a plain function and register that one. Also refused:
 - **A decorator that cannot be inspected**: a class-based decorator that is also a
   descriptor, such as `cachetools.cached`, or a stack more than 31 decorators deep. Call
   the decorated function from a plain function and register that one.
-- **A single-dispatch function** (`functools.singledispatch`,
-  `functools.singledispatchmethod`) with an implementation registered beside its base
-  one: the implementation that runs is chosen at call time, by the type of an argument,
-  so its parameters and defaults cannot be read. Call it from a plain function and
-  register that one.
+- **A single-dispatch function** (`functools.singledispatch`) with an implementation
+  registered beside its base one, or in its place (`register(object)`): the
+  implementation that runs is chosen at call time, by the type of an argument, so its
+  parameters and defaults cannot be read. Call it from a plain function and register
+  that one. With its base implementation alone it is read like any function, and a
+  function that only has attributes called `registry` and `dispatch` is not taken for
+  one. (Pydantic AI cannot run a `functools.singledispatchmethod` as a tool built from
+  its signature. Given its schema by hand, one with a registered implementation is
+  refused by this rule.)
 - **A value bound by position past a wrapper that names a positional parameter**
   (`def wrapper(tenant, *args, **kwargs)`), by a `functools.partial` with a positional
   argument or by a bound method. The value is read as filling the function's leading
-  parameter, and the wrapper may keep it. Refused where a wrapper that kept it would
-  not fail the call: that parameter of the function has a default, or the function
-  takes `*args` or a positional-only parameter after it. An ordinary method decorator
+  parameter, and the wrapper may keep it. Refused where a wrapper that kept it might
+  not fail the call: that parameter of the function has a default; the function takes
+  `*args` or a positional-only parameter after it; or the values after it can be
+  passed on by position and move up a place, with a default to fill the gap they
+  leave. The last is counted: a wrapper on the stack that names positional parameters
+  beyond the bound one can pass that many on by position (the run context of a
+  context-taking tool is one such value, and so is a value another partial binds), and
+  the call is refused when the last parameter of the function they reach has a default.
+  A `functools.lru_cache` or `functools.cache` wrapper keeps nothing and does not count
+  as such a wrapper. So
+  `functools.partial(scoped(purge), "acme")` with `def wrapper(tenant, limit, dry)`
+  over `def purge(table, limit, dry=False)` is refused, and so is a method decorator
+  that restates the method's parameters (`def wrapper(self, table, limit=10)`) over a
+  method with a positional parameter that has a default. An ordinary method decorator
   (`def wrapper(self, *args, **kwargs)`) over a method whose other parameters are named
   and not positional-only is not refused.
+- **A keyword a `functools.partial` binds that does not reach the parameter it names**:
+  `functools.partial(fetch, limit=77)` over `def fetch(table, limit=10, /, **extra)`.
+  Python does not bind a keyword to a positional-only parameter, so `**extra` takes
+  the 77, `limit` runs on its own default, and the partial no longer shows `limit` at
+  all. Refused when a keyword names a positional-only or variadic parameter of the
+  function or of a wrapper under the partial.
 - **A value for the function's `*args` that is not a list.** Pydantic AI hands the
   function its items one by one, so a string would reach it letter by letter.
   Validation makes the value a list; another one reaches the gate only where a hook of
@@ -155,9 +181,12 @@ type-checked function from a plain function and register that one. Also refused:
 
 **Defaults are judged.** A default of the innermost function that the arguments leave
 out is added, judged, and passed to the function written out. For a tool built from its
-signature Pydantic AI has already done that. A tool given its schema by hand
-(`Tool.from_schema`) is not validated, so there the gate completes whatever the model
-left out. Two more refusals follow from it:
+signature Pydantic AI's validation has already done that. A tool given its schema by
+hand (`Tool.from_schema`) is not validated, and a hook of yours can hand arguments in
+in place of validation (`SkipToolValidation`), so there the gate completes whatever was
+left out. A value a `functools.partial` binds by keyword is the default of the
+parameter it names. A class used as the tool function is completed from the signature
+Pydantic AI validates against. Two more refusals follow from it:
 
 - **A default that is not plain data** (a logger, a client, a sentinel object) cannot be
   shown to a policy. For a tool given its schema by hand the refusal names the
@@ -206,8 +235,18 @@ model chose, so `RecusalGate` judges them too, under the function's name, before
 run: a dict (a multi-argument function's arguments, or a single `dict` argument) is
 judged as it is, any other single value as `{"output": value}`. A refusal asks the model
 again; the function does not run, and when the output retries run out the run ends with
-an error. Plain structured output, with no function, runs nothing and is not judged.
+an error. Plain structured output has no output function and is not judged.
 
+- The name is the function's `__name__`, and it is all the policy is given. A decorator
+  that does not copy it (`functools.wraps` does) leaves its wrapper's name, so the
+  function is judged as `wrapper`. A tool and an output function of one name are both
+  judged under it: give an output function a name no tool has.
+- Two output functions with the same name (`output_type=[review.submit, prod.submit]`)
+  are refused, each time the model picks one: Pydantic AI gives each its own output
+  tool, and the policy could not tell which of them it was judging. A text output
+  function (`TextOutput`) is refused when an output tool runs a function of its name.
+  Give each output function a name of its own. One function listed twice is one
+  function.
 - The data-only rule holds here too: an output function whose parameter is a Pydantic
   model, a dataclass or an Enum is refused. Declare plain fields (`str`, `int`, `list`,
   `dict`) and build the model inside the function.
@@ -316,15 +355,25 @@ path.
   run's toolset from `RunContext.tool_manager` at the time of each call. Where Pydantic AI
   provides none (its Temporal activity context), the gate relies on the check it makes
   when the run's toolsets are assembled, which does not see a wrapper another capability
-  adds afterwards or one a dynamic toolset returns. It finds the function a tool runs
-  the same way, so there it completes no defaults and reads no wrappers either.
+  adds afterwards or one a dynamic toolset returns. It finds the function a tool runs,
+  and a run's output functions, the same way, so there it completes no defaults, reads
+  no wrappers and does not see two output functions of one name either.
 - **What a function does in its own body.** A value a function sets itself, a wrapper
   that restates the function's parameters and then does not pass one on (the function
-  runs on its own default for it), a function that calls a single-dispatch function,
-  and a decorator that applies another decorator inside itself (the gate follows the
-  function a wrapper says it wraps, `__wrapped__`, and that is not the one such a
-  wrapper calls): the policy judged the arguments, and what the code does with them is
-  its own.
+  runs on its own default for it, or, where the wrapper passes the others on by
+  position, each of those reaches the parameter before its own), a function that calls
+  a single-dispatch function, and a decorator that applies another decorator inside
+  itself (the gate follows the function a wrapper says it wraps, `__wrapped__`, and
+  that is not the one such a wrapper calls): the policy judged the arguments, and what
+  the code does with them is its own.
+- **What a class used as a tool function does when it is built.** The gate reads the
+  signature Pydantic AI validates the class against and completes the arguments from
+  it. It does not read `__init__` or `__new__` themselves, so a decorator on one of
+  them with a parameter of its own is not seen.
+- **An output validator.** A function registered with `@agent.output_validator` runs on
+  the model's output, plain text and plain structured output included, and is not
+  judged: the gate judges output functions. Behind an output function it is handed
+  that function's result, and does not run when the function is refused.
 - **A default applied somewhere else.** A default an MCP server or a toolset of your own
   applies to a call it receives, and a decorator on an output function: for output
   functions the gate judges the value and does not read the function's wrappers.

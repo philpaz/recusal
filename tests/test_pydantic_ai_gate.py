@@ -52,6 +52,29 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
     assert ci.count("requirements/adapter-pydantic-ai.txt") == 3
 
 
+def test_the_package_requires_the_kernel_that_walks_every_callable():
+    """The gate reads a decorated tool with the kernel's walk (``reached_parameters``) and
+    refuses a declared signature by the kernel's ``DeclaredSignature``. The package allowed
+    ``recusal>=0.14.0``, which has neither: installed beside it, the adapter failed at
+    import. The floor is the first kernel with both, stated in the package and in its
+    README, and the kernel in this tree is at or past it."""
+    import recusal
+    from recusal import invocation
+
+    floor = "0.15.0"
+    pyproject = (ROOT / "adapters" / "pydantic-ai" / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+    assert f'"recusal>={floor},<1"' in pyproject
+    assert "recusal>=0.14" not in pyproject and "recusal>=0.14" not in readme
+    assert f"`recusal>={floor}`" in readme
+    assert hasattr(invocation, "reached_parameters") and hasattr(invocation, "DeclaredSignature")
+
+    def parts(version):
+        return tuple(int(part) for part in version.split("."))
+
+    assert parts(recusal.__version__) >= parts(floor)
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="Pydantic AI requires Python 3.11+")
 class TestPydanticAiGate:
     @pytest.fixture
@@ -2247,14 +2270,33 @@ class TestPydanticAiGate:
     ):
         """When the kernel cannot walk the callable, nothing under it has been read. Only a
         class or a builtin, which wraps nothing and whose own signature Pydantic AI
-        validated, is let through, and only for a validated tool."""
+        validates against, is let through, and only for a validated tool. Its arguments
+        are completed from that signature like any other's: a hook can hand them in in
+        place of validation."""
+        import logging
 
         class Report:
             def __init__(self, title: str, pages: int = 1):
                 self.title = title
 
+        class Logged:
+            def __init__(self, title: str, log: logging.Logger = logging.getLogger("x")):
+                self.title = title
+
+        class Unsigned:
+            __signature__ = "not a signature"
+
+            def __init__(self, title: str, pages: int = 1):
+                self.title = title
+
         args = {"title": "x"}
-        assert adapter._with_defaults(self._ctx_for(Report), "t", args) == (args, None)
+        full = {"title": "x", "pages": 1}
+        assert adapter._with_defaults(self._ctx_for(Report), "t", dict(full)) == (full, None)
+        assert adapter._with_defaults(self._ctx_for(Report), "t", dict(args)) == (full, None)
+        same, reason = adapter._with_defaults(self._ctx_for(Logged), "t", dict(args))
+        assert same == args and "parameter `log`" in reason and "not plain data" in reason
+        same, reason = adapter._with_defaults(self._ctx_for(Unsigned), "t", dict(args))
+        assert same == args and "cannot be inspected" in reason
         by_hand = self._ctx_for(Report, validated=False)
         same, reason = adapter._with_defaults(by_hand, "t", dict(args))
         assert same == args and "cannot be inspected" in reason
@@ -2404,7 +2446,8 @@ class TestPydanticAiGate:
         def names_two_above(table, limit, **kwargs):
             return forwards_positionals(table, limit, **kwargs)
 
-        # read whatever the order: the wrapper that names more may stand under it as well
+        # only a wrapper ABOVE can fill this one's `*args`: with the one that names more
+        # under it, nothing reaches them, and a value it keeps fails the call
         @functools.wraps(plain)
         def names_two(table, limit, **kwargs):
             return plain(table, limit, **kwargs)
@@ -2413,7 +2456,21 @@ class TestPydanticAiGate:
         def forwards_args_above(table, *args, **kwargs):
             return names_two(table, *args, **kwargs)
 
-        # no wrapper names more positional parameters than the one that forwards `*args`
+        # read from each wrapper up, not from the outermost down: the one that names more
+        # stands between two forwarding ones, and the lower of those is refused
+        @functools.wraps(restates)
+        def forwards_on_top(table, *args, **kwargs):
+            return restates(table, *args, **kwargs)
+
+        # every wrapper above counts, not the nearest alone: what the one that names more
+        # passes on by position goes through a wrapper that only forwards
+        passes_through = self._decorators().forwards(forwards_positionals)
+
+        @functools.wraps(passes_through)
+        def restates_over_a_forwarder(table, limit, *, flag):
+            return passes_through(table, limit, flag=flag)
+
+        # no wrapper above names more positional parameters than the one that forwards `*args`
         @functools.wraps(forwards_positionals)
         def forwards_positionals_twice(table, *args, **kwargs):
             return forwards_positionals(table, *args, **kwargs)
@@ -2427,8 +2484,9 @@ class TestPydanticAiGate:
             "positional-only parameter"
         )
         not_alone = (
-            "names `table` and also forwards positional arguments (`*args`), in a stack "
-            "where another wrapper names more positional parameters"
+            "names `table` and also forwards positional arguments (`*args`), and another "
+            "wrapper names more positional parameters above it: what that one passes on by "
+            "position moves into the place of `table` if this one does not hand it on"
         )
         for function, cause in (
             (names_the_second, by_position.format("dst")),
@@ -2438,7 +2496,8 @@ class TestPydanticAiGate:
             (names_limit, by_position.format("limit")),
             (restates, not_alone),
             (names_two_above, not_alone),
-            (forwards_args_above, not_alone),
+            (forwards_on_top, not_alone),
+            (restates_over_a_forwarder, not_alone),
             (names_the_second_one, "`limit` is not where the function has it (the function has"),
             (swapped, "`limit` is not where the function has it (the function has `table`"),
             (positional_only_name, "takes `table` as a positional-only parameter where"),
@@ -2468,8 +2527,9 @@ class TestPydanticAiGate:
         def first_and_flag(table, *, flag, **kwargs):
             return plain(table, flag=flag, **kwargs)
 
-        # and one that forwards `*args` too, while no wrapper names more positional parameters
-        # than it does: then nothing reaches its `*args` to move into the place it keeps
+        # and one that forwards `*args` too, while no wrapper above it names more positional
+        # parameters than it does: then nothing reaches its `*args` to move into the place
+        # it keeps
         d = self._decorators()
         sent = {"table": "x", "limit": 1, "flag": True}
         for function in (
@@ -2481,8 +2541,32 @@ class TestPydanticAiGate:
             d.forwards(forwards_positionals),
             forwards_positionals_twice,
             names_as_many,
+            forwards_args_above,
+            d.forwards(forwards_args_above),
         ):
             assert adapter._with_defaults(self._ctx_for(function), "t", dict(sent)) == (sent, None)
+
+        # the wrapper that names more stands under the forwarding one, which keeps what it
+        # names: every such call fails, so allowing the stack runs nothing unjudged
+        ran = []
+
+        def target(table: str, limit: int, *, flag: bool) -> str:
+            ran.append((table, limit, flag))
+            return "ok"
+
+        @functools.wraps(target)
+        def hands_on(table, limit, **kwargs):
+            return target(table, limit, **kwargs)
+
+        @functools.wraps(hands_on)
+        def keeps_what_it_names(table, *args, **kwargs):
+            return hands_on(*args, **kwargs)
+
+        ctx = self._ctx_for(keeps_what_it_names)
+        assert adapter._with_defaults(ctx, "t", dict(sent)) == (sent, None)
+        with pytest.raises(TypeError):
+            keeps_what_it_names(**sent)
+        assert ran == []
 
     def test_a_value_pydantic_ai_would_spread_is_refused(self, example, adapter):
         """Pydantic AI hands a function's ``*rest`` its items one by one. Validation makes
@@ -2502,6 +2586,7 @@ class TestPydanticAiGate:
         for sent, refused in (
             ({"table": "x", "labels": "ab"}, True),
             ({"table": "x", "labels": {"a": 1}}, True),
+            ({"table": "x", "labels": ("a", "b")}, True),
             ({"table": "x", "labels": ["a", "b"]}, False),
             ({"table": "x", "labels": []}, False),
             ({"table": "x"}, False),
@@ -2682,23 +2767,68 @@ class TestPydanticAiGate:
         def names_it_again(ctx, *args, **kwargs):
             return another_name(ctx, *args, **kwargs)
 
+        # an ordinary pair: a logging wrapper above one that restates the function. Nothing
+        # above the logging wrapper passes more by position than it names
+        @functools.wraps(restated)
+        def logs_above(context, *args, **kwargs):
+            return restated(context, *args, **kwargs)
+
+        @functools.wraps(lookup)
+        def defaults_the_context(context=None, **kwargs):
+            return lookup(context, **kwargs)
+
+        @functools.wraps(lookup)
+        def names_a_defaulted_one(context, table, limit, **kwargs):
+            return lookup(context, table, limit, **kwargs)
+
+        # a reason names the parameter as the wrapper calls it, not as the function does
         for function, cause in (
             (names_limit_first, "names `limit` and also forwards, and `limit` has a default"),
             (by_keyword, "names `limit` and also forwards, and `limit` has a default"),
             (names_table_first, "`table` is not where the function has it (the function has `ctx`"),
             (
                 names_the_context,
-                "names `ctx` and also forwards, over a function that takes `*args`",
+                "names `context` and also forwards, over a function that takes `*args` or a "
+                "positional-only parameter: Pydantic AI passes such a function's values by "
+                "position, so `context` can be handed",
             ),
-            (restates_above, "names `ctx` and also forwards positional arguments (`*args`), in a"),
+            (
+                restates_above,
+                "names `context` and also forwards positional arguments (`*args`), and "
+                "another wrapper names more positional parameters above it: what that one "
+                "passes on by position moves into the place of `context` if",
+            ),
+            (
+                defaults_the_context,
+                "names `context` and also forwards, and `context` has a default",
+            ),
+            # and only the context is renamed: another parameter keeps its own name
+            (
+                names_a_defaulted_one,
+                "names `limit` and also forwards, and `limit` has a default",
+            ),
         ):
             reason = adapter._with_defaults(
                 self._ctx_for(function, takes_ctx=True), "t", {"table": "x"}
             )[1]
             assert reason is not None and cause in reason, (function, reason)
-        for function in (forwards_everything, names_it_again):
+            assert "`ctx`" not in reason or function is names_table_first, reason
+        for function in (forwards_everything, names_it_again, logs_above):
             ctx = self._ctx_for(function, takes_ctx=True)
             assert adapter._with_defaults(ctx, "t", {"table": "x", "limit": 1})[1] is None
+
+        # the function's own context parameter is read the same way, positional-only or not:
+        # a function that takes only its context by position is still called by keyword
+        def context_only_by_position(ctx, /, table: str, limit: int = 10) -> str:
+            return "ok"
+
+        @functools.wraps(context_only_by_position)
+        def names_its_context(context, *args, **kwargs):
+            return context_only_by_position(context, *args, **kwargs)
+
+        ctx = self._ctx_for(names_its_context, takes_ctx=True)
+        completed = {"table": "x", "limit": 10}
+        assert adapter._with_defaults(ctx, "t", {"table": "x"}) == (completed, None)
 
         for function in wrappers:
             ran.clear(), seen.clear()
@@ -2844,6 +2974,86 @@ class TestPydanticAiGate:
             reason = adapter._with_defaults(self._ctx_for(function), "t", dict(sent))[1]
             assert reason is None or chosen not in reason, (function, reason)
         assert adapter._with_defaults(self._ctx_for(only_base), "t", dict(sent))[1] is None
+        # `functools.wraps` copies the registry to a wrapper above: the base is two steps in
+        stacked = d.forwards(d.forwards(only_base))
+        assert adapter._with_defaults(self._ctx_for(stacked), "t", dict(sent))[1] is None
+
+        # `register(object)` puts another function in the base's place: the registry still
+        # has one entry, and the replacement's own `skip_review=True` ran unjudged
+        @functools.singledispatch
+        def replaced(key: int | str, /, deep: bool = False) -> str:
+            """Lookup."""
+            ran.append(("base", key, deep))
+            return "base"
+
+        @replaced.register(object)
+        def _replacement(key, /, deep: bool = False, skip_review: bool = True) -> str:
+            ran.append(("replacement", key, deep, skip_review))
+            return "replacement"
+
+        class Replaced:
+            @functools.singledispatchmethod
+            def lookup(self, key, deep=False):
+                return "base"
+
+        @Replaced.lookup.register(object)
+        def _method_replacement(self, key, deep=False, skip_review=True):
+            return "replacement"
+
+        assert len(replaced.registry) == 1
+        in_place = "registered beside its base one or in its place"
+        for function in (replaced, d.forwards(replaced), Replaced().lookup):
+            for validated in (True, False):
+                ctx = self._ctx_for(function, validated=validated)
+                same, reason = adapter._with_defaults(ctx, "t", dict(sent))
+                assert same == sent and chosen in reason and in_place in reason, function
+
+        # a callable that only has attributes of those names is not a single-dispatch
+        # function: the real one keeps a `mappingproxy` and a `dispatch` it can call
+        def routed(key: str, deep: bool = False) -> str:
+            return "ok"
+
+        routed.registry = {"users": "db1", "orders": "db2"}
+        routed.dispatch = print
+
+        def proxied(key: str, deep: bool = False) -> str:
+            return "ok"
+
+        proxied.registry = types.MappingProxyType({"users": "db1", "orders": "db2"})
+        proxied.dispatch = "by table"
+
+        class Router:
+            def __init__(self):
+                self.registry = {"users": "db1", "orders": "db2"}
+
+            def dispatch(self, key):
+                return self.registry[key]
+
+            def __call__(self, key: str, deep: bool = False) -> str:
+                return "ok"
+
+        class Touchy:
+            """Reading its attributes the ordinary way runs code of the application's."""
+
+            touched: list = []
+
+            def __getattr__(self, name):
+                if name in ("registry", "dispatch"):
+                    self.touched.append(name)
+                raise AttributeError(name)
+
+            def __call__(self, key: str, deep: bool = False) -> str:
+                return "ok"
+
+        class TouchyDispatch(Touchy):
+            registry = types.MappingProxyType({})
+            touched: list = []
+
+        completed = {"key": "k", "deep": False}
+        for function in (routed, proxied, Router(), Touchy(), TouchyDispatch()):
+            ctx = self._ctx_for(function)
+            assert adapter._with_defaults(ctx, "t", dict(sent)) == (completed, None), function
+        assert Touchy.touched == [] and TouchyDispatch.touched == []
 
         def policy(name, args):
             seen.append(dict(args))
@@ -2955,31 +3165,34 @@ class TestPydanticAiGate:
         def restated_required(table, limit=10):
             return required(table, limit)
 
-        past = "by position past a wrapper that names a positional parameter: whether"
+        past = "by position past a wrapper that names a positional parameter: "
+        # the reason says what is true of the parameter it names: the bound value may not
+        # reach it, or it is one more parameter taken by position
+        reaches = "whether that value reaches the function's `{}`, or the function runs on"
+        by_position = "the function's `{}` is taken by position as well, so if the wrapper keeps"
         service = Service()
-        for function, name in (
-            (functools.partial(scoped(purge), "acme"), "table"),
-            (functools.partial(restated, "acme"), "table"),
-            (functools.partial(d.forwards(scoped(purge)), "acme"), "table"),
-            (functools.partial(scoped(listed), "acme"), "ids"),
-            (functools.partial(scoped(only_listed), "acme"), "ids"),
-            (d.forwards(functools.partial(scoped(purge), "acme")), "table"),
-            (service.remove, "ids"),
-            (service.positional, "table"),
-            (service.adapted, "table"),
-            (Called(), "table"),
+        for function, cause in (
+            (functools.partial(scoped(purge), "acme"), reaches.format("table")),
+            (functools.partial(restated, "acme"), reaches.format("table")),
+            (functools.partial(d.forwards(scoped(purge)), "acme"), reaches.format("table")),
+            (functools.partial(scoped(listed), "acme"), by_position.format("ids")),
+            (functools.partial(scoped(only_listed), "acme"), reaches.format("ids")),
+            (d.forwards(functools.partial(scoped(purge), "acme")), reaches.format("table")),
+            (service.remove, by_position.format("ids")),
+            (service.positional, by_position.format("table")),
+            (service.adapted, reaches.format("table")),
+            (Called(), reaches.format("table")),
             # every value a partial binds is read, not the first alone
-            (functools.partial(scoped(three), "acme", "users"), "table"),
+            (functools.partial(scoped(three), "acme", "users"), reaches.format("table")),
         ):
             for validated in (True, False):
                 ctx = self._ctx_for(function, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", {"limit": 5})
                 assert same == {"limit": 5}, function
-                assert past in reason and f"the function's `{name}`" in reason, (function, reason)
+                assert past + cause in reason, (function, reason)
         # not refused: keeping the value fails the call, or no wrapper names anything
         for function in (
             functools.partial(scoped(required), "acme"),
-            functools.partial(restated_required, "acme"),
             functools.partial(d.forwards(purge), "acme"),
             functools.partial(scoped(purge), limit=5),
             functools.partial(purge, "acme"),
@@ -2991,6 +3204,143 @@ class TestPydanticAiGate:
             assert reason is None or past not in reason, (function, reason)
         completed = adapter._with_defaults(self._ctx_for(service.query), "t", {"table": "x"})
         assert completed == ({"table": "x", "limit": 10}, None)
+
+        # A wrapper that keeps the bound value and passes the rest on by position does not
+        # fail the call when a later parameter has a default to fill the gap: the values
+        # move up a place. `partial(keeps(purge_rows), "acme")` was judged
+        # `{"limit": 5, "dry": True}` and ran `table=5, limit=True, dry=False`.
+        def keeps(function):
+            @functools.wraps(function)
+            def wrapper(tenant, limit, dry):
+                return function(limit, dry)
+
+            return wrapper
+
+        def purge_rows(table: str, limit: int, dry: bool = False) -> str:
+            """Purge rows."""
+            ran.append((table, limit, dry))
+            return "purged"
+
+        def all_required(table: str, limit: int, dry: bool) -> str:
+            return "ok"
+
+        @functools.wraps(all_required)
+        def restated_all_required(table, limit, dry):
+            return all_required(table, limit, dry)
+
+        # the values can come by position from a wrapper above the partial as well
+        bound_under = functools.partial(scoped(purge_rows), "acme")
+
+        @functools.wraps(bound_under)
+        def restates_above(limit, dry=False):
+            return bound_under(limit, dry)
+
+        class Taking:
+            # the run context is one value that travels by position, and it has no default
+            @with_self
+            def lookup(self, ctx, table: str, limit: int = 10) -> str:
+                return "ok"
+
+            @with_self
+            def optional_context(self, ctx=None, table: str = "x") -> str:
+                return "ok"
+
+        class Cached:
+            # a cache wrapper has no parameters of its own and keeps nothing: the walk
+            # shows it as the function it wraps, and that copy is not a naming wrapper
+            @functools.lru_cache
+            def lookup(self, table: str, force: bool = False) -> str:
+                return "ok"
+
+            @with_self
+            @functools.cache
+            def decorated(self, table: str, force: bool = False) -> str:
+                return "ok"
+
+            # no wrapper here has a body that could keep the object, whatever travels
+            @functools.lru_cache
+            def optional_context(self, ctx=None, table: str = "x") -> str:
+                return "ok"
+
+        # only a parameter that can be filled by position leaves a gap when values move up
+        def keeps_named(function):
+            @functools.wraps(function)
+            def wrapper(tenant, limit, *, dry):
+                return function(limit, dry=dry)
+
+            return wrapper
+
+        def keyword_default(table: str, limit: int, *, dry: bool = False) -> str:
+            return "ok"
+
+        # a value another partial binds travels by position too: `partial(under, 5)` hands
+        # 5 to a wrapper that can keep "acme", and `second` then runs on its own default
+        def defaulted(first: str, second: int = 1, third: int = 0) -> str:
+            return "ok"
+
+        under_a_partial = functools.partial(scoped(defaulted), "acme")
+        under_a_partial.note = "an attribute keeps functools from merging the two partials"
+        two_partials = functools.partial(under_a_partial, 5)
+        assert two_partials.func is under_a_partial
+
+        # a wrapper written exactly like the function, annotations and all, is still a
+        # wrapper with a body: only a cache wrapper's copy of the function is left out
+        @functools.wraps(required)
+        def written_alike(table: str, limit: int = 10) -> str:
+            return required(table, limit)
+
+        moves_up = "the function's `{}` has a default, so if the wrapper keeps that value and"
+        for function, cause, takes_ctx in (
+            (functools.partial(keeps(purge_rows), "acme"), moves_up.format("dry"), False),
+            (functools.partial(restated_required, "acme"), moves_up.format("limit"), False),
+            (functools.partial(written_alike, "acme"), moves_up.format("limit"), False),
+            (restates_above, moves_up.format("dry"), False),
+            (two_partials, moves_up.format("second"), False),
+            (Taking().optional_context, moves_up.format("ctx"), True),
+        ):
+            for validated in (True, False):
+                ctx = self._ctx_for(function, takes_ctx=takes_ctx, validated=validated)
+                same, reason = adapter._with_defaults(ctx, "t", {"limit": 5})
+                assert same == {"limit": 5}, function
+                assert past + cause in reason, (function, reason)
+                assert "each moves up a place and the call does not fail" in reason
+        for function, takes_ctx in (
+            # no later parameter has a default: the last value passed on by position leaves
+            # its own parameter empty, and the call fails
+            (functools.partial(keeps(all_required), "acme"), False),
+            (functools.partial(restated_all_required, "acme"), False),
+            (Taking().lookup, True),
+            (Cached().lookup, False),
+            (Cached().decorated, False),
+            (Cached().optional_context, True),
+            (functools.partial(Wrapping(keeps_named(keyword_default)), "acme"), False),
+        ):
+            ctx = self._ctx_for(function, takes_ctx=takes_ctx)
+            assert adapter._with_defaults(ctx, "t", {"limit": 5, "dry": True})[1] is None, function
+        with pytest.raises(TypeError):
+            functools.partial(keeps(all_required), "acme")(limit=5, dry=True)
+
+        tool = functools.partial(keeps(purge_rows), "acme")
+        tool.__name__ = tool.__qualname__ = "purge_rows"
+        tool.__doc__ = "Purge rows."
+        for capabilities in (
+            [example.RecusalGate(lambda n, a: seen.append(dict(a)) or [])],
+            [
+                example.Hooks(
+                    before_tool_execute=example.recusal_before_tool_execute(
+                        lambda n, a: seen.append(dict(a)) or []
+                    )
+                )
+            ],
+        ):
+            ran.clear(), seen.clear()
+            agent = example.Agent(
+                self._model_calling(example, "purge_rows", {"limit": 5, "dry": True}),
+                tools=[tool],
+                capabilities=capabilities,
+            )
+            answers = example.responses_of(agent.run_sync("go"))
+            assert ran == [] and seen == [] and moves_up.format("dry") in answers["c1"][1]
 
         tool = functools.partial(scoped(purge), "acme")
         tool.__name__ = tool.__qualname__ = "purge"
@@ -3013,6 +3363,451 @@ class TestPydanticAiGate:
             )
             answers = example.responses_of(agent.run_sync("go"))
             assert ran == [] and seen == [] and past in answers["c1"][1]
+
+    # --- tenth review round (2026-11-22) ------------------------------------------------------
+
+    def test_a_keyword_partial_does_not_hide_what_a_wrapper_takes(self, example, adapter):
+        """A ``functools.partial`` with a keyword shows every parameter from the first
+        keyword-bound one on as keyword-only and drops ``*args``, on the wrapper's level
+        and on the function's alike. ``wrapper(table, limit=10)`` over
+        ``delete_rows(table, *ids, limit=10)`` is refused alone and was allowed behind
+        ``partial(delete_rows, table="orders")``: judged ``limit=500``, ran ``ids=(500,)``
+        and ``limit=10``. The levels under such a partial are read without its keywords
+        too, so a stack refused without the partial is refused with it."""
+        import functools
+
+        ran, seen = [], []
+
+        def audited(function):
+            @functools.wraps(function)
+            def wrapper(table, limit=10):
+                return function(table, limit)
+
+            return wrapper
+
+        @audited
+        def delete_rows(table: str, *ids: int, limit: int = 10) -> str:
+            """Delete rows by id."""
+            ran.append((table, ids, limit))
+            return "deleted"
+
+        def with_context(function):
+            @functools.wraps(function)
+            def wrapper(context, table, limit, dry):
+                return function(context, table, limit, dry)
+
+            return wrapper
+
+        @with_context
+        def purge(ctx, table: str, limit: int = 10, *rest: int, dry: bool = True) -> str:
+            return "purged"
+
+        other_kind = (
+            "a wrapper around the function this tool runs takes `{}` as a positional or "
+            "keyword parameter where the function takes it as a keyword-only one"
+        )
+        alone = adapter._with_defaults(self._ctx_for(delete_rows), "t", {"table": "x"})[1]
+        assert other_kind.format("limit") in alone
+        for function, cause, takes_ctx in (
+            (functools.partial(delete_rows, table="orders"), other_kind.format("limit"), False),
+            (functools.partial(delete_rows, limit=3), other_kind.format("limit"), False),
+            (functools.partial(purge, limit=5), other_kind.format("dry"), True),
+            (functools.partial(purge, table="t"), other_kind.format("dry"), True),
+        ):
+            for validated in (True, False):
+                ctx = self._ctx_for(function, takes_ctx=takes_ctx, validated=validated)
+                same, reason = adapter._with_defaults(ctx, "t", {"limit": 500})
+                assert same == {"limit": 500} and cause in reason, (function, reason)
+
+        # a keyword-only partial over a wrapper that is transparent without it stays allowed,
+        # with the bound value judged as the default it is
+        def fetch(table: str, /, limit: int) -> str:
+            return "ok"
+
+        @functools.wraps(fetch)
+        def restated(table, /, limit):
+            return fetch(table, limit)
+
+        def plain(table: str, limit: int, *, flag: bool) -> str:
+            return "ok"
+
+        @functools.wraps(plain)
+        def names_the_first(table, **kwargs):
+            return plain(table, **kwargs)
+
+        d = self._decorators()
+        for function, sent, completed in (
+            (functools.partial(restated, limit=5), {"table": "x"}, {"table": "x", "limit": 5}),
+            (
+                functools.partial(names_the_first, flag=True),
+                {"table": "x", "limit": 1},
+                {"table": "x", "limit": 1, "flag": True},
+            ),
+            (
+                functools.partial(d.forwards(plain), limit=7),
+                {"table": "x", "flag": False},
+                {"table": "x", "flag": False, "limit": 7},
+            ),
+        ):
+            ctx = self._ctx_for(function)
+            assert adapter._with_defaults(ctx, "t", dict(sent)) == (completed, None), function
+
+        def policy(name, args):
+            seen.append(dict(args))
+            return []
+
+        orders = functools.partial(delete_rows, table="orders")
+        orders.__name__ = orders.__qualname__ = "delete_orders"
+        orders.__doc__ = "Delete order rows."
+        for capabilities in (
+            [example.RecusalGate(policy)],
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))],
+        ):
+            ran.clear(), seen.clear()
+            agent = example.Agent(
+                self._model_calling(example, "delete_orders", {"limit": 500}),
+                tools=[orders],
+                capabilities=capabilities,
+            )
+            answers = example.responses_of(agent.run_sync("go"))
+            assert ran == [] and seen == [] and other_kind.format("limit") in answers["c1"][1]
+
+    def test_a_partial_keyword_that_does_not_reach_its_parameter_is_refused(self, example, adapter):
+        """``functools.partial(fetch, limit=77)`` over ``fetch(table, limit=10, /, **extra)``:
+        Python does not bind a keyword to a positional-only parameter, so ``**extra`` took
+        the 77, ``limit`` ran on its own default, and the partial's signature showed no
+        ``limit`` at all: judged ``{"table": "t"}``, ran ``limit=10``. No wrapper is
+        needed. Refused, naming the parameter and whose it is."""
+        import functools
+
+        ran, seen = [], []
+        d = self._decorators()
+
+        def fetch(table: str, limit: int = 10, /, **extra: int) -> str:
+            """Fetch rows."""
+            ran.append((table, limit, extra))
+            return "fetched"
+
+        def lookup(ctx, table: str, limit: int = 10, **extra: int) -> str:
+            return "ok"
+
+        @functools.wraps(lookup)
+        def keeps_a_limit(ctx, limit=10, /, **kwargs):
+            return lookup(ctx, limit, **kwargs)
+
+        def spread(table: str, *limit: int, **extra: int) -> str:
+            return "ok"
+
+        whose = (
+            "a `functools.partial` binds `limit` by keyword, and {} takes `limit` as a {} "
+            "parameter, which a keyword does not reach"
+        )
+        function, wrapper = "the function this tool runs", "a wrapper around the function"
+        for tool, cause, takes_ctx in (
+            (functools.partial(fetch, limit=77), whose.format(function, "positional-only"), False),
+            (
+                functools.partial(d.forwards(fetch), limit=77),
+                whose.format(function, "positional-only"),
+                False,
+            ),
+            (
+                d.forwards(functools.partial(fetch, limit=77)),
+                whose.format(function, "positional-only"),
+                False,
+            ),
+            (
+                functools.partial(keeps_a_limit, limit=77),
+                whose.format(wrapper + " this tool runs", "positional-only"),
+                True,
+            ),
+            (
+                functools.partial(spread, limit=77),
+                whose.format(function, "variadic positional"),
+                False,
+            ),
+        ):
+            for validated in (True, False):
+                ctx = self._ctx_for(tool, takes_ctx=takes_ctx, validated=validated)
+                same, reason = adapter._with_defaults(ctx, "t", {"table": "t"})
+                assert same == {"table": "t"} and cause in reason, (tool, reason)
+
+        # a keyword that names a parameter a keyword reaches is the default it looks like
+        def by_keyword(table: str, /, limit: int = 10, **extra: int) -> str:
+            return "ok"
+
+        ctx = self._ctx_for(functools.partial(by_keyword, limit=77))
+        assert adapter._with_defaults(ctx, "t", {"table": "t"}) == (
+            {"table": "t", "limit": 77},
+            None,
+        )
+
+        # the levels are read with the positional arguments the partial binds still in
+        # place: here one fills `table`, so the keyword of that name is one more extra
+        def tagged(table: str, /, **extra: str) -> str:
+            return "ok"
+
+        ctx = self._ctx_for(functools.partial(tagged, "t", table="x"))
+        assert adapter._with_defaults(ctx, "t", {"note": "n"}) == ({"note": "n"}, None)
+
+        def policy(name, args):
+            seen.append(dict(args))
+            return []
+
+        capped = functools.partial(fetch, limit=77)
+        capped.__name__ = capped.__qualname__ = "fetch_capped"
+        capped.__doc__ = "Fetch rows."
+        for capabilities in (
+            [example.RecusalGate(policy)],
+            [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))],
+        ):
+            for sent in ({"table": "t"}, {"table": "t", "limit": 5000}):
+                ran.clear(), seen.clear()
+                agent = example.Agent(
+                    self._model_calling(example, "fetch_capped", sent),
+                    tools=[capped],
+                    capabilities=capabilities,
+                )
+                answers = example.responses_of(agent.run_sync("go"))
+                assert ran == [] and seen == []
+                assert whose.format(function, "positional-only") in answers["c1"][1]
+                assert "5000" not in answers["c1"][1]
+
+    def test_a_class_tool_is_completed_when_a_hook_supplies_its_arguments(self, example):
+        """A class used as the tool function is read by the signature Pydantic AI validates
+        against. Where a ``before_tool_validate`` hook skipped validation, nothing had
+        filled its defaults in: judged ``{"table": "t"}``, ran ``force=True``. The default
+        is completed and judged, for both forms of the gate."""
+        import dataclasses
+
+        from pydantic_ai import Tool
+        from pydantic_ai.exceptions import SkipToolValidation
+
+        ran, seen = [], []
+
+        @dataclasses.dataclass
+        class Purge:
+            """Purge a table."""
+
+            table: str
+            force: bool = True
+
+            def __post_init__(self):
+                ran.append((self.table, self.force))
+
+        async def skip_validation(ctx, *, call, tool_def, args):
+            raise SkipToolValidation(dict(args))
+
+        for refuses_force in (True, False):
+            policy = (
+                self._deny_force(seen)
+                if refuses_force
+                else (lambda n, a: seen.append((n, dict(a))) or [])
+            )
+            for gate in (
+                example.RecusalGate(policy),
+                example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy)),
+            ):
+                for capabilities in (
+                    [gate],
+                    [example.Hooks(before_tool_validate=skip_validation), gate],
+                ):
+                    ran.clear(), seen.clear()
+                    agent = example.Agent(
+                        self._model_calling(example, "purge", {"table": "t"}),
+                        tools=[Tool(Purge, name="purge", description="d")],
+                        capabilities=capabilities,
+                    )
+                    agent.run_sync("go")
+                    assert seen == [("purge", {"table": "t", "force": True})]
+                    assert ran == ([] if refuses_force else [("t", True)])
+
+    def test_output_functions_that_share_a_name_are_refused(self, example, adapter):
+        """The policy is given an output function's name, and Pydantic AI gives each output
+        function its own output tool for the model to pick: with
+        ``output_type=[review.submit, production.submit]`` the policy was handed ``submit``
+        for both. A run whose output functions share a name has the output refused before
+        the policy, naming the name."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from pydantic_ai import TextOutput
+        from pydantic_ai.exceptions import ModelRetry, UnexpectedModelBehavior
+        from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+        from pydantic_ai.output import OutputContext
+
+        ran, seen, offered = [], [], []
+
+        class Queue:
+            def __init__(self, name):
+                self.name = name
+
+            def submit(self, text: str) -> str:
+                ran.append((self.name, text))
+                return f"submitted to {self.name}"
+
+        def publish(text: str) -> str:
+            ran.append(("publish", text))
+            return "published"
+
+        def picking(index):
+            def respond(messages, info):
+                offered[:] = [tool.name for tool in info.output_tools]
+                call = ToolCallPart(offered[index], {"text": "x"}, tool_call_id="c1")
+                return ModelResponse(parts=[call])
+
+            return FunctionModel(respond)
+
+        def policy(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        review, production = Queue("review"), Queue("production")
+        shared = "more than one output function of this run is named `submit`"
+        for index in (0, 1):
+            ran.clear(), seen.clear()
+            agent = example.Agent(
+                picking(index),
+                output_type=[review.submit, production.submit],
+                capabilities=[example.RecusalGate(policy)],
+            )
+            with pytest.raises(UnexpectedModelBehavior):
+                agent.run_sync("go")
+            assert ran == [] and seen == [] and len(offered) == 2
+
+        # functions of different names are judged, each under its own; and one function, or
+        # one method of one object, listed under two tools is one function
+        for outputs, index, name in (
+            ([review.submit, publish], 0, "submit"),
+            ([review.submit, publish], 1, "publish"),
+            ([review.submit, review.submit], 1, "submit"),
+            ([publish, publish], 0, "publish"),
+        ):
+            ran.clear(), seen.clear()
+            agent = example.Agent(
+                picking(index), output_type=outputs, capabilities=[example.RecusalGate(policy)]
+            )
+            agent.run_sync("go")
+            assert seen == [(name, {"output": "x"})] and len(ran) == 1, outputs
+
+        # a text output function is refused when an output tool runs one of its name, so
+        # the name stands for the output tool's function alone
+        def as_text(messages, info):
+            return ModelResponse(parts=[TextPart(content="x")])
+
+        ran.clear(), seen.clear()
+        agent = example.Agent(
+            FunctionModel(as_text),
+            output_type=[TextOutput(review.submit), production.submit],
+            capabilities=[example.RecusalGate(policy)],
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            agent.run_sync("go")
+        assert ran == [] and seen == []
+        ran.clear(), seen.clear()
+        agent = example.Agent(
+            picking(0),
+            output_type=[TextOutput(review.submit), production.submit],
+            capabilities=[example.RecusalGate(policy)],
+        )
+        assert agent.run_sync("go").output == "submitted to production"
+        assert seen == [("submit", {"output": "x"})]
+        ran.clear(), seen.clear()
+        agent = example.Agent(
+            FunctionModel(as_text),
+            output_type=[TextOutput(review.submit), publish],
+            capabilities=[example.RecusalGate(policy)],
+        )
+        assert agent.run_sync("go").output == "submitted to review"
+        assert seen == [("submit", {"output": "x"})]
+
+        # the reason, and what is read: the processors of the run's output tools
+        def processor(function):
+            return SimpleNamespace(_function_schema=SimpleNamespace(function=function))
+
+        def ctx_with(*functions, plain=0):
+            processors = {str(n): processor(f) for n, f in enumerate(functions)}
+            processors.update({f"plain{n}": SimpleNamespace() for n in range(plain)})
+            tools = {
+                name: SimpleNamespace(
+                    toolset=None,
+                    source_tool=SimpleNamespace(
+                        toolset=SimpleNamespace(processors=processors), source_tool=None
+                    ),
+                )
+                for name in processors
+            }
+            tools["wipe"] = SimpleNamespace(toolset=SimpleNamespace(), source_tool=None)
+            return SimpleNamespace(tool_manager=SimpleNamespace(tools=tools))
+
+        reason = adapter._shared_output_name(
+            ctx_with(review.submit, production.submit), "submit", True
+        )
+        assert reason == (
+            "more than one output function of this run is named `submit`, and the policy is "
+            "given only that name, so it could not tell which of them it is judging; give "
+            "each output function a name of its own"
+        )
+        assert adapter._shared_output_name(ctx_with(review.submit, publish), "submit", True) is None
+        assert adapter._shared_output_name(ctx_with(publish, plain=2), "publish", True) is None
+        assert shared in adapter._shared_output_name(ctx_with(review.submit), "submit", False)
+        assert adapter._shared_output_name(ctx_with(publish), "submit", False) is None
+        assert adapter._shared_output_name(SimpleNamespace(), "submit", True) is None
+        # an output tool whose function is not among the ones read: they could not be read
+        unread = adapter._shared_output_name(ctx_with(publish), "submit", True)
+        assert unread == (
+            "the output functions of this run cannot be read, so it cannot be told whether "
+            "another one is named `submit` as well"
+        )
+
+        gate = example.RecusalGate(policy)
+        context = OutputContext(
+            mode="tool",
+            output_type=str,
+            object_def=None,
+            has_function=True,
+            function_name="submit",
+            tool_call=ToolCallPart("final_result_submit", {"text": "x"}, tool_call_id="c1"),
+        )
+        seen.clear()
+        for ctx in (ctx_with(review.submit, production.submit), ctx_with(publish)):
+            with pytest.raises(ModelRetry, match="Recusal refused `submit`: "):
+                asyncio.run(gate.before_output_process(ctx, output_context=context, output="x"))
+        assert seen == []
+
+    def test_an_output_function_is_judged_under_the_name_it_carries(self, example):
+        """The name the policy is given for an output function is its ``__name__``: a
+        decorator that does not copy it (``functools.wraps``) leaves its wrapper's name."""
+        import functools
+
+        seen = []
+
+        def bare(function):
+            def wrapper(text: str) -> str:
+                return function(text)
+
+            return wrapper
+
+        def copies(function):
+            @functools.wraps(function)
+            def wrapper(text: str) -> str:
+                return function(text)
+
+            return wrapper
+
+        def publish(text: str) -> str:
+            """Publish."""
+            return "published"
+
+        for output, name in ((bare(publish), "wrapper"), (copies(publish), "publish")):
+            seen.clear()
+            agent = example.Agent(
+                self._model_calling(example, "final_result", {"text": "x"}),
+                output_type=output,
+                capabilities=[example.RecusalGate(lambda n, a: seen.append(n) or [])],
+            )
+            assert agent.run_sync("go").output == "published"
+            assert seen == [name]
 
     @pytest.mark.parametrize("form", ["innermost", "wrapped_gate", "hooks_subclass"])
     def test_an_output_changed_after_the_gate_is_refused(self, example, form):

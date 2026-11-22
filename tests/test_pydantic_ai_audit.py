@@ -784,6 +784,191 @@ class TestPydanticAiAudit:
             assert entry["action"]["input_sha256"] == _sha(sent)
         assert "MARKER" not in log_path.read_text(encoding="utf-8")
 
+    @ROUTES
+    def test_a_partial_or_a_registry_the_gate_cannot_read_is_one_recorded_deny(
+        self, example, log, log_path, via_hooks
+    ):
+        """The refusals of the tenth review round, by both audited forms: a keyword partial
+        over a wrapper that takes a parameter as another kind, a partial keyword that names
+        a positional-only parameter, a bound value a wrapper can keep while the rest move up
+        a place, and ``register(object)`` in the base's place. Nothing runs, the policy is
+        not asked, and each is exactly one entry with none of the model's text."""
+        import functools
+
+        ran, asked = [], []
+
+        def audited(function):
+            @functools.wraps(function)
+            def wrapper(table, limit=10):
+                return function(table, limit)
+
+            return wrapper
+
+        @audited
+        def delete_rows(table: str, *ids: int, limit: int = 10) -> str:
+            """Delete rows."""
+            ran.append(("delete_rows", table, ids, limit))
+            return "deleted"
+
+        def fetch(table: str, limit: int = 10, /, **extra: int) -> str:
+            """Fetch rows."""
+            ran.append(("fetch", table, limit, extra))
+            return "fetched"
+
+        def keeps(function):
+            @functools.wraps(function)
+            def wrapper(tenant, limit, note):
+                return function(limit, note)
+
+            return wrapper
+
+        def purge_rows(table: str, limit: int, note: str = "") -> str:
+            """Purge rows."""
+            ran.append(("purge_rows", table, limit, note))
+            return "purged"
+
+        @functools.singledispatch
+        def lookup(key: int | str, /, deep: bool = False) -> str:
+            """Lookup."""
+            ran.append(("lookup", key))
+            return "base"
+
+        @lookup.register(object)
+        def _replacement(key, /, deep: bool = False, skip_review: bool = True) -> str:
+            ran.append(("lookup", key, skip_review))
+            return "replacement"
+
+        def named(tool, name):
+            tool.__name__ = tool.__qualname__ = name
+            tool.__doc__ = "A tool."
+            return tool
+
+        tools = [
+            named(functools.partial(delete_rows, table="orders"), "delete_orders"),
+            named(functools.partial(fetch, limit=77), "fetch_capped"),
+            named(functools.partial(keeps(purge_rows), "tenant-MARKER"), "purge_tenant"),
+            lookup,
+        ]
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
+        calls = [
+            ("delete_orders", {"limit": 500}, "c1"),
+            ("fetch_capped", {"table": "MARKER-table"}, "c2"),
+            ("purge_tenant", {"limit": 5, "note": "MARKER-note"}, "c3"),
+            ("lookup", {"key": "MARKER-key"}, "c4"),
+        ]
+        responses, _ = example.run_calls(
+            calls, log, policy=policy, tools=tools, via_hooks=via_hooks
+        )
+        assert ran == [] and asked == [] and len(log.entries) == 4
+        entries = self.by_id(log)
+        causes = {
+            "c1": "takes `limit` as a positional or keyword parameter where the function takes",
+            "c2": "a `functools.partial` binds `limit` by keyword, and the function this tool runs",
+            "c3": "the function's `note` has a default, so if the wrapper keeps that value",
+            "c4": "registered beside its base one or in its place",
+        }
+        for name, sent, call_id in calls:
+            outcome, reason = responses[call_id]
+            entry = entries[call_id]
+            assert outcome == "failed" and causes[call_id] in reason
+            assert reason.startswith(f"Recusal refused `{name}` [FAIL]")
+            assert entry["action"]["decision"] == "deny" and entry["decision"] == "FAIL"
+            assert entry["action"]["reason"] == reason and "MARKER" not in reason
+            assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+            assert entry["action"]["input_sha256"] == _sha(sent)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    @ROUTES
+    def test_a_class_tool_a_hook_supplied_is_recorded_as_completed(self, example, log, via_hooks):
+        """Where a hook supplies a class tool's arguments in place of validation, the entry is
+        bound to the arguments with the class's own default written out, which is what the
+        policy judged and what the class is called with."""
+        import dataclasses
+
+        from pydantic_ai import Agent, Tool
+        from pydantic_ai.capabilities import Hooks
+        from pydantic_ai.exceptions import SkipToolValidation
+
+        ran, judged = [], []
+
+        @dataclasses.dataclass
+        class Purge:
+            """Purge a table."""
+
+            table: str
+            force: bool = True
+
+            def __post_init__(self):
+                ran.append((self.table, self.force))
+
+        async def skip_validation(ctx, *, call, tool_def, args):
+            raise SkipToolValidation(dict(args))
+
+        def policy(name, args):
+            judged.append(dict(args))
+            return []
+
+        gate = (
+            Hooks(before_tool_execute=example.recusal_audited_before_tool_execute(policy, log))
+            if via_hooks
+            else example.RecusalAuditedGate(policy, log=log)
+        )
+        Agent(
+            self._model_calling("purge", {"table": "t"}),
+            tools=[Tool(Purge, name="purge", description="d")],
+            capabilities=[Hooks(before_tool_validate=skip_validation), gate],
+        ).run_sync("go")
+        (entry,) = log.entries
+        assert judged == [{"table": "t", "force": True}] and ran == [("t", True)]
+        assert entry["action"]["decision"] != "deny" and entry["decision"] == "PASS"
+        assert entry["action"]["input_sha256"] == _sha({"table": "t", "force": True})
+
+    def test_output_functions_that_share_a_name_are_one_recorded_deny_each_time(self, example, log):
+        """Two output functions of one name: each attempt the model makes is refused before
+        the policy, and each refusal is one entry on the output surface."""
+        from pydantic_ai import Agent
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+        from pydantic_ai.messages import ModelResponse, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+
+        ran, asked, attempts = [], [], []
+
+        class Queue:
+            def __init__(self, name):
+                self.name = name
+
+            def submit(self, text: str) -> str:
+                ran.append((self.name, text))
+                return "submitted"
+
+        def respond(messages, info):
+            attempts.append(1)
+            call = ToolCallPart(
+                info.output_tools[1].name, {"text": "MARKER"}, tool_call_id=f"c{len(attempts)}"
+            )
+            return ModelResponse(parts=[call])
+
+        agent = Agent(
+            FunctionModel(respond),
+            output_type=[Queue("review").submit, Queue("production").submit],
+            capabilities=[example.RecusalAuditedGate(lambda n, a: asked.append(n) or [], log=log)],
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            agent.run_sync("go")
+        assert ran == [] and asked == [] and attempts
+        assert len(log.entries) == len(attempts)
+        for number, entry in enumerate(log.entries, start=1):
+            action = entry["action"]
+            assert action["decision"] == "deny" and action["tool"] == "submit"
+            assert action["surface"] == "pydantic_ai.before_output_process"
+            assert action["tool_use_id"] == f"c{number}"
+            assert "more than one output function of this run is named `submit`" in action["reason"]
+            assert "MARKER" not in action["reason"]
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):

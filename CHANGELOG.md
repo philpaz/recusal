@@ -72,18 +72,42 @@ All notable changes to this project are documented here. The format follows
     `copy_file(src, dst, *flags)` was judged with `dst` under `/tmp` and wrote to the
     path sent as `src`. A wrapper that names a parameter and also forwards is refused
     over such a function; elsewhere the positional parameters it names must be the
-    function's first ones in order, and it may forward `*args` only while no other
-    wrapper names more positional parameters. For a tool that takes the run context, a
+    function's first ones in order, and it may forward `*args` only while no wrapper
+    above it names more positional parameters. For a tool that takes the run context, a
     wrapper's first positional parameter is the context, whatever the wrapper calls it,
-    unless it has the name of another parameter of the function.
+    unless it has the name of another parameter of the function; a refusal names the
+    parameter as the wrapper calls it.
   - A `functools.singledispatch` function picks the implementation that runs at call
     time, and a registered implementation's own default ran unjudged. A single-dispatch
-    function or method with more than its base implementation is refused.
+    function with an implementation registered beside its base one, or in its place
+    (`register(object)`), is refused. A function that only has attributes called
+    `registry` and `dispatch` is not taken for one.
   - A `functools.partial` with a positional argument, or a bound method, over a wrapper
     that names a positional parameter was read as filling the function's first
     parameter, which then ran on its own default when the wrapper kept the value:
     `partial(scoped(purge), "acme")` was judged `{"limit": 5}` and ran `table="prod"`.
-    Refused where a wrapper that kept the value would not fail the call.
+    Refused where a wrapper that kept the value might not fail the call, which includes
+    the values after it moving up a place: with `wrapper(tenant, limit, dry)` over
+    `purge(table, limit, dry=False)` the call was judged `{"limit": 5, "dry": True}`
+    and ran `table=5, limit=True, dry=False`.
+  - A `functools.partial` with a keyword shows every later parameter as keyword-only,
+    on a wrapper and on the function alike, so a wrapper that takes a parameter as
+    another kind than the function was refused alone and allowed behind the partial:
+    `wrapper(table, limit=10)` over `delete_rows(table, *ids, limit=10)` behind
+    `partial(delete_rows, table="orders")` was judged `limit=500` and ran `ids=(500,)`,
+    `limit=10`. The wrappers under such a partial are now read without its keywords as
+    well. A keyword that names a positional-only parameter is not bound to it
+    (`partial(fetch, limit=77)` over `fetch(table, limit=10, /, **extra)` ran `limit=10`,
+    which nothing showed) and is refused.
+  - A class used as the tool function was let through as validated also where a hook of
+    the application's supplied the arguments in place of validation: judged
+    `{"table": "t"}`, ran `force=True`. Its arguments are now completed from the
+    signature Pydantic AI validates against, like any other tool's.
+  - Two output functions with the same name (`output_type=[review.submit, prod.submit]`)
+    were both judged as `submit`, and the model picked which ran. Such an output is now
+    refused before the policy, naming the name.
+  - The package allowed `recusal>=0.14.0`, a kernel without the walk the gate imports,
+    so the adapter failed at import beside it. It requires `recusal>=0.15.0`.
   - Where a hook of the application's skips validation, a value for a function's `*args`
     that is not a list was judged whole and handed to the function item by item. It is
     refused.
