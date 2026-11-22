@@ -42,6 +42,11 @@ dependencies = [
     # (.github/workflows/compat.yml) tests the newest release.
     "openai-agents>=0.24.0,<1",
     "mcp>=2.3.0,<3",
+    # The gate validates a call's arguments against the tool's listed input schema with
+    # these two. The MCP SDK depends on both; the lower bounds are the versions the pinned
+    # CI lane tests (requirements/adapter-openai-agents-mcp.txt).
+    "jsonschema>=4.26.0,<5",
+    "referencing>=0.37.0,<1",
 ]
 
 [project.urls]

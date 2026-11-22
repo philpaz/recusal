@@ -344,3 +344,102 @@ def test_clone_shares_the_lists_it_is_not_given(oa):
     agent = oa.Agent(name="a", tools=[oa.echo])
     clone = agent.clone(tools=[oa.echo])
     assert clone.handoffs is agent.handoffs and clone.mcp_servers is agent.mcp_servers
+
+
+# --- the second review of 2026-11-21 ----------------------------------------------------------
+
+
+def test_model_settings_are_where_the_gate_reads_what_goes_into_the_request(oa):
+    """``gated_agent`` refuses an agent whose ``model_settings.extra_body`` or
+    ``extra_args`` carry tools. A run can bring settings of its own, which no gate reads."""
+    import dataclasses
+
+    from agents import ModelSettings
+
+    assert {"extra_body", "extra_args"} <= {f.name for f in dataclasses.fields(ModelSettings)}
+    settings = oa.Agent(name="a").model_settings
+    assert isinstance(settings, ModelSettings)
+    assert settings.extra_body is None and settings.extra_args is None
+    assert "model_settings" in {f.name for f in dataclasses.fields(oa.RunConfig)}
+
+
+def test_the_sdk_accepts_a_mapping_keyed_by_int_and_converts_its_keys(oa):
+    """Why the gate refuses such a parameter itself: the SDK counts it as data only, and
+    the function then receives keys that are not strings."""
+    import typing
+
+    from agents._function_tool_arguments import can_prepare_without_user_code
+
+    received = []
+
+    def keyed(m: typing.Dict[int, str]) -> str:
+        """Record a mapping; contacts nothing."""
+        received.append(m)
+        return "ok"
+
+    tool = oa.function_tool(keyed, strict_mode=False)
+    model = _adapter()._sdk_schema(tool).params_pydantic_model
+    assert can_prepare_without_user_code(model)
+    field = model.__pydantic_core_schema__["schema"]["fields"]["m"]["schema"]
+    assert field["type"] == "dict" and field["keys_schema"]["type"] == "int"
+    _run_route(oa, _agent(oa, [("keyed", {"m": {"1": "a"}}, "c1")], [tool]), "run")
+    assert received == [{1: "a"}]
+
+
+@pytest.mark.parametrize(
+    "calls, error, message",
+    [
+        (
+            [("run_sql", {"sql": SELECT}, "c1"), ("run_sql", {"sql": "SELECT 2"}, "c1")],
+            "ModelBehaviorError",
+            "reused a tool call ID",
+        ),
+        ([("run_sql", {"sql": SELECT}, "")], "ModelBehaviorError", "non-empty string call ID"),
+        ([("drop_all", {}, "c1")], "ModelBehaviorError", "drop_all"),
+        (
+            [("run_sql", '{"sql": ' + "[" * 100_000 + "]" * 100_000 + "}", "c1")],
+            "RecursionError",
+            "",
+        ),
+    ],
+    ids=["reused-call-id", "blank-call-id", "unknown-tool", "nested-past-the-parser"],
+)
+def test_what_the_sdk_rejects_before_any_guardrail_runs(oa, calls, error, message):
+    """The README's list of calls that are on no audit log because no guardrail ran."""
+    import agents.exceptions
+
+    expected = getattr(agents.exceptions, error, None) or RecursionError
+    seen = Seen(oa.sql_scope_policy)
+    agent = oa.gated_agent(_agent(oa, calls, [oa.run_sql]), seen)
+    oa.EXECUTED.clear()
+    with pytest.raises(expected, match=message or None):
+        _run_route(oa, agent, "run")
+    assert seen.calls == [] and oa.EXECUTED == []
+
+
+def test_a_class_based_descriptor_decorator_has_no_signature_to_read(oa):
+    """The shape of ``cachetools.cached``: ``inspect`` reads an instance of a class with
+    ``__get__`` as a built-in, and the SDK accepts it as a routine."""
+    import functools
+    import inspect
+
+    class Decorator:
+        def __init__(self, fn):
+            functools.update_wrapper(self, fn)
+            self.fn = fn
+
+        def __call__(self, *args, **kwargs):
+            return self.fn(*args, **kwargs)
+
+        def __get__(self, instance, owner=None):
+            return self
+
+    def run_sql(sql: str) -> str:
+        """Record SQL text without connecting to a database."""
+        return "recorded"
+
+    decorated = Decorator(run_sql)
+    assert inspect.ismethoddescriptor(decorated)
+    with pytest.raises(ValueError):
+        inspect.signature(decorated, follow_wrapped=False)
+    assert oa.function_tool(decorated).name == "run_sql"

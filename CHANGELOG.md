@@ -22,10 +22,17 @@ All notable changes to this project are documented here. The format follows
   - A `functools.wraps` wrapper under `function_tool` ran with values the policy never
     saw: a wrapper's own keyword default (`dry_run=False`) was in no schema, and a
     wrapper that took a parameter of the function left the function at its own default
-    (judged `SELECT 1`, ran `DELETE`). The gate now walks every callable the call reaches
-    with the kernel's `reached_parameters` and refuses the tool unless each one takes
-    exactly the parameters the SDK prepared for, or forwards `*args, **kwargs` and names
-    none of its own. This is why the package now requires `recusal>=0.15.0`.
+    (judged `SELECT 1`, ran `DELETE`). The gate now walks the callables the call reaches
+    with the kernel's `reached_parameters` (the function, what its `__wrapped__` chain
+    leads to, a bound method's function and a callable object's `__call__`), at every
+    level of a stack of wrappers, and refuses the tool unless each one takes exactly the
+    parameters the SDK prepared for, or forwards `*args, **kwargs` and names none of its
+    own. This is why the package now requires `recusal>=0.15.0`. A
+    `functools.singledispatch` function is refused as well: the implementation that runs
+    is chosen by the type of an argument, and a registered one ran with a default
+    (`include_deleted=True`) that was in no schema. A wrapper that calls a function it
+    holds in a closure or an attribute is not read; the README lists it under what the
+    gate does not see.
   - `gated_agent` returned a copy that shared the original agent's `handoffs` and
     `mcp_servers` lists, so a handoff appended to the original after gating was the gated
     copy's too, and the agent it handed off to ran ungated. The copy now has its own
@@ -36,14 +43,28 @@ All notable changes to this project are documented here. The format follows
     `"nan"` for a `float` parameter) ran on the plain gate, where a policy that compares
     it (`amount > 1000`) raises no objection, and was refused only on the audited gate.
     Both now refuse it before the policy runs, for the same reason, so "the audited forms
-    are the plain ones with a recording passed in" holds.
+    are the plain ones with a recording passed in" holds. The same was true of deeply
+    nested arguments: at about 488 levels the plain gate ran the call and the audited
+    gate refused it, and deeper the two refused for different stated causes. The gate
+    now refuses arguments that hold a value more than 64 levels down, before anything
+    else reads them, with one reason and one audit entry; the limit is fixed and does not
+    move with the interpreter's recursion limit.
   - `gate_tools` and `gated_agent` now raise `TypeError`, naming the tool and the
     parameter, for a function tool they used to accept and then refuse on every call: a
     parameter the SDK prepares only by running the tool's own code (an `Enum`, a model, a
     dataclass, a `TypedDict`, `datetime`, `date`, `tuple`, `set`, `bytes`,
-    `Field(pattern=...)`, a custom validator) and a variadic parameter. The README lists
-    the parameter types that are gated. This is why the release is 0.2.0: an agent that
-    carried such a tool was built and is now refused.
+    `Field(pattern=...)`, a custom validator), a mapping whose key type is not `str`
+    (`dict[int, str]`) and a variadic parameter. A default that is not JSON data
+    (`tags: list[str] = ()`) and a default factory other than `list` or `dict` are named
+    as what they are. A decorator whose signature cannot be read (a class-based decorator
+    that is also a descriptor, such as `cachetools.cached`) is refused with what to do
+    about it. The README lists the parameter types that are gated. This is why the
+    release is 0.2.0: an agent that carried such a tool was built and is now refused.
+  - `gated_agent` and `is_gated` now refuse an agent whose `model_settings` put tools
+    into the request themselves: `extra_body` or `extra_args` with a `tools`, `prompt`,
+    `plugins`, `web_search_options` or `mcp_servers` key. Settings given to a run
+    (`RunConfig(model_settings=...)`) are not known when the agent is gated and are not
+    read.
   - Corrected: two tools under one name in different `tool_namespace` groups were refused
     with a reason that was not true of them (the SDK resolves those by namespace, not
     last-wins). They are still refused, for the reason that is: the policy and the audit
@@ -54,35 +75,67 @@ All notable changes to this project are documented here. The format follows
     the log" does not hold under the SDK's `pre_approval_tool_input_guardrails=True`,
     where the guardrail also runs before the approval. A call then has an entry before a
     person decides, and a second one if it is approved. Nothing runs without the second
-    judgment.
+    judgment. Also in the README now: the calls the SDK itself rejects before the
+    guardrail runs (a reused or a blank tool call id, arguments nested about a thousand
+    levels deep), that `Field(default_factory=list)` is gated, and that a `dict`
+    parameter needs `strict_mode=False`.
   - New public names for a gate on another seam of the SDK: `shared_name_reason`,
-    `tools_gated`, and the `agent_gated` argument of `gate_tools`.
+    `settings_reason`, `too_deep`, `tools_gated`, and the `agent_gated` argument of
+    `gate_tools`.
 - **`recusal-openai-agents-mcp` 0.2.0 (unreleased): the server is sent what the policy
-  judged, completed from the server's listed schema.** Found by the same review and
-  reproduced against a real stdio server built with the MCP Python SDK (`mcp` 2.3.0):
+  judged, checked against and completed from the server's listed schema.** Found by the
+  same review and reproduced against a real stdio server built with the MCP Python SDK
+  (`mcp` 2.3.0):
   - The gate judged the arguments as sent and never read the tool's listed `inputSchema`,
     and the server then ran values no policy judged: `{"dry_run": "false"}` (a string,
     which a policy reading `if not args.get("dry_run")` takes as set) ran as
     `dry_run=False`, `{"amount": "500"}` ran as `500`, and `{}` ran with every default in
-    the schema (`recursive=True`), under an audit entry that fingerprinted `{}`. Before
-    the policy runs, the gate now writes every listed default the call leaves out into
-    the arguments, and refuses an argument that is not already of the JSON type the
-    schema declares, naming the parameter and the two types. The policy judges the
-    completed arguments, the server is sent the completed arguments, and the entry is
-    bound to them. To read the schema, `gate_mcp_server` now also wraps the server's
-    `list_tools`, in place, and a call to a tool the server does not list is refused.
-    This is why the release is 0.2.0: a call that relied on the server converting a
-    string is now refused with a reason the model can act on. The README says exactly
-    what of a schema is read, and that a parameter left out with no listed default, and
-    the server's handling of a hosted MCP call, are not seen.
+    the schema (`recursive=True`), under an audit entry that fingerprinted `{}`. The same
+    held one level down and for every shape Pydantic publishes: an `Optional[bool]`
+    (`anyOf`), a nested model (`$ref`, with its own defaults), a `dict[str, bool]`
+    (`additionalProperties`), a tuple (`prefixItems`), and JSON text sent for a model
+    parameter, which the SDK's server parses. Before the policy runs, the arguments must
+    now be valid against the whole listed schema as they stand, validated with
+    `jsonschema` in the draft the schema declares and stricter where a server would
+    still convert (`5.0` is not an integer; an `enum` value must be of the listed JSON
+    type), and every default the schema lists for a property they leave out, at any
+    depth, is written into them. The policy judges the completed arguments, the server is
+    sent the completed arguments, and the entry is bound to them. What the gate cannot
+    check or complete is refused, with a reason that names the place in the arguments
+    and what the schema requires there and carries no argument text: a schema that is
+    not a valid JSON Schema or declares a draft other than draft-07, 2019-09 and 2020-12,
+    a `$ref` that does not resolve inside the schema (a remote one is never fetched), a
+    default under a keyword the walk does not follow, alternatives of an `anyOf` that
+    would write different defaults. To read the schema, `gate_mcp_server` now also wraps
+    the server's `list_tools`, in place; each listing replaces the one before, so a call
+    to a tool the server does not list, or no longer lists, is refused. This is why the
+    release is 0.2.0: a call that relied on the server converting a string is now refused
+    with a reason the model can act on. The package now requires `jsonschema>=4.26.0` and
+    `referencing>=0.37.0`, which the MCP SDK already depends on.
+  - One listed default is judged and not sent: one that is not valid against its own
+    property schema. Pydantic publishes `{"default": null, "type": "string"}` for
+    `q: str = None`; the server runs with `None` when the parameter is left out and would
+    reject it if it were sent.
+  - The README says what is not seen: a parameter left out with no listed default (a
+    `default_factory` default among them), a server whose code does more than its schema
+    says (the MCP Python SDK's server parses a string for a parameter without an
+    annotation, which it lists as `type: string`), an integer above 2^53 for a float
+    parameter, a schema that changes after it was listed, and the server's handling of a
+    hosted MCP call.
+  - A non-finite number in a local server call (`1e400`) left an audit entry with no
+    fingerprint and the kernel's "cannot be fingerprinted" in place of the gate's reason.
+    Arguments that are not JSON data are now refused with the gate's own reason, in one
+    entry bound to the text the gate writes them as. Arguments that hold a value more
+    than 64 levels down are refused the same way.
   - Arguments nested about 900 deep were refused with no audit entry, because the copy
     for the policy was made, and failed, before `decide` ran. Every refusal before the
     policy runs is now one entry.
   - `gated_agent` refused a parent whose sub-agent behind `as_tool` was itself gated by
     this package and held an MCP server or a hosted tool, with advice to do what had been
     done. The sub-agent is now judged by this package's own `is_gated`.
-  - `gated_agent` and `is_gated` now refuse an agent with a `prompt`, and the gated copy
-    has its own `handoffs` list, as in `recusal-openai-agents`. Requires
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt` and an agent whose
+    `model_settings` put tools into the request, and the gated copy has its own
+    `handoffs` list, as in `recusal-openai-agents`. Requires
     `recusal-openai-agents>=0.2.0`.
   - Now in the README's list of what the gate does not see: request metadata from a
     `tool_meta_resolver`, a hosted approval the SDK answers again from its own memory

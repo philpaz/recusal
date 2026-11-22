@@ -15,8 +15,9 @@ What each entry is bound to:
   from the tool's schema, defaults included;
 - a call refused before judgment (arguments that do not validate against the tool's
   parameters, a prepared value that is not JSON data): the arguments as proposed;
-- a call whose arguments are not a JSON object, or hold a non-finite number: the argument
-  text, or the JSON value it parsed to, under the key ``input``.
+- a call whose arguments are not a JSON object, hold a non-finite number or are nested
+  more than 64 levels deep: the argument text, or the JSON value it parsed to, under the
+  key ``input``.
 
 When an entry is written: when the guardrail runs, which is when the tool is about to
 execute, after any approval, so a call a person rejected has no entry. Under the SDK's
@@ -24,8 +25,9 @@ execute, after any approval, so a call a person rejected has no entry. Under the
 a call then has an entry before a person decides, and a second one if it is approved.
 
 What is not on the log: a call the SDK rejects before the guardrail runs (a tool the agent
-does not have raises ``ModelBehaviorError``), and anything ``gated_agent`` refuses to gate
-at construction, which raises before any agent runs.
+does not have, a reused or a blank tool call id, arguments nested about a thousand levels
+deep: each raises inside the SDK), and anything ``gated_agent`` refuses to gate at
+construction, which raises before any agent runs.
 """
 
 from __future__ import annotations
@@ -47,7 +49,9 @@ def recording(
 ) -> Recording:
     """The recording arguments for each call, built in one place.
 
-    A blank tool call id is recorded as no id rather than refused."""
+    A blank tool call id is recorded as no id rather than refused. SDK 0.24.0 rejects a
+    blank id itself, before the guardrail runs, so that case reaches this only on another
+    seam or release."""
 
     def for_call(ctx: Any) -> dict[str, Any]:
         ident = getattr(ctx, "tool_call_id", None)

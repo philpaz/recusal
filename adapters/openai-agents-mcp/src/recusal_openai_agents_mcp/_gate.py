@@ -16,15 +16,17 @@ output, and the server's own ``call_tool`` is never reached. The policy therefor
 name the server executes under, whatever the model called it, and a policy keyed by tool
 name must name the server's own tools.
 
-What is sent is not yet what the server runs: a server fills a parameter the call leaves
-out from its default and converts a value of another type, after the gate. The server's
+What is sent is not yet what the server runs: a server fills what the call leaves out
+from its defaults and converts a value of another type, after the gate. The server's
 listed input schema is the only statement of that, so the gate also wraps ``list_tools``,
-in place, to keep each tool's listed schema, and before the policy runs it writes every
-listed default the call leaves out into the arguments and refuses an argument that is not
-already of the JSON type the schema declares (:func:`_schema_refusal`). The policy judges
-the completed arguments and the server is sent the completed arguments. A parameter left
-out that has no listed default, and whatever else the server does with what it receives,
-is not seen.
+in place, to keep each tool's listed schema, and before the policy runs the arguments
+must be valid against the whole of that schema as they stand, and every default the
+schema lists for a property they leave out, at any depth, is written into them
+(``_schema.Listed.complete``). Arguments the gate cannot check or complete are refused.
+The policy judges the completed arguments and the server is sent the completed arguments,
+with one exception: a listed default that is not valid against its own property schema is
+judged and not sent. A parameter left out that has no listed default, and whatever a
+server does beyond what its schema says, is not seen.
 
 Hosted MCP (``HostedMCPTool``). Those calls run on OpenAI's servers, and the one local point
 is the SDK's approval callback, which runs only for a call OpenAI asks approval for.
@@ -41,8 +43,9 @@ conversion are not seen.
 ``gated_agent(agent, policy)`` gates all three at once: function tools (through the
 ``recusal-openai-agents`` package's ``gate_tools``), every server in ``mcp_servers`` in place, and every
 ``HostedMCPTool`` as a gated copy. It refuses, rather than skips, what no gate can see:
-handoffs, an agent with a ``prompt`` (a stored prompt can configure tools of its own), a
-sub-agent behind ``as_tool`` that is not itself gated, and ``Agent`` subclasses.
+handoffs, an agent with a ``prompt`` (a stored prompt can configure tools of its own), an
+agent whose ``model_settings`` put tools into the request, a sub-agent behind ``as_tool``
+that is not itself gated, and ``Agent`` subclasses.
 
 A server carries one policy. Because the gate is installed on the server object, every
 agent that lists that object shares it: gating it again with the same policy is a no-op,
@@ -55,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import json
 from typing import Any, Callable, List, Optional
 
 from agents import Agent, HostedMCPTool, MCPToolApprovalRequest
@@ -62,13 +66,18 @@ from agents.mcp import MCPServer
 from mcp.types import CallToolResult, TextContent
 from recusal_openai_agents import gate_tools
 from recusal_openai_agents import refusal as _refusal
+from recusal_openai_agents import settings_reason as _settings_reason
 from recusal_openai_agents import shared_name_reason as _shared_name_reason
+from recusal_openai_agents import too_deep as _too_deep
 from recusal_openai_agents import tools_gated as _tools_gated
 from recusal_openai_agents import unjudgeable as _unjudgeable
 
 from recusal import decide
 from recusal.claude_code import identity_getter
 from recusal.invocation import detached as _detached
+
+from ._schema import Listed as _Listed
+from ._schema import Refused as _Refused
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -81,97 +90,36 @@ Recording = Callable[[str, Any], dict]
 _FAILED_CLOSED = "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({name})"
 
 
-#: The JSON type names a listed schema may declare, and the Python type each one is.
-_JSON_TYPES = {
-    bool: "boolean",
-    int: "integer",
-    float: "number",
-    str: "string",
-    list: "array",
-    dict: "object",
-    type(None): "null",
-}
-
-
-def _same(a: Any, b: Any) -> bool:
-    """Equal, and of the same JSON type all the way down (``1`` is not ``True`` or ``1.0``)."""
-    if type(a) is not type(b):
-        return False
-    if type(a) is list:
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
-    if type(a) is dict:
-        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
-    return bool(a == b)
-
-
-def _type_refusal(value: Any, declared: Any) -> Optional[str]:
-    """Why ``value`` is not already what the listed schema ``declared`` for it, or None.
-
-    Read from the schema: ``type`` (one name or a list of names), ``enum`` and ``const``,
-    and the same three inside ``items`` (for each item of a list) and ``properties`` (for
-    each member of an object that names one). Nothing else is read: a ``$ref``, ``anyOf``,
-    ``oneOf``, a format or a range leaves the value unchecked. The check is strict, because
-    a server converts what does not match after the policy judged it: a string is not a
-    boolean or a number, ``true`` is not an integer, and ``5.0`` is not an integer."""
-    if type(declared) is not dict:
-        return None
-    actual = _JSON_TYPES[type(value)]
-    named = declared.get("type")
-    allowed = [named] if type(named) is str else named if type(named) is list else None
-    if allowed is not None:
-        names = [name for name in allowed if type(name) is str]
-        if actual not in names and not (actual == "integer" and "number" in names):
-            return (
-                f"is of JSON type {actual} where the server's schema declares {' or '.join(names)}"
-            )
-    choices = declared.get("enum")
-    if type(choices) is list and not any(_same(value, choice) for choice in choices):
-        return "is not one of the values the server's schema lists"
-    if "const" in declared and not _same(value, declared["const"]):
-        return "is not the value the server's schema fixes"
-    inner: Optional[str] = None
+def _rendered(value: Any, ancestors: tuple = ()) -> str:
+    """Arguments that are not JSON data, written as text so that a refusal can be bound to
+    them: JSON, with a non-finite number as Python writes it (``nan``, ``inf``), an object
+    that is not data as its type's name, and nothing below the depth the gate reads."""
+    if len(ancestors) > 64 or id(value) in ancestors:
+        return "..."
+    inner = (*ancestors, id(value))
+    if type(value) is dict:
+        members = (f"{_rendered(k, inner)}:{_rendered(v, inner)}" for k, v in value.items())
+        return "{" + ",".join(members) + "}"
     if type(value) is list:
-        inner = next(filter(None, (_type_refusal(v, declared.get("items")) for v in value)), None)
-    elif type(value) is dict and type(declared.get("properties")) is dict:
-        members = declared["properties"]
-        inner = next(
-            filter(None, (_type_refusal(v, members.get(k)) for k, v in value.items())), None
-        )
-    return f"holds a value that {inner}" if inner is not None else None
+        return "[" + ",".join(_rendered(item, inner) for item in value) + "]"
+    if type(value) is float:
+        return repr(value)
+    if value is None or type(value) in (bool, int, str):
+        return json.dumps(value)
+    return f"<{type(value).__name__}>"
 
 
-def _schema_refusal(args: dict[str, Any], schema: Any) -> Optional[str]:
-    """Complete ``args`` from the tool's listed input schema, in place, and say why they are
-    not what the server would run with as sent, or None when they are.
-
-    The gate sees what is sent to the server, and the server's listed schema is the only
-    statement of what the server then does with it. Two things a server does after the
-    policy judged would otherwise go unseen. It fills a parameter the call leaves out from
-    its default: every property with a ``default`` that the call leaves out is written
-    into ``args`` with that default, so the policy judges it and the server receives it
-    written out. It converts a value of another type (the string ``"false"`` to a boolean,
-    ``"500"`` to a number): each argument the schema types must already be of that type
-    (:func:`_type_refusal`), a written default included.
-
-    Nothing is completed or checked when the schema is not an object schema with
-    ``properties``, and an argument the schema does not name is left as sent."""
-    properties = schema.get("properties") if type(schema) is dict else None
-    if type(properties) is not dict or schema.get("type") != "object":
-        return None
-    for name, declared in properties.items():
-        if name not in args and type(declared) is dict and "default" in declared:
-            try:
-                args[name] = _detached(declared["default"])
-            except (TypeError, RecursionError):
-                return f"the default the server's schema lists for `{name}` is not JSON data"
-    for name, value in args.items():
-        why = _type_refusal(value, properties.get(name))
-        if why is not None:
-            return (
-                f"argument `{name}` {why}; the server would not run with the value the "
-                "policy judged. Send the declared JSON type."
-            )
-    return None
+def _as_handed(arguments: Any) -> Any:
+    """What a refusal before judgment is bound to: the arguments as the SDK handed them,
+    or, when they are not JSON data and so have no fingerprint, the text
+    :func:`_rendered` writes them as (which the record holds under the key ``input``)."""
+    if not _too_deep(arguments):
+        try:
+            _detached(arguments)
+            return arguments
+        except TypeError:
+            pass
+    return _rendered(arguments)
 
 
 #: The schema of a tool the server has not listed.
@@ -186,41 +134,45 @@ def _judged_call(
 
     ``arguments`` is the dict the SDK hands ``call_tool`` (``None`` for a call without
     any) and ``schema`` the input schema the server listed for the tool. The arguments are
-    copied as JSON data, completed with the schema's defaults and checked against its types
-    (:func:`_schema_refusal`); the policy judges a copy of the completed arguments and the
-    server is sent the completed arguments, so a policy that writes to what it was handed
-    changes its copy and not the call. Refused before the policy runs: a non-mapping,
-    arguments that are not JSON data, a tool the server does not list, and an argument of
-    another type than the schema declares.
+    copied as JSON data, validated against the whole schema and completed with every
+    default it lists (``_schema.Listed.complete``); the policy judges a copy of the
+    completed arguments and the server is sent the completed arguments, so a policy that
+    writes to what it was handed changes its copy and not the call. A listed default that
+    is not valid against its own property schema is judged and not sent. Refused before the
+    policy runs: a non-mapping, arguments that are not JSON data or are nested too deeply,
+    a tool the server does not list, arguments that are not valid against the schema as
+    they stand, and a schema the gate cannot check or complete them against.
 
     ``record`` goes straight to ``decide``, which then writes the decision to an audit
-    log; the entry of a judged call carries the fingerprint of the completed arguments,
-    and a call refused before judgment is bound to the arguments as the SDK handed them.
+    log; the entry of a judged call carries the fingerprint of the arguments as judged,
+    and a call refused before judgment is bound to the arguments as the SDK handed them
+    (:func:`_as_handed`).
     """
     args = {} if arguments is None else arguments
+
+    def refused(detail: str) -> tuple[None, str]:
+        return None, _unjudgeable(tool_name, detail, _as_handed(args), record)
+
     if not isinstance(args, dict):
-        return None, _unjudgeable(tool_name, "arguments are not a mapping", args, record)
+        return refused("arguments are not a mapping")
+    if _too_deep(args):
+        return refused("arguments are nested too deeply")
     try:
-        sent = _detached(args)
-    except RecursionError:
-        return None, _unjudgeable(
-            tool_name, "arguments are nested too deeply to judge", args, record
-        )
+        proposed = _detached(args)
     except TypeError as exc:
-        return None, _unjudgeable(tool_name, f"arguments are not JSON data ({exc})", args, record)
+        return refused(f"arguments are not JSON data ({exc})")
     if schema is _UNLISTED:
-        return None, _unjudgeable(
-            tool_name,
+        return refused(
             "the server lists no tool of this name, or its tools could not be listed, so the "
-            "gate cannot read the schema its arguments would be checked against",
-            args,
-            record,
+            "gate cannot read the schema its arguments would be checked against"
         )
-    why = _schema_refusal(sent, schema)
-    if why is not None:
-        return None, _unjudgeable(tool_name, why, args, record)
     try:
-        decision, reason = decide(tool_name, _detached(sent), policy, safe_errors=True, **record)
+        listed = schema if isinstance(schema, _Listed) else _Listed(schema)
+        judged, sent = listed.complete(proposed)
+    except _Refused as cause:
+        return refused(cause.reason)
+    try:
+        decision, reason = decide(tool_name, judged, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
         return None, _FAILED_CLOSED.format(name=type(exc).__name__)
     return (None, reason) if decision == "deny" else (sent, None)
@@ -298,9 +250,10 @@ def gate_mcp_server(
 
     The server's ``list_tools`` is wrapped too, in place, and only to read: it returns what
     the server listed and keeps each tool's input schema, which :func:`_judged_call`
-    completes and checks the arguments against. A tool the gate has seen no listing for is
-    looked up with one ``list_tools()`` call of the gate's own; a tool the server does not
-    list is refused.
+    checks and completes the arguments against. Each listing replaces the one before, so a
+    tool the server no longer lists is no longer known. A call to a tool that is not in
+    the most recent listing makes the gate call ``list_tools()`` itself, with no run
+    context and no agent, once for that call; a tool that is still not listed is refused.
     """
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
@@ -328,21 +281,25 @@ def gate_mcp_server(
         )
     original = server.call_tool
     original_list_tools = server.list_tools
-    #: tool name -> the input schema the server listed for it, most recent listing last
+    #: tool name -> the input schema in the server's most recent listing
     listed: dict[str, Any] = {}
 
     async def gated_list_tools(*args: Any, **kwargs: Any) -> Any:
         tools = await original_list_tools(*args, **kwargs)
+        latest = {}
         for tool in tools:
             schema = getattr(tool, "input_schema", None)
             if schema is None:
                 schema = getattr(tool, "inputSchema", None)
-            listed[tool.name] = copy.deepcopy(schema)
+            latest[tool.name] = _Listed(copy.deepcopy(schema))
+        listed.clear()  # a tool the server withdrew is no longer listed
+        listed.update(latest)
         return tools
 
     async def listed_schema(tool_name: str) -> Any:
-        """The schema the server listed for the tool: from the listings the SDK has made
-        through this server object, or from one the gate asks for when it has seen none."""
+        """The schema the server listed for the tool: from the most recent listing made
+        through this server object, or from one the gate asks for when the tool is not
+        in it."""
         if tool_name not in listed:
             try:
                 await gated_list_tools()
@@ -463,6 +420,9 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
             "(hosted MCP among them) that are not in the agent's tools list, which no gate "
             "sees. Put the instructions and the tools on the agent itself."
         )
+    settings = _settings_reason(agent)
+    if settings is not None:
+        return f"its {settings}"
     shared = _shared_name_reason(agent.tools)
     if shared is not None:
         return f"its {shared}"

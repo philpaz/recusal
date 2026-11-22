@@ -919,8 +919,9 @@ class TestWhatIsSentIsWhatWasJudged:
     listed schema, and a server then ran values no policy judged: ``"false"`` converted to
     ``False``, ``"500"`` to ``500``, and a parameter left out filled from its default. The
     gate now writes every listed default the call leaves out into the arguments, which the
-    policy judges and the server is sent, and refuses an argument that is not already of
-    the JSON type the schema declares."""
+    policy judges and the server is sent, and refuses arguments that are not valid against
+    the listed schema as they stand. ``TestTheWholeListedSchema`` holds the second review,
+    which found the first fix read only a top-level property with a plain ``type``."""
 
     @pytest.fixture
     def example(self):
@@ -1015,21 +1016,39 @@ class TestWhatIsSentIsWhatWasJudged:
         args["tags"].append("WRITTEN BY THE POLICY")
         return []
 
-    def test_a_listed_default_of_another_type_than_declared_is_refused(self, example):
-        schema = {"type": "object", "properties": {"dry_run": {"type": "boolean", "default": "no"}}}
+    def test_a_listed_default_its_own_schema_does_not_allow_is_judged_and_not_sent(self, example):
+        """The server runs with such a default when the parameter is left out, and would
+        reject it if it were sent: it is what the policy judges, and it is not sent."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "default": "no"},
+                "path": {"type": "string", "default": "/"},
+            },
+        }
         policy = self.Recording()
-        outputs, called = example.run_calls(
-            [("purge", {}, "c1")], policy=policy, server=_purge_server(example, schema)
+        _, called = example.run_calls(
+            [("purge", {}, "c1"), ("purge", {"dry_run": True}, "c2")],
+            policy=policy,
+            server=_purge_server(example, schema),
         )
-        assert called == [] and policy.seen == []
-        assert "argument `dry_run` is of JSON type string" in _text(outputs["c1"])
+        assert policy.seen == [
+            ("purge", {"dry_run": "no", "path": "/"}),
+            ("purge", {"dry_run": True, "path": "/"}),
+        ]
+        assert called == [
+            ("files", "purge", {"path": "/"}),
+            ("files", "purge", {"dry_run": True, "path": "/"}),
+        ]
 
-    def test_a_listed_default_that_is_not_json_data_is_refused(self, example):
+    def test_a_listed_schema_that_is_not_json_data_is_refused(self, example):
         schema = {"type": "object", "properties": {"ratio": {"default": float("nan")}}}
-        args: dict = {}
-        assert _adapter()._schema_refusal(args, schema) == (
-            "the default the server's schema lists for `ratio` is not JSON data"
+        policy = self.Recording()
+        assert _adapter()._judged_call("purge", {}, schema, policy) == (
+            None,
+            "Recusal refused `purge`: the server's listed schema for this tool is not JSON data",
         )
+        assert policy.seen == []
 
     # --- an argument must already be of the type the schema declares --------------------------
 
@@ -1047,6 +1066,7 @@ class TestWhatIsSentIsWhatWasJudged:
             "label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "ref": {"$ref": "#/$defs/Ref"},
         },
+        "$defs": {"Ref": {"type": "object", "properties": {"deep": {"type": "boolean"}}}},
     }
 
     @pytest.mark.parametrize(
@@ -1101,13 +1121,27 @@ class TestWhatIsSentIsWhatWasJudged:
             ),
             (
                 {"tags": ["a", 1]},
-                "argument `tags` holds a value that is of JSON type integer where the "
-                "server's schema declares string",
+                "argument `tags[1]` is of JSON type integer where the server's schema "
+                "declares string",
             ),
             (
                 {"options": {"force": "MARKER"}},
-                "argument `options` holds a value that is of JSON type string where the "
-                "server's schema declares boolean",
+                "argument `options.force` is of JSON type string where the server's schema "
+                "declares boolean",
+            ),
+            (
+                {"label": 5},
+                "argument `label` is of JSON type integer where the server's schema declares "
+                "string or null",
+            ),
+            (
+                {"ref": {"deep": "MARKER"}},
+                "argument `ref.deep` is of JSON type string where the server's schema "
+                "declares boolean",
+            ),
+            (
+                {"ref": "MARKER"},
+                "argument `ref` is of JSON type string where the server's schema declares object",
             ),
             (
                 {"mode": "MARKER"},
@@ -1130,6 +1164,9 @@ class TestWhatIsSentIsWhatWasJudged:
             "object-for-array",
             "item-of-another-type",
             "member-of-another-type",
+            "none-of-the-alternatives",
+            "member-behind-a-ref",
+            "string-for-an-object-behind-a-ref",
             "not-in-enum",
             "enum-by-type",
             "enum-boolean-is-not-a-number",
@@ -1144,10 +1181,14 @@ class TestWhatIsSentIsWhatWasJudged:
             [("purge", arguments, "c1")], policy=policy, server=_purge_server(example, self.TYPED)
         )
         assert called == [] and policy.seen == []
-        assert _text(outputs["c1"]) == (
-            f"Recusal refused `purge`: {detail}; the server would not run with the value the "
-            "policy judged. Send the declared JSON type."
+        # only a value of another JSON type is told to send the declared type
+        advice = (
+            "the server would not run with the value the policy judged. Send the declared "
+            "JSON type."
+            if "is of JSON type" in detail
+            else "the gate sends only arguments that are valid against it as they stand"
         )
+        assert _text(outputs["c1"]) == f"Recusal refused `purge`: {detail}; {advice}"
         assert "MARKER" not in _text(outputs["c1"]), "the reason carries no argument text"
 
     def test_negative_control_ungated_the_server_is_sent_the_string_it_would_convert(self, example):
@@ -1168,9 +1209,9 @@ class TestWhatIsSentIsWhatWasJudged:
             "options": {"force": False, "unlisted": "kept"},
             "mode": 1,
             "kind": "files",
-            "label": 5,  # anyOf is not read: left as sent
-            "ref": {"any": "thing"},  # nor is a $ref
-            "unlisted": "kept",  # nor an argument the schema does not name
+            "label": None,
+            "ref": {"deep": True, "unlisted": "kept"},
+            "unlisted": "kept",  # an argument the schema does not name, and does not forbid
         }
         policy = self.Recording()
         _, called = example.run_calls(
@@ -1184,22 +1225,20 @@ class TestWhatIsSentIsWhatWasJudged:
             ("files", "purge", {"ratio": None, "depth": -1}),
         ]
 
-    @pytest.mark.parametrize(
-        "schema",
-        [
-            {"type": "string"},
-            {"properties": {"dry_run": {"type": "boolean", "default": False}}},
-            {"type": "object"},
-            {"type": "object", "properties": ["dry_run"]},
-            None,
-        ],
-        ids=["not-an-object", "no-type", "no-properties", "properties-not-a-mapping", "none"],
-    )
-    def test_a_schema_that_is_not_an_object_schema_is_not_read(self, schema):
+    @pytest.mark.parametrize("schema", [{}, {"type": "object"}], ids=["empty", "bare"])
+    def test_a_schema_that_constrains_nothing_judges_and_sends_the_call_as_it_is(self, schema):
         pytest.importorskip("agents.mcp", reason="openai-agents is not installed")
-        args = {"dry_run": "false"}
-        assert _adapter()._schema_refusal(args, schema) is None
-        assert args == {"dry_run": "false"}, "nothing is completed and nothing is checked"
+        policy = self.Recording()
+        sent, reason = _adapter()._judged_call("purge", {"dry_run": "false"}, schema, policy)
+        assert (sent, reason) == ({"dry_run": "false"}, None)
+        assert policy.seen == [("purge", {"dry_run": "false"})]
+
+    def test_a_schema_without_a_type_is_read_all_the_same(self, example):
+        schema = {"properties": {"dry_run": {"type": "boolean", "default": False}}}
+        policy = self.Recording()
+        sent, reason = _adapter()._judged_call("purge", {"dry_run": "false"}, schema, policy)
+        assert sent is None and "argument `dry_run` is of JSON type string" in reason
+        assert _adapter()._judged_call("purge", {}, schema, policy)[0] == {"dry_run": False}
 
     # --- the schema is the one the server listed ----------------------------------------------
 
@@ -1381,3 +1420,1209 @@ class TestWhatIsSentIsWhatWasJudged:
             "Recusal refused `run_sql`: arguments hold a non-finite number, which is not JSON data"
         )
         assert policy.seen == []
+
+
+#: A member with a listed default, the shape a nested model or an inline object publishes.
+OPTIONS = {
+    "type": "object",
+    "properties": {
+        "recursive": {"type": "boolean", "default": True},
+        "dry_run": {"type": "boolean", "default": False},
+    },
+}
+FILLED = {"recursive": True, "dry_run": False}
+
+_SCHEMA = "the server's listed schema for this tool"
+_AS_THEY_STAND = "the gate sends only arguments that are valid against it as they stand"
+_SEND_THE_TYPE = (
+    "the server would not run with the value the policy judged. Send the declared JSON type."
+)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestTheWholeListedSchema:
+    """The second review of 2026-11-21. The first fix read a top-level property with a
+    plain ``type`` and completed top-level defaults only, so the first review's exploit
+    still ran for ``anyOf`` (every ``Optional``), ``$ref`` (every nested model),
+    ``additionalProperties`` (every ``dict``), ``prefixItems`` (every tuple) and nested
+    defaults. The arguments must now be valid against the whole listed schema as they
+    stand, every default it lists at any depth is written out, and what the gate cannot
+    check or complete is refused. ``TestARealServerRunsWhatWasJudged`` shows the same
+    against a server built with the MCP Python SDK."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+
+    def judged(self, arguments, schema):
+        """``(what the policy saw or None, what is sent or None, the reason or None)``."""
+        policy = self.Recording()
+        sent, reason = _adapter()._judged_call("purge", arguments, schema, policy)
+        return (policy.seen[0][1] if policy.seen else None), sent, reason
+
+    # --- defaults at every depth -----------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "schema, arguments, completed",
+        [
+            ({"properties": {"opts": OPTIONS}}, {"opts": {}}, {"opts": FILLED}),
+            (
+                {"properties": {"opts": OPTIONS}},
+                {"opts": {"dry_run": True}},
+                {"opts": {"dry_run": True, "recursive": True}},
+            ),
+            (
+                {"properties": {"targets": {"type": "array", "items": OPTIONS}}},
+                {"targets": [{}, {"recursive": False}]},
+                {"targets": [FILLED, {"recursive": False, "dry_run": False}]},
+            ),
+            (
+                {
+                    "properties": {"opts": {"$ref": "#/$defs/Options"}},
+                    "$defs": {"Options": OPTIONS},
+                },
+                {"opts": {}},
+                {"opts": FILLED},
+            ),
+            (
+                {
+                    "properties": {"opts": {"$ref": "#/$defs/Options", "default": {}}},
+                    "$defs": {"Options": OPTIONS},
+                },
+                {},
+                {"opts": FILLED},
+            ),
+            (
+                {
+                    "properties": {"mode": {"$ref": "#/$defs/Mode"}},
+                    "$defs": {"Mode": {"default": 1}},
+                },
+                {},
+                {"mode": 1},
+            ),
+            (
+                {"properties": {"by": {"type": "object", "additionalProperties": OPTIONS}}},
+                {"by": {"a": {}}},
+                {"by": {"a": FILLED}},
+            ),
+            (
+                {
+                    "properties": {
+                        "t": {"type": "array", "prefixItems": [{"type": "integer"}, OPTIONS]}
+                    }
+                },
+                {"t": [1, {}]},
+                {"t": [1, FILLED]},
+            ),
+            (
+                {
+                    "properties": {
+                        "opts": {"allOf": [OPTIONS, {"properties": {"depth": {"default": 3}}}]}
+                    }
+                },
+                {"opts": {}},
+                {"opts": {**FILLED, "depth": 3}},
+            ),
+            (
+                {"properties": {"opts": {"anyOf": [OPTIONS, {"type": "null"}]}}},
+                {"opts": {}},
+                {"opts": FILLED},
+            ),
+            (
+                {"properties": {"opts": {"anyOf": [OPTIONS, {"type": "null"}]}}},
+                {"opts": None},
+                {"opts": None},
+            ),
+            (
+                {
+                    "properties": {
+                        "shape": {
+                            "oneOf": [
+                                {
+                                    "properties": {"kind": {"const": "a"}, "x": {"default": 1}},
+                                    "required": ["kind"],
+                                },
+                                {
+                                    "properties": {"kind": {"const": "b"}, "y": {"default": 2}},
+                                    "required": ["kind"],
+                                },
+                            ]
+                        }
+                    }
+                },
+                {"shape": {"kind": "b"}},
+                {"shape": {"kind": "b", "y": 2}},
+            ),
+            (
+                {
+                    "properties": {"node": {"$ref": "#/$defs/Node"}},
+                    "$defs": {
+                        "Node": {
+                            "type": "object",
+                            "properties": {
+                                "leaf": {"type": "boolean", "default": True},
+                                "child": {"$ref": "#/$defs/Node"},
+                            },
+                        }
+                    },
+                },
+                {"node": {"child": {"child": {}}}},
+                {"node": {"leaf": True, "child": {"leaf": True, "child": {"leaf": True}}}},
+            ),
+        ],
+        ids=[
+            "nested-object",
+            "nested-object-in-part",
+            "items-of-a-list",
+            "behind-a-ref",
+            "a-written-default-is-completed-too",
+            "a-default-the-ref-lists",
+            "additional-properties",
+            "prefix-items",
+            "all-of",
+            "the-one-alternative-that-validates",
+            "the-other-alternative",
+            "one-of",
+            "a-schema-that-refers-to-itself",
+        ],
+    )
+    def test_every_listed_default_is_written_out_judged_and_sent(
+        self, example, schema, arguments, completed
+    ):
+        import copy
+
+        before = copy.deepcopy(arguments)
+        assert self.judged(arguments, schema) == (completed, completed, None)
+        assert arguments == before, "the caller's own dict is not written to"
+
+    def test_the_policy_and_the_server_share_no_object(self, example):
+        """A policy that writes to what it was handed changes its copy, not the call, and
+        not the schema's own default for the next call."""
+        schema = {"properties": {"opts": {"default": {"tags": ["a"]}}}}
+        server = example.gate_mcp_server(_purge_server(example, schema), self.spoiling)
+        example.CALLED.clear()
+        asyncio.run(server.call_tool("purge", {}))
+        assert example.CALLED == [("files", "purge", {"opts": {"tags": ["a"]}})]
+        # nor does a server that writes to what it received reach the listed default
+        example.CALLED[0][2]["opts"]["tags"].append("WRITTEN BY THE SERVER")
+        asyncio.run(server.call_tool("purge", {}))
+        assert example.CALLED[1] == ("files", "purge", {"opts": {"tags": ["a"]}})
+
+    @staticmethod
+    def spoiling(name, args):
+        args["opts"]["tags"].append("WRITTEN BY THE POLICY")
+        args["extra"] = True
+        return []
+
+    def test_alternatives_that_would_write_different_defaults_are_refused(self, example):
+        other = {
+            "type": "object",
+            "properties": {"recursive": {"type": "boolean", "default": False}},
+        }
+        schema = {"properties": {"opts": {"anyOf": [OPTIONS, other]}}}
+        assert self.judged({"opts": {}}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: argument `opts` matches more than one of the alternatives "
+            "the server's schema lists, and they list different defaults, so the gate cannot "
+            "tell what the server would run with",
+        )
+        # nothing is left out, so nothing is ambiguous
+        given = {"opts": {"recursive": True, "dry_run": True}}
+        assert self.judged(given, schema) == (given, given, None)
+        # two alternatives that write the same defaults are one answer
+        same = {"properties": {"opts": {"anyOf": [OPTIONS, {**OPTIONS, "title": "again"}]}}}
+        assert self.judged({"opts": {}}, same) == ({"opts": FILLED}, {"opts": FILLED}, None)
+        # alternatives that differ only in a default that cannot be sent differ all the same
+        unsendable = [
+            {"properties": {"q": {"type": "string", "default": None}}},
+            {"properties": {"q": {"type": "string", "default": 5}}},
+        ]
+        schema = {"properties": {"opts": {"type": "object", "anyOf": unsendable}}}
+        assert "they list different defaults" in self.judged({"opts": {}}, schema)[2]
+
+    def test_a_default_that_cannot_be_sent_is_judged_at_any_depth_and_not_sent(self, example):
+        schema = {
+            "properties": {
+                "opts": {
+                    "type": "object",
+                    "properties": {
+                        "q": {"type": "string", "default": None},
+                        "limit": {"type": "integer", "default": 10},
+                    },
+                }
+            }
+        }
+        assert self.judged({"opts": {}}, schema) == (
+            {"opts": {"q": None, "limit": 10}},
+            {"opts": {"limit": 10}},
+            None,
+        )
+        assert self.judged({"opts": {"q": "x"}}, schema) == (
+            {"opts": {"q": "x", "limit": 10}},
+            {"opts": {"q": "x", "limit": 10}},
+            None,
+        )
+
+    def test_an_item_left_out_that_has_a_listed_default_is_refused(self, example):
+        schema = {"properties": {"t": {"prefixItems": [{"type": "integer"}, {"default": 1}]}}}
+        assert self.judged({"t": [5]}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: argument `t` leaves out an item the server's schema lists "
+            "a default for, which the gate cannot write in place",
+        )
+        assert self.judged({"t": [5, 2]}, schema) == ({"t": [5, 2]}, {"t": [5, 2]}, None)
+
+    # --- strict validity against the whole schema ------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "schema, arguments, detail",
+        [
+            (
+                {"properties": {"dry_run": {"anyOf": [{"type": "boolean"}, {"type": "null"}]}}},
+                {"dry_run": "false"},
+                "argument `dry_run` is of JSON type string where the server's schema declares "
+                f"boolean or null; {_SEND_THE_TYPE}",
+            ),
+            (
+                {"properties": {"dry_run": {"anyOf": [{"type": "boolean"}, {"type": "null"}]}}},
+                {"dry_run": 1},
+                "argument `dry_run` is of JSON type integer where the server's schema declares "
+                f"boolean or null; {_SEND_THE_TYPE}",
+            ),
+            (
+                {
+                    "properties": {"opts": {"$ref": "#/$defs/Options"}},
+                    "$defs": {"Options": OPTIONS},
+                },
+                {"opts": {"recursive": "false"}},
+                "argument `opts.recursive` is of JSON type string where the server's schema "
+                f"declares boolean; {_SEND_THE_TYPE}",
+            ),
+            (
+                {
+                    "properties": {"opts": {"$ref": "#/$defs/Options"}},
+                    "$defs": {"Options": OPTIONS},
+                },
+                {"opts": '{"recursive": true}'},
+                "argument `opts` is of JSON type string where the server's schema declares "
+                f"object; {_SEND_THE_TYPE}",
+            ),
+            (
+                {"properties": {"flags": {"additionalProperties": {"type": "boolean"}}}},
+                {"flags": {"MARKER": "true"}},
+                "argument `flags.*` is of JSON type string where the server's schema declares "
+                f"boolean; {_SEND_THE_TYPE}",
+            ),
+            (
+                {"properties": {"t": {"prefixItems": [{"type": "integer"}, {"type": "boolean"}]}}},
+                {"t": [1, "true"]},
+                "argument `t[1]` is of JSON type string where the server's schema declares "
+                f"boolean; {_SEND_THE_TYPE}",
+            ),
+            (
+                {"properties": {"items": {"type": "array", "items": OPTIONS}}},
+                {"items": [{}, {"recursive": "no"}]},
+                "argument `items[1].recursive` is of JSON type string where the server's schema "
+                f"declares boolean; {_SEND_THE_TYPE}",
+            ),
+            (
+                {"properties": {"n": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}},
+                {"n": 5.0},
+                "argument `n` is of JSON type number where the server's schema declares integer "
+                f"or null; {_SEND_THE_TYPE}",
+            ),
+            (
+                {"properties": {"level": {"enum": ["low", "high"], "type": "string"}}},
+                {"level": "MARKER"},
+                "argument `level` is not one of the values the server's schema lists; "
+                f"{_AS_THEY_STAND}",
+            ),
+            (
+                {"properties": {"path": {"type": "string"}}, "required": ["path"]},
+                {},
+                f"the arguments leave out `path`, which the server's schema requires; "
+                f"{_AS_THEY_STAND}",
+            ),
+            (
+                {"properties": {"opts": {"required": ["recursive", "dry_run"]}}},
+                {"opts": {"recursive": True}},
+                "argument `opts` leaves out `dry_run`, which the server's schema requires; "
+                f"{_AS_THEY_STAND}",
+            ),
+            (
+                {"properties": {"path": {"type": "string"}}, "additionalProperties": False},
+                {"MARKER": 1},
+                f"the arguments hold a member the server's schema does not allow; {_AS_THEY_STAND}",
+            ),
+            (
+                {"properties": {"n": {"type": "integer", "minimum": 10}}},
+                {"n": 5},
+                f"argument `n` does not meet `minimum` in the server's schema; {_AS_THEY_STAND}",
+            ),
+            (
+                {
+                    "properties": {
+                        "n": {"anyOf": [{"type": "string", "maxLength": 2}, {"type": "null"}]}
+                    }
+                },
+                {"n": "MARKER"},
+                "argument `n` matches none of the alternatives the server's schema lists there; "
+                f"{_AS_THEY_STAND}",
+            ),
+            (
+                {"type": "string"},
+                {"path": "MARKER"},
+                "the arguments are of JSON type object where the server's schema declares "
+                f"string; {_SEND_THE_TYPE}",
+            ),
+            (
+                {
+                    "properties": {
+                        "n": {"anyOf": [{"type": "number", "minimum": 10}, {"type": "null"}]}
+                    }
+                },
+                {"n": 5},
+                "argument `n` matches none of the alternatives the server's schema lists there; "
+                f"{_AS_THEY_STAND}",
+            ),
+            (
+                {"properties": {"a": {"type": "integer", "default": 1}}, "required": ["a"]},
+                {},
+                f"the arguments leave out `a`, which the server's schema requires; "
+                f"{_AS_THEY_STAND}",
+            ),
+        ],
+        ids=[
+            "string-for-an-optional-boolean",
+            "integer-for-an-optional-boolean",
+            "member-of-a-nested-model",
+            "json-text-for-an-object",
+            "member-the-schema-does-not-name",
+            "item-of-a-tuple",
+            "member-of-a-list-item",
+            "float-for-an-optional-integer",
+            "not-in-enum",
+            "required-left-out",
+            "nested-required-left-out",
+            "member-not-allowed",
+            "another-constraint",
+            "no-alternative-and-the-type-is-listed",
+            "the-arguments-themselves",
+            "an-integer-is-a-number-so-the-type-is-listed",
+            "required-is-checked-before-any-default-is-written",
+        ],
+    )
+    def test_arguments_not_valid_against_the_schema_as_they_stand_are_refused(
+        self, example, schema, arguments, detail
+    ):
+        seen, sent, reason = self.judged(arguments, schema)
+        assert seen is None and sent is None, "refused before the policy ran"
+        assert reason == f"Recusal refused `purge`: {detail}"
+        assert "MARKER" not in reason, "the reason carries no text of the model's"
+
+    def test_a_number_that_is_an_integer_or_a_float_is_judged_as_sent(self, example):
+        schema = {
+            "properties": {
+                "ratio": {"type": "number"},
+                "either": {"type": ["integer", "number"]},
+                "count": {"type": "integer"},
+            }
+        }
+        arguments = {"ratio": 1, "either": 5.0, "count": 5}
+        assert self.judged(arguments, schema) == (arguments, arguments, None)
+        assert self.judged({"ratio": True}, schema)[2] is not None, "a boolean is not a number"
+
+    def test_a_format_is_not_asserted(self, example):
+        schema = {"properties": {"mail": {"type": "string", "format": "email"}}}
+        assert self.judged({"mail": "not an address"}, schema)[2] is None
+
+    def test_a_written_default_must_leave_the_arguments_valid(self, example):
+        schema = {
+            "properties": {"a": {"type": "integer", "default": 1}, "b": {"type": "integer"}},
+            "maxProperties": 1,
+        }
+        assert self.judged({"b": 2}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: the arguments do not meet `maxProperties` in the server's "
+            f"schema; {_AS_THEY_STAND}",
+        )
+
+    # --- the older drafts a server may declare ---------------------------------------------------
+
+    def test_a_draft_07_schema_is_validated_and_completed_by_its_own_keywords(self, example):
+        schema = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "opts": {"$ref": "#/definitions/Options"},
+                "t": {
+                    "type": "array",
+                    "items": [{"type": "integer"}, OPTIONS],
+                    "additionalItems": OPTIONS,
+                },
+            },
+            "definitions": {"Options": OPTIONS},
+        }
+        completed = {"opts": FILLED, "t": [1, FILLED, FILLED]}
+        assert self.judged({"opts": {}, "t": [1, {}, {}]}, schema) == (completed, completed, None)
+        reason = self.judged({"opts": {}, "t": ["1"]}, schema)[2]
+        assert "argument `t[0]` is of JSON type string" in reason
+
+    def test_a_2019_09_schema_is_validated_and_completed(self, example):
+        schema = {
+            "$schema": "https://json-schema.org/draft/2019-09/schema",
+            "properties": {"t": {"items": OPTIONS}},
+        }
+        assert self.judged({"t": [{}]}, schema) == ({"t": [FILLED]}, {"t": [FILLED]}, None)
+
+    # --- a schema the gate cannot check or complete against is refused --------------------------
+
+    @pytest.mark.parametrize(
+        "schema, detail",
+        [
+            (None, "is not a JSON object"),
+            (["object"], "is not a JSON object"),
+            (True, "is not a JSON object"),
+            ({"type": "object", "properties": ["dry_run"]}, "is not a valid JSON Schema"),
+            ({"type": 5}, "is not a valid JSON Schema"),
+            ({"properties": {"a": {"default": object()}}}, "is not JSON data"),
+            (
+                {"$schema": "http://json-schema.org/draft-04/schema#"},
+                "declares a JSON Schema draft the gate does not read (it reads draft-07, "
+                "2019-09 and 2020-12)",
+            ),
+            (
+                {"$schema": "https://example.invalid/dialect"},
+                "declares a JSON Schema draft the gate does not read (it reads draft-07, "
+                "2019-09 and 2020-12)",
+            ),
+            (
+                {"$schema": 7},
+                "declares a JSON Schema draft the gate does not read (it reads draft-07, "
+                "2019-09 and 2020-12)",
+            ),
+            (
+                {"properties": {"a": {"$ref": "#/$defs/Missing"}}},
+                "has a `$ref` that does not resolve inside the schema itself, so the gate cannot "
+                "check the arguments against it",
+            ),
+            (
+                {"properties": {"a": {"$ref": "https://example.invalid/schema.json"}}},
+                "has a `$ref` that does not resolve inside the schema itself, so the gate cannot "
+                "check the arguments against it",
+            ),
+            (
+                {"properties": {"a": {"$ref": "other.json#/$defs/A"}}, "$defs": {"A": {}}},
+                "has a `$ref` that does not resolve inside the schema itself, so the gate cannot "
+                "check the arguments against it",
+            ),
+            (
+                {"properties": {"a": {"$ref": "x/$defs/A"}}, "$defs": {"A": {}}},
+                "has a `$ref` that does not resolve inside the schema itself, so the gate cannot "
+                "check the arguments against it",
+            ),
+            (
+                {"properties": {"a": {"$ref": "#name"}}, "$defs": {"A": {"$anchor": "name"}}},
+                "has a `$ref` that does not resolve inside the schema itself, so the gate cannot "
+                "check the arguments against it",
+            ),
+            (
+                {"$defs": {"unused": {"$ref": "#/$defs/Missing"}}},
+                "has a `$ref` that does not resolve inside the schema itself, so the gate cannot "
+                "check the arguments against it",
+            ),
+            (
+                {"properties": {"a": {"$dynamicRef": "#node"}}},
+                "uses `$dynamicRef`, which the gate does not resolve",
+            ),
+            (
+                {
+                    "$schema": "https://json-schema.org/draft/2019-09/schema",
+                    "properties": {"a": {"$recursiveRef": "#"}},
+                },
+                "uses `$recursiveRef`, which the gate does not resolve",
+            ),
+            (
+                {"properties": {"a": {"$id": "https://example.invalid/a", "type": "string"}}},
+                "embeds a schema with an `$id` of its own, which the gate does not resolve "
+                "references against",
+            ),
+            (
+                {"if": {"required": ["a"]}, "then": {"properties": {"b": {"default": 1}}}},
+                "lists a default under `then`, where the gate cannot tell whether the server "
+                "would apply it",
+            ),
+            (
+                {"patternProperties": {"^x": {"default": 1}}},
+                "lists a default under `patternProperties`, where the gate cannot tell whether "
+                "the server would apply it",
+            ),
+            (
+                {"dependentSchemas": {"a": {"properties": {"b": {"default": 1}}}}},
+                "lists a default under `dependentSchemas`, where the gate cannot tell whether "
+                "the server would apply it",
+            ),
+            ({"$ref": "#"}, "refers to itself without end"),
+            (
+                {
+                    "properties": {"a": {"$ref": "#/$defs/A"}},
+                    "$defs": {"A": {"$ref": "#/$defs/B"}, "B": {"$ref": "#/$defs/A"}},
+                },
+                "refers to itself without end",
+            ),
+        ],
+        ids=[
+            "none",
+            "a-list",
+            "a-boolean",
+            "properties-not-a-mapping",
+            "type-not-a-name",
+            "not-json-data",
+            "draft-04",
+            "an-unknown-dialect",
+            "a-dialect-that-is-not-a-string",
+            "a-ref-to-nowhere",
+            "a-remote-ref",
+            "a-ref-into-another-document",
+            "a-relative-ref",
+            "a-ref-to-an-anchor",
+            "a-ref-to-nowhere-nothing-uses",
+            "a-dynamic-ref",
+            "a-recursive-ref",
+            "an-embedded-id",
+            "a-default-under-then",
+            "a-default-under-pattern-properties",
+            "a-default-under-dependent-schemas",
+            "a-ref-to-itself",
+            "refs-in-a-loop",
+        ],
+    )
+    def test_a_schema_the_gate_cannot_check_or_complete_against_is_refused(
+        self, example, schema, detail
+    ):
+        seen, sent, reason = self.judged({"a": "MARKER"}, schema)
+        assert seen is None and sent is None
+        assert reason == f"Recusal refused `purge`: {_SCHEMA} {detail}"
+
+    def test_defaults_that_never_settle_are_refused(self, example):
+        """A default that is an object which lists the same default again, without end."""
+        again = {"default": {}, "$ref": "#/$defs/A"}
+        schema = {"properties": {"a": again}, "$defs": {"A": {"properties": {"a": again}}}}
+        assert self.judged({}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} lists defaults that never settle",
+        )
+
+    def test_a_remote_ref_is_never_fetched(self, example, monkeypatch):
+        """Refused from the text of the schema, before any validator could ask for it."""
+        import urllib.request
+
+        asked: list = []
+
+        def fetched(request, *args, **kwargs):
+            asked.append(getattr(request, "full_url", request))
+            raise OSError("no network in a test")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fetched)
+        schema = {"properties": {"a": {"$ref": "https://example.invalid/schema.json"}}}
+        assert "does not resolve inside the schema itself" in self.judged({"a": 1}, schema)[2]
+        # and the validator itself holds an empty registry, so it has nowhere to ask
+        import importlib
+
+        listed = importlib.import_module("recusal_openai_agents_mcp._schema").Listed({})
+        with pytest.raises(Exception, match="Unresolvable"):
+            list(listed._prepared().descend(1, schema["properties"]["a"]))
+        assert asked == [], "the validator asked the network for a schema"
+
+    def test_what_the_walk_does_not_follow_is_still_validated(self, example):
+        """A keyword the walk does not follow is refused only when a default sits under it."""
+        schema = {
+            "if": {"properties": {"kind": {"const": "file"}}, "required": ["kind"]},
+            "then": {"required": ["path"]},
+            "patternProperties": {"^x_": {"type": "integer"}},
+        }
+        given = {"kind": "file", "path": "/data", "x_n": 1}
+        assert self.judged(given, schema) == (given, given, None)
+        assert "leave out `path`" in self.judged({"kind": "file"}, schema)[2]
+        assert "argument `*` is of JSON type string" in self.judged({"x_n": "1"}, schema)[2]
+
+    # --- the most recent listing is the one that counts -----------------------------------------
+
+    @staticmethod
+    def changing_server(example, listings):
+        """A server whose successive listings are ``listings``: each a map of tool name to
+        input schema; the last one repeats."""
+        from mcp.types import Tool
+
+        class Changing(example.InProcessMCPServer):
+            listed = 0
+
+            async def list_tools(self, run_context=None, agent=None):
+                now = listings[min(self.listed, len(listings) - 1)]
+                self.listed += 1
+                return [Tool(name=n, description=n, inputSchema=dict(s)) for n, s in now.items()]
+
+        return Changing(name="files", tools=("purge", "legacy"))
+
+    def test_a_later_listing_replaces_the_schema_of_an_earlier_one(self, example):
+        """First listing wins was a mutation no test caught."""
+        first = {"properties": {"recursive": {"type": "boolean", "default": False}}}
+        second = {
+            "properties": {
+                "recursive": {"type": "boolean", "default": True},
+                "force": {"type": "boolean", "default": True},
+            }
+        }
+        policy = self.Recording()
+        server = example.gate_mcp_server(
+            self.changing_server(example, [{"purge": first}, {"purge": second}]), policy
+        )
+        example.CALLED.clear()
+        asyncio.run(server.list_tools())
+        asyncio.run(server.call_tool("purge", {}))
+        asyncio.run(server.list_tools())
+        asyncio.run(server.call_tool("purge", {}))
+        assert [args for _, args in policy.seen] == [
+            {"recursive": False},
+            {"recursive": True, "force": True},
+        ]
+        assert [args for _, _, args in example.CALLED] == [args for _, args in policy.seen]
+
+    def test_a_tool_the_server_withdrew_is_refused(self, example):
+        policy = self.Recording()
+        server = example.gate_mcp_server(
+            self.changing_server(example, [{"purge": {}, "legacy": {}}, {"purge": {}}]), policy
+        )
+        example.CALLED.clear()
+        asyncio.run(server.list_tools())
+        assert (
+            not asyncio.run(server.call_tool("legacy", {})).model_dump(by_alias=True).get("isError")
+        )
+        asyncio.run(server.list_tools())
+        result = asyncio.run(server.call_tool("legacy", {}))
+        assert result.model_dump(by_alias=True)["isError"] is True
+        assert result.content[0].text.startswith(
+            "Recusal refused `legacy`: the server lists no tool of this name"
+        )
+        assert example.CALLED == [("files", "legacy", {})], "only the call made while it was listed"
+        assert [name for name, _ in policy.seen] == ["legacy"]
+
+    def test_a_call_to_a_tool_not_in_the_latest_listing_lists_once_for_that_call(self, example):
+        server = self.changing_server(example, [{"purge": {}}])
+        gated = example.gate_mcp_server(server, self.Recording())
+        asyncio.run(gated.list_tools())
+        assert server.listed == 1
+        for expected in (2, 3):
+            assert asyncio.run(gated.call_tool("legacy", {})).model_dump(by_alias=True)["isError"]
+            assert server.listed == expected
+        asyncio.run(gated.call_tool("purge", {}))
+        assert server.listed == 3, "a listed tool is not listed for again"
+
+    # --- arguments nested too deeply, and model settings ----------------------------------------
+
+    def test_arguments_nested_past_the_depth_limit_are_refused_before_the_schema_is_read(
+        self, example
+    ):
+        def nested(depth):
+            value: list = []
+            for _ in range(depth - 1):
+                value = [value]
+            return {"meta": value}
+
+        assert self.judged(nested(64), {}) == (nested(64), nested(64), None)
+        assert self.judged(nested(65), {}) == (
+            None,
+            None,
+            "Recusal refused `purge`: arguments are nested too deeply",
+        )
+
+    @pytest.mark.parametrize("field", ["extra_body", "extra_args"])
+    def test_model_settings_that_carry_tools_are_refused(self, example, field):
+        from agents import Agent, ModelSettings
+
+        settings = ModelSettings(**{field: {"tools": [{"type": "web_search"}]}})
+        agent = Agent(
+            name="a",
+            model=example.scripted_model([]),
+            mcp_servers=[example.InProcessMCPServer()],
+            model_settings=settings,
+        )
+        with pytest.raises(
+            ValueError, match=f"cannot gate agent 'a': its model_settings.{field} sets `tools`"
+        ):
+            example.gated_agent(agent, example.sql_scope_policy)
+        gated = example.gated_agent(
+            Agent(name="a", model=example.scripted_model([])), example.sql_scope_policy
+        )
+        assert example.is_gated(gated)
+        gated.model_settings = settings
+        assert not example.is_gated(gated)
+
+
+def _in_order(calls):
+    """Calls in one order whatever order they ran in and whatever order their keys are in."""
+    import json
+
+    return sorted(calls, key=lambda call: json.dumps(call, sort_keys=True))
+
+
+#: A server built with the MCP Python SDK's own server class, run over stdio. It writes
+#: what each tool function received, after the SDK's own validation, to a file.
+STDIO_SERVER = """
+import json
+import os
+import threading
+from typing import Literal, Optional, Union
+
+from mcp.server.mcpserver import MCPServer
+from pydantic import BaseModel, Field
+
+app = MCPServer("files")
+LOG = os.environ["RECUSAL_TEST_SERVER_LOG"]
+WRITING = threading.Lock()  # the calls of one turn run side by side
+
+
+def plain(value):
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    if isinstance(value, dict):
+        return {key: plain(item) for key, item in value.items()}
+    return value
+
+
+def record(tool, **received):
+    with WRITING, open(LOG, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps([tool, plain(received)]) + "\\n")
+    return "ran " + tool
+
+
+class Options(BaseModel):
+    recursive: bool = True
+    dry_run: bool = False
+
+
+@app.tool()
+def purge_opt(
+    path: Optional[str] = "/", recursive: Optional[bool] = True, dry_run: Optional[bool] = None
+) -> str:
+    return record("purge_opt", path=path, recursive=recursive, dry_run=dry_run)
+
+
+@app.tool()
+def purge_nested(path: str, opts: Options) -> str:
+    return record("purge_nested", path=path, opts=opts)
+
+
+@app.tool()
+def purge_nested_default(path: str, opts: Options = Options()) -> str:
+    return record("purge_nested_default", path=path, opts=opts)
+
+
+@app.tool()
+def boxes(items: list[Options]) -> str:
+    return record("boxes", items=items)
+
+
+@app.tool()
+def set_flags(flags: dict[str, bool]) -> str:
+    return record("set_flags", flags=flags)
+
+
+@app.tool()
+def set_limits(limits: dict[str, int]) -> str:
+    return record("set_limits", limits=limits)
+
+
+@app.tool()
+def pair(t: tuple[int, bool]) -> str:
+    return record("pair", t=t)
+
+
+@app.tool()
+def search(q: str = None, limit: int = None, tags: list[str] = None) -> str:
+    return record("search", q=q, limit=limit, tags=tags)
+
+
+@app.tool()
+def run_mode(level: Literal["low", "high"] = "low") -> str:
+    return record("run_mode", level=level)
+
+
+@app.tool()
+def count(n: int = 1, ratio: float = 1) -> str:
+    return record("count", n=n, ratio=ratio)
+
+
+@app.tool()
+def wipe(prefix) -> str:
+    return record("wipe", prefix=prefix)
+
+
+@app.tool()
+def either(v: Union[dict, str]) -> str:
+    return record("either", v=v)
+
+
+@app.tool()
+def pay(amount: float) -> str:
+    return record("pay", amount=amount)
+
+
+@app.tool()
+def tagged(src: str, tags: list[str] = Field(default_factory=lambda: ["all"])) -> str:
+    return record("tagged", src=src, tags=tags)
+
+
+def swap_v1(path: str, recursive: bool = False) -> str:
+    return record("swap", version=1, path=path, recursive=recursive)
+
+
+def swap_v2(path: str, recursive: bool = True, force: bool = True) -> str:
+    return record("swap", version=2, path=path, recursive=recursive, force=force)
+
+
+def legacy(x: int = 1) -> str:
+    return record("legacy", x=x)
+
+
+app.add_tool(swap_v1, name="swap")
+app.add_tool(legacy, name="legacy")
+
+
+@app.tool()
+def reconfigure() -> str:
+    app.remove_tool("swap")
+    app.add_tool(swap_v2, name="swap")
+    app.remove_tool("legacy")
+    return "reconfigured"
+
+
+if __name__ == "__main__":
+    app.run("stdio")
+"""
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestARealServerRunsWhatWasJudged:
+    """The second review's probes, kept as tests: a server built with the MCP Python SDK,
+    reached over stdio, with the parameter shapes Pydantic publishes. For every call the
+    server runs, what its function received equals what the policy judged."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+
+    @pytest.fixture
+    def stdio(self, example, tmp_path):
+        pytest.importorskip("mcp.server.mcpserver", reason="the MCP SDK's server is not installed")
+        import json
+        import os
+        from types import SimpleNamespace
+
+        from agents import Agent, RunConfig, Runner
+        from agents.mcp import MCPServerStdio
+        from agents.testing import ScriptedModel, assistant_message, function_call
+
+        script = tmp_path / "stdio_server.py"
+        script.write_text(STDIO_SERVER, encoding="utf-8")
+        server_log = tmp_path / "server.jsonl"
+        env = {"RECUSAL_TEST_SERVER_LOG": str(server_log)}
+        if "SYSTEMROOT" in os.environ:
+            env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+
+        def run(turns, policy=None, *, gated=True, direct=(), schemas=()):
+            """Script ``turns`` (each a list of ``(tool, arguments)``) through an agent
+            whose one server is the stdio server; then make the ``direct`` calls on the
+            gated server object."""
+            policy = policy or self.Recording()
+            script_turns, ids = [], iter(range(1, 1000))
+            for turn in turns:
+                script_turns.append(
+                    [function_call(n, json.dumps(a), call_id=f"c{next(ids)}") for n, a in turn]
+                )
+            model = ScriptedModel([*script_turns, [assistant_message("done")]])
+            found = SimpleNamespace(wire=[], direct=[], schemas={}, judged=policy.seen)
+
+            async def go():
+                params = {"command": sys.executable, "args": [str(script)], "env": env}
+                async with MCPServerStdio(params=params, client_session_timeout_seconds=60) as srv:
+                    send = srv.session.call_tool
+
+                    async def spy(name, arguments=None, *args, **kwargs):
+                        found.wire.append((name, json.loads(json.dumps(arguments))))
+                        return await send(name, arguments, *args, **kwargs)
+
+                    srv.session.call_tool = spy
+                    for tool in await srv.list_tools() if schemas else ():
+                        if tool.name in schemas:
+                            schema = getattr(tool, "input_schema", None) or tool.inputSchema
+                            found.schemas[tool.name] = schema["properties"]
+                    agent = Agent(name="assistant", model=model, mcp_servers=[srv])
+                    if gated:
+                        agent = example.gated_agent(agent, policy)
+                    await Runner.run(agent, "go", run_config=RunConfig(tracing_disabled=True))
+                    for name, arguments in direct:
+                        result = await srv.call_tool(name, arguments)
+                        found.direct.append(result.content[0].text)
+
+            asyncio.run(asyncio.wait_for(go(), 180))
+            found.outputs = {k: _text(v) for k, v in example.tool_outputs(model).items()}
+            lines = (
+                server_log.read_text(encoding="utf-8").splitlines() if server_log.exists() else []
+            )
+            found.ran = [tuple(json.loads(line)) for line in lines]
+            return found
+
+        return run
+
+    def test_what_the_sdk_publishes_for_the_shapes_under_test(self, stdio):
+        """The premise: these are the schema shapes the first fix did not read."""
+        found = stdio([], schemas=("purge_opt", "purge_nested", "set_flags", "pair", "search"))
+        assert found.schemas["purge_opt"]["dry_run"] == {
+            "anyOf": [{"type": "boolean"}, {"type": "null"}],
+            "default": None,
+            "title": "Dry Run",
+        }
+        assert found.schemas["purge_nested"]["opts"] == {"$ref": "#/$defs/Options"}
+        assert found.schemas["set_flags"]["flags"]["additionalProperties"] == {"type": "boolean"}
+        assert found.schemas["pair"]["t"]["prefixItems"] == [
+            {"type": "integer"},
+            {"type": "boolean"},
+        ]
+        assert found.schemas["search"]["q"] == {"default": None, "title": "Q", "type": "string"}
+
+    def test_negative_control_ungated_the_server_converts_and_fills_what_no_policy_saw(self, stdio):
+        found = stdio(
+            [
+                [
+                    ("purge_opt", {"path": "/data", "dry_run": "false"}),
+                    ("purge_nested", {"path": "/d", "opts": {}}),
+                    ("purge_nested", {"path": "/d", "opts": '{"dry_run": true}'}),
+                    ("set_flags", {"flags": {"force": "true"}}),
+                    ("pair", {"t": ["7", 1]}),
+                ]
+            ],
+            gated=False,
+        )
+        assert _in_order(found.ran) == _in_order(
+            [
+                ("purge_opt", {"path": "/data", "recursive": True, "dry_run": False}),
+                ("purge_nested", {"path": "/d", "opts": {"recursive": True, "dry_run": False}}),
+                ("purge_nested", {"path": "/d", "opts": {"recursive": True, "dry_run": True}}),
+                ("set_flags", {"flags": {"force": True}}),
+                ("pair", {"t": [7, True]}),
+            ]
+        )
+
+    def test_a_value_the_server_would_convert_is_refused_and_never_reaches_it(self, stdio):
+        calls = [
+            ("purge_opt", {"path": "/data", "dry_run": "false"}),
+            ("purge_opt", {"path": "/d", "recursive": "true"}),
+            ("purge_opt", {"path": "/d", "recursive": 1}),
+            ("purge_nested", {"path": "/d", "opts": {"recursive": "false", "dry_run": "true"}}),
+            ("purge_nested", {"path": "/d", "opts": '{"recursive": true}'}),
+            ("boxes", {"items": [{}, {"recursive": "no"}]}),
+            ("set_flags", {"flags": {"force": "true"}}),
+            ("set_limits", {"limits": {"max": "500"}}),
+            ("pair", {"t": [1, "true"]}),
+            ("pair", {"t": ["7", 1]}),
+            ("count", {"n": 2.0}),
+            ("run_mode", {"level": "HIGH"}),
+        ]
+        found = stdio([calls])
+        assert found.ran == [] and found.wire == [] and found.judged == []
+        expected = {
+            "c1": "argument `dry_run` is of JSON type string where the server's schema declares "
+            "boolean or null",
+            "c2": "argument `recursive` is of JSON type string where the server's schema "
+            "declares boolean or null",
+            "c3": "argument `recursive` is of JSON type integer where the server's schema "
+            "declares boolean or null",
+            "c4": "argument `opts.dry_run` is of JSON type string where the server's schema "
+            "declares boolean",
+            "c5": "argument `opts` is of JSON type string where the server's schema declares "
+            "object",
+            "c6": "argument `items[1].recursive` is of JSON type string where the server's "
+            "schema declares boolean",
+            "c7": "argument `flags.*` is of JSON type string where the server's schema declares "
+            "boolean",
+            "c8": "argument `limits.*` is of JSON type string where the server's schema "
+            "declares integer",
+            "c9": "argument `t[1]` is of JSON type string where the server's schema declares "
+            "boolean",
+            "c10": "argument `t[0]` is of JSON type string where the server's schema declares "
+            "integer",
+            "c11": "argument `n` is of JSON type number where the server's schema declares integer",
+        }
+        for call_id, detail in expected.items():
+            tool = calls[int(call_id[1:]) - 1][0]
+            assert found.outputs[call_id] == f"Recusal refused `{tool}`: {detail}; {_SEND_THE_TYPE}"
+        assert found.outputs["c12"] == (
+            "Recusal refused `run_mode`: argument `level` is not one of the values the "
+            f"server's schema lists; {_AS_THEY_STAND}"
+        )
+
+    def test_what_the_server_runs_is_what_the_policy_judged(self, stdio):
+        calls = [
+            ("purge_opt", {}),
+            ("purge_opt", {"path": None, "recursive": None, "dry_run": None}),
+            ("purge_nested", {"path": "/d", "opts": {}}),
+            ("purge_nested", {"path": "/d", "opts": {"dry_run": True}}),
+            ("purge_nested_default", {"path": "/d"}),
+            ("purge_nested_default", {"path": "/d", "opts": {"dry_run": True}}),
+            ("boxes", {"items": [{}, {"recursive": False}]}),
+            ("set_flags", {"flags": {"force": True}}),
+            ("set_limits", {"limits": {"max": 500}}),
+            ("pair", {"t": [7, True]}),
+            ("run_mode", {}),
+            ("count", {"n": 3, "ratio": 2}),
+        ]
+        found = stdio([calls])
+        judged = [
+            ("purge_opt", {"path": "/", "recursive": True, "dry_run": None}),
+            ("purge_opt", {"path": None, "recursive": None, "dry_run": None}),
+            ("purge_nested", {"path": "/d", "opts": {"recursive": True, "dry_run": False}}),
+            ("purge_nested", {"path": "/d", "opts": {"recursive": True, "dry_run": True}}),
+            ("purge_nested_default", {"path": "/d", "opts": {"recursive": True, "dry_run": False}}),
+            ("purge_nested_default", {"path": "/d", "opts": {"recursive": True, "dry_run": True}}),
+            (
+                "boxes",
+                {
+                    "items": [
+                        {"recursive": True, "dry_run": False},
+                        {"recursive": False, "dry_run": False},
+                    ]
+                },
+            ),
+            ("set_flags", {"flags": {"force": True}}),
+            ("set_limits", {"limits": {"max": 500}}),
+            ("pair", {"t": [7, True]}),
+            ("run_mode", {"level": "low"}),
+            ("count", {"n": 3, "ratio": 2}),
+        ]
+        assert _in_order(found.judged) == _in_order(judged)
+        assert _in_order(found.wire) == _in_order(judged), "sent what was judged"
+        assert _in_order(found.ran) == _in_order(judged), "and ran what was judged"
+
+    def test_a_policy_refuses_the_nested_default_it_now_sees(self, stdio):
+        from recusal import Finding
+
+        def dry_runs_only(name, args):
+            opts = args.get("opts", {})
+            if opts.get("recursive") is True or not opts.get("dry_run"):
+                return [Finding.fail("dry_run_only", severity="CRITICAL", message="dry runs only")]
+            return []
+
+        found = stdio(
+            [
+                [
+                    ("purge_nested", {"path": "/d", "opts": {}}),
+                    ("purge_nested", {"path": "/d", "opts": {"recursive": False, "dry_run": True}}),
+                ]
+            ],
+            self.Recording(dry_runs_only),
+        )
+        assert found.outputs["c1"] == "Recusal refused `purge_nested` [FAIL]: dry runs only"
+        assert found.ran == [
+            ("purge_nested", {"path": "/d", "opts": {"recursive": False, "dry_run": True}})
+        ]
+
+    def test_a_default_the_server_would_reject_if_sent_is_judged_and_not_sent(self, stdio):
+        """``q: str = None``: Pydantic publishes ``{"default": null, "type": "string"}``. The
+        first fix wrote the ``null``, then refused its own written default, so every call
+        that left the parameter out failed. The server runs with ``None``: that is judged,
+        and it is not sent."""
+        found = stdio(
+            [
+                [
+                    ("search", {}),
+                    ("search", {"q": "x"}),
+                    ("search", {"q": "x", "limit": 3, "tags": ["a"]}),
+                ]
+            ]
+        )
+        judged = [
+            ("search", {"q": None, "limit": None, "tags": None}),
+            ("search", {"q": "x", "limit": None, "tags": None}),
+            ("search", {"q": "x", "limit": 3, "tags": ["a"]}),
+        ]
+        assert _in_order(found.judged) == _in_order(judged)
+        assert _in_order(found.ran) == _in_order(judged), "the server ran with None"
+        assert _in_order(found.wire) == _in_order(
+            [
+                ("search", {}),
+                ("search", {"q": "x"}),
+                ("search", {"q": "x", "limit": 3, "tags": ["a"]}),
+            ]
+        )
+
+    def test_what_a_server_does_beyond_its_listed_schema_is_not_seen(self, stdio):
+        """The README's list of what the gate does not see, kept true by a test. The MCP
+        Python SDK's server lists ``type: string`` for a parameter without an annotation
+        and then parses the string; it parses JSON text for a parameter whose schema allows
+        a string beside an object; a float parameter rounds an integer above 2**53; and a
+        ``default_factory`` default is in no schema."""
+        found = stdio(
+            [
+                [
+                    ("wipe", {"prefix": "null"}),
+                    ("either", {"v": '{"a": 1}'}),
+                    ("pay", {"amount": 9007199254740993}),
+                    ("tagged", {"src": "a"}),
+                ]
+            ],
+            schemas=("wipe", "tagged"),
+        )
+        assert found.schemas["wipe"] == {"prefix": {"title": "prefix", "type": "string"}}
+        assert "default" not in found.schemas["tagged"]["tags"]
+        sent = [
+            ("wipe", {"prefix": "null"}),
+            ("either", {"v": '{"a": 1}'}),
+            ("pay", {"amount": 9007199254740993}),
+            ("tagged", {"src": "a"}),
+        ]
+        assert _in_order(found.judged) == _in_order(found.wire) == _in_order(sent)
+        assert _in_order(found.ran) == _in_order(
+            [
+                ("wipe", {"prefix": None}),
+                ("either", {"v": {"a": 1}}),
+                ("pay", {"amount": 9007199254740992.0}),
+                ("tagged", {"src": "a", "tags": ["all"]}),
+            ]
+        )
+
+    def test_the_most_recent_listing_governs_and_a_withdrawn_tool_is_refused(self, stdio):
+        """The server replaces ``swap`` and withdraws ``legacy`` in the first turn; the SDK
+        lists again for the second."""
+        found = stdio(
+            [
+                [("swap", {"path": "/x"}), ("legacy", {})],
+                [("reconfigure", {})],
+                [("swap", {"path": "/x"})],
+            ],
+            direct=[("legacy", {}), ("swap", {"path": "/y"})],
+        )
+        assert _in_order(found.judged[:2]) == _in_order(
+            [("swap", {"path": "/x", "recursive": False}), ("legacy", {"x": 1})]
+        )
+        assert found.judged[2:] == [
+            ("reconfigure", {}),
+            ("swap", {"path": "/x", "recursive": True, "force": True}),
+            ("swap", {"path": "/y", "recursive": True, "force": True}),
+        ]
+        assert found.ran[2:] == [
+            ("swap", {"version": 2, "path": "/x", "recursive": True, "force": True}),
+            ("swap", {"version": 2, "path": "/y", "recursive": True, "force": True}),
+        ]
+        assert found.direct[0].startswith(
+            "Recusal refused `legacy`: the server lists no tool of this name"
+        )
+        assert [name for name, _ in found.wire].count("legacy") == 1, "not sent for again"

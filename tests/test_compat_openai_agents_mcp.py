@@ -361,3 +361,48 @@ def test_the_sdk_sends_a_local_server_the_arguments_without_reading_its_schema(e
     seen = _record_calls(server)
     _run_server(ex, [("run_sql", {"sql": 5, "limit": "10"}, "c1"), ("run_sql", {}, "c2")], [server])
     assert [arguments for _, arguments, _ in seen] == [{"sql": 5, "limit": "10"}, {}]
+
+
+# --- the whole listed schema (the second review of 2026-11-21) --------------------------------
+
+
+def test_jsonschema_has_the_surface_the_gate_validates_with():
+    """The gate validates a call's arguments against the listed schema with ``jsonschema``:
+    a validator per draft, chosen by ``$schema``; validation that does not convert and does
+    not assert formats; a registry that fetches nothing; and ``descend``, which validates a
+    value against a subschema with references resolved against the whole schema."""
+    validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    from referencing import Registry
+
+    for name in ("Draft7Validator", "Draft201909Validator", "Draft202012Validator"):
+        draft = getattr(validators, name)
+        declared = {"$schema": draft.META_SCHEMA["$schema"]}
+        assert validators.validator_for(declared, default=None) is draft
+    unknown = {"$schema": "https://example.invalid/dialect"}
+    assert validators.validator_for(unknown, default=None) is None
+
+    latest = validators.Draft202012Validator
+    assert not latest({"type": "boolean"}).is_valid("false"), "validation does not convert"
+    assert not latest({"type": "integer"}).is_valid(True)
+    # the two places the gate is stricter than JSON Schema
+    assert latest({"type": "integer"}).is_valid(1.0)
+    assert latest({"enum": [1]}).is_valid(1.0)
+    assert latest({"type": "string", "format": "email"}).is_valid("not an address")
+
+    strict = validators.extend(
+        latest, type_checker=latest.TYPE_CHECKER.redefine("integer", lambda _, v: type(v) is int)
+    )
+    assert not strict({"type": "integer"}).is_valid(1.0) and strict({"type": "number"}).is_valid(1)
+
+    root = {"$defs": {"Flag": {"type": "boolean"}}}
+    validator = latest(root, registry=Registry())
+    assert list(validator.descend("true", {"$ref": "#/$defs/Flag"}))
+    assert not list(validator.descend(True, {"$ref": "#/$defs/Flag"}))
+    with pytest.raises(Exception, match="Unresolvable"):
+        list(validator.descend(1, {"$ref": "https://example.invalid/schema.json"}))
+    (error,) = latest({"properties": {"a": {"items": {"type": "integer"}}}}).iter_errors(
+        {"a": [1, "x"]}
+    )
+    assert list(error.absolute_path) == ["a", 1]
+    assert error.validator == "type" and error.validator_value == "integer"
+    assert error.instance == "x"

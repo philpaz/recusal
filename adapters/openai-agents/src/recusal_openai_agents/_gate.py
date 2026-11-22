@@ -17,6 +17,9 @@ What the guardrail cannot see, so ``gated_agent`` refuses it rather than skippin
 - MCP servers attached with ``mcp_servers=``, and handoffs to other agents;
 - an agent with a ``prompt``: a prompt stored on OpenAI's servers can configure tools of
   its own, which are not in the agent's ``tools`` list;
+- an agent whose ``model_settings`` put tools into the request themselves (``extra_body``
+  or ``extra_args`` with a ``tools``, ``prompt``, ``plugins``, ``web_search_options`` or
+  ``mcp_servers`` key);
 - a sub-agent behind ``agent.as_tool(...)`` whose own tools are not gated: the guardrail
   sees only the input handed to the sub-agent, never the calls it then makes. Gate the
   sub-agent first, ``gated_agent(sub, policy).as_tool(...)``, and the parent accepts it;
@@ -28,10 +31,19 @@ when you call them, naming the tool and the cause (:func:`_tool_refusal`):
 
 - a parameter the SDK prepares only by running the tool's own code (an ``Enum``, a model, a
   dataclass, a ``TypedDict``, a date, a tuple, a set, ``bytes``, a string pattern, a custom
-  validator or a default factory): every call would be refused as unjudgeable;
+  validator, a default factory other than ``list`` or ``dict``, a default that is not JSON
+  data): every call would be refused as unjudgeable;
+- a mapping parameter whose key type is not ``str``: the SDK converts the keys, and
+  arguments are judged as JSON data, whose keys are strings;
 - a variadic parameter (``*args``, ``**kwargs``), whose values have no names to judge by;
 - a wrapper around the function that takes a parameter of its own, or takes one of the
-  function's: it would run with a value no policy judged.
+  function's: it would run with a value no policy judged;
+- a ``functools.singledispatch`` function, which picks the code that runs by the type of
+  an argument, and a decorator whose signature cannot be read.
+
+Which callables are read for that: the function, what its ``__wrapped__`` chain leads to,
+a bound method's function and a callable object's ``__call__``. A wrapper that calls a
+function it holds some other way (in a closure, in an attribute) is not read.
 
 ``gated_agent`` checks the agent when you call it. Build the agent completely, then gate
 it; a tool appended to the gated agent's list afterwards is not gated. The gated copy has
@@ -42,8 +54,10 @@ original agent's lists does not reach it.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import inspect
 import json
+from collections.abc import Mapping
 from typing import Any, Callable, List, Optional
 
 from agents import (
@@ -71,6 +85,25 @@ _NOT_BUILT_BY_FUNCTION_TOOL = (
 )
 
 _VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+
+#: How many levels below the arguments object a value may sit. A fixed number, the same
+#: with and without a recording: nothing nested deeper is copied, fingerprinted, prepared
+#: or handed to a policy, each of which walks the arguments and would give up at a depth
+#: that depends on the interpreter's recursion limit and the caller's stack.
+_MAX_DEPTH = 64
+
+_TOO_DEEP = "arguments are nested too deeply"
+
+
+def _too_deep(value: Any, depth: int = 0) -> bool:
+    """Whether decoded arguments hold a value more than ``_MAX_DEPTH`` levels down."""
+    if depth > _MAX_DEPTH:
+        return True
+    if type(value) is dict:
+        return any(_too_deep(item, depth + 1) for item in value.values())
+    if type(value) is list:
+        return any(_too_deep(item, depth + 1) for item in value)
+    return False
 
 
 def _sdk_schema(tool: FunctionTool) -> FuncSchema:
@@ -122,23 +155,147 @@ def _judged_names(schema: FuncSchema) -> tuple[list[str], list[str]]:
 def _unprepared_parameters(schema: FuncSchema) -> Optional[str]:
     """Why the SDK will not prepare this tool's arguments before the tool runs, or None if
     it will. The rule is the SDK's own (``can_prepare_without_user_code``): it prepares a
-    parameter model only when validating it runs none of the tool's code."""
+    parameter model only when validating it runs none of the tool's code.
+
+    A parameter of a type the SDK does prepare is still not prepared when its default is
+    not JSON data (``tags: list[str] = ()``, ``timeout: float = math.inf``) or comes from a
+    factory other than ``list`` or ``dict``; those two causes are named for what they are."""
     model = schema.params_pydantic_model
     if can_prepare_without_user_code(model):
         return None
+    names: list[str] = []
+    defaults: list[str] = []
+    factories: list[str] = []
     try:
         fields = model.__pydantic_core_schema__["schema"]["fields"]
-        names = [n for n, field in fields.items() if not _is_data_only_schema(field["schema"])]
+        for name, field in fields.items():
+            inner = field["schema"]
+            if _is_data_only_schema(inner):
+                continue
+            if inner["type"] != "default" or not _is_data_only_schema(inner["schema"]):
+                names.append(name)
+            elif inner.get("default_factory") is not None:
+                factories.append(name)
+            else:
+                defaults.append(name)
     except Exception:  # noqa: BLE001, the refusal stands without the parameter's name
-        names = []
-    which = ("parameter " + ", ".join(f"`{n}`" for n in names)) if names else "a parameter"
+        names, defaults, factories = [], [], []
+    if not names and factories:
+        return (
+            f"parameter {_quoted(factories)} has a default factory other than `list` or "
+            "`dict`, which is code of the tool's own that the SDK does not run before the "
+            "tool does, so no call could be judged. Use `Field(default_factory=list)`, "
+            "`Field(default_factory=dict)` or a plain default, and build the value inside "
+            "the tool body."
+        )
+    if not names and defaults:
+        return (
+            f"parameter {_quoted(defaults)} has a default that is not plain JSON data (a "
+            "tuple, a set, a non-finite number, an object), which the SDK does not "
+            "prepare, so no call could be judged. Give it a JSON default (None, a string, a "
+            "finite number, a boolean, a list or a dict of them) and build the other value "
+            "inside the tool body."
+        )
+    which = f"parameter {_quoted(names)}" if names else "a parameter"
     return (
         f"{which} has a type or a validation the SDK prepares only by running the tool's own "
         "code (an Enum, a model, a dataclass, a TypedDict, a date, a tuple, a set, bytes, a "
-        "pattern, a custom validator or a default factory), so no call could be judged. "
+        "pattern, a custom validator), so no call could be judged. "
         "Declare data-only parameters (str, int, float, bool, None, Literal, and lists and "
         "dicts of them) and resolve application types inside the tool body."
     )
+
+
+def _quoted(names: list[str]) -> str:
+    return ", ".join(f"`{name}`" for name in names)
+
+
+def _other_keys(node: Any) -> bool:
+    """Whether a parameter's core schema holds a mapping whose key type is not ``str``."""
+    if type(node) is dict:
+        keys = node.get("keys_schema")
+        if node.get("type") == "dict" and type(keys) is dict:
+            if keys.get("type") not in ("str", "any"):
+                return True
+        return any(_other_keys(item) for item in node.values())
+    if type(node) is list:
+        return any(_other_keys(item) for item in node)
+    return False
+
+
+def _mapping_keys_refusal(schema: FuncSchema) -> Optional[str]:
+    """Why a mapping parameter could not be judged, or None.
+
+    The SDK accepts ``dict[int, str]`` and converts the keys of the JSON object it is sent
+    (``{"1": "a"}`` reaches the function as ``{1: "a"}``). The gate judges the prepared
+    arguments as JSON data, whose keys are strings, so every call that gives such a mapping
+    a member would be refused; the tool is refused when it is gated."""
+    try:
+        fields = schema.params_pydantic_model.__pydantic_core_schema__["schema"]["fields"]
+        names = [name for name, field in fields.items() if _other_keys(field["schema"])]
+    except Exception:  # noqa: BLE001, a parameter model the gate cannot read is refused
+        return "its parameter model cannot be read"
+    if not names:
+        return None
+    return (
+        f"parameter {_quoted(names)} is a mapping whose key type is not `str`. The SDK "
+        "would convert the keys of the JSON object the model sends, and the gate judges "
+        "arguments as JSON data, whose keys are strings, so no call that gives it a member "
+        "could be judged. Declare `dict[str, ...]` and convert the keys inside the tool body."
+    )
+
+
+#: The object ``functools.lru_cache`` returns, which the kernel's walk reads through.
+_LRU_WRAPPER = type(functools.lru_cache(maxsize=None)(lambda: None))
+
+_SINGLEDISPATCH = (
+    "it is a `functools.singledispatch` function: the implementation that runs is chosen "
+    "by the type of an argument and each one has its own parameters, so the gate cannot "
+    "tell which would run or with what defaults. Register one plain function per tool and "
+    "dispatch inside its body."
+)
+
+_OPAQUE_DECORATOR = (
+    "a decorator on the function cannot be inspected (a class-based decorator that is also "
+    "a descriptor, such as `cachetools.cached`), so the functions under it cannot be read. "
+    "Call the decorated function from a plain function and register that."
+)
+
+
+def _wrapped_chain(func: Any) -> list[Any]:
+    """``func`` and the callables its ``__wrapped__`` attributes lead to, outermost first;
+    a ``functools.partial`` is followed to its function."""
+    chain: list[Any] = []
+    while func is not None and len(chain) < 64 and not any(func is link for link in chain):
+        chain.append(func)
+        if isinstance(func, functools.partial):
+            func = func.func
+        else:
+            func = getattr(func, "__wrapped__", None)
+    return chain
+
+
+def _dispatches_by_type(link: Any) -> bool:
+    """A ``functools.singledispatch`` function, or a ``singledispatchmethod`` read from an
+    object: what it runs depends on the type of an argument."""
+    if callable(getattr(link, "dispatch", None)) and hasattr(link, "registry"):
+        return True
+    register = getattr(link, "register", None)
+    return isinstance(getattr(register, "__self__", None), functools.singledispatchmethod)
+
+
+def _opaque_decorator(link: Any) -> bool:
+    """A decorator object ``inspect`` reads as a built-in and finds no signature for: an
+    instance of a class with ``__get__``, as ``cachetools.cached`` returns."""
+    if not inspect.ismethoddescriptor(link) or isinstance(link, _LRU_WRAPPER):
+        return False
+    try:
+        inspect.signature(link, follow_wrapped=False)
+    except ValueError:
+        return True
+    except TypeError:
+        return False
+    return False
 
 
 def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
@@ -151,14 +308,25 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
     walk) must either take exactly the parameters the SDK prepared for, or forward
     ``*args`` and ``**kwargs`` and name none of its own. A wrapper that adds a parameter
     runs it at a default that is in no schema; one that takes a parameter of the function
-    leaves the function at its own default; one that reorders them swaps the values."""
+    leaves the function at its own default; one that reorders them swaps the values.
+
+    The walk reads the callable, what ``__wrapped__`` leads to, a bound method's function
+    and a callable object's ``__call__``. A ``functools.singledispatch`` function is
+    refused: which implementation runs depends on the type of an argument, and the walk
+    reads only the one ``__wrapped__`` names. A wrapper that calls a function it holds in
+    a closure or an attribute is not read, and is not refused."""
     get_callable = getattr(tool.on_invoke_tool, "_get_wrapped_callable", None)
     func = get_callable() if callable(get_callable) else None
+    chain = _wrapped_chain(func)
+    if any(_dispatches_by_type(link) for link in chain):
+        return _SINGLEDISPATCH
     try:
         if not callable(func):
             raise TypeError("the invoker does not expose the function it wraps")
         levels = _reached_parameters(func)
     except Exception as exc:  # noqa: BLE001, a callable the gate cannot read is refused
+        if type(exc) is ValueError and any(_opaque_decorator(link) for link in chain):
+            return _OPAQUE_DECORATOR
         return f"the function it runs cannot be inspected ({type(exc).__name__})"
     declared = [(p.name, p.kind) for p in schema.signature.parameters.values()]
     for level in levels:
@@ -186,7 +354,11 @@ def _tool_refusal(tool: FunctionTool) -> Optional[str]:
         _judged_names(schema)
     except TypeError as exc:
         return str(exc)
-    return _unprepared_parameters(schema) or _wrapper_refusal(tool, schema)
+    return (
+        _unprepared_parameters(schema)
+        or _mapping_keys_refusal(schema)
+        or _wrapper_refusal(tool, schema)
+    )
 
 
 def _effective_arguments(schema: FuncSchema, prepared: Any) -> dict[str, Any]:
@@ -220,20 +392,19 @@ def _proposed(
 
     A non-finite number (``NaN``, ``Infinity``, a literal too large for a float) is not
     JSON data: no policy can compare it and no record can fingerprint it, so it is refused
-    here, before the policy runs, with or without a recording. So are arguments nested too
-    deeply to read. Those refusals are bound to the argument text, as the one for
-    malformed JSON is."""
-    too_deep = "arguments are nested too deeply to judge"
+    here, before the policy runs, with or without a recording. So are arguments that hold
+    a value more than ``_MAX_DEPTH`` levels down, before anything else reads them. Those
+    refusals are bound to the argument text, as the one for malformed JSON is."""
     try:
         args = json.loads(arguments or "{}")
     except RecursionError:
-        return None, _unjudgeable(tool_name, too_deep, arguments, record)
+        return None, _unjudgeable(tool_name, _TOO_DEEP, arguments, record)
     except ValueError:
         return None, _unjudgeable(tool_name, "arguments are not valid JSON", arguments, record)
+    if _too_deep(args):
+        return None, _unjudgeable(tool_name, _TOO_DEEP, arguments, record)
     try:
         args = _detached(args)
-    except RecursionError:
-        return None, _unjudgeable(tool_name, too_deep, arguments, record)
     except TypeError:
         return None, _unjudgeable(
             tool_name,
@@ -483,6 +654,9 @@ def _ungateable_reason(agent: Any) -> str | None:
         return "it has handoffs, which hand the conversation to another agent's tools"
     if agent.prompt is not None:
         return _PROMPT_REASON
+    settings = _settings_reason(agent)
+    if settings is not None:
+        return f"its {settings}"
     shared = _shared_name_reason(agent.tools)
     if shared is not None:
         return f"its {shared}"
@@ -496,6 +670,33 @@ _PROMPT_REASON = (
     "not in the agent's tools list, which no gate sees. Put the instructions and the tools "
     "on the agent itself."
 )
+
+
+#: Request fields that configure tools the provider runs, or a stored prompt that can.
+_TOOL_REQUEST_KEYS = ("tools", "prompt", "plugins", "web_search_options", "mcp_servers")
+
+
+def _settings_reason(agent: Any) -> Optional[str]:
+    """Why an agent's ``model_settings`` could configure tools no gate sees, or None.
+
+    The SDK merges ``extra_body`` into the body of every model request and passes
+    ``extra_args`` as request arguments, so a ``tools`` key there (or a stored ``prompt``)
+    reaches the provider without being in the agent's ``tools`` list. Only the agent's own
+    settings are read: settings given to a run (``RunConfig(model_settings=...)``) are not
+    known when the agent is gated."""
+    settings = getattr(agent, "model_settings", None)
+    for field in ("extra_body", "extra_args"):
+        extra = getattr(settings, field, None)
+        if not isinstance(extra, Mapping):
+            continue
+        found = [key for key in _TOOL_REQUEST_KEYS if key in extra]
+        if found:
+            return (
+                f"model_settings.{field} sets {_quoted(found)}, which puts tools into the "
+                "model request that are not in the agent's tools list, which no gate sees. "
+                "Put the tools on the agent itself."
+            )
+    return None
 
 
 def _tools_gated(tools: Any, agent_gated: Callable[[Any], bool]) -> bool:

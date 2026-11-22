@@ -29,10 +29,14 @@ from ._gate import (
 # gates MCP servers with them): the decision for a call whose arguments are a JSON
 # string, the recorded refusal for a call that cannot be judged, and the tool names an
 # agent lists more than once, why tools that share a name cannot be gated, and whether a
-# list of tools carries the guardrail (with the caller's own answer for a sub-agent).
+# list of tools carries the guardrail (with the caller's own answer for a sub-agent), why
+# an agent's model settings put tools into the request, and whether arguments are nested
+# deeper than the gate reads.
 from ._gate import _duplicate_names as duplicate_names
 from ._gate import _refusal as refusal
+from ._gate import _settings_reason as settings_reason
 from ._gate import _shared_name_reason as shared_name_reason
+from ._gate import _too_deep as too_deep
 from ._gate import _tools_gated as tools_gated
 from ._gate import _unjudgeable as unjudgeable
 
@@ -53,7 +57,9 @@ __all__ = [
     "recording",
     "recusal_guardrail",
     "refusal",
+    "settings_reason",
     "shared_name_reason",
+    "too_deep",
     "tools_gated",
     "unjudgeable",
 ]

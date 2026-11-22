@@ -96,20 +96,28 @@ defaults filled and types coerced (`{"amount": "50"}` reaches an `int` parameter
 `50`), each value under the name of the parameter that receives it (which parameter is
 the context the SDK fills is read from the SDK's own schema for the tool), and pins that
 invocation so the SDK executes exactly what was judged. A non-finite number (`NaN`,
-`Infinity`) is refused before the policy runs, with or without an audit log. A tool no
+`Infinity`) and arguments that hold a value more than 64 levels deep are refused before
+the policy runs, the same way with or without an audit log. A tool no
 call to which could be judged is refused when it is gated, by `gate_tools` and
 `gated_agent`, with a `TypeError` naming the tool: a parameter model the SDK will not
 prepare (one that runs a custom validator or holds an application type such as an Enum, a
-model, a dataclass or a date), a variadic parameter, and a `functools.wraps` wrapper that
+model, a dataclass or a date, a default that is not JSON data, a default factory other
+than `list` or `dict`), a mapping whose key type is not `str`, a variadic parameter, a
+`functools.wraps` wrapper at any level of a stack that
 takes a parameter of its own or one of the function's, which would run with a value no
-policy judged; keep parameters data-only and validate inside the tool body. A refusal
+policy judged, a `functools.singledispatch` function, and a decorator whose signature
+cannot be read (a class-based decorator that is also a descriptor, such as
+`cachetools.cached`); keep parameters data-only and validate inside the tool body. The
+walk reads the function, its `__wrapped__` chain, a bound method's function and a callable
+object's `__call__`; a wrapper that calls a function it holds in a closure is not read. A refusal
 becomes the call's
 output, so the model reads Recusal's reason and the tool never runs. Gate a finished agent with
 `gated_agent(agent, policy)`: it returns a gated copy with its own `tools`, `handoffs` and
 `mcp_servers` lists, and it refuses, rather than skips,
 anything the guardrail cannot see. That means hosted tools and the SDK's other non-function
 tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an agent with
-a `prompt` (a stored prompt can configure tools of its own), an
+a `prompt` (a stored prompt can configure tools of its own), an agent whose
+`model_settings` put tools into the request through `extra_body` or `extra_args`, an
 `agent.as_tool(...)` whose sub-agent is not itself gated, and `Agent` subclasses such as
 `SandboxAgent`. `Runner.run`, `Runner.run_streamed` and calls a person approved through
 `needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
@@ -139,13 +147,24 @@ server's own `call_tool`, in place, the one point where the SDK hands over the s
 tool name and the arguments that are sent to it, after any approval. A server fills a
 parameter the call leaves out from its default and converts a value of another type, and
 its listed `inputSchema` is the only statement of both, so the gate also wraps
-`list_tools`, in place, to keep each tool's listed schema, and before the policy runs it
-writes every listed default the call leaves out into the arguments and refuses an
-argument that is not already of the JSON type the schema declares (a string for a boolean
-or a number, `5.0` for an integer), naming the parameter and the two types. The policy
+`list_tools`, in place, to keep each tool's schema from the most recent listing, and
+before the policy runs the arguments must be valid against the whole of that schema as
+they stand (validated with `jsonschema` in the draft the schema declares, through
+`anyOf`, `$ref`, `additionalProperties`, `prefixItems` and the rest, and stricter where a
+server would still convert: a string is not a boolean or a number, `5.0` is not an
+integer), and every default the schema lists for a property they leave out, at any depth,
+is written into them. Arguments the gate cannot check or complete are refused with a
+reason that names the place and what the schema requires there, and carries no argument
+text: a `$ref` that does not resolve inside the schema, a draft other than draft-07,
+2019-09 and 2020-12, a default under a keyword the walk does not follow, alternatives
+that would write different defaults, a tool the server no longer lists. The policy
 judges a copy of the completed arguments and the server is sent the completed arguments,
-so a policy's write to what it judged changes its copy, not the call. A parameter left
-out that has no listed default is the server's to fill and is not seen, and for hosted
+so a policy's write to what it judged changes its copy, not the call. The one exception
+is a listed default that is not valid against its own property schema (`q: str = None`
+publishes one): the server runs with it and would reject it if sent, so it is judged and
+not sent. A parameter left
+out that has no listed default is the server's to fill and is not seen, nor is a server
+whose code does more than its schema says, and for hosted
 MCP the server's schema is not read at all. A refusal is returned
 as an MCP error result carrying the reason, so the model reads it and the server is never
 called. A policy keyed by tool name names the server's own tools. A policy written for

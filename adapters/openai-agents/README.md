@@ -99,14 +99,28 @@ Declare data-only parameters. These are gated and judged by value:
 - `str`, `int`, `float`, `bool`, `None`, `Optional[...]` and unions of these;
 - `Literal[...]` of strings, integers and booleans;
 - `list[...]` and `dict[str, ...]` of the above, and `Any` (judged as the JSON it was sent as);
-- any of them with `Field` limits such as `ge=`, `le=` or `max_length=`.
+- any of them with `Field` limits such as `ge=`, `le=` or `max_length=`;
+- any of them with a default that is JSON data, or with `Field(default_factory=list)` or
+  `Field(default_factory=dict)`.
+
+A `dict` parameter needs `function_tool(..., strict_mode=False)`: under the SDK's default
+strict schema the SDK itself refuses to build such a tool (`UserError`,
+"additionalProperties should not be set").
 
 `gate_tools` and `gated_agent` raise `TypeError`, naming the tool and the parameter, for a
-parameter the SDK prepares only by running code of the tool's own, because no call to
-such a tool could be judged: an `Enum`, a Pydantic model, a dataclass, a `TypedDict`,
-`datetime` and `date`, `tuple`, `set`, `bytes`, `Field(pattern=...)`, a custom validator
-and a default factory. Take a `str`, an `int` or a `dict` in its place and build the
-application type inside the tool body.
+parameter no call to which could be judged:
+
+- a type or a validation the SDK prepares only by running code of the tool's own: an
+  `Enum`, a Pydantic model, a dataclass, a `TypedDict`, `datetime` and `date`, `tuple`,
+  `set`, `bytes`, `Field(pattern=...)` and a custom validator. Take a `str`, an `int` or
+  a `dict` in its place and build the application type inside the tool body;
+- a default factory other than `list` or `dict` (`Field(default_factory=lambda: [...])`).
+  Use a plain default and build the value inside the tool body;
+- a default that is not JSON data (`tags: list[str] = ()`, `timeout: float = math.inf`).
+  Give it a JSON default: `None`, a string, a finite number, a boolean, a list or a dict;
+- a mapping whose key type is not `str` (`dict[int, str]`). The SDK converts the keys of
+  the JSON object the model sends, and the gate judges arguments as JSON data, whose keys
+  are strings. Declare `dict[str, ...]` and convert the keys inside the tool body.
 
 ## Put every decision on the record
 
@@ -144,6 +158,10 @@ guardrail never sees. The rule is default-deny:
 - **An agent with a `prompt`.** A prompt stored on OpenAI's servers can configure tools
   that are not in the agent's `tools` list. Put the instructions and the tools on the
   agent itself.
+- **An agent whose `model_settings` put tools into the request.** The SDK sends
+  `extra_body` and `extra_args` with every model request, so a `tools`, `prompt`,
+  `plugins`, `web_search_options` or `mcp_servers` key there reaches the provider beside
+  the agent's `tools` list. Put the tools on the agent itself.
 - **`Agent` subclasses** such as `SandboxAgent` and `RealtimeAgent`: a subclass can add
   tools of its own at run time.
 - **Function tools that share a name.** Two tools under one name are resolved by the SDK
@@ -162,7 +180,8 @@ guardrail cannot judge:
 - **A `FunctionTool` built by hand** (`FunctionTool(..., on_invoke_tool=...)`). The gate
   could judge only the model's raw JSON, not what your invoker makes of it. Build the
   tool with `function_tool`.
-- **A parameter type outside the data-only set** listed under Parameter types above.
+- **A parameter outside the data-only set** listed under Parameter types above: its
+  type, its default, or the key type of a mapping.
 - **A variadic parameter** (`*args`, `**kwargs`). Its values have no names to judge by.
   Declare each parameter by name.
 - **A wrapped function whose wrapper takes a parameter.** The SDK reads a
@@ -170,7 +189,17 @@ guardrail cannot judge:
   of its own (`dry_run=False`) would run it at a default that is in no schema, and one
   that takes or reorders the function's parameters would hand the function other values
   than the policy judged. A wrapper that forwards `*args, **kwargs` and names no
-  parameter is gated. A function with a declared `__signature__` is refused.
+  parameter is gated, and so is a stack of them, each level read in turn; a stack of more
+  than 31 is refused as too deep to read. A function with a declared `__signature__` is
+  refused.
+- **A decorator whose signature cannot be read.** A class-based decorator that is also a
+  descriptor (`cachetools.cached`, `cachetools.func.ttl_cache`, `cachetools.func.lru_cache`)
+  hides the functions under it from inspection. Call the decorated function from a plain
+  function and register that. `functools.lru_cache` and `functools.cache` are read
+  through and gated.
+- **A `functools.singledispatch` function, or a `singledispatchmethod`.** The
+  implementation that runs is chosen by the type of an argument, and each one has its
+  own parameters and defaults. Register one plain function and dispatch inside its body.
 - **A sub-agent behind `agent.as_tool(...)` whose own tools are not gated.** Gate the
   sub-agent first, `gated_agent(sub, policy).as_tool(...)`, and the parent accepts it.
 
@@ -181,17 +210,31 @@ Refused call by call, before the policy runs, with a reason the model reads:
 - a non-finite number (`NaN`, `Infinity`, a literal too large for a float, or a string a
   `float` parameter reads as one). It is not JSON data: a policy cannot compare it and a
   record cannot fingerprint it;
-- arguments given to a tool that takes none.
+- arguments given to a tool that takes none;
+- arguments that hold a value more than 64 levels below the arguments object. The limit
+  is the gate's own and fixed: it is the same with and without an audit log, and does not
+  move with the interpreter's recursion limit.
 
 What the gate does not see:
 
 - **What a wrapper or the tool body does with the arguments.** The gate judges the
   values the function is called with. A decorator that changes them in its body, and
   anything the tool reads from elsewhere, is not seen.
-- **A call the SDK rejects before the guardrail runs.** A tool the agent does not have
-  raises `ModelBehaviorError` in the SDK; arguments that hold a lone surrogate character
-  raise `UnicodeEncodeError` inside the SDK. Nothing runs, and neither is on the audit
-  log.
+- **A function a wrapper holds some other way than `__wrapped__`.** The gate reads the
+  function, what its `__wrapped__` chain leads to, a bound method's function and a
+  callable object's `__call__`. A decorator that applies a second decorator inside itself
+  and calls that one (the inner wrapper sits in a closure, and `functools.wraps` points
+  past it), or a callable object that copies another function's `__wrapped__`, runs a
+  wrapper the gate never read. A parameter that wrapper takes or adds is not judged.
+- **Model settings given to a run.** Only the agent's own `model_settings` are read when
+  it is gated. `RunConfig(model_settings=...)` is merged in when a run starts, and an
+  `extra_body` there is not seen.
+- **A call the SDK rejects before the guardrail runs.** Each of these raises inside the
+  SDK and stops the run; nothing runs, and none is on the audit log: a tool the agent
+  does not have, a tool call id the model reuses within one response, and a blank tool
+  call id (`ModelBehaviorError`); arguments that hold a lone surrogate character
+  (`UnicodeEncodeError`); and arguments nested about a thousand levels deep or more
+  (`RecursionError`, at a depth that depends on the interpreter's recursion limit).
 - **A realtime session.** `gated_agent` refuses a `RealtimeAgent`. `gate_tools` accepts a
   list of function tools whatever they are attached to, but a realtime session runs the
   guardrail on a tool context of its own, so the arguments the gate pinned are not the

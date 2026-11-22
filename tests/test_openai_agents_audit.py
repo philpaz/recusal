@@ -630,6 +630,64 @@ class TestOneDecisionPath:
         assert entry["action"]["reason"] == audited["c1"]
         assert entry["action"]["input_sha256"] == _sha(bound)
 
+    @staticmethod
+    def note_tool(gate, ran):
+        import typing
+
+        @gate.function_tool(strict_mode=False)
+        def note(payload: typing.Any) -> str:
+            """Record a note; contacts nothing."""
+            ran.append("ran")
+            return "noted"
+
+        return note
+
+    @ROUTES
+    @pytest.mark.parametrize("depth", [65, 300, 488, 600])
+    def test_deeply_nested_arguments_are_refused_the_same_way_with_and_without_a_log(
+        self, example, gate, log, streamed, depth
+    ):
+        """The second review, F3: at about 488 levels the plain gate ran the call and the
+        audited one refused it (the record could not fingerprint it), and deeper the two
+        refused for different stated causes. One fixed limit, applied by the gate before
+        anything else reads the arguments, now gives one answer in both."""
+        ran: list = []
+        seen: list = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        arguments = '{"payload": ' + "[" * depth + "]" * depth + "}"
+        calls = [("note", arguments, "c1")]
+        plain, _ = gate.run_calls(
+            calls, policy=policy, streamed=streamed, tools=[self.note_tool(gate, ran)]
+        )
+        audited, _ = example.run_calls(
+            calls, log, policy=policy, streamed=streamed, tools=[self.note_tool(gate, ran)]
+        )
+        assert plain == {"c1": "Recusal refused `note`: arguments are nested too deeply"}
+        assert audited == {"c1": "Recusal refused `note` [FAIL]: arguments are nested too deeply"}
+        assert ran == [] and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["tool_use_id"] == "c1"
+        assert entry["action"]["reason"] == audited["c1"]
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha({"input": arguments})
+
+    def test_arguments_at_the_depth_limit_take_the_same_path_in_both(self, example, gate, log):
+        ran: list = []
+        arguments = '{"payload": ' + "[" * 64 + "]" * 64 + "}"
+        calls = [("note", arguments, "c1")]
+        plain, _ = gate.run_calls(calls, policy=lambda *_: [], tools=[self.note_tool(gate, ran)])
+        audited, _ = example.run_calls(
+            calls, log, policy=lambda *_: [], tools=[self.note_tool(gate, ran)]
+        )
+        assert plain == audited == {"c1": "noted"} and ran == ["ran", "ran"]
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "defer"
+        assert entry["action"]["input_sha256"] == _sha(json.loads(arguments))
+
     def test_negative_control_a_finite_amount_takes_the_same_path_in_both(self, example, gate, log):
         ran: list = []
         calls = [("pay", '{"amount": 5}', "c1"), ("pay", '{"amount": 5000}', "c2")]
