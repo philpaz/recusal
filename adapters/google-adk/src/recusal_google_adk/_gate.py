@@ -42,7 +42,7 @@ from __future__ import annotations
 import copy
 import inspect
 import re
-from typing import Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
@@ -62,6 +62,9 @@ from recusal.invocation import detached as _detached
 from recusal.invocation import json_data as _json_data
 from recusal.invocation import reached_parameters as _reached_parameters
 from recusal.invocation import unsupported_signature as _unsupported_signature
+
+if TYPE_CHECKING:
+    from google.adk.agents.llm_agent import BeforeToolCallback
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -337,7 +340,7 @@ def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> st
         return f"Recusal refused `{tool_name}`: {detail}"
     bound = proposal if isinstance(proposal, dict) else {"input": proposal}
 
-    def unjudgeable(_name, _input):
+    def unjudgeable(_name: str, _input: dict[str, Any]) -> list[Finding]:
         return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
 
     try:
@@ -395,7 +398,9 @@ def _refusal(
     return reason if decision == "deny" else None
 
 
-def recusal_before_tool(policy: Policy, recording: Optional[Recording] = None):
+def recusal_before_tool(
+    policy: Policy, recording: Optional[Recording] = None
+) -> BeforeToolCallback:
     """Return a ``before_tool_callback`` that judges each tool call before it runs.
 
     A refusal is returned as the tool's response, ``{"error": reason}``, so the model sees
@@ -403,7 +408,9 @@ def recusal_before_tool(policy: Policy, recording: Optional[Recording] = None):
     decision on an audit log (``recusal_google_adk.recording``).
     """
 
-    def gate(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext):
+    def gate(
+        tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
+    ) -> Optional[dict[str, Any]]:
         try:
             record = _record_for(recording, tool_context)
         except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call

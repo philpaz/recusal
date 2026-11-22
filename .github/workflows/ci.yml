@@ -509,7 +509,7 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
 
   # The same proof for recusal-openai-agents.
   adapter-openai-agents-wheel:
