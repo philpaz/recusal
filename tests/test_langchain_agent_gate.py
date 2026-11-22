@@ -878,6 +878,104 @@ class TestLangChainAgentGate:
                 messages[0].content
             )
 
+    # --- review round 3 ----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("is_async", [False, True], ids=["invoke", "ainvoke"])
+    def test_a_forwarder_under_the_schema_inferred_from_it_is_refused(self, example, is_async):
+        """``@tool`` over a decorator built without ``functools.wraps``: the inferred
+        schema's fields are the forwarder's own ``args`` and ``kwargs``, the policy judged
+        ``{}`` and the function behind it ran ``limit=1000000``."""
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        if is_async:
+
+            async def export_rows(table: str = "users", limit: int = 1000000) -> str:
+                """Export the rows of a table."""
+                ran.append((table, limit))
+                return "exported"
+
+            async def wrapper(*args, **kwargs):
+                return await export_rows(*args, **kwargs)
+
+        else:
+
+            def export_rows(table: str = "users", limit: int = 1000000) -> str:
+                """Export the rows of a table."""
+                ran.append((table, limit))
+                return "exported"
+
+            def wrapper(*args, **kwargs):
+                return export_rows(*args, **kwargs)
+
+        wrapper.__name__, wrapper.__doc__ = "export_rows", export_rows.__doc__
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        kwargs = {"policy": recording, "tools": [tool(wrapper)]}
+        calls = [self.call("export_rows", {})]
+        if is_async:
+            messages, _ = asyncio.run(example.arun_calls(calls, **kwargs))
+        else:
+            messages, _ = example.run_calls(calls, **kwargs)
+        assert ran == [] and seen == []
+        assert "takes only `*args` or `**kwargs`" in str(messages[0].content)
+
+    def test_an_mcp_argument_named_like_one_langchain_keeps(self, example, monkeypatch):
+        """``callbacks`` reaches the server as sent, so it is judged; ``config`` cannot
+        reach it, and the refusal says so in the server's terms."""
+        received, seen = [], []
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        tool = self.mcp_tool(monkeypatch, received)
+        calls = [
+            self.call("read_file", {"path": "/x", "callbacks": "m"}, "callbacks"),
+            self.call("read_file", {"path": "/x", "config": "m"}, "config"),
+        ]
+        messages, _ = asyncio.run(example.arun_calls(calls, policy=recording, tools=[tool]))
+        by_id = {m.tool_call_id: str(m.content) for m in messages}
+        assert seen == [("read_file", {"path": "/x", "callbacks": "m"})]
+        assert received == [{"path": "/x", "callbacks": "m"}]
+        assert "the invocation sets `config`" in by_id["config"]
+        assert "the MCP server would not receive it" in by_id["config"]
+
+    def test_an_error_answer_that_is_not_the_refusal_is_withheld_after_a_refused_call(
+        self, example
+    ):
+        """A fallback listed after the gate ran another tool for a refused call; that tool
+        failed, and the fallback answered with the failure under the judged tool's name."""
+        from langchain.agents.middleware import wrap_tool_call
+        from langchain_core.messages import ToolMessage
+
+        ran = []
+
+        @wrap_tool_call
+        def fallback(request, handler):
+            result = handler(request)
+            if getattr(result, "status", None) != "error":
+                return result
+            ran.append(request.tool_call["args"]["sql"])
+            return ToolMessage(
+                content="fallback failed after it ran the statement",
+                tool_call_id=request.tool_call["id"],
+                name="run_sql",
+                status="error",
+            )
+
+        messages, executed = example.run_calls(
+            [self.call("run_sql", self.DELETE)], middleware=[example.gate_middleware(), fallback]
+        )
+        assert executed == [] and ran == [self.DELETE["sql"]]
+        assert messages[0].status == "error"
+        assert "fallback failed" not in str(messages[0].content)
+        assert "did not allow the call" in str(messages[0].content)
+
     # --- the tool shapes the LangGraph gate takes, through the middleware -----------------
 
     @pytest.mark.parametrize("route", ["sync", "async"])

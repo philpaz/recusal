@@ -259,7 +259,8 @@ def _reached(func) -> list:
     turned into the ``TypeError`` the seam refuses on. One callable Python itself cannot
     read is common enough to give as the example in the reason: an object whose class
     defines ``__get__`` (``cachetools.cached`` returns one), which ``inspect.signature``
-    takes for a builtin.
+    takes for a builtin. A stack of ``functools.wraps`` decorators deeper than the walk
+    follows is the other failure that has a cause the gate can state (:func:`_stacked`).
     """
     try:
         return _reached_parameters(func)
@@ -269,12 +270,38 @@ def _reached(func) -> list:
             "so the gate cannot tell which parameters it runs with"
         ) from None
     except Exception as exc:  # noqa: BLE001, an uninspectable callable cannot be judged
+        if _stacked(func) > _READ_DEPTH:
+            raise TypeError(
+                "the tool's function is under more decorators than the gate reads (more "
+                f"than {_READ_DEPTH}, one inside the other), so its parameters cannot be "
+                "read; call the decorated function from a plain function and give the "
+                "tool that"
+            ) from None
         raise TypeError(
             f"the tool's callable cannot be inspected for its parameters ({type(exc).__name__}), "
             "for example a class-based decorator that is also a descriptor (its class "
             "defines `__get__`); call the decorated function from a plain function and give "
             "the tool that"
         ) from None
+
+
+#: A stack of ``functools.wraps`` decorators the kernel's walk reads to the end: it follows
+#: at most this many decorators inward and raises ``ValueError`` for more. A failure on a
+#: deeper stack is reported as that. ``tests/test_langgraph_gate.py`` pins the number
+#: against the kernel: a stack this deep is read, one deeper is refused with this reason.
+_READ_DEPTH = 31
+
+
+def _stacked(func) -> int:
+    """How many ``__wrapped__`` steps lead inward from ``func``, counted to one past
+    :data:`_READ_DEPTH`."""
+    depth = 0
+    while depth <= _READ_DEPTH:
+        func = getattr(func, "__wrapped__", None)
+        if func is None:
+            break
+        depth += 1
+    return depth
 
 
 def _read_to_the_end(levels: list, fields: frozenset[str]) -> None:
@@ -289,11 +316,25 @@ def _read_to_the_end(levels: list, fields: frozenset[str]) -> None:
     of that callable; the variadic then carries nothing the schema declares. A callable
     with no variadic parameter cannot receive a name it does not declare, and is not
     checked here.
+
+    A callable that takes nothing but variadics is refused whatever the schema declares.
+    The schema LangChain infers from ``def wrapper(*args, **kwargs)`` declares ``args`` and
+    ``kwargs``, the variadics' own names, so every field would count as a parameter while
+    the wrapper hands everything to a function whose defaults nobody read. A variadic's
+    own name accounts for a field only on a callable that also names a parameter
+    (``def f(q, **kwargs)``).
     """
     innermost = levels[-1]
     if not any(_variadic(parameter) for parameter in innermost.values()):
         return
     unread = sorted(fields - innermost.keys())
+    if not unread and all(_variadic(parameter) for parameter in innermost.values()):
+        raise TypeError(
+            "the tool's innermost callable takes only `*args` or `**kwargs`, so it passes "
+            "every argument on to code the gate cannot read; name the arguments in its "
+            "signature, build a decorator with `functools.wraps`, or give the tool the "
+            "function itself"
+        )
     if unread:
         raise TypeError(
             "the tool's innermost callable takes `*args` or `**kwargs` and does not name "
@@ -359,9 +400,34 @@ def _calls_an_mcp_server(func) -> bool:
 
 
 def _fills_itself(tool, func) -> frozenset[str]:
-    """The keyword names LangChain writes its own value under when it calls ``func``."""
-    holder = _HOLDER_TAKES if isinstance(tool, (StructuredTool, Tool)) else frozenset()
-    return _framework_keys(func) | holder
+    """The keyword names under which ``func`` would not receive a value the parse step
+    produced, because LangChain writes its own value there or keeps the name for itself.
+
+    For the function a ``StructuredTool`` or ``Tool`` holds: ``config`` and ``run_manager``
+    always (``BaseTool.run`` writes both, and the holder's ``_run`` takes them as its own
+    keywords: :data:`_HOLDER_TAKES`), the function's ``RunnableConfig`` parameter, and
+    ``callbacks`` when the function names a parameter ``callbacks``, which the holder then
+    overwrites. For a ``BaseTool`` subclass's ``_run``/``_arun``: ``run_manager`` when the
+    method names it, and its ``RunnableConfig`` parameter; nothing writes ``callbacks``
+    there. A ``callbacks`` key that reaches a function through ``**kwargs`` is not written
+    by anything either: the function receives it as judged, so it is judged like any other.
+
+    The signature is read as LangChain reads it (``inspect.signature``, which follows
+    ``__wrapped__``). If it cannot be read, both names count as filled: refused, not guessed.
+    """
+    config_param = _get_runnable_config_param(func)
+    names = {config_param} if config_param else set()
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return frozenset(names | _RESERVED | _HOLDER_TAKES)
+    if isinstance(tool, (StructuredTool, Tool)):
+        names |= _HOLDER_TAKES
+        if "callbacks" in parameters:
+            names.add("callbacks")
+    elif "run_manager" in parameters:
+        names.add("run_manager")
+    return frozenset(names)
 
 
 def _completed(
@@ -397,13 +463,17 @@ def _completed(
     ``TypeError`` and the call is refused as unjudgeable.
 
     Last, a judged argument under a name LangChain fills itself (:func:`_fills_itself`:
-    ``config`` on a ``StructuredTool``, ``run_manager``, ``callbacks``) is refused: the
-    framework would overwrite or keep it, and the function would not receive that value.
+    ``config`` and ``run_manager`` on a ``StructuredTool``, ``callbacks`` on a function that
+    names it) is refused: the framework would overwrite or keep it, and the function would
+    not receive that value. So is one named ``self``: LangChain calls the tool's bound
+    ``_run``/``_arun`` with the arguments as keywords, and Python raises for a second
+    ``self`` after the policy has allowed the call.
     """
     fields = _schema_fields(tool)
     func = _execution_callable(tool, is_async)
     levels = _reached(func)
-    if not _calls_an_mcp_server(func):
+    to_a_server = _calls_an_mcp_server(func)
+    if not to_a_server:
         _read_to_the_end(levels, fields)
     framework_keys = _framework_keys(func)
     named = [{n for n, p in level.items() if not _variadic(p)} for level in levels]
@@ -444,13 +514,24 @@ def _completed(
                     "so the invocation cannot be judged"
                 )
             completed[name] = parameter.default
-    taken = sorted(k for k in completed if k not in host_keys and k in _fills_itself(tool, func))
+    if "self" in completed and "self" not in host_keys:
+        raise TypeError(
+            "the invocation sets `self`, which is the tool object itself when LangChain "
+            "calls the tool, so the call could not be made; an argument named `self` "
+            "cannot be passed to a tool"
+        )
+    fills = _fills_itself(tool, func)
+    taken = ", ".join(f"`{k}`" for k in sorted(completed) if k not in host_keys and k in fills)
+    if taken and to_a_server:
+        raise TypeError(
+            f"the invocation sets {taken}, which LangChain fills itself at call time, so "
+            "the MCP server would not receive it; a server argument with that name cannot "
+            "be sent through langchain-mcp-adapters"
+        )
     if taken:
         raise TypeError(
-            "the invocation sets "
-            + ", ".join(f"`{k}`" for k in taken)
-            + ", which LangChain fills itself at call time, so the tool would not receive "
-            "the judged value; rename the parameter"
+            f"the invocation sets {taken}, which LangChain fills itself at call time, so "
+            "the tool would not receive the judged value; rename the parameter"
         )
     return completed
 

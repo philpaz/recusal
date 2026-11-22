@@ -26,9 +26,12 @@ around it, declares and the schema omits, and that neither the host nor the fram
 refuses the call: Python would fill it after judgment and the policy would never see the
 value that runs; so does a parameter a forwarding decorator names that the function it wraps
 names too; and so does an innermost function that takes `*args` or `**kwargs` without naming
-every schema field, which hands arguments on to code the gate cannot read: a decorator built
-without `functools.wraps`, an `_arun(*args, **kwargs)` that hands the call to `_run`, and a
-function that takes only `**kwargs` under a schema; the one exception is the function
+every schema field, or that takes nothing else, which hands arguments on to code the gate
+cannot read: a decorator built without `functools.wraps` that names no parameter of its own
+(`def wrapper(*args, **kwargs)`, under an explicit schema or the one inferred from it; one that
+names a parameter and then calls the function is not read, like any function that calls
+another), an `_arun(*args, **kwargs)` that hands the call to `_run`, and a
+function that takes only `**kwargs`; the one exception is the function
 `langchain-mcp-adapters` defines for its tools, recognised by its code object, which hands
 the judged arguments to the MCP server as they stand, so those tools are judged and run on
 the async routes unless they were built with tool interceptors, and a default the server

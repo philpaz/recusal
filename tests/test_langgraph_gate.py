@@ -2163,10 +2163,10 @@ class TestWhatRunsIsWhatWasJudged:
 
         schema = {"type": "object", "properties": {"table": {"type": "string"}}}
         tool = StructuredTool(name="js", description="d", func=js, args_schema=schema)
-        calls = [self.call("js", {"table": "t", "run_manager": "x", "callbacks": "y"})]
+        calls = [self.call("js", {"table": "t", "run_manager": "x", "config": "y"})]
         messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
         assert ran == [] and seen == []
-        assert "the invocation sets `callbacks`, `run_manager`, which LangChain fills itself" in (
+        assert "the invocation sets `config`, `run_manager`, which LangChain fills itself" in (
             messages[0].content
         )
 
@@ -3705,3 +3705,498 @@ class TestWhatTheGateCannotReadIsRefused:
         assert "does not take its input as a first named parameter" in messages[0].content
         messages = self.run(example, "sync", [wrapped], calls, self.no_delete(seen))
         assert messages[0].content == "X" and seen == [("upper", {"text": "x"})]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
+class TestForwardersAndTheNamesLangChainKeeps:
+    """Review round 3 of the package (2026-11): a forwarder that takes only ``*args`` and
+    ``**kwargs`` under the schema LangChain infers from it, refusal reasons that were not
+    true of the call they refused, and five checks no test pinned. Each test names its
+    finding."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("langgraph")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_langgraph_round3_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    call = staticmethod(TestWhatRunsIsWhatWasJudged.call)
+    no_delete = staticmethod(TestWhatRunsIsWhatWasJudged.no_delete)
+    run = TestWhatRunsIsWhatWasJudged.run
+    ROUTES = TestWhatRunsIsWhatWasJudged.ROUTES
+    limit_under = staticmethod(TestWhatTheGateCannotReadIsRefused.limit_under)
+    in_graph = TestWhatTheGateCannotReadIsRefused.in_graph
+    mcp_library = staticmethod(TestWhatTheGateCannotReadIsRefused.mcp_library)
+    MCP_SCHEMA = TestWhatTheGateCannotReadIsRefused.MCP_SCHEMA
+
+    ONLY_VARIADICS = "the tool's innermost callable takes only `*args` or `**kwargs`"
+
+    # --- C1: a forwarder under the schema LangChain infers from it ----------------------------
+
+    @staticmethod
+    def forwarded(ran, shape, is_async):
+        """``export_rows(table="users", limit=1000000)`` behind a decorator built without
+        ``functools.wraps`` (it copies the name and the docstring by hand), or behind a
+        ``functools.wraps`` decorator over that one. ``@tool`` infers the schema from the
+        forwarder: its fields are ``args`` and ``kwargs``."""
+        import functools
+
+        from langchain_core.tools import tool
+
+        if is_async:
+
+            async def export_rows(table: str = "users", limit: int = 1000000) -> str:
+                """Export the rows of a table."""
+                ran.append((table, limit))
+                return "exported"
+
+            def timed(fn):
+                async def wrapper(*args, **kwargs):
+                    return await fn(*args, **kwargs)
+
+                wrapper.__name__, wrapper.__doc__ = fn.__name__, fn.__doc__
+                return wrapper
+
+        else:
+
+            def export_rows(table: str = "users", limit: int = 1000000) -> str:
+                """Export the rows of a table."""
+                ran.append((table, limit))
+                return "exported"
+
+            def timed(fn):
+                def wrapper(*args, **kwargs):
+                    return fn(*args, **kwargs)
+
+                wrapper.__name__, wrapper.__doc__ = fn.__name__, fn.__doc__
+                return wrapper
+
+        forwarder = timed(export_rows)
+        inner = forwarder
+        if shape == "wraps_over_it":
+            if is_async:
+
+                @functools.wraps(forwarder)
+                async def outer(*args, **kwargs):
+                    return await forwarder(*args, **kwargs)
+
+            else:
+
+                @functools.wraps(forwarder)
+                def outer(*args, **kwargs):
+                    return forwarder(*args, **kwargs)
+
+            inner = outer
+        built = tool(inner)
+        assert set(built.args) == {"args", "kwargs"}
+        return built
+
+    @pytest.mark.parametrize("shape", ["forwarder", "wraps_over_it"])
+    @ROUTES
+    def test_a_forwarder_under_the_schema_inferred_from_it_is_refused(self, example, route, shape):
+        """The schema's fields were the forwarder's own ``args`` and ``kwargs``, so every
+        field counted as a parameter: the policy judged ``{}`` and the function behind the
+        forwarder ran ``limit=1000000``."""
+        ran, seen = [], []
+        tool = self.forwarded(ran, shape, route == "async")
+        calls = [self.call("export_rows", {})]
+        messages = self.run(example, route, [tool], calls, self.limit_under(1000, seen))
+        assert ran == [] and seen == [], "refused before the policy, and not run"
+        assert messages[0].status == "error"
+        assert self.ONLY_VARIADICS in messages[0].content
+        assert "build a decorator with `functools.wraps`" in messages[0].content
+        # negative control: ungated, the default nobody judged runs
+        self.run(example, route, [tool], calls, None, gated=False)
+        assert ran == [("users", 1000000)]
+
+    def test_a_function_of_only_kwargs_is_refused_whatever_its_schema_declares(self, example):
+        """``@tool def f(**kwargs)``: the inferred schema declares ``kwargs`` itself. The
+        gate cannot tell it from a forwarder, under that schema or under one that declares
+        nothing."""
+        from langchain_core.tools import StructuredTool, tool
+
+        ran, seen = [], []
+
+        @tool
+        def loose(**kwargs: Any) -> str:
+            """Loose."""
+            ran.append(kwargs)
+            return "ok"
+
+        def bare(**kwargs):
+            ran.append(kwargs)
+            return "ok"
+
+        empty = StructuredTool(
+            name="bare", description="d", func=bare, args_schema={"type": "object"}
+        )
+        calls = [self.call("loose", {}, "a"), self.call("bare", {}, "b")]
+        messages = self.run(example, "sync", [loose, empty], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert all(self.ONLY_VARIADICS in m.content for m in messages)
+
+    def test_limitation_a_function_that_names_its_parameter_and_calls_another_is_not_read(
+        self, example
+    ):
+        """Documented in the package README under what the gate does not see: the gate
+        reads signatures, not bodies. A forwarder that names its first parameter is, to
+        the gate, ``def f(table, **kwargs)``; the function it calls runs its own default."""
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        def export(table: str, limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        @tool
+        def export_rows(table: str, *args: Any, **kwargs: Any) -> str:
+            """Export the rows of a table."""
+            return export(table, *args, **kwargs)
+
+        calls = [self.call("export_rows", {"table": "users"})]
+        messages = self.run(example, "sync", [export_rows], calls, self.limit_under(1000, seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("export_rows", {"table": "users"})]
+        assert ran == [("users", 1000000)], "the limit that ran was not shown to the policy"
+
+    # --- the names LangChain keeps, exactly ---------------------------------------------------
+
+    @staticmethod
+    def keyword_tools(ran):
+        from langchain_core.tools import BaseTool, StructuredTool
+
+        schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+
+        def takes_extras(q: str, **extra: Any) -> str:
+            ran.append(("extras", q, extra))
+            return "ok"
+
+        def names_callbacks(q: str, callbacks: Any = "default") -> str:
+            ran.append(("names", q, callbacks if isinstance(callbacks, str) else "LangChain's"))
+            return "ok"
+
+        class NamesBoth(BaseTool):
+            name: str = "both"
+            description: str = "A BaseTool whose _run names callbacks and run_manager."
+
+            def _run(self, q: str, callbacks: Any = "default", run_manager=None) -> str:
+                ran.append(("both", q, callbacks))
+                return "ok"
+
+        class TakesExtras(BaseTool):
+            name: str = "loose"
+            description: str = "A BaseTool whose _run names neither."
+
+            def _run(self, q: str, **extra: Any) -> str:
+                ran.append(("loose", q, extra))
+                return "ok"
+
+        return [
+            StructuredTool(name="extras", description="d", func=takes_extras, args_schema=schema),
+            StructuredTool(name="names", description="d", func=names_callbacks, args_schema=schema),
+            NamesBoth(),
+            TakesExtras(),
+        ]
+
+    def test_a_reserved_name_the_function_really_receives_is_judged_not_refused(self, example):
+        """``callbacks`` through ``**kwargs``, ``callbacks`` on a ``BaseTool`` subclass's
+        ``_run`` and ``run_manager`` through that ``_run``'s ``**kwargs``: nothing writes
+        there, the function receives the model's value, and the call was refused with "the
+        tool would not receive the judged value". It is judged, and runs as judged."""
+        ran, seen = [], []
+        calls = [
+            self.call("extras", {"q": "x", "callbacks": "m"}, "a"),
+            self.call("both", {"q": "x", "callbacks": "m"}, "b"),
+            self.call("loose", {"q": "x", "run_manager": "m", "callbacks": "m"}, "c"),
+            self.call("extras", {"q": "x", "callbacks": "DELETE"}, "d"),
+        ]
+        messages = self.run(example, "sync", self.keyword_tools(ran), calls, self.no_delete(seen))
+        assert {m.tool_call_id: m.status for m in messages} == {
+            "a": "success",
+            "b": "success",
+            "c": "success",
+            "d": "error",
+        }
+        assert sorted(seen, key=str) == [
+            ("both", {"q": "x", "callbacks": "m"}),
+            ("extras", {"q": "x", "callbacks": "DELETE"}),
+            ("extras", {"q": "x", "callbacks": "m"}),
+            ("loose", {"q": "x", "run_manager": "m", "callbacks": "m"}),
+        ]
+        assert sorted(ran, key=str) == [
+            ("both", "x", "m"),
+            ("extras", "x", {"callbacks": "m"}),
+            ("loose", "x", {"run_manager": "m", "callbacks": "m"}),
+        ]
+
+    @pytest.mark.parametrize(
+        ("tool_name", "key"),
+        [
+            ("extras", "config"),
+            ("extras", "run_manager"),
+            ("names", "callbacks"),
+            ("names", "config"),
+            ("both", "run_manager"),
+        ],
+    )
+    def test_a_name_langchain_writes_or_keeps_is_refused_and_ungated_never_arrives(
+        self, example, tool_name, key
+    ):
+        """Each of these is a name the function does not receive the model's value under:
+        ungated, the value is dropped or replaced by LangChain's own."""
+        ran, seen = [], []
+        calls = [self.call(tool_name, {"q": "x", key: "model"})]
+        messages = self.run(example, "sync", self.keyword_tools(ran), calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert f"the invocation sets `{key}`, which LangChain fills itself" in messages[0].content
+        assert "rename the parameter" in messages[0].content
+        assert "MCP server" not in messages[0].content
+        self.run(example, "sync", self.keyword_tools(ran), calls, None, gated=False)
+        assert len(ran) == 1 and "model" not in repr(ran)
+
+    def test_the_names_langchain_keeps_are_read_for_the_tool_and_the_function(self, example):
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool, StructuredTool
+
+        adapter = _adapter()
+        extras, names, both, loose = self.keyword_tools([])
+        assert adapter._fills_itself(extras, extras.func) == {"config", "run_manager"}
+        assert adapter._fills_itself(names, names.func) == {"config", "run_manager", "callbacks"}
+        assert adapter._fills_itself(both, both._run) == {"run_manager"}
+        assert adapter._fills_itself(loose, loose._run) == frozenset()
+
+        def configured(q: str, cfg: RunnableConfig) -> str:
+            return q
+
+        held = StructuredTool.from_function(func=configured, name="c", description="d")
+        assert adapter._fills_itself(held, configured) == {"config", "run_manager", "cfg"}
+
+        class Configured(BaseTool):
+            name: str = "c"
+            description: str = "d"
+
+            def _run(self, q: str, cfg: RunnableConfig) -> str:
+                return q
+
+        assert adapter._fills_itself(Configured(), Configured()._run) == {"cfg"}
+
+    def test_a_signature_that_cannot_be_read_counts_every_reserved_name_as_kept(
+        self, example, monkeypatch
+    ):
+        adapter = _adapter()
+        extras = self.keyword_tools([])[0]
+
+        def unreadable(func):
+            raise ValueError("no signature found")
+
+        monkeypatch.setattr(adapter.inspect, "signature", unreadable)
+        assert adapter._fills_itself(extras, extras.func) == {"config", "run_manager", "callbacks"}
+
+    def test_a_call_that_sets_self_is_refused_before_the_policy(self, example):
+        """LangChain calls the tool's bound ``_run`` with the arguments as keywords. A key
+        named ``self`` raised ``TypeError: got multiple values for argument 'self'`` after
+        the policy had allowed the call, and the run failed."""
+        ran, seen = [], []
+        tools = self.keyword_tools(ran)
+        calls = [
+            self.call("extras", {"q": "x", "self": "m"}, "a"),
+            self.call("loose", {"q": "x", "self": "m"}, "b"),
+        ]
+        messages = self.run(example, "sync", tools, calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert all("the invocation sets `self`" in m.content for m in messages)
+        with pytest.raises(TypeError, match="multiple values for argument 'self'"):
+            self.run(example, "sync", tools, calls[:1], None, gated=False)
+
+    def test_an_mcp_argument_with_a_name_langchain_keeps(self, example, monkeypatch):
+        """For a tool ``langchain-mcp-adapters`` built: ``callbacks`` reaches the server as
+        the model sent it, so it is judged; ``config``, ``run_manager`` and ``self`` cannot
+        reach the server, and the refusal says so in the server's terms, not "rename the
+        parameter"."""
+        received, seen = [], []
+        tool = self.mcp_library(monkeypatch)(received, self.MCP_SCHEMA)
+        calls = [
+            self.call("read_file", {"path": "/x", "callbacks": "m"}, "callbacks"),
+            self.call("read_file", {"path": "/x", "config": "m"}, "config"),
+            self.call("read_file", {"path": "/x", "run_manager": "m"}, "run_manager"),
+            self.call("read_file", {"path": "/x", "self": "m"}, "self"),
+        ]
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        by_id = {m.tool_call_id: m for m in messages}
+        assert by_id["callbacks"].status == "success", by_id["callbacks"].content
+        assert seen == [("read_file", {"path": "/x", "callbacks": "m"})]
+        assert received == [{"path": "/x", "callbacks": "m"}]
+        for key in ("config", "run_manager"):
+            assert f"the invocation sets `{key}`" in by_id[key].content
+            assert "the MCP server would not receive it" in by_id[key].content
+            assert "rename the parameter" not in by_id[key].content
+        assert "the invocation sets `self`" in by_id["self"].content
+
+    # --- a stack of decorators too deep to read ------------------------------------------------
+
+    def test_a_stack_deeper_than_the_walk_reads_is_refused_with_that_reason(self, example):
+        import functools
+
+        from langchain_core.tools import StructuredTool
+
+        ran, seen = [], []
+        depth = _adapter()._READ_DEPTH
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def lookup(key: str, limit: int = 10) -> str:
+            ran.append((key, limit))
+            return "found"
+
+        def stacked(count):
+            fn = lookup
+            for _ in range(count):
+                fn = logged(fn)
+            assert _adapter()._stacked(fn) == min(count, depth + 1)
+            return StructuredTool.from_function(func=fn, name="lookup", description="d")
+
+        calls = [self.call("lookup", {"key": "k"})]
+        messages = self.run(example, "sync", [stacked(depth)], calls, self.no_delete(seen))
+        assert messages[0].status == "success", "the kernel reads a stack this deep"
+        assert seen == [("lookup", {"key": "k", "limit": 10})] and ran == [("k", 10)]
+        for count in (depth + 1, depth + 9):
+            seen.clear(), ran.clear()
+            messages = self.run(example, "sync", [stacked(count)], calls, self.no_delete(seen))
+            assert seen == [] and ran == []
+            assert f"under more decorators than the gate reads (more than {depth}" in (
+                messages[0].content
+            )
+            assert "descriptor" not in messages[0].content
+
+    def test_a_shallow_callable_that_cannot_be_read_is_not_called_a_deep_stack(
+        self, example, monkeypatch
+    ):
+        seen = []
+
+        def unreadable(func):
+            raise ValueError("no signature found")
+
+        monkeypatch.setattr(_adapter(), "_reached_parameters", unreadable)
+        messages, _ = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})], policy=self.no_delete(seen)
+        )
+        assert "cannot be inspected for its parameters (ValueError)" in messages[0].content
+        assert "more decorators" not in messages[0].content
+
+    # --- the review's surviving mutations, each pinned ----------------------------------------
+
+    @ROUTES
+    def test_a_value_the_model_sent_under_a_name_toolnode_fills_is_judged_when_unchanged(
+        self, example, route
+    ):
+        """Pins Z03. An earlier hook attaches a variant of the registered tool whose
+        function takes the graph state. ToolNode injects by the registered tool, which has
+        no state parameter, so the model's ``state`` arrives as the model sent it: it is
+        the model's, and it is judged."""
+        from typing import Annotated
+
+        from langchain_core.tools import tool
+        from langgraph.prebuilt import InjectedState
+
+        ran, seen = [], []
+
+        @tool("lookup")
+        def registered(q: str) -> str:
+            """Look up."""
+            ran.append(("registered", q))
+            return "ok"
+
+        @tool("lookup")
+        def variant(q: str, state: Annotated[dict, InjectedState] = {"role": "user"}) -> str:  # noqa: B006
+            """Look up, by role."""
+            ran.append(("variant", q, state))
+            return "ok"
+
+        assert _adapter()._node_fills(variant) == {"state"}
+        gates = example.recusal_gates(self.no_delete(seen))
+
+        def attach(request, execute):
+            return gates["wrap_tool_call"](request.override(tool=variant), execute)
+
+        async def aattach(request, execute):
+            return await gates["awrap_tool_call"](request.override(tool=variant), execute)
+
+        node = example.ToolNode([registered], wrap_tool_call=attach, awrap_tool_call=aattach)
+        calls = [self.call("lookup", {"q": "x", "state": {"role": "DELETE"}})]
+        messages = self.in_graph(example, route, node, calls)
+        assert seen == [("lookup", {"q": "x", "state": {"role": "DELETE"}})]
+        assert ran == [] and messages[0].status == "error"
+
+    @ROUTES
+    def test_an_error_answer_that_is_not_the_refusal_is_withheld_after_a_refused_call(
+        self, example, route
+    ):
+        """Pins Z41. The policy refused; a step after the gate ran another tool, which
+        failed, and answered with that failure under the judged tool's name. An error
+        answer passes only when it holds the gate's own reason."""
+        from langchain_core.messages import ToolMessage
+
+        seen, ran = [], []
+        gates = example.recusal_gates(self.no_delete(seen))
+
+        def failed(judged, first):
+            if first.status != "error":
+                return first
+            ran.append(judged.tool_call["args"]["sql"])
+            return ToolMessage(
+                content="fallback failed after it ran the statement",
+                tool_call_id=judged.tool_call["id"],
+                name="run_sql",
+                status="error",
+            )
+
+        def after(request, execute):
+            return gates["wrap_tool_call"](request, lambda judged: failed(judged, execute(judged)))
+
+        async def aafter(request, execute):
+            async def fallback(judged):
+                return failed(judged, await execute(judged))
+
+            return await gates["awrap_tool_call"](request, fallback)
+
+        node = example.ToolNode(
+            [example.echo, example.run_sql], wrap_tool_call=after, awrap_tool_call=aafter
+        )
+        messages = self.in_graph(example, route, node, [self.call("run_sql", {"sql": DELETE})])
+        assert seen == [("run_sql", {"sql": DELETE})] and ran == [DELETE]
+        assert messages[0].status == "error"
+        assert "fallback failed" not in messages[0].content
+        assert "did not allow the call" in messages[0].content
+
+    def test_a_validation_message_at_the_model_root_is_never_forwarded(self, example):
+        """Pins Z23. A root validator can build its message from anything it was handed,
+        the host's state included, under any error type: only the type is reported."""
+        from pydantic import BaseModel, ValidationError, model_validator
+        from pydantic_core import PydanticCustomError
+
+        class Args(BaseModel):
+            sql: str
+
+            @model_validator(mode="before")
+            @classmethod
+            def check(cls, data):
+                raise PydanticCustomError(
+                    "tenant_mismatch", "the state says {who}", {"who": "admin"}
+                )
+
+        with pytest.raises(ValidationError) as caught:
+            Args(sql="x")
+        text = _adapter()._sanitized(caught.value, frozenset())
+        assert text == "model: tenant_mismatch"

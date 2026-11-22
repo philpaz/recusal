@@ -878,6 +878,60 @@ class TestLangGraphAudit:
         assert [e["action"]["decision"] for e in log.entries] == ["deny"]
         assert "tool_use_id" not in log.entries[0]["action"]
 
+    def test_the_record_of_a_refusal_that_judged_nothing_leaves_the_hosts_arguments_out(
+        self, example, gate, log
+    ):
+        """Pins Z26. The input does not validate, so nothing is judged and the record is
+        bound to the proposal: the model's arguments, without the state field the host
+        injected beside them."""
+        from typing import Annotated
+
+        from langchain_core.messages import AIMessage, ToolMessage
+        from langchain_core.tools import tool
+        from langgraph.graph import START, MessagesState, StateGraph
+        from langgraph.prebuilt import InjectedState, tools_condition
+
+        class State(MessagesState):
+            role: str
+
+        @tool
+        def act(count: int, role: Annotated[str, InjectedState("role")]) -> str:
+            """Act a number of times."""
+            return "acted"
+
+        calls = [self.call("act", {"count": "many"}, "c1")]
+        script = iter([AIMessage(content="", tool_calls=calls)])
+        builder = StateGraph(State)
+        builder.add_node(
+            "agent", lambda state: {"messages": [next(script, AIMessage(content="done"))]}
+        )
+        builder.add_node("tools", example.audited_tool_node([act], lambda name, args: [], log))
+        builder.add_edge(START, "agent")
+        builder.add_conditional_edges("agent", tools_condition)
+        builder.add_edge("tools", "agent")
+        out = builder.compile().invoke({"messages": [], "role": "HOST-ROLE"})["messages"]
+        message = [m for m in out if isinstance(m, ToolMessage)][0]
+        assert "arguments do not validate (count:" in message.content
+        canonical = json.dumps({"count": "many"}, sort_keys=True, separators=(",", ":"))
+        expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        assert [e["action"]["input_sha256"] for e in log.entries] == [expected]
+
+    def test_the_node_helper_puts_the_actor_and_the_control_on_the_record(self, example, gate, log):
+        """Pins Z44: ``audited_tool_node`` could drop ``actor`` on the way to its gates."""
+        control = {"policy_id": "sql-scope", "policy_version": "3"}
+        node = example.audited_tool_node(
+            [gate.run_sql], gate.sql_scope_policy, log, actor="ops@example.test", control=control
+        )
+        gate.EXECUTED.clear()
+        gate.run_in_graph(node, [self.call("run_sql", {"sql": "SELECT * FROM audit_log"}, "s")])
+        asyncio.run(
+            gate.run_in_graph_async(
+                node, [self.call("run_sql", {"sql": "SELECT * FROM audit_log"}, "a")]
+            )
+        )
+        assert [e["actor"] for e in log.entries] == ["ops@example.test"] * 2
+        assert all(e["action"]["control"]["policy_id"] == "sql-scope" for e in log.entries)
+
     # --- review round 2: what the gate cannot read, and an answer that is not its own -------
 
     @pytest.mark.parametrize("route", ["sync", "async"])

@@ -15,9 +15,14 @@ All notable changes to this project are documented here. The format follows
   by the model against an ordinary setup was found; these are values the function ran
   with that the policy never saw, tools that were always refused, and refusals that did
   not say why. This is why the release is 0.3.0: calls that ran are now refused, and a
-  policy can be shown an argument it was not shown before. One shape is still not read,
-  and the README lists it under what the gate does not see: with a kernel that does not
-  detect it, a decorator that applies another decorator inside itself.
+  policy can be shown an argument it was not shown before. What the gate still does not
+  read is listed in the README under what it does not see: with a kernel that does not
+  detect it, a decorator that applies another decorator inside itself; a function that
+  names its parameters and then calls another function, whose defaults run unseen; a
+  default an MCP server applies to an argument the model left out; a tool that a hook
+  between the gate and the tool ran besides the judged call, when the answer still fits;
+  `runtime.tool_call_id`; and a `run_manager` or `callbacks` parameter LangChain leaves
+  out of the schema and does not fill.
   - The tool call id is written by the model, and a parameter annotated
     `InjectedToolCallId` receives it. It counted as the host's and was left out of
     judgment (judged `{'title': 'x'}`, ran with the id `DELETE-ALL'; --`). The policy is
@@ -42,7 +47,12 @@ All notable changes to this project are documented here. The format follows
     gate cannot tell from a forwarding decorator: `RunnableLambda(...).as_tool(args_schema=...)`
     and a `BaseTool` with an `args_schema` whose `_run` is `(**kwargs)`. These ran judged
     before. The README says what to give the node instead. A function that takes
-    `**kwargs` and names every schema field still runs.
+    `**kwargs` and names every schema field still runs. A function that takes nothing but
+    `*args` and `**kwargs` is refused whatever the schema declares: under the schema
+    `@tool` infers from `def wrapper(*args, **kwargs)`, whose fields are `args` and
+    `kwargs`, the policy judged `{}` and the function behind the wrapper ran
+    `limit=1000000`. A forwarder that names a parameter of its own is not told from an
+    ordinary function, and the README lists it under what the gate does not see.
   - The tools `langchain-mcp-adapters` builds are the one exception to that rule, and
     still run judged on the async routes: their function hands the judged arguments to
     the MCP server as they stand. It is recognised by the code object the library holds,
@@ -103,7 +113,15 @@ All notable changes to this project are documented here. The format follows
     was refused after the policy had run, as "arguments other than the ones the gate
     judged". It is now refused before the policy with that reason, and `gated_tool_node`
     and `audited_tool_node` raise `TypeError` for such a tool when the node is built. A
-    call that sets `run_manager` or `callbacks` is refused the same way.
+    call that sets a name the function would not receive the value under is refused
+    the same way, and only such a call: `config` or `run_manager` on a `@tool` or
+    `StructuredTool`, `callbacks` on a function that names it, `run_manager` on a
+    `BaseTool` whose `_run` names it. A `callbacks` the function does receive (through
+    `**kwargs`, or on a `BaseTool` subclass's `_run`) is judged; it was refused with a
+    reason that was not true of it. For a tool `langchain-mcp-adapters` built, the
+    refusal says the MCP server would not receive the argument. A call that sets `self`
+    is refused before the policy; it raised `TypeError` after the policy had allowed it.
+    A function under more than 31 decorators is refused with that reason.
   - The package declares `langgraph-prebuilt` and `pydantic`, which it imports, each with
     an upper bound. The README lists the argument types the gate can judge and the ones it
     refuses, every refusal with what to do instead, what the gate does not see, and the

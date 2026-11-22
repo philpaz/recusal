@@ -140,11 +140,13 @@ In short, before the policy runs:
   forwarding decorator names that the function it wraps names too;
 - a function that hands its arguments on to code the gate cannot read: the innermost
   function the gate reaches takes `*args` or `**kwargs` and does not name every field of
-  the schema. That is a decorator built without `functools.wraps`, a `BaseTool` whose
-  `_arun(*args, **kwargs)` hands the call to `_run` (under `ainvoke`), and a function
-  that takes only `**kwargs` under a schema, `RunnableLambda(...).as_tool(args_schema=...)`
-  for one. Give the agent a function of your own that names the parameters and calls
-  the tool. The one exception is a tool `langchain-mcp-adapters` built, below;
+  the schema, or takes nothing but `*args` and `**kwargs`. That is a decorator built
+  without `functools.wraps` (`def wrapper(*args, **kwargs)`, under an explicit schema
+  or the one `@tool` infers from it), a `BaseTool` whose `_arun(*args, **kwargs)` hands
+  the call to `_run` (under `ainvoke`), and a function that takes only `**kwargs`,
+  `RunnableLambda(...).as_tool(args_schema=...)` for one. Give the agent a function of
+  your own that names the parameters and calls the tool. The one exception is a tool
+  `langchain-mcp-adapters` built, below;
 - a function that declares `__signature__`, which LangSmith's `@traceable` and
   `decorator.decorator` set (apply `@traceable` inside the tool's function, or trace at
   the graph level), and one Python cannot inspect, which `cachetools.cached` returns
@@ -152,6 +154,9 @@ In short, before the policy runs:
 - an argument value the policy cannot be shown faithfully: `pathlib.Path`, `set`,
   `bytes`, `timedelta`, Pydantic's `HttpUrl` and `SecretStr` among them. Declare the
   parameter as `str` and convert it inside the tool;
+- a call that sets a name under which the function would not receive the value:
+  `config` or `run_manager` on a `@tool` or `StructuredTool`, `callbacks` on one whose
+  function names a parameter `callbacks`, and `self` on any tool;
 - a function parameter named `config` that is not the function's `RunnableConfig`.
   `RunnableLambda(...).as_tool()` over a function typed to take one string is refused
   for its `config`: LangChain builds it around the runnable's own
@@ -172,7 +177,11 @@ policy under its own name; `runtime.tool_call_id` cannot be, so do not use it as
 **MCP tools.** The tools `langchain-mcp-adapters` builds are judged and run under
 `ainvoke` and `astream`; the policy is shown the arguments the adapter sends to the MCP
 server, exactly as it sends them. A tool built with `tool_interceptors=` is refused,
-because an interceptor can replace the arguments after they were judged. Under `invoke`
+because an interceptor can replace the arguments after they were judged. A call in which
+the model sets an argument named `config`, `run_manager` or `self` is refused: LangChain
+keeps those names when it calls a tool, so the server would not receive the argument,
+and a server tool that declares one cannot be given it through this library
+(`callbacks` does reach the server, and is judged). Under `invoke`
 such tools are refused, as the library gives them no sync function. The
 `recusal-langgraph` README has the detail and the releases this is checked against.
 
@@ -211,6 +220,12 @@ hands on for execution. That decides what it sees:
   gate follows that pointer, not what the wrapper calls, so a keyword the inner
   decorator adds or keeps runs with a value the policy did not see. Apply each
   decorator to the function directly, one above the other.
+- **A function that names its parameters and then calls another function.** The gate
+  reads signatures, not function bodies. The function that is called runs with its own
+  defaults, and the policy is shown only the arguments of the first. A decorator built
+  without `functools.wraps` that names a parameter
+  (`def wrapper(q, *args, **kwargs): return fn(q, *args, **kwargs)`) is such a
+  function; one that names no parameter is refused.
 - **A default an MCP server applies.** For a `langchain-mcp-adapters` tool the policy
   is shown what is sent to the server. An argument the model leaves out is not sent, and
   the server fills it from its own schema or code; the gate does not see that value.

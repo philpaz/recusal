@@ -138,8 +138,13 @@ value the model sent that reaches the tool unchanged, whatever the tool's annota
 say. An injected argument that
 nothing filled is judged too, at the value the function runs with: the default behind an
 `InjectedState("role")` parameter when the state has no `role`, and the default of an
-`InjectedToolArg` parameter no host supplies. ToolNode strips whatever the model wrote
-under such a name, so the model cannot fill it; the policy sees the default that runs.
+`InjectedToolArg` parameter no host supplies. When the tool's schema marks the name
+injected, ToolNode strips whatever the model wrote under it, so the model cannot fill it
+and the policy sees the default that runs. In two cases ToolNode does not strip it, the
+model's value reaches the function, and that value is judged: when the function marks a
+parameter injected and the tool's `args_schema` declares it as an ordinary argument
+(ToolNode reads the schema), and when an earlier hook attaches another tool object under
+the registered tool's name (ToolNode strips and fills by the tool it registered).
 
 **The call id is the model's.** A parameter annotated `InjectedToolCallId` receives the
 tool call id, and the model writes that id. The policy is shown it under the parameter's
@@ -187,7 +192,7 @@ own parameter name: `Tool(name="lookup", func=lambda q: ...)` is judged as `{"q"
 **MCP tools.** The tools `langchain-mcp-adapters` builds (`MultiServerMCPClient.get_tools()`,
 `load_mcp_tools`) are judged and run on `ainvoke` and `astream`. The policy is shown the
 arguments the adapter sends to the MCP server, exactly as it sends them, under the tool's
-name. Three things to know:
+name. Four things to know:
 
 - The adapter does not validate the arguments or fill a default the server's schema
   gives: when the model leaves an argument out, the server applies its own default and
@@ -196,6 +201,12 @@ name. Three things to know:
   runs: an interceptor runs between the adapter and the server and can replace the
   arguments after they were judged. Build the tools without interceptors, or give the
   node a function of your own that names the parameters and calls the tool.
+- A call in which the model sets an argument named `config`, `run_manager` or `self` is
+  refused before the policy runs. LangChain keeps the first two names for itself when it
+  calls a tool and Python takes the third for the tool object, so the server would not
+  receive the argument (with `self` the call fails). A server tool that declares an
+  argument under one of these names cannot be given it through `langchain-mcp-adapters`.
+  An argument named `callbacks` does reach the server as the model sent it, and is judged.
 - The library gives its tools no sync function, so `invoke` and `stream` refuse them (an
   ungated `ToolNode` raises there).
 
@@ -236,20 +247,23 @@ does not run, and an audited gate records it as one entry:
   The rule is on the innermost one it reaches: if that function takes `*args` or
   `**kwargs`, every field the schema declares must be one of its parameters. Otherwise
   it passes those arguments on, and whatever receives them fills its own defaults after
-  the policy has judged. The call is refused, naming one such field. This refuses:
-  - a decorator built without `functools.wraps` (`def wrapper(*args, **kwargs)`), on a
-    tool with an explicit `args_schema`. Build the decorator with `functools.wraps`, or
-    give the tool the function itself. Without an explicit schema LangChain infers one
-    from the wrapper itself, with the fields `args` and `kwargs`, and the gate holds
-    the wrapper to that;
+  the policy has judged. The call is refused, naming one such field. And if that function
+  takes nothing but `*args` and `**kwargs`, the call is refused whatever the schema
+  declares. This refuses:
+  - a decorator built without `functools.wraps` (`def wrapper(*args, **kwargs)`), under
+    an explicit `args_schema` and under the schema `@tool` infers from the wrapper, whose
+    fields are the wrapper's own `args` and `kwargs`. A `functools.wraps` decorator over
+    such a wrapper is refused the same way. Build the decorator with `functools.wraps`,
+    or give the tool the function itself;
   - a `BaseTool` subclass whose `_arun(*args, **kwargs)` hands the call to `_run`, on
     `ainvoke` and `astream` (`invoke` and `stream` run `_run` and are judged). Name the
     parameters in `_arun`, or leave `_arun` out: LangChain then runs `_run` on a thread;
-  - a function that takes only `**kwargs` under a schema that declares fields:
+  - a function that takes only `**kwargs`, under any schema:
     `RunnableLambda(...).as_tool(args_schema=...)`, a `BaseTool` with an `args_schema`
     whose `_run` is `(**kwargs)`, and a function of your own written as
-    `def call(**arguments)`. The gate cannot tell such a function from a decorator that
-    forwards. Give the node a function that names the parameters and calls the tool
+    `def call(**arguments)`, `@tool def call(**kwargs)` included. The gate cannot tell
+    such a function from a decorator that forwards. Give the node a function that names
+    the parameters and calls the tool
     (`async def read_file(path: str, depth: int = 2): return await
     other_tool.ainvoke({"path": path, "depth": depth})` under `@tool`). The one exception
     is the function `langchain-mcp-adapters` defines for its tools (see "MCP tools"
@@ -258,7 +272,11 @@ does not run, and an audited gate records it as one entry:
   A function that takes `**kwargs` and also names every schema field runs: the variadic
   then carries only keys the schema does not declare (the ones an `extra="allow"` schema
   accepts, which are judged). The schema LangChain infers for `def f(q, **kwargs)`
-  declares `kwargs` itself, which is a parameter of the function, so that runs too.
+  declares `kwargs` itself; on a function that names at least one parameter of its own,
+  the variadic's own name counts as a parameter, so that runs too. The gate reads
+  signatures, not bodies: if such a function is itself a forwarder
+  (`def wrapper(q, *args, **kwargs): return fn(q, *args, **kwargs)`), the defaults of
+  the function it calls are not seen (see "Not seen").
 - A parameter that a forwarding decorator (`*args`, `**kwargs`) names and the function it
   wraps names too (`def wrapper(*args, timeout=30, **kwargs)` around
   `def fetch(url, timeout=...)`): the decorator keeps the judged argument and the
@@ -272,16 +290,25 @@ does not run, and an audited gate records it as one entry:
   the tool's function.
 - A function whose parameters cannot be inspected. A class-based decorator that is also a
   descriptor (its class defines `__get__`) is one: Python's `inspect.signature` finds no
-  signature for it. `cachetools.cached` returns such an object. A stack of more
-  decorators than the kernel's walk follows is another. Call the decorated function from
-  a plain function and give the tool that.
+  signature for it. `cachetools.cached` returns such an object. A function under more
+  than 31 `functools.wraps` decorators, one inside the other, is another: the walk reads
+  no deeper, and the refusal says so. Call the decorated function from a plain function
+  and give the tool that.
 - A positional-only parameter.
 - A function parameter named `config` on a `@tool` or `StructuredTool` function, unless
   it is the function's `RunnableConfig`: LangChain writes the run configuration under
   that name, so the function never receives the model's value. `gated_tool_node` and
   `audited_tool_node` raise `TypeError` for such a tool when the node is built. Rename
-  the parameter. A call that sets `run_manager` or `callbacks` is refused for the same
-  reason. `RunnableLambda(...).as_tool()` over a function typed to take one string is
+  the parameter. A call is refused for the same reason when it sets a name under which
+  the function would not receive the value, and only then: `config` or `run_manager` on
+  any `@tool` or `StructuredTool` (LangChain keeps both for itself there); `callbacks`
+  on one whose function names a parameter `callbacks` (LangChain overwrites it);
+  `run_manager` on a `BaseTool` subclass whose `_run` names it. Where the function does
+  receive the value, the call is judged with it: `callbacks` that reaches a function
+  through `**kwargs`, and `callbacks` on a `BaseTool` subclass's `_run`. A call that
+  sets `self` is refused on every tool: LangChain passes the arguments as keywords to a
+  method of the tool object, and Python raises for a second `self`.
+  `RunnableLambda(...).as_tool()` over a function typed to take one string is
   refused as well, when the node is built and on every call: LangChain builds that tool
   around the runnable's own `invoke(input, config)`. Write a function that calls the
   runnable and give the node that
@@ -361,8 +388,12 @@ gate has decided nothing, and no entry is written.
   wrapper that calls `guarded`. A keyword the inner decorator adds, or keeps from the
   function, then runs with a value the policy did not see. Apply each decorator to the
   function directly, one above the other; the gate reads that stack.
-- A decorator, or any function, that names every parameter and calls another function
-  with different values. The gate reads signatures, not function bodies.
+- A function that names its parameters and then calls another function. The gate reads
+  signatures, not function bodies: the function it calls runs with its own defaults and
+  with whatever values the first one hands it, and the policy is shown only the
+  arguments of the first. A decorator built without `functools.wraps` that names a
+  parameter (`def wrapper(q, *args, **kwargs): return fn(q, *args, **kwargs)`) is such
+  a function: `fn`'s defaults are not seen. One that names no parameter is refused.
 - A tool that a hook between the gate and the tool ran besides the judged call, unless
   the answer that comes back fails one of the three checks under "Refused after the
   fact". After a call the judging step allowed, the gate withholds only a `ToolMessage`
