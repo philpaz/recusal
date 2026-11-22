@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **Kernel: `recusal.invocation` refuses a wrapper that holds another wrapper it cannot
+  follow.** `reached_parameters` follows a wrapper to what it calls through `__wrapped__`.
+  A decorator that applies another decorator inside itself calls the result, held only in
+  its closure, while `functools.wraps` sets its `__wrapped__` to the undecorated function,
+  so the wrapper in between was never read. That wrapper could keep an argument for itself
+  (`wrapper(*args, timeout=30, **kwargs)`: the policy judged `timeout=5` and the function
+  ran with its own default) or fill a default of its own (`force=True`) with no policy
+  judging it. The walk now raises the new public `recusal.invocation.HiddenWrapper`, a
+  subclass of `ValueError`, when a callable on the way holds, in its closure cells (a
+  function) or its instance attributes (a callable object, as a class-based decorator
+  keeps it), another callable that wraps the same function and that the walk does not
+  reach through `__wrapped__`. `unsupported_signature` uses the same walk and returns the
+  reason "a wrapper holds another wrapper of the function it wraps, which the walk does
+  not follow". A gate that already refuses on a `ValueError` or any exception from the
+  walk refuses these without a change. Nothing that was refused is now accepted. A
+  decorator that holds only the function it wraps, configuration and helpers that wrap
+  nothing is read as before; one that builds a second wrapper of the same function inside
+  itself, a `functools.lru_cache` included, is now refused. A wrapper held anywhere else
+  (a module global, a container, a `functools.partial`, a helper's own closure) is not
+  found by this check.
+
 ## [0.15.0] - 2026-11-21
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public

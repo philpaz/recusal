@@ -17,6 +17,7 @@ import pytest
 from recusal.invocation import (
     SCALARS,
     DeclaredSignature,
+    HiddenWrapper,
     detached,
     json_data,
     reached_parameters,
@@ -385,6 +386,411 @@ def test_a_call_that_is_not_a_plain_method_and_a_class_are_refused():
     assert unsupported_signature(Runner) is not None
     with pytest.raises(TypeError):
         reached_parameters(Runner)
+
+
+# --- a wrapper the walk cannot follow ------------------------------------------------------
+
+_UNFOLLOWED = (
+    "a wrapper holds another wrapper of the function it wraps, which the walk does not follow"
+)
+
+
+def _with_timeout(default):
+    """A decorator whose wrapper keeps ``timeout`` for itself."""
+    import functools
+
+    def decorate(function):
+        @functools.wraps(function)
+        def wrapper(*args, timeout=default, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def _forcing(function):
+    """A decorator whose wrapper adds ``force``, filled from its own default."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, force=True, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _composed(inner):
+    """A decorator that applies ``inner`` inside itself: its wrapper calls the result, held
+    only in its closure, while ``functools.wraps`` names the undecorated function."""
+    import functools
+
+    def decorate(function):
+        guarded = inner(function)
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return guarded(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def _levels(func):
+    return [list(level) for level in reached_parameters(func)]
+
+
+def test_a_wrapper_applied_inside_another_keeps_an_argument_and_is_refused():
+    """Three adapter reviews, one gap: ``resilient`` applies ``with_timeout`` inside itself
+    and calls the result, but its ``__wrapped__`` is the undecorated function, so the walk
+    never read the wrapper in between. The policy judged ``timeout=5``; that wrapper kept
+    it and the function ran with its own default."""
+
+    def fetch(url: str, timeout: int = 999999) -> int:
+        return timeout
+
+    tool = _composed(_with_timeout(30))(fetch)
+    assert tool.__wrapped__ is fetch
+    assert list(inspect_signature(tool)) == ["url", "timeout"]
+    assert tool("u", timeout=5) == 999999  # the value judged is not the value run
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == _UNFOLLOWED  # names no function, parameter or value
+    assert unsupported_signature(tool) == _UNFOLLOWED
+
+
+def test_the_refusal_is_a_value_error_so_a_gate_that_catches_one_refuses():
+    assert issubclass(HiddenWrapper, ValueError)
+    assert not issubclass(HiddenWrapper, DeclaredSignature)
+
+
+def test_a_default_of_a_wrapper_applied_inside_another_is_refused():
+    """The hidden wrapper's own ``force=True`` ran unseen the same way."""
+
+    def wipe(table: str) -> str:
+        return table
+
+    tool = _composed(_forcing)(wipe)
+    assert list(inspect_signature(tool)) == ["table"]
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(tool)
+    assert unsupported_signature(tool) == _UNFOLLOWED
+
+
+def test_a_hidden_wrapper_is_refused_wherever_the_wrapper_that_holds_it_stands():
+    """Further in behind a tracer, behind a ``functools.partial``, as a method, and as a
+    coroutine function."""
+    import functools
+
+    def fetch(url: str, timeout: int = 999999) -> int:
+        return timeout
+
+    tool = _composed(_with_timeout(30))(fetch)
+
+    class Holder:
+        @_composed(_with_timeout(30))
+        def fetch(self, url: str, timeout: int = 999999) -> int:
+            return timeout
+
+    def composed_async(function):
+        @functools.wraps(function)
+        async def guarded(*args, timeout=30, **kwargs):
+            return await function(*args, **kwargs)
+
+        @functools.wraps(function)
+        async def wrapper(*args, **kwargs):
+            return await guarded(*args, **kwargs)
+
+        return wrapper
+
+    @composed_async
+    async def fetch_async(url: str, timeout: int = 999999) -> int:
+        return timeout
+
+    for func in (
+        _traced(tool),
+        _traced(_traced(tool)),
+        functools.partial(tool),
+        functools.partial(_traced(tool), "u"),
+        Holder().fetch,
+        fetch_async,
+    ):
+        with pytest.raises(HiddenWrapper):
+            reached_parameters(func)
+    for func in (_traced(tool), Holder().fetch, fetch_async):
+        assert unsupported_signature(func) == _UNFOLLOWED, func
+
+
+def test_a_hidden_wrapper_in_an_instance_attribute_is_refused():
+    """A class-based decorator holds the composed wrapper on the instance, not in a cell."""
+    import functools
+
+    def fetch(url: str, timeout: int = 999999) -> int:
+        return timeout
+
+    class Resilient:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.guarded = _with_timeout(30)(function)
+
+        def __call__(self, *args, **kwargs):
+            return self.guarded(*args, **kwargs)
+
+    tool = Resilient(fetch)
+    assert tool("u", timeout=5) == 999999
+    for func in (tool, _traced(tool), functools.partial(tool)):
+        with pytest.raises(HiddenWrapper):
+            reached_parameters(func)
+
+
+def test_a_hidden_wrapper_is_found_at_any_depth_of_either_chain():
+    """What is held may wrap the function through other wrappers, and may wrap a function
+    further in than the one ``__wrapped__`` names."""
+    import functools
+    import inspect
+
+    def fetch(url: str, timeout: int = 999999) -> int:
+        return timeout
+
+    # held: tracer -> timeout wrapper -> the function
+    through = _composed(lambda function: _traced(_with_timeout(30)(function)))(fetch)
+    assert through("u", timeout=5) == 999999
+
+    # held: a wrapper of the innermost function, while ``__wrapped__`` names a tracer of it
+    def around_the_innermost(function):
+        guarded = _with_timeout(30)(inspect.unwrap(function))
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return guarded(*args, **kwargs)
+
+        return wrapper
+
+    innermost = around_the_innermost(_traced(_traced(fetch)))
+    assert innermost("u", timeout=5) == 999999
+    for func in (through, innermost):
+        with pytest.raises(HiddenWrapper):
+            reached_parameters(func)
+
+
+def test_ordinary_decorators_are_walked_as_before():
+    """The refusal is for a held wrapper of the same function only. What a decorator
+    ordinarily holds (the function, configuration, helpers that wrap nothing) is not one."""
+    import contextlib
+    import functools
+    import logging
+    import time
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    forward, own = ["args", "kwargs"], ["query", "limit"]
+
+    def retrying(attempts, message="retrying"):
+        def decorate(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                for _ in range(attempts):
+                    return function(*args, **kwargs)
+                return message
+
+            return wrapper
+
+        return decorate
+
+    def observed(on_error):
+        log, clock = logging.getLogger(__name__).info, time.monotonic
+
+        def decorate(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                started = clock()
+                try:
+                    return function(*args, **kwargs)
+                except Exception as error:  # noqa: BLE001, the decorator style under test
+                    on_error(error)
+                finally:
+                    log("%s", clock() - started)
+
+            return wrapper
+
+        return decorate
+
+    def traced_async(function):
+        @functools.wraps(function)
+        async def wrapper(*args, **kwargs):
+            return await function(*args, **kwargs)
+
+        return wrapper
+
+    @traced_async
+    async def search_async(query: str, limit: int = 5) -> str:
+        return query
+
+    class Decorator:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    class Holder:
+        @_traced
+        def search(self, query: str, limit: int = 5) -> str:
+            return query
+
+    @contextlib.contextmanager
+    def span():
+        yield
+
+    dispatched = functools.singledispatch(search)
+    dispatched.register(int, lambda query, limit=5: "int")
+
+    for func, expected in (
+        (_traced(search), [forward, own]),
+        (_traced(_traced(_traced(search))), [forward, forward, forward, own]),
+        (retrying(3)(search), [forward, own]),
+        (observed(print)(search), [forward, own]),
+        (functools.lru_cache(maxsize=None)(search), [own, own]),
+        (functools.cache(search), [own, own]),
+        (_traced(functools.lru_cache(maxsize=None)(search)), [forward, own, own]),
+        (functools.partial(_traced(search), "q"), [forward, ["limit"]]),
+        (dispatched, [["args", "kw"], own]),
+        (span()(search), [["args", "kwds"], own]),
+        (Decorator(search), [forward, forward, own]),
+        (Decorator(_traced(search)), [forward, forward, forward, own]),
+        (Holder().search, [forward, own]),
+        (search_async, [forward, own]),
+    ):
+        assert _levels(func) == expected, func
+    # ``contextlib.contextmanager`` is itself a ``functools.wraps`` decorator
+    assert _levels(span) == [["args", "kwds"], []]
+    for func in (_traced(search), retrying(3)(search), observed(print)(search), search_async):
+        assert unsupported_signature(func) is None, func
+
+
+def test_what_a_wrapper_holds_that_is_not_a_hidden_wrapper_is_not_refused():
+    """Each exemption of the check: the wrapper itself, a wrapper the walk reaches anyway,
+    a value that is not callable, an empty cell, and attributes that cannot be read."""
+    import functools
+    import types
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    forward, own = ["args", "kwargs"], ["query", "limit"]
+
+    # a wrapper that calls itself again (a retry) holds itself, and it wraps the function
+    def again(function):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return wrapper if not args else function(*args, **kwargs)
+
+        return wrapper
+
+    assert _levels(again(search)) == [forward, own]
+
+    # a wrapper may hold the function it wraps and what that wraps in turn: the walk reads
+    # both through ``__wrapped__``
+    def unwrapping(function):
+        inner = function.__wrapped__
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return (function if args else inner)(*args, **kwargs)
+
+        return wrapper
+
+    assert _levels(unwrapping(_traced(_traced(search)))) == [forward, forward, forward, own]
+
+    # a record that names the function but cannot be called is not a wrapper
+    def recorded(function):
+        record = types.SimpleNamespace(__wrapped__=function)
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs), record
+
+        return wrapper
+
+    assert _levels(recorded(search)) == [forward, own]
+
+    # a cell that was never filled
+    def unfilled(function):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs), later
+
+        if not function:
+            later = None
+        return wrapper
+
+    assert _levels(unfilled(search)) == [forward, own]
+
+    # a held callable whose attributes raise on being read
+    class Opaque:
+        def __call__(self):
+            return None
+
+        def __getattr__(self, name):
+            raise RuntimeError(name)
+
+    def opaquely(function, helper=Opaque()):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs), helper
+
+        return wrapper
+
+    assert _levels(opaquely(search)) == [forward, own]
+
+    # a callable object with no instance attributes to read
+    class Slotted:
+        __slots__ = ("__wrapped__",)
+
+        def __init__(self, function):
+            self.__wrapped__ = function
+
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    assert _levels(Slotted(search)) == [forward, forward, own]
+
+
+def test_a_cycle_of_wrapped_ends_and_is_never_a_hidden_wrapper():
+    import functools
+
+    from recusal import invocation
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def first():
+        return None
+
+    def second():
+        return None
+
+    first.__wrapped__, second.__wrapped__ = second, first  # type: ignore[attr-defined]
+    # what a callable names is read as deep as the walk goes and no further, cycle or not
+    assert len(invocation._wrapped_chain(first)) == 32
+
+    def holding(function, helper=first):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs), helper
+
+        return wrapper
+
+    assert _levels(holding(search)) == [["args", "kwargs"], ["query", "limit"]]
+    # a callable that names itself is refused as too deep, as before, not as a hidden wrapper
+    looped = _traced(search)
+    looped.__wrapped__ = looped
+    with pytest.raises(ValueError, match="too many wrappers") as refused:
+        reached_parameters(looped)
+    assert not isinstance(refused.value, HiddenWrapper)
 
 
 def inspect_signature(func):

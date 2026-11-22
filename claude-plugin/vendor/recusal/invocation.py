@@ -10,7 +10,8 @@ and they are decisions about data, not about any framework:
   (:func:`json_data`);
 - whether every parameter of a callable can be judged by name
   (:func:`unsupported_signature`), counting every callable a call reaches
-  (:func:`reached_parameters`);
+  (:func:`reached_parameters`), and refusing a wrapper that holds another wrapper the walk
+  cannot follow (:class:`HiddenWrapper`);
 - how to hand a policy a copy it can write to without reaching what executes
   (:func:`detached`).
 
@@ -111,6 +112,8 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
         reached = reached_parameters(func)
     except DeclaredSignature:
         return "it declares a signature that is not its own"
+    except HiddenWrapper:
+        return _HIDDEN_WRAPPER
     except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
         return "its signature cannot be inspected"
     for level in reached:
@@ -146,6 +149,16 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
 class DeclaredSignature(Exception):
     """A callable on the way to the code that runs carries a ``__signature__`` of its own."""
 
+
+class HiddenWrapper(ValueError):
+    """A callable on the way holds, in its closure or its instance attributes, another
+    wrapper of the function it wraps: one ``__wrapped__`` does not name, so the walk cannot
+    follow what the call reaches."""
+
+
+_HIDDEN_WRAPPER = (
+    "a wrapper holds another wrapper of the function it wraps, which the walk does not follow"
+)
 
 #: Wrappers that pass every argument through unchanged and declare no parameters of their
 #: own, so the code that runs is the function they wrap: ``functools.lru_cache`` and
@@ -202,6 +215,54 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
             _refuse_declared_signature(call, depth + 1)
 
 
+def _wrapped_chain(func: Any) -> List[Any]:
+    """What ``func`` names as ``__wrapped__``, what that names in turn, and so on, ``func``
+    itself left out. Bounded like the walk, so a cycle ends, and never raises."""
+    chain: List[Any] = []
+    for _ in range(32):
+        try:
+            func = getattr(func, "__wrapped__", None)
+        except Exception:  # noqa: BLE001, an attribute that cannot be read names nothing
+            break
+        if func is None:
+            break
+        chain.append(func)
+    return chain
+
+
+def _refuse_hidden_wrapper(func: Any) -> None:
+    """Raise :class:`HiddenWrapper` if ``func`` holds a wrapper the walk does not follow.
+
+    A decorator can apply another decorator inside itself and call the result, while
+    ``functools.wraps`` sets ``__wrapped__`` to the undecorated function: the walk then
+    never reads the wrapper in between, which can keep an argument for itself or fill a
+    default of its own. What ``func`` holds is read where such a wrapper lives: the closure
+    cells of a function, the instance attributes of a callable object. A held callable is a
+    hidden wrapper when it is not ``func``, is not one the walk reaches through
+    ``__wrapped__``, and itself wraps (through its own ``__wrapped__`` chain) one that the
+    walk does reach. An empty cell, a value that is not callable and a callable that wraps
+    nothing of ``func``'s are not: a logger, a clock, a callback, configuration.
+    """
+    followed = _wrapped_chain(func)
+    held = []
+    if inspect.isfunction(func):
+        for cell in func.__closure__ or ():
+            try:
+                held.append(cell.cell_contents)
+            except ValueError:  # an empty cell holds nothing
+                continue
+    else:
+        try:
+            held.extend(vars(func).values())
+        except Exception:  # noqa: BLE001, no instance attributes to read
+            return
+    for value in held:
+        if value is func or any(value is seen for seen in followed) or not callable(value):
+            continue
+        if any(inner is seen for inner in _wrapped_chain(value) for seen in followed):
+            raise HiddenWrapper(_HIDDEN_WRAPPER)
+
+
 def _next_callables(func: Any) -> List[Any]:
     """The callables ``func`` may hand the call to, each bound as ``func`` binds it.
 
@@ -216,6 +277,11 @@ def _next_callables(func: Any) -> List[Any]:
     A ``__call__`` that Python would call without the object (a ``staticmethod``, a
     ``partial``, any other non-function) raises ``TypeError``: what it binds cannot be read
     as a method's parameters.
+
+    ``__wrapped__`` is the only link from a wrapper to what it calls that is followed. A
+    wrapper that holds another wrapper of the same function, in its closure or its instance
+    attributes, raises :class:`HiddenWrapper` (:func:`_refuse_hidden_wrapper`): what it
+    calls cannot be read from it.
     """
     # a ``staticmethod`` (Python 3.10+) shows its function as ``__wrapped__``, taken below
     if inspect.ismethod(func):
@@ -228,6 +294,7 @@ def _next_callables(func: Any) -> List[Any]:
     found = []
     wrapped = getattr(func, "__wrapped__", None)
     if wrapped is not None:
+        _refuse_hidden_wrapper(func)
         found.append(wrapped)
     if not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
         call = inspect.getattr_static(type(func), "__call__", None)
@@ -243,8 +310,12 @@ def reached_parameters(func: Any) -> List[Any]:
 
     A gate that completes and judges a call by the parameters a framework declares must
     also find every named parameter some callable on the way would fill from a default of
-    its own; this is that walk. Raises :class:`DeclaredSignature`, ``TypeError`` or
-    ``ValueError`` for a callable it cannot read, which a gate turns into a refusal.
+    its own; this is that walk. It follows a method's function, a ``functools.partial``'s
+    function, every ``__wrapped__`` and a callable object's ``__call__``. Raises
+    :class:`DeclaredSignature`, :class:`HiddenWrapper` (a ``ValueError``: a wrapper on the
+    way holds another wrapper of the function it wraps, which ``__wrapped__`` does not
+    name), ``TypeError`` or ``ValueError`` for a callable it cannot read, which a gate turns
+    into a refusal.
     """
     found = [own_parameters(func)]
     pending = _next_callables(func)
