@@ -42,6 +42,14 @@ All notable changes to this project are documented here. The format follows
   - A gate marked `defer_loading=True`, or placed in a group loaded on demand, judged
     nothing while `is_gated` said `True`. The first is now refused when the gate is
     built, and the second does not count for `is_gated`.
+  - Another `innermost` capability listed after the gate ran after it and could rewrite
+    the call (a documented limit until now), and so could any hook listed after a gate
+    placed inside a `WrapperCapability`. The gate now reads the order the run dispatches
+    in and refuses a call when a `before_tool_execute` of the application's comes after
+    it.
+  - A realtime session, which calls none of the hooks the gate judges in, is refused
+    when it starts. Provider-tool settings on the model, and on each candidate of a
+    `FallbackModel`, are read as well as the run's.
   - Refused rather than run unjudged, and documented: an output function taking a
     Pydantic model, and a union of output functions under `NativeOutput` or
     `PromptedOutput` (use tool output).

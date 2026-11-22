@@ -595,6 +595,41 @@ class TestPydanticAiAudit:
         assert entry["action"]["surface"] == "pydantic_ai.before_output_process"
         assert entry["action"]["tool_use_id"] == "c1"
 
+    def test_refusals_made_before_judgment_are_on_the_record(self, example, log):
+        """A call refused because of the run's toolsets, and a deferred call whose arguments
+        are not a JSON object, never reach the policy; each is still one entry, a deny,
+        bound to the call as the model sent it."""
+        import asyncio
+
+        from pydantic_ai import Agent, DeferredToolRequests, FunctionToolset
+        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.toolsets.wrapper import WrapperToolset
+
+        def wipe(table: str) -> str:
+            """Wipe."""
+            return "wiped"
+
+        class Forcing(WrapperToolset):
+            async def call_tool(self, name, tool_args, ctx, tool):
+                return await super().call_tool(name, tool_args, ctx, tool)
+
+        allow = lambda name, args: []  # noqa: E731
+        gate = example.RecusalAuditedGate(allow, log=log)
+        Agent(
+            self._model_calling("wipe", {"table": "t"}),
+            toolsets=[Forcing(FunctionToolset([wipe]))],
+            capabilities=[gate],
+        ).run_sync("go")
+        requests = DeferredToolRequests(calls=[ToolCallPart("wipe", "not json", tool_call_id="c9")])
+        asyncio.run(gate.handle_deferred_tool_calls(None, requests=requests))
+        first, second = log.entries
+        assert first["action"]["decision"] == "deny" and first["action"]["tool_use_id"] == "c1"
+        assert first["action"]["surface"] == "pydantic_ai.before_tool_execute"
+        assert first["action"]["input_sha256"] == _sha({"table": "t"})
+        assert second["action"]["decision"] == "deny" and second["action"]["tool_use_id"] == "c9"
+        assert second["action"]["surface"] == "pydantic_ai.handle_deferred_tool_calls"
+        assert second["action"]["input_sha256"] == _sha({"INVALID_JSON": "not json"})
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):

@@ -73,14 +73,21 @@ reason. The tool does not run and no retry budget is spent. A policy that raises
 the call (fail closed).
 
 `RecusalGate` declares Pydantic AI's `innermost` position, so its hooks run after every
-ordinary capability's. Another `innermost` capability listed after it still runs after it,
-so list the gate last. A toolset runs after every capability hook, so one that runs other
-tools' calls itself could change the arguments after the gate judged them. A run with
-one in its toolsets has every call refused:
+ordinary capability's. List it directly and last. The gate reads the order the run
+dispatches in, and a call is refused when a capability with a `before_tool_execute` of
+yours comes after the gate, since it could change the arguments the gate judged. That
+happens in two ways: another `innermost` capability listed after the gate, and a gate
+placed inside a `WrapperCapability`, which does not pass the gate's position on.
+
+A toolset runs after every capability hook, so one that runs other tools' calls itself
+could also change the arguments after the gate judged them. A run with one in its
+toolsets has every call refused:
 
 - a toolset of yours that holds other toolsets and has its own `call_tool` (a
   `WrapperToolset` subclass overriding it, or a container written from scratch, which
-  would also hide what it holds);
+  would also hide what it holds). The gate looks for held toolsets in the toolset's
+  attributes and four levels into the lists, tuples, sets, dicts and plain objects
+  there;
 - a subclass of a Pydantic AI toolset that replaces its `call_tool`;
 - a toolset with a `process_tool_call` function, such as an MCP server given one.
 
@@ -138,18 +145,23 @@ the calls first and calls it with the ones it allowed. Pydantic AI offers deferr
 to each capability in turn and the gate comes last, so a handler in any other capability
 (`HandleDeferredToolCalls`, a `Hooks` with a deferred hook, or one of your own) would be
 handed calls no policy has judged: a run with one is refused with a `UserError` that
-says this.
+says this, before the run starts, so also when a run is resumed from a history that ends
+in a tool call.
 
 **Tools the provider runs** (web search, code execution, web fetch, a provider-side MCP
 server and the like) run with arguments the model chose where no hook of your
 application sees them. A gated agent that offers one is refused with a `UserError`
 before the request is sent, as is one whose model settings switch such a tool on
-(`openai_native_tools`, or `tools`, `plugins` or `web_search_options` in `extra_body`).
-The gate asks the model what the request will carry, so a tool the model drops, or
-replaces with its local version (`WebSearch`, `WebFetch` and `MCP` on a model without
-the provider side), is not refused; where the provider side would be used, turn it off
-with `native=False`. Provider-side tool search is allowed: it finds tools, and the calls
-to them are judged like any other.
+(`openai_native_tools`, or `tools`, `plugins`, `web_search_options`, `mcp_servers` or
+`search_parameters` in `extra_body`), on the run or on the model. The gate asks the
+model what the request will carry, and each candidate of a `FallbackModel` in turn, so a
+tool the model drops, or replaces with its local version (`WebSearch`, `WebFetch` and
+`MCP` on a model without the provider side), is not refused; where the provider side
+would be used, turn it off with `native=False`. Provider-side tool search is allowed: it
+finds tools, and the calls to them are judged like any other.
+
+**Realtime sessions** are refused with a `UserError` when they start: a session calls
+none of the request and output hooks the gate judges in.
 
 **The name the policy is given** is the one the model calls the tool by: under a
 `PrefixedToolset` or `RenamedToolset` that is the prefixed or new name (`db_wipe` for a
@@ -188,6 +200,16 @@ path.
 - **`is_gated` reads the capabilities as listed.** For a gate a capability function
   returns (`lambda ctx: RecusalGate(...)`), or one inside a `WrapperCapability`, it says
   `False` although the gate runs.
+- **A toolset of yours that reaches another toolset through a function.** One that
+  builds or fetches the toolset it forwards to inside `call_tool` (a factory, a closure)
+  holds nothing the gate can find, so it is taken for the tool itself: the policy judged
+  the arguments it was handed, and what it does with them is its own code.
+- **A provider tool switched on some other way.** The settings named above are the ones
+  the gate knows. A model that searches or runs code by itself, or a setting not listed,
+  is not seen.
+- **Whoever reads the event stream.** Pydantic AI emits a tool call as an event before
+  the call is judged. Code that acts on that event, instead of on the tool running or on
+  the deferred request it is handed, acts before the gate.
 - **A wrapper toolset under a run context with no tool manager.** The gate reads the
   run's toolset from `RunContext.tool_manager` at the time of each call. Where Pydantic AI
   provides none (its Temporal activity context), the gate relies on the check it makes

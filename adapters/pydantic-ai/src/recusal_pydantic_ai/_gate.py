@@ -181,8 +181,10 @@ class RecusalGate(AbstractCapability[Any]):
 
     Declares the ``innermost`` position, so Pydantic AI sorts it after every ordinary
     capability however the list is written, and it judges the arguments as they reach the
-    tool. Only another ``innermost`` capability listed after the gate still runs after it;
-    list the gate last.
+    tool. List it directly and last: a call is refused when a capability with a
+    ``before_tool_execute`` of the application's is dispatched after the gate (another
+    ``innermost`` capability listed after it, or anything listed after a gate placed
+    inside a ``WrapperCapability``, which does not pass its position on).
 
     ``policy`` is required. A gate has no default policy: what to refuse is the adopter's
     decision, never the adapter's.
@@ -238,6 +240,8 @@ class RecusalGate(AbstractCapability[Any]):
             # toolset's current contents: a wrapper added outside the gate's own is here.
             toolset = getattr(getattr(ctx, "tool_manager", None), "toolset", None)
             unseen = _rewriting_wrapper(toolset) if toolset is not None else None
+        if not unseen:
+            unseen = _rewriter_after(getattr(ctx, "root_capability", None), self)
         if unseen:
             raise ToolFailed(_unjudgeable(call.tool_name, unseen, self._proposal(call), record))
         reason = _refusal(
@@ -246,6 +250,21 @@ class RecusalGate(AbstractCapability[Any]):
         if reason is not None:
             raise ToolFailed(reason)
         return args
+
+    async def before_run(self, ctx: RunContext[Any]) -> None:
+        """Refuse, before anything runs, a run the gate could not hold to its policy.
+
+        - A realtime session: it calls none of the request and output hooks the gate judges
+          in, and hands its tools straight to the provider.
+        - Another capability that answers deferred calls (see ``deferred``). Checked here
+          as well as before each request, because a run resumed from a history that ends in
+          a tool call executes it before any request is made."""
+        if getattr(ctx, "realtime", False):
+            raise UserError(
+                "Recusal refused the run: a realtime session calls none of the request and "
+                "output hooks the gate judges in, so it cannot be gated."
+            )
+        _refuse_deferred_handlers_elsewhere(ctx)
 
     async def prepare_model_request(
         self,
@@ -263,14 +282,7 @@ class RecusalGate(AbstractCapability[Any]):
           judged as any other.
         - Another capability that answers deferred calls: it is offered them before the
           gate (see ``deferred``)."""
-        elsewhere = _deferred_handlers_elsewhere(getattr(ctx, "root_capability", None))
-        if elsewhere:
-            raise UserError(
-                f"Recusal refused the model request: {', '.join(elsewhere)} answers deferred "
-                "tool calls, and Pydantic AI offers them to it before the gate, so it would "
-                "be handed calls no policy has judged. Give its handler to the gate instead: "
-                "`RecusalGate(policy, deferred=handler)`."
-            )
+        _refuse_deferred_handlers_elsewhere(ctx)
         provider_run = _provider_run_tools(request_context)
         if provider_run:
             raise UserError(
@@ -450,46 +462,197 @@ def _deferred_handlers_elsewhere(capability: Any) -> list[str]:
     return [type(capability).__name__]
 
 
+def _refuse_deferred_handlers_elsewhere(ctx: Any) -> None:
+    elsewhere = _deferred_handlers_elsewhere(getattr(ctx, "root_capability", None))
+    if elsewhere:
+        raise UserError(
+            f"Recusal refused the run: {', '.join(elsewhere)} answers deferred tool calls, "
+            "and Pydantic AI offers them to it before the gate, so it would be handed calls "
+            "no policy has judged. Give its handler to the gate instead: "
+            "`RecusalGate(policy, deferred=handler)`."
+        )
+
+
+def _holds(capability: Any, gate: Any, depth: int = 0) -> bool:
+    """True if this capability is the gate, or a wrapper or group around it."""
+    if capability is gate:
+        return True
+    if depth > 32:
+        return False
+    if isinstance(capability, WrapperCapability):
+        return _holds(capability.wrapped, gate, depth + 1)
+    if isinstance(capability, CombinedCapability):
+        return any(_holds(child, gate, depth + 1) for child in capability.capabilities)
+    return False
+
+
+def _changes_arguments(capability: Any, gate: Any, depth: int = 0) -> Optional[str]:
+    """The name of a capability here whose ``before_tool_execute`` is the application's and
+    so could change a call's arguments, or None. The gate itself, Pydantic AI's own
+    capabilities and wrappers that only pass the hook on are not such."""
+    if capability is gate or isinstance(capability, RecusalGate) or depth > 32:
+        return None
+    if isinstance(capability, CombinedCapability):
+        for child in capability.capabilities:
+            name = _changes_arguments(child, gate, depth + 1)
+            if name is not None:
+                return name
+        return None
+    own = type(capability).before_tool_execute
+    if isinstance(capability, Hooks):
+        try:
+            registered = bool(capability._get("before_tool_execute"))
+        except Exception:  # noqa: BLE001, a Hooks this cannot read may have one
+            registered = True
+        return "Hooks" if registered else None
+    if isinstance(capability, WrapperCapability):
+        if _stock(own):
+            return _changes_arguments(capability.wrapped, gate, depth + 1)
+        return type(capability).__name__
+    return None if _stock(own) else type(capability).__name__
+
+
+def _rewriter_after(root: Any, gate: Any) -> Optional[str]:
+    """Why a capability of this run could change a call's arguments after the gate judged
+    them, or None. Pydantic AI runs ``before_tool_execute`` in dispatch order, so the gate
+    must be the last capability with one of the application's: it is, when listed directly,
+    by its ``innermost`` position, unless another ``innermost`` capability is listed after
+    it; inside a ``WrapperCapability`` it has no position of its own."""
+    if root is None or root is gate:
+        return None
+    if not isinstance(root, CombinedCapability):
+        return _wrapped_by_rewriter(root, gate)
+    members = list(getattr(root, "_dispatch", None) or root.capabilities)
+    place = next((i for i, member in enumerate(members) if _holds(member, gate)), None)
+    if place is None:
+        return "the gate is not among the capabilities this run dispatches, so its place is unknown"
+    reason = _wrapped_by_rewriter(members[place], gate)
+    if reason is not None:
+        return reason
+    for member in members[place + 1 :]:
+        name = _changes_arguments(member, gate)
+        if name is not None:
+            return (
+                f"capability {name} has a `before_tool_execute` that runs after the gate, so "
+                "it could change the arguments after the gate judged them; list the gate "
+                "directly and last"
+            )
+    return None
+
+
+def _wrapped_by_rewriter(member: Any, gate: Any) -> Optional[str]:
+    """Why what wraps the gate could change a call after it, or None."""
+    if member is gate:
+        return None
+    name = _changes_arguments(member, gate)
+    if name is not None:
+        return (
+            f"capability {name}, which holds the gate, has a `before_tool_execute` of its own, "
+            "so it could change the arguments after the gate judged them"
+        )
+    return None
+
+
 #: Settings that switch a provider-run tool on without it being among the native tools.
 _PROVIDER_TOOL_SETTINGS = ("openai_native_tools",)
-_PROVIDER_TOOL_BODY_KEYS = ("tools", "plugins", "web_search_options")
+_PROVIDER_TOOL_BODY_KEYS = (
+    "tools",
+    "plugins",
+    "web_search_options",
+    "mcp_servers",
+    "search_parameters",
+)
 
 
 def _provider_run_tools(request_context: Any) -> list[str]:
     """What this request would have the provider run, by name; empty if nothing."""
-    settings = request_context.model_settings
-    params = request_context.model_request_parameters
+    found: set[str] = set()
+    _collect_provider_run(
+        request_context.model,
+        request_context.model_settings,
+        request_context.model_request_parameters,
+        found,
+        0,
+    )
+    return sorted(found)
+
+
+def _collect_provider_run(
+    model: Any, settings: Any, params: Any, found: set[str], depth: int
+) -> None:
+    candidates = getattr(model, "models", None)
+    if isinstance(candidates, (list, tuple)) and candidates and depth < 8:
+        # A fallback model resolves nothing itself: each model it may hand the request to
+        # drops or swaps native tools, and merges in its own settings, when its turn comes.
+        for candidate in candidates:
+            _collect_provider_run(candidate, settings, params, found, depth + 1)
+        return
     try:
         # The model's own resolution: it drops a native tool it does not support, or takes
         # the tool's local version instead, and merges in its own settings.
-        settings, params = request_context.model.prepare_request(settings, params)
+        settings, params = model.prepare_request(settings, params)
     except Exception:  # noqa: BLE001, unresolved: judge the request as it was handed over
         pass
-    found = {
+    found.update(
         type(tool).__name__ for tool in params.native_tools if not isinstance(tool, ToolSearchTool)
-    }
+    )
     if isinstance(settings, Mapping):
         found.update(f"`{key}`" for key in _PROVIDER_TOOL_SETTINGS if settings.get(key))
         body = settings.get("extra_body")
         if isinstance(body, Mapping):
             found.update(f"`extra_body.{key}`" for key in _PROVIDER_TOOL_BODY_KEYS if body.get(key))
-    return sorted(found)
+
+
+#: How far into a toolset's attributes ``_held_toolsets`` looks, and how much it reads.
+_HELD_DEPTH = 4
+_HELD_LIMIT = 4000
+
+
+def _attributes(obj: Any) -> list[Any]:
+    """The values an object holds: its ``__dict__`` and its ``__slots__``."""
+    values: list[Any] = []
+    try:
+        values.extend(vars(obj).values())
+    except TypeError:
+        pass
+    for cls in type(obj).__mro__:
+        slots = vars(cls).get("__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name not in ("__dict__", "__weakref__"):
+                try:
+                    values.append(getattr(obj, name))
+                except AttributeError:
+                    pass
+    return values
 
 
 def _held_toolsets(toolset: Any) -> list[Any]:
-    """The toolsets this one holds, in its attributes or one container deep."""
-    try:
-        values = list(vars(toolset).values())
-    except TypeError:
-        return []
+    """The toolsets this one holds: in its attributes, in containers there (lists, tuples,
+    sets, dicts, nested), and in plain objects there, ``_HELD_DEPTH`` levels down. The
+    search stops at each toolset it finds (that one is searched in its own turn) and after
+    ``_HELD_LIMIT`` values. A toolset reached only through a function is not found."""
     held: list[Any] = []
-    for value in values:
+    seen: set[int] = {id(toolset)}
+    pending: list[tuple[Any, int]] = [(value, 1) for value in _attributes(toolset)]
+    read = 0
+    while pending and read < _HELD_LIMIT:
+        value, depth = pending.pop()
+        read += 1
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
         if isinstance(value, AbstractToolset):
             held.append(value)
+        elif isinstance(value, (str, bytes, int, float, bool, type(None), type)) or callable(value):
+            continue
+        elif depth >= _HELD_DEPTH:
+            continue
+        elif isinstance(value, Mapping):
+            pending.extend((item, depth + 1) for pair in value.items() for item in pair)
         elif isinstance(value, (list, tuple, set, frozenset)):
-            held.extend(item for item in value if isinstance(item, AbstractToolset))
-        elif isinstance(value, dict):
-            held.extend(item for item in value.values() if isinstance(item, AbstractToolset))
+            pending.extend((item, depth + 1) for item in value)
+        elif not _stock(type(value)):
+            pending.extend((item, depth + 1) for item in _attributes(value))
     return held
 
 
