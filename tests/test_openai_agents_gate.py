@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import re
 import subprocess
 import sys
 import typing
@@ -334,15 +335,26 @@ class TestEffectiveArguments:
             return self.policy(name, args)
 
     def test_a_schema_that_rewrites_an_allowed_proposal_is_refused_and_nothing_runs(self, example):
+        """Refused twice over: when the agent is built, so the developer learns then, and by
+        the guardrail's own answer for a call, should the tool reach one another way."""
+        import json
+
         policy = self.Recording(example.sql_scope_policy)
-        outputs, executed = example.run_calls(
-            [("run_sql", {"sql": SELECT}, "c1")],
-            policy=policy,
-            tools=[example.transforming_sql_tool()],
+        tool = example.transforming_sql_tool()
+        for build in (
+            lambda: example.gate_tools([tool], policy),
+            lambda: example.run_calls([("run_sql", {"sql": SELECT}, "c1")], tools=[tool]),
+        ):
+            with pytest.raises(TypeError, match="cannot gate 'run_sql': parameter `sql` has"):
+                build()
+        example.EXECUTED.clear()
+        reason = _adapter()._function_tool_refusal(
+            "run_sql", json.dumps({"sql": SELECT}), policy, tool
         )
-        assert executed == []
+        assert reason.startswith("Recusal refused `run_sql`: parameter `sql` has a type or a")
+        assert "a custom validator" in reason and "no call could be judged" in reason
         assert policy.seen == []  # nothing to judge: the value that would run is unknowable
-        assert "cannot be judged" in outputs["c1"] and "custom validation" in outputs["c1"]
+        assert example.EXECUTED == []
 
     def test_negative_control_the_same_rewriting_tool_runs_the_rewritten_sql_ungated(self, example):
         outputs, executed = example.run_calls(
@@ -385,10 +397,12 @@ class TestEffectiveArguments:
             assert (outputs["c1"] == "recorded") is bool(expect_ran), outputs
 
     def test_a_context_taking_tool_is_judged_by_its_data_parameters(self, example):
+        from agents import RunContextWrapper
+
         ran = []
 
         @example.function_tool
-        def ctx_sql(ctx: _adapter().RunContextWrapper, sql: str) -> str:
+        def ctx_sql(ctx: RunContextWrapper, sql: str) -> str:
             """Record SQL with a context parameter the SDK fills."""
             ran.append(sql)
             return "recorded"
@@ -403,8 +417,8 @@ class TestEffectiveArguments:
         self, example
     ):
         """The SDK prepares only data-only parameter models; an application model inside
-        the parameters could run code, so nothing is prepared and the gate refuses. A
-        dict parameter carries the same data and is judged."""
+        the parameters could run code, so nothing is prepared and the gate refuses the tool
+        when the agent is built. A dict parameter carries the same data and is judged."""
         from pydantic import BaseModel
 
         class Query(BaseModel):
@@ -426,12 +440,13 @@ class TestEffectiveArguments:
             return "recorded"
 
         policy = self.Recording(lambda n, a: [])
+        with pytest.raises(TypeError, match="cannot gate 'query': parameter `q` has a type"):
+            example.run_calls(
+                [("query", {"q": {"sql": SELECT}}, "c1")], policy=policy, tools=[query, query_dict]
+            )
+        assert ran == [] and policy.seen == []
         outputs, _ = example.run_calls(
-            [("query", {"q": {"sql": SELECT}}, "c1")], policy=policy, tools=[query, query_dict]
-        )
-        assert ran == [] and policy.seen == [] and "cannot be judged" in outputs["c1"]
-        outputs, _ = example.run_calls(
-            [("query_dict", {"q": {"sql": SELECT}}, "c2")], policy=policy, tools=[query, query_dict]
+            [("query_dict", {"q": {"sql": SELECT}}, "c2")], policy=policy, tools=[query_dict]
         )
         assert policy.seen == [("query_dict", {"q": {"sql": SELECT}})]
         assert ran == [{"sql": SELECT}] and outputs["c2"] == "recorded"
@@ -510,9 +525,22 @@ class TestCapabilityIdentity:
         example.EXECUTED.clear()
         assert example.EXECUTED == [], "nothing ran: the agent was never built"
 
+    @staticmethod
+    def limited_sql_tool(example):
+        """A second, data-only tool named ``run_sql``: its prepared invocation carries a
+        default the raw arguments do not."""
+
+        @example.function_tool(name_override="run_sql", strict_mode=False)
+        def run_sql(sql: str, limit: int = 10) -> str:
+            """Record SQL text and a row limit without connecting to a database."""
+            example.EXECUTED.append(("run_sql", {"sql": sql, "limit": limit}))
+            return f"recorded SQL: {sql}"
+
+        return run_sql
+
     def test_is_gated_is_false_for_an_agent_whose_gated_tools_share_a_name(self, example):
         (a,) = example.gate_tools([example.run_sql], example.sql_scope_policy)
-        (b,) = example.gate_tools([example.transforming_sql_tool()], example.sql_scope_policy)
+        (b,) = example.gate_tools([self.limited_sql_tool(example)], example.sql_scope_policy)
         model = example.scripted_model([])
         agent = example.Agent(name="dup", model=model, tools=[a, b])
         assert not example.is_gated(agent)
@@ -520,21 +548,26 @@ class TestCapabilityIdentity:
 
     def test_a_bound_guardrail_judges_its_own_tool_whatever_the_agent_lists(self, example):
         """Kills the lookup mutant on its own: the agent's metadata lists a same-named
-        agent tool FIRST, which a name lookup would find and judge as raw SELECT (allowed);
-        the bound guardrail judges the transforming function tool it was built for and
-        refuses it as unjudgeable."""
+        agent tool FIRST, which a name lookup would find and judge as the raw arguments;
+        the bound guardrail judges the function tool it was built for, as the SDK prepares
+        it, with the default the raw arguments leave out."""
         import json
         from types import SimpleNamespace
 
-        (gated,) = example.gate_tools([example.transforming_sql_tool()], example.sql_scope_policy)
+        judged = []
+
+        def recording_policy(name, tool_input):
+            judged.append(dict(tool_input))
+            return example.sql_scope_policy(name, tool_input)
+
+        (gated,) = example.gate_tools([self.limited_sql_tool(example)], recording_policy)
         decoy = self.sub_agent_as_run_sql(example)
         misleading_agent = SimpleNamespace(name="misleading", tools=[decoy, gated])
         guardrail = gated.tool_input_guardrails[-1]
         ctx = SimpleNamespace(tool_name="run_sql", tool_arguments=json.dumps({"sql": SELECT}))
-        output = guardrail.guardrail_function(SimpleNamespace(context=ctx, agent=misleading_agent))
-        text = str(output.output_info) + str(getattr(output, "output", "")) + str(output)
-        assert "cannot be judged" in text, text
-        assert not getattr(ctx, "_function_tool_arguments", None)
+        guardrail.guardrail_function(SimpleNamespace(context=ctx, agent=misleading_agent))
+        assert judged == [{"sql": SELECT, "limit": 10}]
+        assert ctx._function_tool_arguments.args == [SELECT, 10]
 
     def test_an_allowed_call_pins_the_invocation_that_was_judged(self, example):
         """The gate judges the invocation the SDK prepared and pins that same object on the
@@ -587,3 +620,564 @@ class TestCapabilityIdentity:
             [("run_sql", {"sql": SELECT}, "c1"), ("echo", {"text": "hi"}, "c2")]
         )
         assert executed == [("run_sql", {"sql": SELECT}), ("echo", {"text": "hi"})]
+
+
+#: A callable-object tool whose context parameter is annotated through an alias, in a
+#: module with string annotations: neither the text ``RunContextWrapper`` nor the class is
+#: in the annotation as written, and only resolving it the SDK's way finds the context.
+_ALIASED_CONTEXT_SOURCE = '''
+from __future__ import annotations
+
+from typing import Any
+
+from agents import RunContextWrapper as RCW
+
+Ctx = RCW[Any]
+
+
+class SqlRunner:
+    def __init__(self, ran):
+        self.ran = ran
+
+    def __call__(self, ctx: Ctx, sql: str) -> str:
+        """Record SQL text without connecting to a database."""
+        self.ran.append(sql)
+        return "recorded"
+'''
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestJudgedIsWhatRuns:
+    """The 2026-11-21 review. What the policy judged was not always what ran: a context
+    parameter the gate detected differently from the SDK shifted every argument one name
+    over; a wrapper's own parameter ran at a default no policy saw; the gated copy shared
+    its ``handoffs`` list with the original. And a tool the gate could never judge was
+    accepted when the agent was built and refused on every call."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("agents.testing", reason="openai-agents is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_openai_judged_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    Recording = TestEffectiveArguments.Recording
+
+    # --- the context parameter is the SDK's decision, never a second reading ----------------
+
+    @pytest.mark.parametrize(
+        "sql, runs", [(DELETE, False), (SELECT, True)], ids=["delete", "select"]
+    )
+    def test_an_aliased_context_on_a_callable_object_does_not_shift_the_names(
+        self, example, sql, runs
+    ):
+        namespace: dict = {}
+        exec(compile(_ALIASED_CONTEXT_SOURCE, "<aliased context>", "exec"), namespace)
+        ran: list = []
+        tool = example.function_tool(namespace["SqlRunner"](ran), name_override="run_sql")
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, _ = example.run_calls(
+            [("run_sql", {"sql": sql}, "c1")], policy=policy, tools=[tool]
+        )
+        # judged under the name the function receives it by, not under the context's
+        assert policy.seen == [("run_sql", {"sql": sql})]
+        assert ran == ([sql] if runs else [])
+        assert (outputs["c1"] == "recorded") is runs, outputs
+
+    def test_negative_control_the_aliased_context_tool_runs_delete_ungated(self, example):
+        namespace: dict = {}
+        exec(compile(_ALIASED_CONTEXT_SOURCE, "<aliased context>", "exec"), namespace)
+        ran: list = []
+        tool = example.function_tool(namespace["SqlRunner"](ran), name_override="run_sql")
+        example.run_calls([("run_sql", {"sql": DELETE}, "c1")], gated=False, tools=[tool])
+        assert ran == [DELETE]
+
+    def test_prepared_values_that_are_not_one_per_parameter_are_refused(self, example):
+        from types import SimpleNamespace
+
+        @example.function_tool(strict_mode=False)
+        def search(sql: str, *, dry: bool = False) -> str:
+            """Record a search; contacts nothing."""
+            return "recorded"
+
+        gate = _adapter()
+        schema = gate._sdk_schema(search)
+        named = gate._effective_arguments(
+            schema, SimpleNamespace(args=[SELECT], kwargs={"dry": True})
+        )
+        assert named == {"sql": SELECT, "dry": True}
+        for args, kwargs in (
+            ([], {"dry": True}),  # a value short: the names would shift
+            ([SELECT, "one too many"], {"dry": True}),
+            ([SELECT], {}),  # a keyword parameter left to the function's own default
+            ([SELECT], {"dry": True, "force": True}),  # a keyword the tool does not declare
+        ):
+            with pytest.raises(TypeError, match="not one for each of the tool's parameters"):
+                gate._effective_arguments(schema, SimpleNamespace(args=args, kwargs=kwargs))
+
+    # --- a wrapper cannot run a value no policy judged ----------------------------------------
+
+    @staticmethod
+    def wrapped_tools(example, ran):
+        import functools
+
+        def adds_a_parameter(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, dry_run=False, **kwargs):
+                ran.append(("wrapper", dry_run))
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def takes_the_functions_parameter(fn):
+            @functools.wraps(fn)
+            def wrapper(sql, *args, **kwargs):
+                return fn(*args, **kwargs)  # the function then runs on its own default
+
+            return wrapper
+
+        def reorders(fn):
+            @functools.wraps(fn)
+            def wrapper(table, sql):
+                return fn(sql, table)
+
+            return wrapper
+
+        def forwards(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def run_sql(sql: str = DELETE) -> str:
+            """Record SQL text without connecting to a database."""
+            ran.append(("run_sql", sql))
+            return "recorded"
+
+        def copy_rows(sql: str, table: str) -> str:
+            """Record a copy; contacts nothing."""
+            ran.append(("copy_rows", sql, table))
+            return "recorded"
+
+        def tool(decorator, func):
+            return example.function_tool(
+                decorator(func), name_override=func.__name__, strict_mode=False
+            )
+
+        return {
+            "adds": (tool(adds_a_parameter, run_sql), "dry_run"),
+            "takes": (tool(takes_the_functions_parameter, run_sql), "sql"),
+            "reorders": (tool(reorders, copy_rows), "table"),
+            "forwards": (tool(forwards, run_sql), None),
+        }
+
+    @pytest.mark.parametrize("case", ["adds", "takes", "reorders"])
+    def test_a_wrapper_with_a_parameter_of_its_own_is_refused_when_the_agent_is_built(
+        self, example, case
+    ):
+        import json
+
+        ran: list = []
+        tool, parameter = self.wrapped_tools(example, ran)[case]
+        expected = f"cannot gate {tool.name!r}: a function the call reaches takes `{parameter}`"
+        with pytest.raises(TypeError, match=expected):
+            example.gate_tools([tool], example.sql_scope_policy)
+        with pytest.raises(TypeError, match=expected):
+            example.gated_agent(example.Agent(name="a", tools=[tool]), example.sql_scope_policy)
+        # and the guardrail's own answer for a call, should the tool reach one another way
+        policy = self.Recording(example.sql_scope_policy)
+        reason = _adapter()._function_tool_refusal(
+            tool.name, json.dumps({"sql": SELECT, "table": "t"}), policy, tool
+        )
+        assert reason.startswith(
+            f"Recusal refused `{tool.name}`: a function the call reaches takes `{parameter}`"
+        )
+        assert policy.seen == [] and ran == []
+
+    def test_negative_control_the_wrapper_that_takes_the_parameter_runs_delete_ungated(
+        self, example
+    ):
+        ran: list = []
+        tool, _ = self.wrapped_tools(example, ran)["takes"]
+        example.run_calls([("run_sql", {"sql": SELECT}, "c1")], gated=False, tools=[tool])
+        assert ran == [("run_sql", DELETE)]  # proposed SELECT, ran the function's default
+
+    def test_a_wrapper_that_only_forwards_is_gated_and_judged_as_the_function(self, example):
+        ran: list = []
+        tool, _ = self.wrapped_tools(example, ran)["forwards"]
+        policy = self.Recording(example.sql_scope_policy)
+        outputs, _ = example.run_calls(
+            [("run_sql", {}, "c1"), ("run_sql", {"sql": SELECT}, "c2")],
+            policy=policy,
+            tools=[tool],
+        )
+        # the function's default, DELETE, is written out by the SDK, judged and refused
+        assert sorted(policy.seen, key=str) == sorted(
+            [("run_sql", {"sql": DELETE}), ("run_sql", {"sql": SELECT})], key=str
+        )
+        assert ran == [("run_sql", SELECT)]
+        assert outputs["c1"].startswith("Recusal refused `run_sql` [FAIL]")
+
+    def test_a_function_that_declares_another_signature_is_refused(self, example):
+        import inspect
+
+        def run_sql(sql: str, limit: int = 10) -> str:
+            """Record SQL text without connecting to a database."""
+            return "recorded"
+
+        run_sql.__signature__ = inspect.Signature(
+            [inspect.Parameter("sql", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=str)]
+        )
+        tool = example.function_tool(run_sql)
+        with pytest.raises(TypeError, match="cannot be inspected \\(DeclaredSignature\\)"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    # --- the gated copy shares no list with the original --------------------------------------
+
+    def test_the_gated_copy_has_its_own_lists(self, example):
+        other = example.Agent(name="billing", tools=[example.run_sql])
+        agent = example.Agent(name="triage", tools=[example.echo])
+        gated = example.gated_agent(agent, example.sql_scope_policy)
+        assert gated.handoffs is not agent.handoffs
+        assert gated.mcp_servers is not agent.mcp_servers
+        assert gated.tools is not agent.tools
+        agent.handoffs.append(other)  # the original changes after gating
+        agent.mcp_servers.append(object())
+        assert gated.handoffs == [] and gated.mcp_servers == []
+        assert example.is_gated(gated)
+
+    def test_a_handoff_added_to_the_original_afterwards_is_not_the_gated_copys(self, example):
+        from agents.exceptions import ModelBehaviorError
+
+        billing = example.Agent(
+            name="billing",
+            model=example.scripted_model([("run_sql", {"sql": DELETE}, "b1")]),
+            tools=[example.run_sql],
+        )
+        model = example.scripted_model([("transfer_to_billing", {}, "c1")])
+        agent = example.Agent(name="triage", model=model, tools=[example.echo])
+        gated = example.gated_agent(agent, example.sql_scope_policy)
+        agent.handoffs.append(billing)
+        example.EXECUTED.clear()
+        with pytest.raises(ModelBehaviorError, match="transfer_to_billing"):
+            asyncio.run(example.run_agent(gated))
+        assert example.EXECUTED == []
+
+    def test_an_agent_with_a_prompt_is_refused(self, example):
+        prompt = {"id": "pmpt_stored"}
+        agent = example.Agent(name="a", tools=[example.echo], prompt=prompt)
+        with pytest.raises(ValueError, match="cannot gate agent 'a': it has a prompt"):
+            example.gated_agent(agent, example.sql_scope_policy)
+        gated = example.gated_agent(
+            example.Agent(name="a", tools=[example.echo]), example.sql_scope_policy
+        )
+        assert example.is_gated(gated)
+        gated.prompt = prompt
+        assert not example.is_gated(gated)
+
+    # --- what the gate could never judge is refused when the agent is built ------------------
+
+    @staticmethod
+    def typed_tool(example, annotation, name="typed"):
+        def typed(value) -> str:
+            """Record a value; contacts nothing."""
+            example.EXECUTED.append((name, {"value": value}))
+            return "recorded"
+
+        typed.__annotations__ = {"value": annotation, "return": str}
+        return example.function_tool(typed, name_override=name, strict_mode=False)
+
+    @staticmethod
+    def refused_annotations():
+        import dataclasses
+        import datetime
+        import enum
+
+        from pydantic import BaseModel, Field
+
+        class Color(enum.Enum):
+            RED = "red"
+
+        class Location(typing.TypedDict):
+            lat: float
+
+        class Model(BaseModel):
+            x: int
+
+        @dataclasses.dataclass
+        class Data:
+            x: int
+
+        return {
+            "enum": Color,
+            "typed-dict": Location,
+            "model": Model,
+            "dataclass": Data,
+            "datetime": datetime.datetime,
+            "date": datetime.date,
+            "tuple": typing.Tuple[int, int],
+            "set": typing.Set[str],
+            "bytes": bytes,
+            "list-of-typed-dict": typing.List[Location],
+            "pattern": typing.Annotated[str, Field(pattern="^a")],
+        }
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "enum",
+            "typed-dict",
+            "model",
+            "dataclass",
+            "datetime",
+            "date",
+            "tuple",
+            "set",
+            "bytes",
+            "list-of-typed-dict",
+            "pattern",
+        ],
+    )
+    def test_a_parameter_type_the_sdk_will_not_prepare_is_refused_at_setup(self, example, case):
+        tool = self.typed_tool(example, self.refused_annotations()[case])
+        expected = "cannot gate 'typed': parameter `value` has a type or a validation"
+        with pytest.raises(TypeError, match=expected):
+            example.gate_tools([tool], example.sql_scope_policy)
+        agent = example.Agent(name="a", tools=[example.echo, tool])
+        with pytest.raises(TypeError, match=expected):
+            example.gated_agent(agent, example.sql_scope_policy)
+
+    def test_the_refused_parameter_is_named_among_the_others(self, example):
+        import enum
+
+        class Mode(enum.Enum):
+            FAST = "fast"
+
+        @example.function_tool
+        def search(sql: str, mode: Mode, limit: int) -> str:
+            """Record a search; contacts nothing."""
+            return "recorded"
+
+        with pytest.raises(TypeError, match="cannot gate 'search': parameter `mode` has a type"):
+            example.gate_tools([search], example.sql_scope_policy)
+
+    @pytest.mark.parametrize(
+        "annotation, value",
+        [
+            (str, "a"),
+            (int, 1),
+            (float, 1.5),
+            (bool, True),
+            (typing.Optional[int], None),
+            (typing.List[str], ["a"]),
+            (typing.Dict[str, int], {"a": 1}),
+            (typing.Any, {"k": [1]}),
+            (typing.Literal["a", "b"], "a"),
+            (typing.Union[int, str], "a"),
+        ],
+        ids=["str", "int", "float", "bool", "optional", "list", "dict", "any", "literal", "union"],
+    )
+    def test_the_data_only_parameter_types_are_gated_and_judged(self, example, annotation, value):
+        tool = self.typed_tool(example, annotation)
+        policy = self.Recording(lambda name, args: [])
+        outputs, executed = example.run_calls(
+            [("typed", {"value": value}, "c1")], policy=policy, tools=[tool]
+        )
+        assert policy.seen == [("typed", {"value": value})]
+        assert executed == [("typed", {"value": value})] and outputs["c1"] == "recorded"
+
+    @pytest.mark.parametrize("stars", ["*", "**"])
+    def test_a_variadic_parameter_is_refused_at_setup(self, example, stars):
+        def many(sql: str, *parts: str) -> str:
+            """Record SQL parts; contacts nothing."""
+            return "recorded"
+
+        def keyed(sql: str, **options: int) -> str:
+            """Record SQL options; contacts nothing."""
+            return "recorded"
+
+        func, name = (many, "parts") if stars == "*" else (keyed, "options")
+        tool = example.function_tool(func, strict_mode=False)
+        expected = (
+            f"cannot gate '{func.__name__}': its parameter `{re.escape(stars)}{name}` is variadic"
+        )
+        with pytest.raises(TypeError, match=expected):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    def test_a_tool_not_built_by_function_tool_has_no_schema_to_read(self, example):
+        tool = copy.copy(example.run_sql)
+        tool.on_invoke_tool = lambda ctx, arguments: "ran"
+        with pytest.raises(TypeError, match="Build the tool with function_tool"):
+            _adapter()._sdk_schema(tool)
+        assert "function_tool" in _adapter()._tool_refusal(tool)
+
+    # --- names shared across namespaces: refused, for the reason that is true ---------------
+
+    def test_a_name_shared_across_namespaces_is_refused_for_what_the_policy_is_given(self, example):
+        from agents import tool_namespace
+
+        crm = tool_namespace(name="crm", description="crm tools", tools=[example.run_sql])
+        erp = tool_namespace(name="erp", description="erp tools", tools=[example.run_sql])
+        expected = (
+            "function tools in different namespaces share a name \\['run_sql'\\]; a policy "
+            "and the audit record are given a tool's own name without its namespace"
+        )
+        with pytest.raises(TypeError, match=expected):
+            example.gate_tools([*crm, *erp], example.sql_scope_policy)
+        agent = example.Agent(name="a", tools=[*crm, *erp])
+        with pytest.raises(ValueError, match=expected):
+            example.gated_agent(agent, example.sql_scope_policy)
+        # one namespace alone is gated, and the policy is given the tool's own name
+        from agents.testing import ScriptedModel, assistant_message, function_call
+
+        call = function_call("run_sql", {"sql": SELECT}, call_id="c1", namespace="crm")
+        model = ScriptedModel([[call], [assistant_message("done")]])
+        policy = self.Recording(example.sql_scope_policy)
+        gated = example.gated_agent(example.Agent(name="a", model=model, tools=crm), policy)
+        example.EXECUTED.clear()
+        asyncio.run(example.run_agent(gated))
+        assert policy.seen == [("run_sql", {"sql": SELECT})]
+        assert example.EXECUTED == [("run_sql", {"sql": SELECT})]
+
+    def test_a_name_shared_in_one_namespace_keeps_the_last_wins_reason(self, example):
+        from agents import tool_namespace
+
+        crm = tool_namespace(
+            name="crm", description="crm tools", tools=[example.run_sql, example.run_sql]
+        )
+        for tools in (crm, [example.run_sql, example.run_sql]):
+            with pytest.raises(TypeError, match="share a name \\['run_sql'\\]; the SDK resolves"):
+                example.gate_tools(tools, example.sql_scope_policy)
+
+    # --- a refusal says what happened ---------------------------------------------------------
+
+    def test_a_tool_without_parameters_refuses_arguments_and_says_so(self, example):
+        ran: list = []
+
+        @example.function_tool(strict_mode=False)
+        def ping() -> str:
+            """Record a ping; contacts nothing."""
+            ran.append("ping")
+            return "pong"
+
+        policy = self.Recording(lambda name, args: [])
+        outputs, _ = example.run_calls(
+            [("ping", {"extra": 1}, "c1"), ("ping", {}, "c2")], policy=policy, tools=[ping]
+        )
+        assert outputs["c1"] == (
+            "Recusal refused `ping`: the arguments the tool would execute cannot be judged: "
+            "the tool takes no arguments and the call supplies some"
+        )
+        assert outputs["c2"] == "pong"
+        assert policy.seen == [("ping", {})] and ran == ["ping"]
+
+    def test_arguments_that_do_not_validate_say_so(self, example):
+        outputs, executed = example.run_calls([("run_sql", {"sql": ["MARKER"]}, "c1")])
+        assert executed == []
+        assert outputs["c1"] == (
+            "Recusal refused `run_sql`: the arguments the tool would execute cannot be "
+            "judged: they do not validate against the tool's parameters"
+        )
+
+    @pytest.mark.parametrize(
+        "arguments, detail",
+        [
+            ('{"amount": NaN}', "arguments hold a non-finite number, which is not JSON data"),
+            ('{"amount": -Infinity}', "arguments hold a non-finite number, which is not JSON data"),
+            ('{"amount": 1e999}', "arguments hold a non-finite number, which is not JSON data"),
+            ('{"amount": [1, NaN]}', "arguments hold a non-finite number, which is not JSON data"),
+            (
+                '{"amount": "nan"}',
+                "the arguments the tool would execute cannot be judged (non-finite numbers "
+                "are not JSON data)",
+            ),
+        ],
+        ids=["nan", "minus-infinity", "overflow", "nested", "string-read-as-nan"],
+    )
+    def test_a_non_finite_number_is_refused_before_the_policy_runs(
+        self, example, arguments, detail
+    ):
+        from recusal import Finding
+
+        ran: list = []
+
+        @example.function_tool(strict_mode=False)
+        def pay(amount: float) -> str:
+            """Record a payment; contacts nothing."""
+            ran.append(amount)
+            return "paid"
+
+        def ceiling(name, args):  # NaN > 1000 is False: this policy alone lets NaN through
+            if args.get("amount", 0) > 1000:
+                return [Finding.fail("limit", severity="CRITICAL", message="over limit")]
+            return []
+
+        policy = self.Recording(ceiling)
+        outputs, _ = example.run_calls([("pay", arguments, "c1")], policy=policy, tools=[pay])
+        assert outputs["c1"] == f"Recusal refused `pay`: {detail}"
+        assert policy.seen == [] and ran == []
+
+    @pytest.mark.parametrize("depth", [1_500, 100_000])
+    def test_arguments_nested_too_deeply_are_refused_not_raised(self, example, depth):
+        """Two depths, because two readers give up: the JSON parser at the larger, and on
+        Python 3.12 and later the copy made for the policy at the smaller."""
+        deep = "[" * depth + "]" * depth
+        policy = self.Recording(lambda name, args: [])
+        reason = _adapter()._function_tool_refusal(
+            "run_sql", '{"sql": ' + deep + "}", policy, example.run_sql
+        )
+        assert reason == "Recusal refused `run_sql`: arguments are nested too deeply to judge"
+        assert policy.seen == []
+
+    # --- the pin, in a real run ----------------------------------------------------------------
+
+    @pytest.mark.parametrize("gated", [True, False], ids=["gated", "ungated-control"])
+    def test_a_real_run_executes_the_invocation_the_gate_pinned(self, example, monkeypatch, gated):
+        """The SDK prepares an invocation by parsing the arguments once. Gated, the one
+        parse is the gate's, the pin is on the tool context when the tool starts, and the
+        SDK runs it without parsing again. Ungated, there is no pin and the one parse is
+        the SDK's own."""
+        import agents.tool as sdk_tool
+        from agents import RunHooks
+
+        parses: list = []
+        original = sdk_tool._parse_function_tool_json_input
+
+        def counting(**kwargs):
+            parses.append(kwargs["tool_name"])
+            return original(**kwargs)
+
+        monkeypatch.setattr(sdk_tool, "_parse_function_tool_json_input", counting)
+        pins: list = []
+
+        class Hooks(RunHooks):
+            async def on_tool_start(self, context, agent, tool):
+                pin = getattr(context, "_function_tool_arguments", None)
+                pins.append(None if pin is None else list(pin.args))
+
+        policy = self.Recording(lambda name, args: [])
+        agent = example.Agent(
+            name="a",
+            model=example.scripted_model([("charge", {}, "c1")]),
+            tools=[example.charge_tool()],
+        )
+        if gated:
+            agent = example.gated_agent(agent, policy)
+        example.EXECUTED.clear()
+        asyncio.run(
+            example.Runner.run(
+                agent, "go", run_config=example.RunConfig(tracing_disabled=True), hooks=Hooks()
+            )
+        )
+        assert example.EXECUTED == [("charge", {"amount": 100})]
+        assert parses == ["charge"], "prepared once; the SDK did not prepare a second time"
+        assert pins == ([[100]] if gated else [None])
+        assert policy.seen == ([("charge", {"amount": 100})] if gated else [])

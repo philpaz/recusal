@@ -187,7 +187,9 @@ class TestOpenAIAgentsMcpAudit:
         assert sorted(map(repr, called)) == sorted(map(repr, plain_called))
         assert len(log.entries) == len(calls)
 
-    def test_the_record_binds_what_the_server_received_whatever_the_policy_did(self, example, log):
+    def test_the_record_binds_what_was_sent_to_the_server_whatever_the_policy_did(
+        self, example, log
+    ):
         def mutating(tool_name, tool_input):
             tool_input["text"] = "REWRITTEN BY THE POLICY"
             return []
@@ -198,25 +200,117 @@ class TestOpenAIAgentsMcpAudit:
         assert called == [("db", "echo", {"text": "as proposed"})]
         assert log.entries[0]["action"]["input_sha256"] == _sha(called[0][2])
 
+    def test_the_record_binds_the_arguments_completed_with_the_listed_defaults(
+        self, example, gate, log
+    ):
+        """What is sent is the call completed with the defaults the server lists, and that
+        is what the entry fingerprints: not the ``{}`` the model wrote."""
+        server = _purge_server(gate)
+        _, called = example.run_calls(
+            [("purge", {}, "c1")], log, policy=lambda *_: [], server=server
+        )
+        completed = {"path": "/", "recursive": True, "dry_run": False}
+        assert called == [("files", "purge", completed)]
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "defer"
+        assert entry["action"]["input_sha256"] == _sha(completed) != _sha({})
+
     def test_a_call_without_arguments_is_recorded_as_the_empty_mapping(self, example, gate, log):
         record = example.recording(log)("mcp_server", gate.InProcessMCPServer())
-        assert _adapter()._refusal_for_call("echo", None, lambda *_: [], **record) is None
+        sent, reason = _adapter()._judged_call("echo", None, {}, lambda *_: [], **record)
+        assert sent == {} and reason is None
         assert log.entries[0]["action"]["input_sha256"] == _sha({})
 
     def test_non_mapping_arguments_are_one_recorded_deny(self, example, gate, log):
         record = example.recording(log)("mcp_server", gate.InProcessMCPServer())
-        reason = _adapter()._refusal_for_call(
-            "run_sql", ["DELETE"], gate.sql_scope_policy, **record
+        sent, reason = _adapter()._judged_call(
+            "run_sql", ["DELETE"], {}, gate.sql_scope_policy, **record
         )
-        assert reason is not None and "arguments are not a mapping" in reason
+        assert sent is None and "arguments are not a mapping" in reason
         entry = log.entries[0]
         assert entry["action"]["decision"] == "deny"
         assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
         assert entry["action"]["input_sha256"] == _sha({"input": ["DELETE"]})
-        assert _adapter()._refusal_for_call("run_sql", ["DELETE"], gate.sql_scope_policy) == (
-            "Recusal refused `run_sql`: arguments are not a mapping"
+        assert _adapter()._judged_call("run_sql", ["DELETE"], {}, gate.sql_scope_policy) == (
+            None,
+            "Recusal refused `run_sql`: arguments are not a mapping",
         )
         assert len(log.entries) == 1
+
+    # --- refused before the policy runs: always exactly one entry --------------------------
+
+    @pytest.mark.parametrize(
+        "arguments, plain",
+        [
+            ({"dry_run": "MARKER"}, "argument `dry_run` is of JSON type string where"),
+            ({"path": "/data", "recursive": 1}, "argument `recursive` is of JSON type integer"),
+        ],
+        ids=["string-for-boolean", "integer-for-boolean"],
+    )
+    def test_an_argument_of_another_type_is_one_recorded_deny(
+        self, example, gate, log, log_path, arguments, plain
+    ):
+        seen = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        outputs, called = example.run_calls(
+            [("purge", arguments, "c1")], log, policy=policy, server=_purge_server(gate)
+        )
+        assert called == [] and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny"
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert plain in entry["action"]["reason"] == _text(outputs["c1"])
+        # bound to the arguments as the SDK handed them, and never their text
+        assert entry["action"]["input_sha256"] == _sha(arguments)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    def test_a_tool_the_server_does_not_list_is_one_recorded_deny(self, example, gate, log):
+        server = example.audited_agent(
+            gate.Agent(name="a", mcp_servers=[gate.InProcessMCPServer()]),
+            lambda *_: [],
+            log,
+        ).mcp_servers[0]
+        gate.CALLED.clear()
+        result = asyncio.run(server.call_tool("drop_all", {"sql": SELECT}))
+        assert result.model_dump(by_alias=True)["isError"] is True
+        assert "the server lists no tool of this name" in result.content[0].text
+        assert gate.CALLED == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["tool"] == "drop_all"
+
+    @pytest.mark.parametrize("kind", ["too-deep", "non-finite", "not-data"])
+    def test_arguments_that_are_not_json_data_are_one_recorded_deny(self, example, gate, log, kind):
+        """The review's F3: arguments nested about 900 deep raised inside the gate before
+        ``decide`` ran, so the refusal the model read was on no log."""
+        arguments: dict = {"sql": SELECT}
+        if kind == "too-deep":
+            nested: list = []
+            for _ in range(5000):
+                nested = [nested]
+            arguments["meta"] = nested
+        elif kind == "non-finite":
+            arguments["limit"] = float("nan")
+        else:
+            arguments["when"] = object()
+        seen = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        record = example.recording(log)("mcp_server", gate.InProcessMCPServer())
+        sent, reason = _adapter()._judged_call("run_sql", arguments, {}, policy, **record)
+        assert sent is None and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny"
+        assert entry["action"]["reason"] == reason
+        plain = _adapter()._judged_call("run_sql", arguments, {}, policy)
+        assert plain[0] is None and plain[1].startswith("Recusal refused `run_sql`: arguments ")
+        assert seen == [] and len(log.entries) == 1
 
     def test_two_servers_are_told_apart_on_one_log(self, example, gate, log):
         first, second = gate.InProcessMCPServer(name="db"), gate.InProcessMCPServer(name="crm")
@@ -327,8 +421,13 @@ class TestOpenAIAgentsMcpAudit:
         [
             ('{"sql": "MARKER', "arguments are not valid JSON", {"input": '{"sql": "MARKER'}),
             ('["MARKER"]', "arguments are not a JSON object", {"input": ["MARKER"]}),
+            (
+                '{"sql": "MARKER", "limit": NaN}',
+                "arguments hold a non-finite number, which is not JSON data",
+                {"input": '{"sql": "MARKER", "limit": NaN}'},
+            ),
         ],
-        ids=["bad-json", "not-object"],
+        ids=["bad-json", "not-object", "non-finite"],
     )
     def test_a_hosted_request_refused_before_judgment_is_one_recorded_deny(
         self, example, log, log_path, arguments, detail, proposal
@@ -446,3 +545,40 @@ class TestOpenAIAgentsMcpAudit:
         before = set(tmp_path.iterdir())
         example.main()
         assert set(tmp_path.iterdir()) == before
+
+
+#: The input schema a server lists for ``purge``: defaults the server fills when the call
+#: leaves a parameter out, and types it converts a value to.
+PURGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "default": "/"},
+        "recursive": {"type": "boolean", "default": True},
+        "dry_run": {"type": "boolean", "default": False},
+    },
+}
+
+
+def _purge_server(gate, schema=None, name="files"):
+    """An in-process server that lists one tool, ``purge``, under ``schema``, counts its
+    listings and records what it is sent."""
+    import copy
+
+    from mcp.types import Tool
+
+    listed = PURGE_SCHEMA if schema is None else schema
+
+    class PurgeServer(gate.InProcessMCPServer):
+        listings = 0
+
+        async def list_tools(self, run_context=None, agent=None):
+            self.listings += 1
+            return [
+                Tool(
+                    name="purge",
+                    description="Delete files under a path.",
+                    inputSchema=copy.deepcopy(listed),
+                )
+            ]
+
+    return PurgeServer(name=name, tools=("purge",))

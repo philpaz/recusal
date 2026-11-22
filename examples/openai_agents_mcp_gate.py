@@ -19,13 +19,16 @@ names collide or a function tool already holds the name, and shortened when too 
 gate keyed on that public name judges a presentation of the capability, not the
 capability. The seam this example uses is the one place the SDK hands the server the
 capability itself: ``server.call_tool(tool_name, arguments)``, invoked with the server's own
-tool name and the exact argument dict the server will run, after any approval a person
+tool name and the argument dict that is sent to the server, after any approval a person
 gave. ``gate_mcp_server(server, policy)`` wraps that method on the server, in place, because
 a server object is a connection and a copy would be a second one. A refusal returns an MCP
 error result carrying Recusal's reason, which the SDK surfaces to the model as the call's
 output, and the server's own ``call_tool`` is never reached. The policy therefore sees the
 name the server executes under, whatever the model called it, and a policy keyed by tool
-name must name the server's own tools.
+name must name the server's own tools. Before the policy runs, the gate writes each
+default the server's listed schema gives for a parameter the call leaves out into the
+arguments, and refuses an argument that is not of the JSON type that schema declares, so
+the policy judges, and the server is sent, the completed arguments.
 
 Hosted MCP (``HostedMCPTool``). Those calls run on OpenAI's servers, and the one local point
 is the SDK's approval callback, which runs only for a call OpenAI asks approval for.
@@ -40,7 +43,8 @@ is anything but ``"always"`` is reported as ungated.
 ``gated_agent(agent, policy)`` gates all three at once: function tools (through the
 function-tool example's ``gate_tools``), every server in ``mcp_servers`` in place, and every
 ``HostedMCPTool`` as a gated copy. It refuses, rather than skips, what no gate can see:
-handoffs, a sub-agent behind ``as_tool`` that is not itself gated, and ``Agent`` subclasses.
+handoffs, an agent with a ``prompt``, a sub-agent behind ``as_tool`` that is not itself
+gated, and ``Agent`` subclasses.
 
 A server carries one policy. Because the gate is installed on the server object, every
 agent that lists that object shares it: gating it again with the same policy is a no-op,

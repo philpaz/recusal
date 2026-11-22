@@ -28,12 +28,15 @@ from ._gate import (
 # Building blocks for a gate on another seam of the same SDK (recusal-openai-agents-mcp
 # gates MCP servers with them): the decision for a call whose arguments are a JSON
 # string, the recorded refusal for a call that cannot be judged, and the tool names an
-# agent lists more than once.
+# agent lists more than once, why tools that share a name cannot be gated, and whether a
+# list of tools carries the guardrail (with the caller's own answer for a sub-agent).
 from ._gate import _duplicate_names as duplicate_names
 from ._gate import _refusal as refusal
+from ._gate import _shared_name_reason as shared_name_reason
+from ._gate import _tools_gated as tools_gated
 from ._gate import _unjudgeable as unjudgeable
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 __all__ = [
     "GUARDRAIL_NAME",
@@ -50,5 +53,7 @@ __all__ = [
     "recording",
     "recusal_guardrail",
     "refusal",
+    "shared_name_reason",
+    "tools_gated",
     "unjudgeable",
 ]

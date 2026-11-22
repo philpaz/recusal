@@ -22,7 +22,8 @@ shows up as a failure here rather than as a gap in prose. The invariants:
    either judges the value the tool would execute (and refuses it) or refuses what it cannot
    judge; either way nothing runs. Registered for the adapters whose framework validates
    arguments between the hook and the function: the OpenAI Agents function tools (the
-   parameter model the SDK generates), LangGraph's ``ToolNode`` and the LangChain middleware
+   parameter model the SDK generates; that gate refuses the rewriting tool when the agent
+   is built, and its guardrail gives the same refusal for a call), LangGraph's ``ToolNode`` and the LangChain middleware
    built on it (``args_schema``). Not registered where the hook already sits after
    validation or no schema layer exists: Pydantic AI's ``before_tool_execute`` receives the
    validated arguments by the framework's design, the Responses and Chat Completions loops
@@ -339,10 +340,20 @@ def _openai_agents_charge(streamed):
 
 def _openai_agents_transforming(streamed):
     def route(m, policy):
-        outputs, executed = m.run_calls(
-            _TRANSFORM_CALL, policy=policy, streamed=streamed, tools=[m.transforming_sql_tool()]
-        )
-        return _from_text_outputs(outputs), executed
+        # the gate refuses the rewriting tool when the agent is built, so no run can reach
+        # it; the outcome reported is the guardrail's own answer for the call, which holds
+        # the same refusal should the tool reach a call another way
+        import json
+
+        from recusal_openai_agents import _gate
+
+        tool = m.transforming_sql_tool()
+        with pytest.raises(TypeError, match="Recusal cannot gate 'run_sql'"):
+            m.run_calls(_TRANSFORM_CALL, policy=policy, streamed=streamed, tools=[tool])
+        m.EXECUTED.clear()
+        (name, arguments, call_id) = _TRANSFORM_CALL[0]
+        reason = _gate._function_tool_refusal(name, json.dumps(arguments), policy, tool)
+        return _from_text_outputs({call_id: reason}), list(m.EXECUTED)
 
     return route
 

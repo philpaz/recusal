@@ -6,6 +6,88 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **`recusal-openai-agents` 0.2.0 (unreleased): the policy judges the arguments under the
+  names the function receives them by, and a tool the gate could never judge is refused
+  when the agent is built.** Found by the adapter review of 2026-11-21 and reproduced on
+  `openai-agents` 0.24.0:
+  - The gate worked out for itself which parameter is the context the SDK fills, from the
+    text of the annotation. For a callable-object tool whose context was annotated
+    through an alias in a module with string annotations it found none, so every argument
+    was named one parameter off: the policy saw `{"ctx": "DELETE FROM audit_log"}`, raised
+    no objection, and the tool ran the `DELETE`. The names are now read from the SDK's own
+    schema for the tool (`takes_context` and its signature), and a call whose prepared
+    values are not one for each parameter is refused.
+  - A `functools.wraps` wrapper under `function_tool` ran with values the policy never
+    saw: a wrapper's own keyword default (`dry_run=False`) was in no schema, and a
+    wrapper that took a parameter of the function left the function at its own default
+    (judged `SELECT 1`, ran `DELETE`). The gate now walks every callable the call reaches
+    with the kernel's `reached_parameters` and refuses the tool unless each one takes
+    exactly the parameters the SDK prepared for, or forwards `*args, **kwargs` and names
+    none of its own. This is why the package now requires `recusal>=0.15.0`.
+  - `gated_agent` returned a copy that shared the original agent's `handoffs` and
+    `mcp_servers` lists, so a handoff appended to the original after gating was the gated
+    copy's too, and the agent it handed off to ran ungated. The copy now has its own
+    lists.
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt`: a prompt stored on
+    OpenAI's servers can configure tools that are not in the agent's `tools` list.
+  - A non-finite number (`NaN`, `Infinity`, a literal too large for a float, the string
+    `"nan"` for a `float` parameter) ran on the plain gate, where a policy that compares
+    it (`amount > 1000`) raises no objection, and was refused only on the audited gate.
+    Both now refuse it before the policy runs, for the same reason, so "the audited forms
+    are the plain ones with a recording passed in" holds.
+  - `gate_tools` and `gated_agent` now raise `TypeError`, naming the tool and the
+    parameter, for a function tool they used to accept and then refuse on every call: a
+    parameter the SDK prepares only by running the tool's own code (an `Enum`, a model, a
+    dataclass, a `TypedDict`, `datetime`, `date`, `tuple`, `set`, `bytes`,
+    `Field(pattern=...)`, a custom validator) and a variadic parameter. The README lists
+    the parameter types that are gated. This is why the release is 0.2.0: an agent that
+    carried such a tool was built and is now refused.
+  - Corrected: two tools under one name in different `tool_namespace` groups were refused
+    with a reason that was not true of them (the SDK resolves those by namespace, not
+    last-wins). They are still refused, for the reason that is: the policy and the audit
+    record are given a tool's own name without its namespace. A call that gives
+    arguments to a tool that takes none, and arguments that do not validate, now each say
+    so in place of "its schema runs custom validation".
+  - Corrected in the README and `docs/FRAMEWORKS.md`: "a call a person rejected is not on
+    the log" does not hold under the SDK's `pre_approval_tool_input_guardrails=True`,
+    where the guardrail also runs before the approval. A call then has an entry before a
+    person decides, and a second one if it is approved. Nothing runs without the second
+    judgment.
+  - New public names for a gate on another seam of the SDK: `shared_name_reason`,
+    `tools_gated`, and the `agent_gated` argument of `gate_tools`.
+- **`recusal-openai-agents-mcp` 0.2.0 (unreleased): the server is sent what the policy
+  judged, completed from the server's listed schema.** Found by the same review and
+  reproduced against a real stdio server built with the MCP Python SDK (`mcp` 2.3.0):
+  - The gate judged the arguments as sent and never read the tool's listed `inputSchema`,
+    and the server then ran values no policy judged: `{"dry_run": "false"}` (a string,
+    which a policy reading `if not args.get("dry_run")` takes as set) ran as
+    `dry_run=False`, `{"amount": "500"}` ran as `500`, and `{}` ran with every default in
+    the schema (`recursive=True`), under an audit entry that fingerprinted `{}`. Before
+    the policy runs, the gate now writes every listed default the call leaves out into
+    the arguments, and refuses an argument that is not already of the JSON type the
+    schema declares, naming the parameter and the two types. The policy judges the
+    completed arguments, the server is sent the completed arguments, and the entry is
+    bound to them. To read the schema, `gate_mcp_server` now also wraps the server's
+    `list_tools`, in place, and a call to a tool the server does not list is refused.
+    This is why the release is 0.2.0: a call that relied on the server converting a
+    string is now refused with a reason the model can act on. The README says exactly
+    what of a schema is read, and that a parameter left out with no listed default, and
+    the server's handling of a hosted MCP call, are not seen.
+  - Arguments nested about 900 deep were refused with no audit entry, because the copy
+    for the policy was made, and failed, before `decide` ran. Every refusal before the
+    policy runs is now one entry.
+  - `gated_agent` refused a parent whose sub-agent behind `as_tool` was itself gated by
+    this package and held an MCP server or a hosted tool, with advice to do what had been
+    done. The sub-agent is now judged by this package's own `is_gated`.
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt`, and the gated copy
+    has its own `handoffs` list, as in `recusal-openai-agents`. Requires
+    `recusal-openai-agents>=0.2.0`.
+  - Now in the README's list of what the gate does not see: request metadata from a
+    `tool_meta_resolver`, a hosted approval the SDK answers again from its own memory
+    when the provider repeats a request, and a call the SDK rejects before `call_tool`.
+
 ## [0.15.0] - 2026-11-21
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public

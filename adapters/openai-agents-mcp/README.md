@@ -48,7 +48,7 @@ Install it from PyPI. `recusal-openai-agents`, which this package requires, come
 pip install recusal-openai-agents-mcp
 ```
 
-Requires Python 3.10+, `recusal>=0.14.0`, `recusal-openai-agents>=0.1.0`,
+Requires Python 3.10+, `recusal>=0.15.0`, `recusal-openai-agents>=0.2.0`,
 `openai-agents>=0.24.0` and `mcp>=2.3.0`. It is tested on every pull request against
 exactly `openai-agents==0.24.0` with `openai==3.49.0`, and weekly against the newest
 releases.
@@ -78,11 +78,39 @@ agent = gated_agent(Agent(name="assistant", tools=[...], mcp_servers=[server]), 
 `gate_mcp_server(server, policy)` and `gate_hosted_mcp(tool, policy)` gate one of each.
 
 **Local MCP servers are gated in place, at `server.call_tool`.** That is the one point
-where the SDK hands the server its own tool name and the exact arguments it will run,
+where the SDK hands the server its own tool name and the arguments that are sent to it,
 after any approval a person gave. A refusal returns an MCP error result carrying
 Recusal's reason, and the server is never reached. The policy sees the name the server
 executes under, whatever public name the model called it by, so a policy keyed by tool
 name must name the server's own tools.
+
+**The policy judges what is sent, completed from the server's listed schema.** A server
+does two things with what it receives that the gate cannot watch: it fills a parameter
+the call leaves out from its default, and it converts a value of another type (the
+string `"false"` to a boolean, `"500"` to a number). The tool's listed `inputSchema` is
+the only statement of both, so before the policy runs the gate:
+
+- **writes every listed default the call leaves out into the arguments.** A property with
+  a `default` in the schema that the call does not give is added with that default. The
+  policy judges the completed arguments, and the completed arguments are what is sent,
+  so the server fills nothing the schema lists a default for;
+- **refuses an argument that is not already of the JSON type the schema declares**, with
+  a reason that names the parameter and the two types and carries no argument text. A
+  string is not a boolean or a number, `true` is not an integer, and `5.0` is not an
+  integer. The model reads the reason and can send the declared type.
+
+What is read from a property's schema: `type` (one name or a list of names), `enum` and
+`const`, and the same three inside `items` (each item of a list) and `properties` (each
+member of an object). Nothing else is read. A property given by `$ref`, `anyOf`, `oneOf`
+or `allOf`, and a format, a range or a pattern, leave the value unchecked, and a schema
+that is not an object schema with `properties` is not read at all. An argument the
+schema does not name is judged and sent as it is.
+
+To read the schema the gate also wraps the server's `list_tools`, in place, and keeps the
+schema of each tool the server lists. `list_tools` returns what the server listed,
+unchanged. A call to a tool the gate has seen no listing for makes the gate list the
+tools once itself. A call to a tool the server does not list, or to a server whose tools
+cannot be listed, is refused.
 
 **A server carries one policy.** The gate is installed on the server object, so every
 agent that lists that object shares it. Gating it again with the same policy is a no-op;
@@ -93,7 +121,16 @@ policy.
 servers. `gate_hosted_mcp` returns a copy whose `require_approval` is `"always"` and
 whose approval callback is Recusal's: a refusal answers `{"approve": False, "reason":
 ...}`, so the hosted call is not made. A hosted tool whose `require_approval` is anything
-but `"always"` is reported as ungated.
+but `"always"` is reported as ungated. The policy sees the arguments as the model sent
+them: the hosted server's schema is not read, so the check above does not apply.
+
+**Build the agent completely, then gate it.** A tool or a server appended to the gated
+agent afterwards is not gated, and `is_gated(agent)` then returns `False`. The gated copy
+has its own `tools`, `mcp_servers` and `handoffs` lists, so a later change to the
+original agent's lists does not reach it. The servers themselves are shared with the
+original agent and stay gated for both. A sub-agent behind `as_tool` is accepted when it
+is gated itself with this package's `gated_agent`, its own servers and hosted tools
+included.
 
 ## Put every decision on the record
 
@@ -113,18 +150,45 @@ One log covers the three seams, each under its own surface label:
 | Local MCP server | `openai_agents.mcp.call_tool` | none: the SDK hands `call_tool` no id; the server is `control.mcp_server` |
 | Hosted MCP | `openai_agents.hosted_mcp.approval` | the approval request id; the server label is `control.mcp_server` |
 
-Each entry holds a SHA-256 fingerprint of the arguments, never the arguments. If the log
-cannot be written the call is refused. Check the log with
+Each entry holds a SHA-256 fingerprint of the arguments, never the arguments. For a local
+server's judged call that is the fingerprint of the arguments sent, completed with the
+listed defaults. A call the gate refuses before the policy runs (an argument of another
+type, a tool the server does not list, arguments that are not JSON data) is one entry
+too, a deny. If the log cannot be written the call is refused. Check the log with
 `recusal audit verify decisions.jsonl`.
 
 ## What the gate does not see
 
+- **A parameter the call leaves out that has no listed default.** It is the server's to
+  fill, and the schema does not say with what. Most optional parameters are like this.
+  A policy that depends on such a parameter should refuse a call that leaves it out.
+- **What the server does with what it receives.** The gate guarantees what is sent. A
+  server that converts a value the schema does not type, or whose schema does not match
+  its code, runs something the policy did not judge.
+- **A schema that changes after it was listed.** The gate checks against the schema of
+  the most recent listing made through the gated server object.
+- **Request metadata.** What a server's `tool_meta_resolver` returns is sent as `_meta`
+  beside the arguments. It is not given to the policy and is not in the fingerprint.
+- **Hosted MCP: the server's defaults and type conversion.** The hosted server's schema
+  is not read, so the policy sees the arguments as the model sent them. Which of two
+  duplicate keys in the argument text the hosted server reads is not seen either: the
+  policy is given the last one, as `json.loads` reads it.
 - **A hosted call OpenAI does not ask approval for.** That is why the gate sets
   `require_approval` to `"always"`.
+- **A hosted approval the SDK answers from its own memory.** The gate keeps no state
+  between turns. When the provider repeats the id and the arguments of an approval
+  request the gate already allowed, the SDK approves it again without asking the
+  callback, so there are two approvals for one consultation of the policy and one entry.
+  A policy that counts calls counts consultations, not approvals.
 - **What the tool's own approval callback answered** after Recusal allowed a call. The
   entry records Recusal's decision, not that callback's.
-- **Handoffs, an ungated sub-agent behind `as_tool`, and `Agent` subclasses.**
-  `gated_agent` raises for these at construction.
+- **A call the SDK rejects before `call_tool`.** Arguments for a local MCP tool that are
+  malformed JSON, or not a JSON object, are rejected by the SDK itself, and the model
+  reads the SDK's tool error. Nothing runs and there is no entry.
+- **Handoffs, an agent with a `prompt`, an ungated sub-agent behind `as_tool`, and `Agent`
+  subclasses.** `gated_agent` raises for these at construction. A prompt stored on
+  OpenAI's servers can configure tools, hosted MCP among them, that are not in the
+  agent's `tools` list.
 
 ## Compatibility
 

@@ -13,8 +13,15 @@ What each entry is bound to:
 
 - a call that is judged: the arguments the tool is called with, as the SDK prepares them
   from the tool's schema, defaults included;
-- a call refused before judgment (arguments that are not a JSON object, a schema that
-  transforms its input, a preparation the gate cannot read): the arguments as proposed.
+- a call refused before judgment (arguments that do not validate against the tool's
+  parameters, a prepared value that is not JSON data): the arguments as proposed;
+- a call whose arguments are not a JSON object, or hold a non-finite number: the argument
+  text, or the JSON value it parsed to, under the key ``input``.
+
+When an entry is written: when the guardrail runs, which is when the tool is about to
+execute, after any approval, so a call a person rejected has no entry. Under the SDK's
+``pre_approval_tool_input_guardrails=True`` the guardrail also runs before the approval:
+a call then has an entry before a person decides, and a second one if it is approved.
 
 What is not on the log: a call the SDK rejects before the guardrail runs (a tool the agent
 does not have raises ``ModelBehaviorError``), and anything ``gated_agent`` refuses to gate

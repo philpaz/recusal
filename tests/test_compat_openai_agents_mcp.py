@@ -313,3 +313,51 @@ def test_without_a_callback_an_approval_request_is_an_interruption_not_a_call(ex
 def test_negative_control_a_tool_that_approves_everything_approves_delete(ex):
     responses = ex.run_hosted([("run_sql", {"sql": DELETE}, "r1")], gated=False)
     assert responses["r1"]["approve"] is True
+
+
+# --- the listed schema (the 2026-11-21 review) -------------------------------------------------
+
+
+def test_the_sdk_lists_through_an_instance_level_list_tools_before_it_calls(ex):
+    """The gate keeps each tool's listed input schema by wrapping ``list_tools`` on the
+    server object, as it wraps ``call_tool``. The SDK must list through that attribute,
+    with the run context and the agent, before any call."""
+    from agents.mcp import MCPServer
+
+    params = inspect.signature(MCPServer.list_tools).parameters
+    assert list(params) == ["self", "run_context", "agent"]
+    server = ex.InProcessMCPServer()
+    original = server.list_tools
+    order = []
+
+    async def recorder(*args, **kwargs):
+        tools = await original(*args, **kwargs)
+        order.append(("list", [tool.name for tool in tools]))
+        return tools
+
+    server.list_tools = recorder
+    seen = _record_calls(server)
+    _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], [server])
+    assert order and order[0] == ("list", ["echo", "run_sql"])
+    assert [name for name, _, _ in seen] == ["run_sql"]
+
+
+def test_a_listed_tool_carries_its_input_schema_where_the_gate_reads_it(ex):
+    (echo, run_sql) = asyncio.run(ex.InProcessMCPServer().list_tools())
+    schema = getattr(run_sql, "input_schema", None)
+    if schema is None:
+        schema = run_sql.inputSchema
+    assert schema == {
+        "type": "object",
+        "properties": {"sql": {"type": "string"}},
+        "required": ["sql"],
+    }
+
+
+def test_the_sdk_sends_a_local_server_the_arguments_without_reading_its_schema(ex):
+    """Why the gate reads the schema itself: the SDK hands ``call_tool`` the model's
+    arguments as parsed, a string for a parameter the schema types otherwise included."""
+    server = ex.InProcessMCPServer()
+    seen = _record_calls(server)
+    _run_server(ex, [("run_sql", {"sql": 5, "limit": "10"}, "c1"), ("run_sql", {}, "c2")], [server])
+    assert [arguments for _, arguments, _ in seen] == [{"sql": 5, "limit": "10"}, {}]

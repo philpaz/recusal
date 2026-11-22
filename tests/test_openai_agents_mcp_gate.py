@@ -177,8 +177,11 @@ class TestOpenAIAgentsMcpGate:
             args["sql"] = DELETE
             return []
 
-        assert _adapter()._refusal_for_call("run_sql", arguments, mutating) is None
-        assert arguments == before, "the arguments are what the server receives; untouched"
+        sent, reason = _adapter()._judged_call("run_sql", arguments, {}, mutating)
+        assert reason is None
+        assert sent == before, "what is sent to the server is what was proposed; untouched"
+        assert arguments == before, "and so is the dict the SDK handed over"
+        assert observed[0] is not sent and observed[0]["meta"] is not sent["meta"]
         assert observed[0] is not arguments and observed[0]["meta"] is not arguments["meta"]
         assert observed[0]["sql"] == DELETE  # the policy changed its own copy only
 
@@ -869,3 +872,512 @@ class TestNameDomainBinding:
         assert composed.get_control_identity()["manifest_sha256"].startswith("sha256:")
         composed.reset_control_identity()
         assert composed.get_control_identity()["manifest_sha256"] is None
+
+
+#: The input schema a server lists for ``purge``: defaults the server fills when the call
+#: leaves a parameter out, and types it converts a value to.
+PURGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "default": "/"},
+        "recursive": {"type": "boolean", "default": True},
+        "dry_run": {"type": "boolean", "default": False},
+    },
+}
+
+
+def _purge_server(gate, schema=None, name="files"):
+    """An in-process server that lists one tool, ``purge``, under ``schema``, counts its
+    listings and records what it is sent."""
+    import copy
+
+    from mcp.types import Tool
+
+    listed = PURGE_SCHEMA if schema is None else schema
+
+    class PurgeServer(gate.InProcessMCPServer):
+        listings = 0
+
+        async def list_tools(self, run_context=None, agent=None):
+            self.listings += 1
+            return [
+                Tool(
+                    name="purge",
+                    description="Delete files under a path.",
+                    inputSchema=copy.deepcopy(listed),
+                )
+            ]
+
+    return PurgeServer(name=name, tools=("purge",))
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestWhatIsSentIsWhatWasJudged:
+    """The 2026-11-21 review, F1. The gate judged the dict as sent and never read the tool's
+    listed schema, and a server then ran values no policy judged: ``"false"`` converted to
+    ``False``, ``"500"`` to ``500``, and a parameter left out filled from its default. The
+    gate now writes every listed default the call leaves out into the arguments, which the
+    policy judges and the server is sent, and refuses an argument that is not already of
+    the JSON type the schema declares."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("agents.mcp", reason="openai-agents is not installed")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "recusal_openai_agents_mcp_sent_example", EXAMPLE
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    class Recording:
+        def __init__(self, policy=None):
+            self.policy, self.seen = policy or (lambda name, args: []), []
+
+        def __call__(self, name, args):
+            import copy
+
+            self.seen.append((name, copy.deepcopy(args)))
+            return self.policy(name, args)
+
+    @staticmethod
+    def dry_run_only(name, args):
+        """An ordinary policy written against the tool's published parameters."""
+        from recusal import Finding
+
+        if name == "purge" and (args.get("recursive") is True or not args.get("dry_run")):
+            return [Finding.fail("dry_run_only", severity="CRITICAL", message="dry runs only")]
+        return []
+
+    # --- defaults the server would fill are written out, judged and sent ----------------------
+
+    def test_a_parameter_left_out_is_judged_and_sent_at_its_listed_default(self, example):
+        policy = self.Recording()
+        outputs, called = example.run_calls(
+            [("purge", {}, "c1"), ("purge", {"path": "/data", "dry_run": True}, "c2")],
+            policy=policy,
+            server=_purge_server(example),
+        )
+        first = {"path": "/", "recursive": True, "dry_run": False}
+        second = {"path": "/data", "dry_run": True, "recursive": True}
+        assert policy.seen == [("purge", first), ("purge", second)]
+        assert called == [("files", "purge", first), ("files", "purge", second)]
+
+    def test_a_policy_refuses_the_default_it_now_sees(self, example):
+        policy = self.Recording(self.dry_run_only)
+        outputs, called = example.run_calls(
+            [("purge", {}, "c1")], policy=policy, server=_purge_server(example)
+        )
+        assert called == []
+        assert _text(outputs["c1"]) == "Recusal refused `purge` [FAIL]: dry runs only"
+
+    def test_negative_control_ungated_the_server_is_sent_the_call_without_its_defaults(
+        self, example
+    ):
+        _, called = example.run_calls(
+            [("purge", {}, "c1")], gated=False, server=_purge_server(example)
+        )
+        assert called == [("files", "purge", {})]
+
+    def test_a_default_outside_the_checked_types_is_still_written_out(self, example):
+        schema = {
+            "type": "object",
+            "properties": {
+                "label": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
+                "tags": {"type": "array", "default": ["a"]},
+                "note": {"type": "string"},
+            },
+        }
+        policy = self.Recording()
+        _, called = example.run_calls(
+            [("purge", {}, "c1")], policy=policy, server=_purge_server(example, schema)
+        )
+        # ``note`` has no listed default: it is the server's to fill, and is not seen
+        assert policy.seen == [("purge", {"label": None, "tags": ["a"]})]
+        assert called == [("files", "purge", {"label": None, "tags": ["a"]})]
+
+    def test_a_written_default_is_a_copy_the_policy_and_the_server_cannot_share(self, example):
+        schema = {"type": "object", "properties": {"tags": {"type": "array", "default": ["a"]}}}
+        server = example.gate_mcp_server(_purge_server(example, schema), self.spoiling)
+        example.CALLED.clear()
+        for _ in range(2):
+            asyncio.run(server.call_tool("purge", {}))
+        assert example.CALLED == [("files", "purge", {"tags": ["a"]})] * 2
+
+    @staticmethod
+    def spoiling(name, args):
+        args["tags"].append("WRITTEN BY THE POLICY")
+        return []
+
+    def test_a_listed_default_of_another_type_than_declared_is_refused(self, example):
+        schema = {"type": "object", "properties": {"dry_run": {"type": "boolean", "default": "no"}}}
+        policy = self.Recording()
+        outputs, called = example.run_calls(
+            [("purge", {}, "c1")], policy=policy, server=_purge_server(example, schema)
+        )
+        assert called == [] and policy.seen == []
+        assert "argument `dry_run` is of JSON type string" in _text(outputs["c1"])
+
+    def test_a_listed_default_that_is_not_json_data_is_refused(self, example):
+        schema = {"type": "object", "properties": {"ratio": {"default": float("nan")}}}
+        args: dict = {}
+        assert _adapter()._schema_refusal(args, schema) == (
+            "the default the server's schema lists for `ratio` is not JSON data"
+        )
+
+    # --- an argument must already be of the type the schema declares --------------------------
+
+    TYPED = {
+        "type": "object",
+        "properties": {
+            "dry_run": {"type": "boolean"},
+            "depth": {"type": "integer"},
+            "ratio": {"type": ["number", "null"]},
+            "path": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "options": {"type": "object", "properties": {"force": {"type": "boolean"}}},
+            "mode": {"enum": ["soft", "hard", 1]},
+            "kind": {"const": "files"},
+            "label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "ref": {"$ref": "#/$defs/Ref"},
+        },
+    }
+
+    @pytest.mark.parametrize(
+        "arguments, detail",
+        [
+            (
+                {"dry_run": "false"},
+                "argument `dry_run` is of JSON type string where the server's schema declares "
+                "boolean",
+            ),
+            (
+                {"dry_run": 0},
+                "argument `dry_run` is of JSON type integer where the server's schema "
+                "declares boolean",
+            ),
+            (
+                {"depth": "MARKER"},
+                "argument `depth` is of JSON type string where the server's schema declares "
+                "integer",
+            ),
+            (
+                {"depth": 5.0},
+                "argument `depth` is of JSON type number where the server's schema declares "
+                "integer",
+            ),
+            (
+                {"depth": True},
+                "argument `depth` is of JSON type boolean where the server's schema declares "
+                "integer",
+            ),
+            (
+                {"ratio": "MARKER"},
+                "argument `ratio` is of JSON type string where the server's schema declares "
+                "number or null",
+            ),
+            (
+                {"ratio": False},
+                "argument `ratio` is of JSON type boolean where the server's schema declares "
+                "number or null",
+            ),
+            (
+                {"path": None},
+                "argument `path` is of JSON type null where the server's schema declares string",
+            ),
+            (
+                {"path": ["MARKER"]},
+                "argument `path` is of JSON type array where the server's schema declares string",
+            ),
+            (
+                {"tags": {"MARKER": 1}},
+                "argument `tags` is of JSON type object where the server's schema declares array",
+            ),
+            (
+                {"tags": ["a", 1]},
+                "argument `tags` holds a value that is of JSON type integer where the "
+                "server's schema declares string",
+            ),
+            (
+                {"options": {"force": "MARKER"}},
+                "argument `options` holds a value that is of JSON type string where the "
+                "server's schema declares boolean",
+            ),
+            (
+                {"mode": "MARKER"},
+                "argument `mode` is not one of the values the server's schema lists",
+            ),
+            ({"mode": 1.0}, "argument `mode` is not one of the values the server's schema lists"),
+            ({"mode": True}, "argument `mode` is not one of the values the server's schema lists"),
+            ({"kind": "MARKER"}, "argument `kind` is not the value the server's schema fixes"),
+        ],
+        ids=[
+            "string-for-boolean",
+            "integer-for-boolean",
+            "string-for-integer",
+            "float-for-integer",
+            "boolean-for-integer",
+            "string-for-number",
+            "boolean-for-number",
+            "null-for-string",
+            "array-for-string",
+            "object-for-array",
+            "item-of-another-type",
+            "member-of-another-type",
+            "not-in-enum",
+            "enum-by-type",
+            "enum-boolean-is-not-a-number",
+            "not-the-const",
+        ],
+    )
+    def test_an_argument_of_another_type_is_refused_before_the_policy_runs(
+        self, example, arguments, detail
+    ):
+        policy = self.Recording()
+        outputs, called = example.run_calls(
+            [("purge", arguments, "c1")], policy=policy, server=_purge_server(example, self.TYPED)
+        )
+        assert called == [] and policy.seen == []
+        assert _text(outputs["c1"]) == (
+            f"Recusal refused `purge`: {detail}; the server would not run with the value the "
+            "policy judged. Send the declared JSON type."
+        )
+        assert "MARKER" not in _text(outputs["c1"]), "the reason carries no argument text"
+
+    def test_negative_control_ungated_the_server_is_sent_the_string_it_would_convert(self, example):
+        _, called = example.run_calls(
+            [("purge", {"dry_run": "false"}, "c1")],
+            gated=False,
+            server=_purge_server(example, self.TYPED),
+        )
+        assert called == [("files", "purge", {"dry_run": "false"})]
+
+    def test_arguments_of_the_declared_types_are_judged_and_sent_as_they_are(self, example):
+        arguments = {
+            "dry_run": True,
+            "depth": 3,
+            "ratio": 1,  # an integer is a number
+            "path": "/data",
+            "tags": ["a", "b"],
+            "options": {"force": False, "unlisted": "kept"},
+            "mode": 1,
+            "kind": "files",
+            "label": 5,  # anyOf is not read: left as sent
+            "ref": {"any": "thing"},  # nor is a $ref
+            "unlisted": "kept",  # nor an argument the schema does not name
+        }
+        policy = self.Recording()
+        _, called = example.run_calls(
+            [("purge", arguments, "c1"), ("purge", {"ratio": None, "depth": -1}, "c2")],
+            policy=policy,
+            server=_purge_server(example, self.TYPED),
+        )
+        assert policy.seen == [("purge", arguments), ("purge", {"ratio": None, "depth": -1})]
+        assert called == [
+            ("files", "purge", arguments),
+            ("files", "purge", {"ratio": None, "depth": -1}),
+        ]
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "string"},
+            {"properties": {"dry_run": {"type": "boolean", "default": False}}},
+            {"type": "object"},
+            {"type": "object", "properties": ["dry_run"]},
+            None,
+        ],
+        ids=["not-an-object", "no-type", "no-properties", "properties-not-a-mapping", "none"],
+    )
+    def test_a_schema_that_is_not_an_object_schema_is_not_read(self, schema):
+        pytest.importorskip("agents.mcp", reason="openai-agents is not installed")
+        args = {"dry_run": "false"}
+        assert _adapter()._schema_refusal(args, schema) is None
+        assert args == {"dry_run": "false"}, "nothing is completed and nothing is checked"
+
+    # --- the schema is the one the server listed ----------------------------------------------
+
+    def test_the_listing_is_returned_as_the_server_gave_it_and_read_once(self, example):
+        server = example.gate_mcp_server(_purge_server(example), self.Recording())
+        tools = asyncio.run(server.list_tools())
+        assert [tool.name for tool in tools] == ["purge"]
+        assert server.listings == 1
+        # a caller that rewrites the listing it was handed does not rewrite the gate's copy
+        schema = getattr(tools[0], "input_schema", None) or tools[0].inputSchema
+        schema["properties"]["dry_run"]["type"] = "string"
+        example.CALLED.clear()
+        result = asyncio.run(server.call_tool("purge", {"dry_run": "false"}))
+        assert result.model_dump(by_alias=True)["isError"] is True and example.CALLED == []
+        assert server.listings == 1, "the schema came from the listing the gate had seen"
+
+    def test_a_call_before_any_listing_makes_the_gate_list_the_tools_once(self, example):
+        server = example.gate_mcp_server(_purge_server(example), self.Recording())
+        example.CALLED.clear()
+        for _ in range(2):
+            asyncio.run(server.call_tool("purge", {}))
+        assert server.listings == 1
+        assert (
+            example.CALLED
+            == [("files", "purge", {"path": "/", "recursive": True, "dry_run": False})] * 2
+        )
+
+    def test_the_completed_arguments_are_sent_beside_request_metadata(self, example):
+        """The SDK passes ``meta`` when a resolver produced one; the gate passes it on,
+        unjudged, beside the completed arguments."""
+        server = _purge_server(example)
+        inner, received = server.call_tool, []
+
+        async def recorder(tool_name, arguments, meta=None):
+            received.append((arguments, meta))
+            return await inner(tool_name, arguments)
+
+        server.call_tool = recorder
+        example.gate_mcp_server(server, self.Recording())
+        asyncio.run(server.call_tool("purge", {"path": "/data"}, meta={"trace": "t1"}))
+        asyncio.run(server.call_tool("purge", {"path": "/data"}))
+        completed = {"path": "/data", "recursive": True, "dry_run": False}
+        assert received == [(completed, {"trace": "t1"}), (completed, None)]
+
+    def test_a_tool_the_server_does_not_list_is_refused(self, example):
+        policy = self.Recording()
+        server = example.gate_mcp_server(_purge_server(example), policy)
+        example.CALLED.clear()
+        result = asyncio.run(server.call_tool("drop_all", {}))
+        assert result.model_dump(by_alias=True)["isError"] is True
+        assert result.content[0].text == (
+            "Recusal refused `drop_all`: the server lists no tool of this name, or its tools "
+            "could not be listed, so the gate cannot read the schema its arguments would be "
+            "checked against"
+        )
+        assert example.CALLED == [] and policy.seen == []
+
+    def test_a_server_that_cannot_list_its_tools_refuses_the_call(self, example):
+        class Unlistable(example.InProcessMCPServer):
+            async def list_tools(self, run_context=None, agent=None):
+                raise RuntimeError("not connected")
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(Unlistable(), policy)
+        example.CALLED.clear()
+        result = asyncio.run(server.call_tool("run_sql", {"sql": SELECT}))
+        assert result.model_dump(by_alias=True)["isError"] is True
+        assert "its tools could not be listed" in result.content[0].text
+        assert example.CALLED == [] and policy.seen == []
+
+    # --- a sub-agent with MCP behind as_tool ----------------------------------------------------
+
+    def test_a_gated_sub_agent_with_a_server_is_accepted_behind_as_tool(self, example):
+        """F2: the parent asked the function-tool package whether the sub-agent was gated,
+        and that package says no to any agent with ``mcp_servers``."""
+        from agents import Agent
+
+        policy = self.Recording(example.sql_scope_policy)
+        sub = example.gated_agent(
+            Agent(
+                name="sub",
+                model=example.scripted_model([("run_sql", {"sql": DELETE}, "s1")]),
+                mcp_servers=[example.InProcessMCPServer()],
+            ),
+            policy,
+        )
+        assert example.is_gated(sub)
+        parent_model = example.scripted_model([("ask_sub", {"input": "tidy the log"}, "p1")])
+        parent = Agent(name="parent", model=parent_model, tools=[sub.as_tool("ask_sub", "ask")])
+        assert not example.is_gated(parent)
+        gated = example.gated_agent(parent, policy)
+        assert example.is_gated(gated)
+        example.CALLED.clear()
+        asyncio.run(example.run_agent(gated))
+        # the parent's call to the sub-agent and the sub-agent's server call are both judged
+        assert [name for name, _ in policy.seen] == ["ask_sub", "run_sql"]
+        assert example.CALLED == [], "the sub-agent's DELETE never reached its server"
+
+    def test_a_gated_sub_agent_with_a_hosted_tool_is_accepted_behind_as_tool(self, example):
+        from agents import Agent, HostedMCPTool
+
+        hosted = HostedMCPTool(
+            tool_config={
+                "type": "mcp",
+                "server_label": "db",
+                "server_url": "https://example.invalid/mcp",
+                "require_approval": "never",
+            }
+        )
+        model = example.scripted_model([])
+        sub = example.gated_agent(
+            Agent(name="sub", model=model, tools=[hosted]), example.sql_scope_policy
+        )
+        parent = Agent(name="parent", model=model, tools=[sub.as_tool("ask_sub", "ask")])
+        assert example.is_gated(example.gated_agent(parent, example.sql_scope_policy))
+
+    def test_a_sub_agent_whose_server_is_not_gated_is_still_refused(self, example):
+        from agents import Agent
+
+        model = example.scripted_model([])
+        sub = Agent(name="sub", model=model, mcp_servers=[example.InProcessMCPServer()])
+        parent = Agent(name="parent", model=model, tools=[sub.as_tool("ask_sub", "ask")])
+        with pytest.raises(TypeError, match="agent tool 'ask_sub': its agent's own tool calls"):
+            example.gated_agent(parent, example.sql_scope_policy)
+        # gated, then a server appended afterwards: is_gated says so, for sub and parent
+        sub = example.gated_agent(sub, example.sql_scope_policy)
+        parent = example.gated_agent(
+            Agent(name="parent", model=model, tools=[sub.as_tool("ask_sub", "ask")]),
+            example.sql_scope_policy,
+        )
+        assert example.is_gated(parent)
+        sub.mcp_servers.append(example.InProcessMCPServer(name="late"))
+        assert not example.is_gated(sub) and not example.is_gated(parent)
+
+    # --- the gated copy, and what no gate sees --------------------------------------------------
+
+    def test_the_gated_copy_has_its_own_handoffs_list(self, example):
+        from agents import Agent
+
+        model = example.scripted_model([])
+        agent = Agent(name="a", model=model, mcp_servers=[example.InProcessMCPServer()])
+        gated = example.gated_agent(agent, example.sql_scope_policy)
+        assert gated.handoffs is not agent.handoffs
+        assert gated.mcp_servers is not agent.mcp_servers and gated.tools is not agent.tools
+        agent.handoffs.append(Agent(name="other", model=model))
+        assert gated.handoffs == [] and example.is_gated(gated)
+
+    def test_an_agent_with_a_prompt_is_refused(self, example):
+        from agents import Agent
+
+        model = example.scripted_model([])
+        agent = Agent(name="a", model=model, prompt={"id": "pmpt_stored"})
+        with pytest.raises(ValueError, match="cannot gate agent 'a': it has a prompt"):
+            example.gated_agent(agent, example.sql_scope_policy)
+        gated = example.gated_agent(Agent(name="a", model=model), example.sql_scope_policy)
+        assert example.is_gated(gated)
+        gated.prompt = {"id": "pmpt_stored"}
+        assert not example.is_gated(gated)
+
+    def test_names_shared_across_namespaces_are_refused_for_the_true_reason(self, example):
+        from agents import Agent, tool_namespace
+
+        from examples.openai_agents_gate import run_sql
+
+        crm = tool_namespace(name="crm", description="crm tools", tools=[run_sql])
+        erp = tool_namespace(name="erp", description="erp tools", tools=[run_sql])
+        agent = Agent(name="a", model=example.scripted_model([]), tools=[*crm, *erp])
+        with pytest.raises(ValueError, match="its function tools in different namespaces share"):
+            example.gated_agent(agent, example.sql_scope_policy)
+
+    # --- hosted MCP: the argument text is all the gate holds -----------------------------------
+
+    @pytest.mark.parametrize("arguments", ['{"limit": NaN}', '{"limit": 1e999}'])
+    def test_a_hosted_request_with_a_non_finite_number_is_rejected(self, example, arguments):
+        policy = self.Recording()
+        responses = example.run_hosted([("run_sql", arguments, "r1")], policy=policy)
+        assert responses["r1"]["approve"] is False
+        assert responses["r1"]["reason"] == (
+            "Recusal refused `run_sql`: arguments hold a non-finite number, which is not JSON data"
+        )
+        assert policy.seen == []

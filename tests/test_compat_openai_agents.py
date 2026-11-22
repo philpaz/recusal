@@ -240,3 +240,107 @@ def test_a_plain_agent_runs_only_its_listed_tools(oa):
     tools = asyncio.run(agent.get_all_tools(RunContextWrapper(context=None)))
     assert tools == agent.tools
     assert SandboxAgent.get_all_tools is not oa.Agent.get_all_tools
+
+
+# --- what the gate reads to name and to refuse (the 2026-11-21 review) ------------------------
+
+
+def test_the_sdks_own_schema_is_where_the_gate_reads_the_context_parameter(oa):
+    """The gate names the prepared values by the SDK's own function schema, held by the
+    preparation function of the tool's invoker. If a release moves it, ``gate_tools``
+    refuses every tool (fail closed) and this test says why."""
+    import inspect
+
+    from agents import RunContextWrapper
+    from agents.function_schema import FuncSchema
+
+    @oa.function_tool
+    def ctx_sql(ctx: RunContextWrapper, sql: str, *, limit: int = 10) -> str:
+        """Record SQL with a context parameter the SDK fills."""
+        return "recorded"
+
+    prepare = ctx_sql.on_invoke_tool._invoke_tool_impl.__agents_prepare_arguments__
+    schema = inspect.getclosurevars(prepare).nonlocals["schema"]
+    assert isinstance(schema, FuncSchema) and schema is _adapter()._sdk_schema(ctx_sql)
+    assert schema.takes_context is True
+    assert list(schema.signature.parameters) == ["ctx", "sql", "limit"]
+    assert set(schema.params_pydantic_model.model_fields) == {"sql", "limit"}
+    # the SDK passes what its schema's to_call_args gives, context left out: by position
+    # up to a keyword-only parameter, by keyword from there
+    prepared = ctx_sql.on_invoke_tool.prepare_arguments(json.dumps({"sql": SELECT}), "ctx_sql")
+    assert (prepared.args, prepared.kwargs) == ([SELECT], {"limit": 10})
+    assert _adapter()._judged_names(schema) == (["sql"], ["limit"])
+    assert _adapter()._sdk_schema(oa.echo).takes_context is False
+
+
+def test_the_sdk_prepares_only_a_data_only_parameter_model(oa):
+    """``gate_tools`` refuses at setup what the SDK will not prepare, by the SDK's own
+    rule, and names the parameter with the rule's own per-field check."""
+    import enum
+
+    from agents._function_tool_arguments import _is_data_only_schema, can_prepare_without_user_code
+
+    class Mode(enum.Enum):
+        FAST = "fast"
+
+    @oa.function_tool
+    def search(sql: str, mode: Mode) -> str:
+        """Record a search; contacts nothing."""
+        return "recorded"
+
+    assert can_prepare_without_user_code(_adapter()._sdk_schema(oa.run_sql).params_pydantic_model)
+    model = _adapter()._sdk_schema(search).params_pydantic_model
+    assert not can_prepare_without_user_code(model)
+    fields = model.__pydantic_core_schema__["schema"]["fields"]
+    assert {name: _is_data_only_schema(field["schema"]) for name, field in fields.items()} == {
+        "sql": True,
+        "mode": False,
+    }
+    # and what it will not prepare, it hands the guardrail as nothing: empty, not unchanged
+    prepared = search.on_invoke_tool.prepare_arguments(
+        json.dumps({"sql": SELECT, "mode": "fast"}), "search"
+    )
+    assert (prepared.args, prepared.kwargs, prepared.unchanged) == ([], {}, False)
+
+
+def test_a_wrapped_function_is_read_as_the_function_it_wraps_and_called_by_position(oa):
+    """Why a wrapper with a parameter of its own is refused: the SDK builds the schema
+    from the wrapped function and passes the prepared values to the wrapper."""
+    import functools
+
+    received = []
+
+    def keeps(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, dry_run=False, **kwargs):
+            received.append((args, kwargs, dry_run))
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    @oa.function_tool
+    @keeps
+    def wrapped_sql(sql: str) -> str:
+        """Record SQL text without connecting to a database."""
+        return "recorded"
+
+    assert list(wrapped_sql.params_json_schema["properties"]) == ["sql"]
+    model = oa.scripted_model([("wrapped_sql", {"sql": SELECT}, "c1")])
+    asyncio.run(oa.run_agent(oa.Agent(name="a", model=model, tools=[wrapped_sql])))
+    assert received == [((SELECT,), {}, False)]
+
+
+def test_a_namespace_and_a_prompt_are_where_the_gate_reads_them(oa):
+    from agents import tool_namespace
+
+    (namespaced,) = tool_namespace(name="crm", description="crm tools", tools=[oa.run_sql])
+    assert namespaced._tool_namespace == "crm" and namespaced.name == "run_sql"
+    assert getattr(oa.run_sql, "_tool_namespace", None) is None
+    assert oa.Agent(name="a").prompt is None
+
+
+def test_clone_shares_the_lists_it_is_not_given(oa):
+    """Why ``gated_agent`` passes ``handoffs`` and ``mcp_servers`` copies of its own."""
+    agent = oa.Agent(name="a", tools=[oa.echo])
+    clone = agent.clone(tools=[oa.echo])
+    assert clone.handoffs is agent.handoffs and clone.mcp_servers is agent.mcp_servers

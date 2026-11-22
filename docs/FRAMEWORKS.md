@@ -88,18 +88,28 @@ For the OpenAI Agents SDK, [`examples/openai_agents_gate.py`](https://github.com
 attaches a tool input guardrail to each function tool through `gate_tools`, bound to that
 tool (a standalone `recusal_guardrail(policy)` is bound to nothing and refuses every
 call), which the SDK runs immediately before the tool executes. Function tools must have
-unique names: the SDK resolves a shared name last-wins, so `gate_tools`, `gated_agent`
+unique names: the SDK resolves a shared name last-wins, and tools that share a name across
+`tool_namespace` groups reach the policy under the same name, so `gate_tools`, `gated_agent`
 and `is_gated` refuse an agent whose tools share one. The guardrail judges the invocation the SDK
 prepares from the model's arguments, validated against the tool's parameter model with
 defaults filled and types coerced (`{"amount": "50"}` reaches an `int` parameter as
-`50`), and pins that invocation so the SDK executes exactly what was judged. A parameter
-model the SDK will not prepare, one that runs a custom validator or holds a nested
-application model, is refused, because the value it would execute cannot be judged; keep
-parameters data-only and validate inside the tool body. A refusal becomes the call's
+`50`), each value under the name of the parameter that receives it (which parameter is
+the context the SDK fills is read from the SDK's own schema for the tool), and pins that
+invocation so the SDK executes exactly what was judged. A non-finite number (`NaN`,
+`Infinity`) is refused before the policy runs, with or without an audit log. A tool no
+call to which could be judged is refused when it is gated, by `gate_tools` and
+`gated_agent`, with a `TypeError` naming the tool: a parameter model the SDK will not
+prepare (one that runs a custom validator or holds an application type such as an Enum, a
+model, a dataclass or a date), a variadic parameter, and a `functools.wraps` wrapper that
+takes a parameter of its own or one of the function's, which would run with a value no
+policy judged; keep parameters data-only and validate inside the tool body. A refusal
+becomes the call's
 output, so the model reads Recusal's reason and the tool never runs. Gate a finished agent with
-`gated_agent(agent, policy)`: it returns a gated copy, and it refuses, rather than skips,
+`gated_agent(agent, policy)`: it returns a gated copy with its own `tools`, `handoffs` and
+`mcp_servers` lists, and it refuses, rather than skips,
 anything the guardrail cannot see. That means hosted tools and the SDK's other non-function
-tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an
+tools (shell, computer, apply patch and the rest), `mcp_servers`, handoffs, an agent with
+a `prompt` (a stored prompt can configure tools of its own), an
 `agent.as_tool(...)` whose sub-agent is not itself gated, and `Agent` subclasses such as
 `SandboxAgent`. `Runner.run`, `Runner.run_streamed` and calls a person approved through
 `needs_approval` are all judged when the tool is about to run. It is offline (the SDK's own
@@ -111,7 +121,10 @@ the same decision, written as a hash-chained `AuditLog` entry labeled
 `openai_agents.tool_input_guardrail` with the SDK's tool call id and a fingerprint of the
 prepared invocation, before the call runs or is refused, and an unwritable log refuses
 the call. A call waiting for approval is recorded when it is about to run, so a call a
-person rejected is not on the log; it did not run.
+person rejected is not on the log; it did not run. Under the SDK's
+`RunConfig(tool_execution=ToolExecutionConfig(pre_approval_tool_input_guardrails=True))`
+the guardrail runs before the approval as well: a call then has an entry before a person
+decides, a rejected call keeps that entry, and an approved call has two.
 
 ## OpenAI Agents SDK, MCP tools
 
@@ -123,9 +136,17 @@ covers the two paths that example names as out of its sight. A local MCP server
 sanitized, hashed on collision or shortened, so a gate keyed on the public name judges a
 presentation of the capability. `gate_mcp_server(server, policy)` instead wraps the
 server's own `call_tool`, in place, the one point where the SDK hands over the server's
-tool name and the exact arguments it will run, after any approval; the policy judges a
-deep copy of those arguments and the server receives them as they were, so a policy's
-write to what it judged changes its copy, not the call. A refusal is returned
+tool name and the arguments that are sent to it, after any approval. A server fills a
+parameter the call leaves out from its default and converts a value of another type, and
+its listed `inputSchema` is the only statement of both, so the gate also wraps
+`list_tools`, in place, to keep each tool's listed schema, and before the policy runs it
+writes every listed default the call leaves out into the arguments and refuses an
+argument that is not already of the JSON type the schema declares (a string for a boolean
+or a number, `5.0` for an integer), naming the parameter and the two types. The policy
+judges a copy of the completed arguments and the server is sent the completed arguments,
+so a policy's write to what it judged changes its copy, not the call. A parameter left
+out that has no listed default is the server's to fill and is not seen, and for hosted
+MCP the server's schema is not read at all. A refusal is returned
 as an MCP error result carrying the reason, so the model reads it and the server is never
 called. A policy keyed by tool name names the server's own tools. A policy written for
 Claude Code's names, `recusal.mcp.manifest_policy` or a composition carrying one, judges

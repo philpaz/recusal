@@ -33,11 +33,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
-    "recusal>=0.14.0,<1",
+    # 0.15.0 is what recusal-openai-agents 0.2.0, required below, itself requires.
+    "recusal>=0.15.0,<1",
+    # 0.2.0 is the first release with `shared_name_reason`, `tools_gated` and the
+    # `agent_gated` argument of `gate_tools`, which this package uses.
+    "recusal-openai-agents>=0.2.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
-    "recusal-openai-agents>=0.1.0,<1",
     "openai-agents>=0.24.0,<1",
     "mcp>=2.3.0,<3",
 ]
