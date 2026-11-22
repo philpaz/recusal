@@ -6,6 +6,95 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **`recusal-langgraph` 0.3.0 (unreleased): the policy is shown every value the function
+  runs with, and the gate refuses where it cannot tie what it judged to what runs.** Found
+  by the adapter review of 2026-11-21 and reproduced on `langgraph` 1.2.20 with
+  `langchain-core` 1.7.7. No bypass by the model against an ordinary setup was found;
+  these are values the function ran with that the policy never saw, tools that were
+  always refused, and refusals that did not say why. This is why the release is 0.3.0:
+  calls that ran are now refused, and a policy can be shown an argument it was not shown
+  before.
+  - The tool call id is written by the model, and a parameter annotated
+    `InjectedToolCallId` receives it. It counted as the host's and was left out of
+    judgment (judged `{'title': 'x'}`, ran with the id `DELETE-ALL'; --`). The policy is
+    now shown it under the parameter's own name. `runtime.tool_call_id` cannot be shown
+    that way; the README says not to use it as data.
+  - A `functools.wraps` decorator between the tool and its function was read as the
+    function it wraps. Its own keyword default ran unseen (`force=True`), and a parameter
+    it named that the function also names was kept by the decorator while the function ran
+    its own default (judged `timeout=5`, ran `timeout=999999`, and the audit entry bound
+    the judged value). A function with a declared `__signature__` hid a parameter the same
+    way. The gate now walks every callable the call reaches with the kernel's
+    `recusal.invocation.reached_parameters` and refuses all three, naming the parameter and
+    never its default. It therefore requires `recusal>=0.15.0`, and a test pins the floor.
+  - An injected argument that nothing filled ran the function's default unseen: the
+    default behind `InjectedState("role")` when the state has no `role`, and the default of
+    an `InjectedToolArg` no host supplies. An argument now counts as the host's only when
+    ToolNode put it in the tool's input; the default that runs is judged.
+  - A call whose name is not the name of the tool that would run is refused before the
+    policy runs, under the tool's own registered name. An earlier hook can attach a tool
+    to a call ToolNode could not resolve (`request.override(tool=...)`); the policy then
+    judged, and the record named, the model's string (`Run_SQL` judged and passed,
+    `run_sql` ran a `DELETE`).
+  - When execution answers without the judging copy's parse step having run, the gate no
+    longer passes the answer on: it returns a refusal saying the call was never judged and
+    that the tool may have run, and an audited gate records it. A ToolNode that ran the
+    registered tool instead of the copy returned the tool's result as a success with the
+    policy never asked.
+  - An audited gate given a call with an empty id answered "policy error", never called
+    the policy and wrote nothing, while the plain gate ran the same call. Both now refuse a
+    call whose id is empty or not a string, before the policy, and the audited form writes
+    one entry for it, without a call id.
+  - A private framework name that cannot be read refuses the call. A tool without
+    `_injected_args_keys` was silently treated as having no host arguments.
+  - Tools that were always refused now run judged: a `BaseTool` subclass with no
+    `args_schema` (held to the schema LangChain infers from `_run`, and completed from
+    `_run`'s defaults, since LangChain validates nothing for it), and a single-input
+    `Tool(name, func, description)` or `@tool(infer_schema=False)` whose function takes
+    exactly one named parameter (judged under that parameter's name).
+  - A function parameter named `config` on a `@tool` or `StructuredTool` function never
+    receives the model's value, because LangChain writes the run configuration there. It
+    was refused after the policy had run, as "arguments other than the ones the gate
+    judged". It is now refused before the policy with that reason, and `gated_tool_node`
+    and `audited_tool_node` raise `TypeError` for such a tool when the node is built. A
+    call that sets `run_manager` or `callbacks` is refused the same way.
+  - The package declares `langgraph-prebuilt` and `pydantic`, which it imports, each with
+    an upper bound. The README lists the argument types the gate can judge and the ones it
+    refuses, every refusal with what to do instead, what the gate does not see, and the
+    ten private LangChain and LangGraph names it depends on (it said two).
+- **`recusal-langchain` 0.2.0 (unreleased): one middleware for both routes, the name the
+  policy judges is the tool that runs, and a provider-run tool refuses the model call.**
+  Found by the adapter review of 2026-11-21 and reproduced on `langchain` 1.4.10. It
+  requires `recusal-langgraph>=0.3.0` and takes every change listed above; a test pins the
+  floor.
+  - `gate_middleware(policy)` and `audited_gate_middleware(policy, log)` each return one
+    middleware object that implements the sync and the async tool-call hook, so one agent
+    is gated under `invoke` and under `ainvoke`. The four middleware shared one name, so
+    an agent could not list a sync and an async one, and each raised on the other route.
+    `agate_middleware` and `audited_agate_middleware` remain and return the same
+    middleware.
+  - A call the model made as `Run_SQL`, repaired by an earlier middleware that attached
+    the registered `run_sql`, was judged and recorded as `Run_SQL` and its `DELETE` ran
+    past a policy keyed on `run_sql`. It is refused before the policy runs and recorded
+    under `run_sql`.
+  - A tool given to `create_agent` as a dict is run by the model provider and reaches no
+    tool-call middleware. The gate now reads the tools of every model call and, if one is
+    a dict, does not call the model: the agent's answer is the refusal. This is why the
+    release is 0.2.0: an agent that carried a provider-run tool is now refused instead of
+    silently ungated for that tool.
+  - A middleware listed after the gate that swaps the tool object or answers in the
+    tool's place (a human-in-the-loop edit that redirects the call to another tool, a tool
+    emulator) still leaves the call unjudged, and a swapped-in tool still runs. The gate
+    now withholds that answer and refuses, and the audited form records the refusal; the
+    call was unrecorded before. `docs/FRAMEWORKS.md` said a human-in-the-loop edit listed
+    after the gate always reaches the judging copy; it does only when the edit keeps the
+    tool.
+  - The README lists what the gate does not see: a middleware listed before the gate that
+    runs a tool itself, a provider-run tool the gate was not shown, a sub-agent's tools
+    and `runtime.tools`.
+
 ## [0.15.0] - 2026-11-21
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public

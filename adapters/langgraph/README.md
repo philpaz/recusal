@@ -43,9 +43,12 @@ Install it from PyPI:
 pip install recusal-langgraph
 ```
 
-Requires Python 3.10+, `recusal>=0.14.0`, `langgraph>=1.2.20` and `langchain-core>=1.7.7`.
+Requires Python 3.10+, `recusal>=0.15.0`, `langgraph>=1.2.20` and `langchain-core>=1.7.7`.
+It also declares the two packages it imports that come with those: `langgraph-prebuilt>=1.1.1`
+(where `ToolNode` lives) and `pydantic>=2.14.3`.
 It is tested on every pull request against exactly `langgraph==1.2.20` with
-`langchain-core==1.7.7`, and weekly against the newest releases.
+`langchain-core==1.7.7`, `langgraph-prebuilt==1.1.1` and `pydantic==2.14.3`, and weekly
+against the newest releases.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 
@@ -127,9 +130,21 @@ above.
 The policy judges the invocation the tool executes, not the dict the model wrote: the
 input is validated once, defaults the model omitted are completed, and those same
 objects are passed to the function. Arguments the host supplies (state, store, runtime)
-are left out of judgment. An argument counts as the host's only when ToolNode really
-replaced it for this call: a value the model sent that reaches the tool unchanged is
-judged like any other, whatever the tool's annotations say.
+are left out of judgment. An argument counts as the host's only when ToolNode put it in
+the tool's input for this call: a value the model sent that reaches the tool unchanged is
+judged like any other, whatever the tool's annotations say. An injected argument that
+nothing filled is judged too, at the value the function runs with: the default behind an
+`InjectedState("role")` parameter when the state has no `role`, and the default of an
+`InjectedToolArg` parameter no host supplies. ToolNode strips whatever the model wrote
+under such a name, so the model cannot fill it; the policy sees the default that runs.
+
+**The call id is the model's.** A parameter annotated `InjectedToolCallId` receives the
+tool call id, and the model writes that id. The policy is shown it under the parameter's
+own name (for example `tool_call_id`), so for such a tool the policy sees one argument
+more than the model's schema lists. `runtime.tool_call_id` is the same model-written
+string, and the gate cannot show the policy that one: the runtime object is the host's
+and is left out of judgment. Do not use `runtime.tool_call_id` as data (a file name, a
+key, part of a query); take the id as an `InjectedToolCallId` parameter, which is judged.
 
 ## Put every decision on the record
 
@@ -144,36 +159,133 @@ node = audited_tool_node([run_sql], policy, log)
 `ToolNode(tools, **recusal_audited_gates(policy, log))` is the same pair for a node you
 build yourself. Each call the gate sees, allowed or refused,
 is one hash-chained entry labeled `langgraph.toolnode` with LangGraph's tool call id and
-a SHA-256 fingerprint of the arguments (never the arguments). If the log cannot be
+a SHA-256 fingerprint of the arguments (never the arguments). A call whose id is empty
+or not a string is refused, and its entry carries no call id. If the log cannot be
 written the call is refused. Check the log with `recusal audit verify decisions.jsonl`.
 
 The audited gates call the plain gate's own judging function, so there is one decision
 path.
 
-## What the gate refuses, and what it does not see
+## What the gate takes, what it refuses, and what it does not see
 
-- **Refused before the policy runs:** a tool whose class or instance overrides the
-  standard execution lifecycle (it could run without reaching the gate), a
-  `StructuredTool` subclass that replaces `_run` or `_arun` (it would execute something
-  other than the function the gate inspects), input that does
-  not validate against the tool's schema, and a tool whose callable declares a parameter
-  the schema omits, since that is a value no proposal can carry and the policy would
-  never see.
-- **Refused, never run unjudged:** a tool body reached without the gate's judging step.
-  The gate judges inside the tool's parse step; the copy of the tool it hands to
-  execution runs its function only once per allowance, and only with the argument
-  objects that step judged, so a framework release that changed the lifecycle would be
-  refused, not run.
-- **Not on the audit log:** a call another `wrap_tool_call` hook answered without
-  reaching the gate.
-- **Not seen:** a `ToolNode` you did not gate. `is_gated` reads one node; a graph can
-  hold others, `create_react_agent(model, [tools])` builds its own ungated one (pass it
-  your gated node instead), and a tool that calls another tool directly, for example
-  through `runtime.tools`, bypasses every hook.
+**Tools it takes.** A `@tool` or `StructuredTool` function; a `BaseTool` subclass that
+implements `_run` (and `_arun`), with an `args_schema` or without one (the gate then
+holds it to the schema LangChain infers from `_run`, and completes what the model left
+out from `_run`'s defaults, since LangChain validates nothing for such a tool); and a
+single-input `Tool(name, func, description)` or `@tool(infer_schema=False)` whose
+function takes exactly one named parameter. LangChain hands that function one positional
+value whatever key the model wrote it under, so the policy sees it under the function's
+own parameter name: `Tool(name="lookup", func=lambda q: ...)` is judged as `{"q": ...}`.
 
-This package reads two private LangChain and LangGraph helpers to find the arguments the
-host injects. That is why its framework requirements have an upper bound, and why the
-weekly lane against the newest releases exists.
+**Argument values it can judge.** `None`, `bool`, `int`, `str` and a finite `float`; an
+`Enum` (by its value); `datetime`, `date` and `time` (as `isoformat()` text); a finite
+`Decimal` and a `UUID` (as text); a `list` or `tuple` (as a list); a `dict` with string
+keys; a Pydantic v2 model or a dataclass (as a dict of its fields, read field by field so
+no serializer runs). A call carrying any other value is refused, because the policy
+could not be shown what the tool would receive: `pathlib.Path`, `set` and `frozenset`,
+`bytes`, `timedelta`, Pydantic's `HttpUrl` and `SecretStr`, a Pydantic v1 model, a
+non-finite number, a value that contains itself. Declare such a parameter as `str` (or a
+list) and convert it inside the tool body.
+
+**Refused before the policy runs.** Each of these is answered with the reason, the tool
+does not run, and an audited gate records it as one entry:
+
+- A tool whose class or instance overrides the standard execution lifecycle (it could
+  run without reaching the gate), or a `StructuredTool` subclass that replaces `_run` or
+  `_arun` (it would execute something other than the function the gate inspects). Build
+  the tool with `@tool` or `StructuredTool`.
+- Input that does not validate against the tool's schema.
+- A parameter the schema omits, on the tool's function or on any decorator around it:
+  that is a value no proposal can carry and the policy would never see. A
+  `functools.wraps` decorator that adds a keyword of its own
+  (`def wrapper(*args, force=True, **kwargs)`) is the common case. Declare the parameter
+  in the schema, or set the value inside the function.
+- A parameter that a forwarding decorator (`*args`, `**kwargs`) names and the function it
+  wraps names too (`def wrapper(*args, timeout=30, **kwargs)` around
+  `def fetch(url, timeout=...)`): the decorator keeps the judged argument and the
+  function runs with its own default. Drop the name from the decorator's signature and
+  read the argument from `kwargs` there, so it still reaches the function.
+- A function that declares `__signature__`, or whose parameters cannot be inspected: the
+  gate cannot tell which parameters it runs with.
+- A positional-only parameter.
+- A function parameter named `config` on a `@tool` or `StructuredTool` function, unless
+  it is the function's `RunnableConfig`: LangChain writes the run configuration under
+  that name, so the function never receives the model's value. `gated_tool_node` and
+  `audited_tool_node` raise `TypeError` for such a tool when the node is built. Rename
+  the parameter. A call that sets `run_manager` or `callbacks` is refused for the same
+  reason.
+- A parameter named `runtime` with a plain type such as `str`: ToolNode puts its runtime
+  object under that name, so the input does not validate. Rename the parameter.
+- A Pydantic v1 `args_schema`: the gate reads no fields from it, so every parameter is
+  refused as absent from the schema. Use a Pydantic v2 model.
+- A single-input `Tool` whose function names a second parameter, or does not take its
+  input as its first named parameter (a decorator with `*args` in front of it, for
+  example). Use `@tool` with a schema.
+- A call whose name is not the name of the tool that would run. That happens when an
+  earlier hook attaches a tool to a call ToolNode could not resolve
+  (`request.override(tool=...)`): the policy would judge the model's string and the
+  record would name a tool that did not run. The refusal is made, and recorded, under
+  the tool's own registered name. Repair the name in the hook too
+  (`request.override(tool_call={**request.tool_call, "name": tool.name}, tool=tool)`).
+- A call whose `id` is empty or not a string: its answer and its record could not be
+  tied to the call.
+- A tool whose host-injected arguments cannot be read from the installed LangChain and
+  LangGraph (see the private names below).
+- A tool the node does not have.
+
+**Refused after the fact, when the tool may have run.** The gate judges inside the copy
+of the tool it hands to execution. When execution comes back without that copy's judging
+step having run, nothing was judged: the gate withholds the answer and returns a refusal
+that says so, and an audited gate records that refusal as its one entry. This is what
+happens if an installed LangGraph ran the tool some other way than through the copy, or
+if a hook between the gate and the tool swapped the tool or answered for it. The refusal
+does not undo anything: if the tool ran, what it did has happened.
+
+**Refused, never run unjudged.** A tool body reached without the gate's judging step.
+The copy of the tool the gate hands to execution runs its function only once per
+allowance, and only with the argument objects that step judged. This covers the callable
+the tool calls; a decorator that changes the arguments on their way to the function it
+wraps is covered only by the two decorator refusals above.
+
+**Not on the audit log.** A call another `wrap_tool_call` hook answered without reaching
+the gate. And a call ToolNode itself fails before it invokes the tool, for example
+because a required `InjectedState` field is not in the state: the tool does not run, the
+gate has decided nothing, and no entry is written.
+
+**Not seen.**
+
+- A `ToolNode` you did not gate. `is_gated` reads one node; a graph can hold others,
+  and `create_react_agent(model, [tools])` builds its own ungated one (pass it your
+  gated node instead).
+- A tool that calls another tool directly, for example through `runtime.tools`: it
+  bypasses every hook.
+- `runtime.tool_call_id`, as said above.
+- A function parameter named `run_manager` on a `@tool` or `StructuredTool` function,
+  and one named `callbacks` on a `BaseTool` subclass's `_run`: LangChain keeps those two
+  names out of every schema and, in these two places, does not fill them, so the
+  function runs with its own default for that parameter and the policy does not see it.
+- What a tool does once it runs.
+
+**Private names.** This package depends on ten names that are private to LangChain and
+LangGraph (each begins with an underscore and carries no compatibility promise):
+
+- two helpers it imports, `langchain_core.tools.base._get_runnable_config_param` and
+  `langgraph.prebuilt.tool_node._get_all_injected_args`;
+- four members of `BaseTool`: `_injected_args_keys`, which it reads;
+  `_to_args_and_kwargs`, which it replaces on a per-call copy of the tool; and `_run` and
+  `_arun`, which it reads and guards on that copy;
+- four members of `ToolNode`, read only by `is_gated`: `_wrap_tool_call`,
+  `_awrap_tool_call`, `_func` and `_afunc`.
+
+A missing name never falls back to running ungated. Without either helper the package
+does not import. A tool whose `_injected_args_keys` cannot be read, or for which the
+injected-arguments helper raises, is refused on every call. A tool class that does not
+have LangChain's own `_to_args_and_kwargs` is refused as a lifecycle override. `is_gated`
+answers False for a node that is not laid out as it expects. This is why `langgraph`,
+`langchain-core`, `langgraph-prebuilt` and `pydantic` are each declared with an upper
+bound at the next major version, and why the weekly lane against the newest releases
+exists: a release inside those bounds can still move a private name, and
+`tests/test_compat_langgraph.py` fails when one does.
 
 ## Compatibility
 

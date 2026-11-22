@@ -210,7 +210,8 @@ def test_injected_arguments_reach_the_gate_but_not_the_tool(lg):
     ]
     _graph(node, calls).invoke({"messages": []})
     assert ("read_state", {"sql": SELECT}) in seen.calls
-    assert ("with_override", {"sql": SELECT}) in seen.calls
+    # nothing replaced the stripped override, so the function's default runs and is judged
+    assert ("with_override", {"sql": SELECT, "override": ""}) in seen.calls
     assert ("state", ["messages"]) in received, "the forged state reached the tool"
     assert ("override", "") in received, "the model-supplied override reached the tool"
 
@@ -1023,3 +1024,96 @@ def test_private_helper_get_all_injected_args_still_names_every_injected_argumen
         f"longer gives the empty answer, got {plain.all_injected_keys!r}; a probe "
         "that stopped observing anything would fail here, not pass"
     )
+
+
+def test_private_attribute_injected_args_keys_still_names_the_functions_injected_parameters():
+    """``_host_keys`` also reads ``tool._injected_args_keys``, the injected parameters
+    LangChain finds on the tool's own function, and refuses the call when it cannot. The
+    tool with none is the negative control."""
+    pytest.importorskip("langgraph")
+    from typing import Annotated
+
+    from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
+    from langgraph.prebuilt import InjectedState, ToolRuntime
+
+    where = "langchain_core.tools.BaseTool._injected_args_keys"
+
+    @tool
+    def with_injected(
+        sql: str,
+        state: Annotated[dict, InjectedState],
+        runtime: ToolRuntime,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        override: Annotated[str, InjectedToolArg] = "",
+    ) -> str:
+        """Run SQL with state, runtime, the call id and a generic injected argument."""
+        return sql
+
+    @tool
+    def without_injected(sql: str) -> str:
+        """Run SQL with no host-injected arguments."""
+        return sql
+
+    assert hasattr(with_injected, "_injected_args_keys"), (
+        f"{where} changed: a tool no longer has it, so the gate refuses every call"
+    )
+    assert set(with_injected._injected_args_keys) == {
+        "state",
+        "runtime",
+        "tool_call_id",
+        "override",
+    }, f"{where} changed: got {with_injected._injected_args_keys!r}"
+    assert set(without_injected._injected_args_keys) == set(), (
+        f"{where} changed (negative control): a tool with no injected parameters no longer "
+        "gives the empty answer"
+    )
+
+
+def test_the_private_lifecycle_names_the_judging_copy_replaces_still_exist():
+    """The judging copy replaces ``_to_args_and_kwargs`` and guards ``_run``/``_arun`` on a
+    per-call copy of the tool. ``BaseTool.run`` must still parse through the first and call
+    the second, and a function-holding tool's ``_run`` must still take ``config`` and
+    ``run_manager`` for itself, which is why a function parameter of either name never
+    receives the judged value."""
+    pytest.importorskip("langgraph")
+    from langchain_core.tools import BaseTool, StructuredTool, Tool
+
+    for name in ("_to_args_and_kwargs", "_run", "_arun"):
+        assert callable(getattr(BaseTool, name, None)), f"BaseTool.{name} changed"
+    source = inspect.getsource(BaseTool.run) + inspect.getsource(BaseTool.arun)
+    assert "self._to_args_and_kwargs(" in source, "BaseTool.run no longer parses through it"
+    assert "self._run" in source and "self._arun" in source
+    for cls in (StructuredTool, Tool):
+        for body in ("_run", "_arun"):
+            taken = {
+                name
+                for name, p in inspect.signature(getattr(cls, body)).parameters.items()
+                if p.kind is p.KEYWORD_ONLY
+            }
+            assert taken == {"config", "run_manager"}, f"{cls.__name__}.{body} changed: {taken}"
+
+
+def test_a_call_id_parameter_is_still_filled_by_the_parse_step_not_by_toolnode(lg):
+    """The gate judges an ``InjectedToolCallId`` parameter because the value under it is the
+    call id the model wrote, filled by the tool's own parse step after ToolNode stripped
+    whatever the model sent there. If ToolNode started to supply it, the gate would count it
+    as the host's and stop judging it; this fails first."""
+    from typing import Annotated
+
+    from langchain_core.tools import InjectedToolCallId, tool
+
+    received = []
+
+    @tool
+    def note(text: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+        """Record a note under the call id."""
+        received.append(tool_call_id)
+        return "ok"
+
+    seen = Seen(lambda name, args: [])
+    node = lg.ToolNode([note], wrap_tool_call=lg.recusal_gate(seen))
+    _graph(node, [_call("note", {"text": "hi", "tool_call_id": "forged"}, "the-call-id")]).invoke(
+        {"messages": []}
+    )
+    assert received == ["the-call-id"]
+    assert seen.calls == [("note", {"text": "hi", "tool_call_id": "the-call-id"})]

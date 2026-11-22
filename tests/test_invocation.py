@@ -471,6 +471,10 @@ USERS = {
         "reached_parameters",
         "unsupported_signature",
     },
+    "adapters/langgraph/src/recusal_langgraph/_gate.py": {
+        "DeclaredSignature",
+        "reached_parameters",
+    },
     "adapters/openai/src/recusal_openai/_gate.py": {"unsupported_signature"},
     "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
 }

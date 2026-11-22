@@ -15,23 +15,28 @@ and says whether every route through it crosses the gate.
 
 The copy's callable is guarded as well: it runs only for an invocation the parse step just
 judged and allowed, so a route that reached the tool body without the parse step (a
-framework release that changes the lifecycle) is refused instead of run unjudged.
+framework release that changes the lifecycle) is refused instead of run unjudged. And when
+execution answers without the copy's parse step having run at all, the hook does not pass
+that answer on: it refuses, saying the call was never judged and that the tool may have run.
 
 The policy judges the invocation the tool executes, not the dict the model wrote: the hook
 hands execution a per-call copy of the tool whose parse step (``_to_args_and_kwargs``, run by
 ``BaseTool.run``/``arun`` after ToolNode has injected the host's state, store and runtime)
-validates the input once, holds the callable the route executes to the schema (every named
-parameter it declares is a field the schema declares, a key the host injects, or a name the
-framework reserves and fills at call time; any other is a default the model's proposal cannot
-carry and the policy would never see, so the call is refused), completes any schema parameter
-the framework's parse dropped (``_parse_input`` selects the kwargs it returns through the
-argument model's own ``model_dump``, so a field with ``exclude=True`` or a root serializer can
-vanish) from that callable's default, projects every model-controlled argument through a
-projection that runs no serializer of its own, decides, and on allow passes those same
-completed objects to the function. Host arguments are excluded from judgment, and an argument
-counts as the host's only when ToolNode replaced it for this call: a value the model sent that
-arrives unchanged is judged, whatever the tool's annotations say. A tool whose class or instance overrides the standard lifecycle is
-refused rather than judged in the wrong place.
+validates the input once, holds every callable the route reaches to the schema (every named
+parameter the function, or a wrapper around it, declares is a field the schema declares, a
+key the host filled, or a name the framework reserves and fills at call time; any other is a
+default the model's proposal cannot carry and the policy would never see, so the call is
+refused), completes any schema parameter the framework's parse dropped (``_parse_input``
+selects the kwargs it returns through the argument model's own ``model_dump``, so a field
+with ``exclude=True`` or a root serializer can vanish) from the default that would run,
+projects every model-controlled argument through a projection that runs no serializer of its
+own, decides, and on allow passes those same completed objects to the function. Host
+arguments are excluded from judgment, and an argument counts as the host's only when ToolNode
+put it in the input for this call: a value the model sent that arrives unchanged is judged,
+whatever the tool's annotations say, and so is a value the parse step fills itself under an
+injected name (the call id, which the model writes, or a schema default). A tool whose class
+or instance overrides the standard lifecycle is refused rather than judged in the wrong
+place; so is a call whose name is not the name of the tool that will run.
 """
 
 from __future__ import annotations
@@ -55,6 +60,8 @@ from langgraph.prebuilt.tool_node import _get_all_injected_args
 from pydantic import BaseModel, ValidationError
 
 from recusal import Finding, decide
+from recusal.invocation import DeclaredSignature as _DeclaredSignature
+from recusal.invocation import reached_parameters as _reached_parameters
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -111,22 +118,43 @@ def _host_keys(tool) -> frozenset[str]:
     """The argument names the host supplies, never the model.
 
     ToolNode strips every ``InjectedToolArg``-annotated key from the model's arguments and
-    adds back only the state, store and runtime it owns (``_inject_tool_args``), and
-    ``_parse_input`` sets an ``InjectedToolCallId`` from the call id; a value under one of
-    these keys at the parse seam is therefore the host's. Everything else the parse step
-    produces, including a field an ``extra="allow"`` schema accepted, is model-controlled and
-    is judged.
+    adds back only the state, store and runtime it owns (``_inject_tool_args``); a value
+    under one of these keys in the input that reaches the parse seam is therefore the
+    host's. A key the parse step fills itself is not: ``_parse_input`` sets an
+    ``InjectedToolCallId`` from the call id, which the model writes, and gives a key the host
+    left out its schema default. Those, and everything else the parse step produces,
+    including a field an ``extra="allow"`` schema accepted, are judged.
+
+    Both names read here are private to the frameworks. If either is missing or raises, the
+    call is refused (``TypeError``): there is no fallback to "no host keys".
     """
-    injected = _get_all_injected_args(tool)
-    return frozenset(injected.all_injected_keys) | frozenset(
-        getattr(tool, "_injected_args_keys", ())
-    )
+    try:
+        injected = _get_all_injected_args(tool)
+        own = tool._injected_args_keys
+    except Exception as exc:  # noqa: BLE001, without them the model's arguments cannot be told apart
+        raise TypeError(
+            "the arguments the host injects into the tool cannot be read from the installed "
+            f"LangChain and LangGraph ({type(exc).__name__}), so the model's arguments cannot "
+            "be told from the host's"
+        ) from None
+    return frozenset(injected.all_injected_keys) | frozenset(own)
 
 
 def _schema_fields(tool) -> frozenset[str]:
     """The parameter names the tool's ``args_schema`` declares (host-injected ones included;
-    they are excluded elsewhere), or none for a tool without a model schema."""
+    they are excluded elsewhere). A tool that declares no schema (a ``BaseTool`` subclass
+    with only ``_run``) has the one LangChain infers from ``_run``, read through the public
+    ``get_input_schema``. A schema that is neither a JSON schema dict nor a Pydantic v2
+    model (a Pydantic v1 model) declares nothing this gate can read, so every parameter of
+    such a tool is refused as absent from the schema."""
     schema = tool.args_schema
+    if schema is None:
+        try:
+            schema = tool.get_input_schema()
+        except Exception as exc:  # noqa: BLE001, no schema to hold the callable to
+            raise TypeError(
+                f"the tool's argument schema cannot be inferred ({type(exc).__name__})"
+            ) from None
     if isinstance(schema, dict):
         return frozenset(schema.get("properties", {}))
     if isinstance(schema, type) and issubclass(schema, BaseModel):
@@ -144,12 +172,13 @@ _RESERVED = frozenset(FILTERED_ARGS)
 def _execution_callable(tool, is_async: bool):
     """The function the active route finally calls, chosen as the SDK chooses it.
 
-    ``StructuredTool._run`` calls ``func`` and ``_arun`` calls ``coroutine``, falling back to
-    ``func`` on a thread when there is none; ``BaseTool.arun`` runs the class's ``_arun`` when
-    it overrides the default and ``_run`` otherwise, and ``run`` always runs ``_run``. Bound
-    methods are returned, so ``self`` is not among the parameters inspected.
+    ``StructuredTool._run`` and ``Tool._run`` call ``func`` and their ``_arun`` calls
+    ``coroutine``, falling back to ``func`` on a thread when there is none; ``BaseTool.arun``
+    runs the class's ``_arun`` when it overrides the default and ``_run`` otherwise, and
+    ``run`` always runs ``_run``. Bound methods are returned, so ``self`` is not among the
+    parameters inspected.
     """
-    if isinstance(tool, StructuredTool):
+    if isinstance(tool, (StructuredTool, Tool)):
         target = tool.coroutine if is_async and tool.coroutine is not None else tool.func
         if target is None:
             raise TypeError(
@@ -168,61 +197,171 @@ def _framework_keys(func) -> frozenset[str]:
     return _RESERVED | ({config_param} if config_param else frozenset())
 
 
+#: The keyword names ``StructuredTool`` and ``Tool`` take for themselves in ``_run`` and
+#: ``_arun`` (``config``, ``run_manager``): ``BaseTool.run`` writes its own value under each
+#: and the holder keeps it, so a function parameter of that name never receives the value
+#: the parse step produced. ``tests/test_langgraph_gate.py`` pins the set.
+_HOLDER_TAKES = frozenset(
+    name
+    for cls in (StructuredTool, Tool)
+    for body in ("_run", "_arun")
+    for name, parameter in inspect.signature(getattr(cls, body)).parameters.items()
+    if parameter.kind is parameter.KEYWORD_ONLY
+)
+
+
+def _variadic(parameter) -> bool:
+    return parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+
+
+def _reached(func) -> list:
+    """The parameters of every callable a call to ``func`` reaches, ``func``'s own first.
+
+    ``inspect.signature`` reads a ``functools.wraps`` wrapper as the function it wraps and
+    honours a declared ``__signature__``, so a wrapper's own parameter would run with its
+    default while the gate looked at the wrapped function. This is the kernel's walk
+    (``recusal.invocation.reached_parameters``), with every failure turned into the
+    ``TypeError`` the seam refuses on.
+    """
+    try:
+        return _reached_parameters(func)
+    except _DeclaredSignature:
+        raise TypeError(
+            "the tool's callable declares a signature that is not its own (`__signature__`), "
+            "so the gate cannot tell which parameters it runs with"
+        ) from None
+    except Exception as exc:  # noqa: BLE001, an uninspectable callable cannot be judged
+        raise TypeError(
+            f"the tool's callable cannot be inspected for its parameters ({type(exc).__name__})"
+        ) from None
+
+
+def _fills_itself(tool, func) -> frozenset[str]:
+    """The keyword names LangChain writes its own value under when it calls ``func``."""
+    holder = _HOLDER_TAKES if isinstance(tool, (StructuredTool, Tool)) else frozenset()
+    return _framework_keys(func) | holder
+
+
 def _completed(
     kwargs: dict[str, Any], tool, host_keys: frozenset[str], is_async: bool
 ) -> dict[str, Any]:
-    """The parsed kwargs, held to the callable the route executes, with every suppressed
-    schema parameter restored from that callable's default.
+    """The parsed kwargs, held to every callable the route reaches, with every suppressed
+    schema parameter restored from the default that would run.
 
-    Python fills whatever the parsed kwargs leave out from the callable's own defaults, after
-    the policy has judged, so the callable is the authority on what will execute. Each named
-    parameter it declares must be a field the schema declares (judged), a key the host injects
-    (never the model's) or a name the framework fills at call time (:func:`_framework_keys`);
-    any other parameter is a value the proposal cannot carry and the policy would never see,
-    so the call is refused as unjudgeable, naming the parameter and never its default. A
-    positional-only parameter cannot be judged by name and is refused too.
+    Python fills whatever the parsed kwargs leave out from a callable's own defaults, after
+    the policy has judged, so the callables are the authority on what will execute: the one
+    the route calls and every one it hands the call to (:func:`_reached`: a
+    ``functools.wraps`` wrapper and the function it wraps, a method, a ``functools.partial``,
+    a callable object). Each named parameter one of them declares must be a field the schema
+    declares (judged), a key the host filled for this call (never the model's) or a name the
+    framework fills at call time (:func:`_framework_keys`); any other parameter is a value
+    the proposal cannot carry and the policy would never see, so the call is refused as
+    unjudgeable, naming the parameter and never its default. A positional-only parameter
+    cannot be judged by name and is refused too. So is a parameter that a forwarding wrapper
+    (``*args``/``**kwargs``) names and another callable on the way names as well: the wrapper
+    keeps the judged argument and the other runs with its own default.
 
     ``_parse_input`` returns only the fields present in the validated model's
     ``model_dump()``, so a schema field with ``exclude=True`` or a model-wide serializer that
     omits it never reaches the kwargs, and the function would fill its own Python default
-    after the policy judged an invocation without it. Each parameter the schema declares, the
-    host does not inject, and the parse did not return is taken from the route's callable's
-    default here, and passed explicitly, so the judged invocation is the executed one; a
-    suppressed parameter with no default raises ``TypeError`` and the call is refused as
-    unjudgeable.
+    after the policy judged an invocation without it; a tool with no declared schema is not
+    validated at all, so whatever the model left out is missing too. Each parameter the
+    schema declares, the host did not fill, and the parse did not return is taken from the
+    default of the first callable that names it, and passed explicitly, so the judged
+    invocation is the executed one; a missing parameter with no default raises
+    ``TypeError`` and the call is refused as unjudgeable.
+
+    Last, a judged argument under a name LangChain fills itself (:func:`_fills_itself`:
+    ``config`` on a ``StructuredTool``, ``run_manager``, ``callbacks``) is refused: the
+    framework would overwrite or keep it, and the function would not receive that value.
     """
     fields = _schema_fields(tool)
     func = _execution_callable(tool, is_async)
-    try:
-        parameters = inspect.signature(func).parameters
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"the tool's callable cannot be inspected for its parameters ({exc})")
+    levels = _reached(func)
     framework_keys = _framework_keys(func)
+    named = [{n for n, p in level.items() if not _variadic(p)} for level in levels]
     completed = dict(kwargs)
-    for name, parameter in parameters.items():
-        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-            continue
-        if name in host_keys or name in framework_keys:
-            continue
-        if parameter.kind is parameter.POSITIONAL_ONLY:
-            raise TypeError(
-                f"the callable's parameter `{name}` is positional-only, so the invocation "
-                "cannot be judged by name"
-            )
-        if name not in fields:
-            raise TypeError(
-                f"the callable's parameter `{name}` is absent from the argument schema, so "
-                "the invocation cannot be judged; declare it in the schema"
-            )
-        if name in completed:
-            continue
-        if parameter.default is parameter.empty:
-            raise TypeError(
-                f"the schema suppressed `{name}` and the callable has no default for it, so "
-                "the invocation cannot be judged"
-            )
-        completed[name] = parameter.default
+    for index, level in enumerate(levels):
+        forwards = any(_variadic(parameter) for parameter in level.values())
+        for name, parameter in level.items():
+            if _variadic(parameter):
+                continue
+            if name in host_keys or name in framework_keys:
+                continue
+            if parameter.kind is parameter.POSITIONAL_ONLY:
+                raise TypeError(
+                    f"the callable's parameter `{name}` is positional-only, so the invocation "
+                    "cannot be judged by name"
+                )
+            if name not in fields:
+                raise TypeError(
+                    f"the callable's parameter `{name}` is absent from the argument schema, so "
+                    "the invocation cannot be judged; declare it in the schema"
+                )
+            if forwards and any(name in other for i, other in enumerate(named) if i != index):
+                raise TypeError(
+                    f"the callable's parameter `{name}` is taken by a wrapper and by the "
+                    "function it wraps, which would then run with its own default, a value "
+                    "no policy judged"
+                )
+            if name in completed:
+                continue
+            if parameter.default is parameter.empty:
+                if tool.args_schema is None:
+                    raise TypeError(
+                        f"the call leaves out `{name}` and the callable has no default for "
+                        "it, so the invocation cannot be judged"
+                    )
+                raise TypeError(
+                    f"the schema suppressed `{name}` and the callable has no default for it, "
+                    "so the invocation cannot be judged"
+                )
+            completed[name] = parameter.default
+    taken = sorted(k for k in completed if k not in host_keys and k in _fills_itself(tool, func))
+    if taken:
+        raise TypeError(
+            "the invocation sets "
+            + ", ".join(f"`{k}`" for k in taken)
+            + ", which LangChain fills itself at call time, so the tool would not receive "
+            "the judged value; rename the parameter"
+        )
     return completed
+
+
+def _single_input(tool, args: tuple, kwargs: dict[str, Any], is_async: bool) -> str:
+    """The name of the parameter a single-input ``Tool`` hands its one value to.
+
+    A ``Tool`` (``Tool(name, func, description)``, ``@tool(infer_schema=False)``) calls its
+    function with one positional value and no names, whatever key the model wrote it under.
+    That value can be judged by name only when the name is certain: the function's own first
+    parameter takes it, and no callable the call reaches names any other parameter (one with
+    a default would run with a value no policy judged). Anything else, and a positional input
+    to any other kind of tool, raises ``TypeError`` and the call is refused.
+    """
+    if not isinstance(tool, Tool) or kwargs or len(args) != 1:
+        raise TypeError("a positional tool input cannot be judged by name")
+    func = _execution_callable(tool, is_async)
+    levels = _reached(func)
+    framework_keys = _framework_keys(func)
+    first = next(iter(levels[0].items()), None)
+    if (
+        first is None
+        or first[1].kind is not first[1].POSITIONAL_OR_KEYWORD
+        or first[0] in framework_keys
+    ):
+        raise TypeError(
+            "the single-input tool's function does not take its input as a first named "
+            "parameter, so the input cannot be judged by name"
+        )
+    for level in levels:
+        for name, parameter in level.items():
+            if _variadic(parameter) or name in framework_keys or name == first[0]:
+                continue
+            raise TypeError(
+                f"the callable's parameter `{name}` is not the tool's single input, so it "
+                "would run with a value no policy judged"
+            )
+    return first[0]
 
 
 def _faithful(value: Any, _stack: tuple[int, ...] = ()) -> Any:
@@ -340,7 +479,14 @@ def _unjudgeable(name: str, detail: str, bound: dict, policy: Policy, record: di
     return reason
 
 
-def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any], is_async: bool):
+def _judging(
+    tool,
+    call: dict[str, Any],
+    policy: Policy,
+    record: dict[str, Any],
+    is_async: bool,
+    entered: list | None = None,
+):
     """A per-call copy of ``tool`` that judges, then runs, exactly the invocation it parsed.
 
     ``BaseTool.run``/``arun`` parse the input through ``_to_args_and_kwargs`` and hand the
@@ -351,18 +497,26 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
     completes any schema parameter that parse suppressed from that callable's default
     (:func:`_completed`), projects every model-controlled argument with :func:`_faithful`,
     calls ``decide`` once, and on allow returns the very objects it judged, so the tool
-    executes what was judged with no second validation and nothing to compare. A deny, an input the parser rejects,
-    a positional input, or a value that cannot be projected raises :class:`RecusalRefusal`,
-    which the copy's ``handle_tool_error`` turns into the error ToolMessage the model reads;
-    any other ``ToolException`` keeps the original tool's handling. The copy serves one call
-    id; every execution attempt of that call (a retry, a resume) is judged again.
+    executes what was judged with no second validation and nothing to compare. A
+    single-input ``Tool`` hands its function one positional value; it is judged under the
+    name of the parameter that takes it (:func:`_single_input`). A deny, an input the parser
+    rejects, any other positional input, or a value that cannot be projected raises
+    :class:`RecusalRefusal`, which the copy's ``handle_tool_error`` turns into the error
+    ToolMessage the model reads; any other ``ToolException`` keeps the original tool's
+    handling. The copy serves one call id; every execution attempt of that call (a retry, a
+    resume) is judged again.
+
+    ``entered`` is a list the parse step appends to each time it is entered, so the hook
+    that passes one can tell, once execution returns, whether this call passed the judging
+    step at all (:func:`_judge`).
     """
     name, call_id, fallback = call["name"], call.get("id"), call.get("args")
     copy = tool.model_copy()
-    #: Holds the keyword arguments the parse step just judged and allowed, from that moment
-    #: until the tool body takes them. The body runs only by spending this, and only with
-    #: those very objects.
-    allowed: list[dict[str, Any]] = []
+    #: Holds the arguments the parse step just judged and allowed, positional and keyword,
+    #: from that moment until the tool body takes them. The body runs only by spending this,
+    #: and only with those very objects.
+    allowed: list[tuple[tuple, dict[str, Any]]] = []
+    entered = [] if entered is None else entered
     parse = type(tool)._to_args_and_kwargs
     host_keys = _host_keys(tool)
     original_handler = tool.handle_tool_error
@@ -386,30 +540,38 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
         ordinary one. So the annotations are not trusted alone. A key the model sent whose
         value arrives here unchanged was not replaced by the host: it is the model's, and it
         is judged like every other argument.
+
+        A key that is absent from the input was not filled by the host either. The parse
+        step fills it afterwards: an ``InjectedToolCallId`` from the call id, which the model
+        writes, and any other from its schema default. Both are values the function runs
+        with that no host supplied, so they are judged. This is read before the parse step,
+        which writes the call id into the input it is given.
         """
-        if not isinstance(tool_input, dict) or not isinstance(fallback, dict):
-            return host_keys
-        return host_keys - {
-            key
-            for key in host_keys & fallback.keys() & tool_input.keys()
-            if _unchanged(tool_input[key], fallback[key])
+        if not isinstance(tool_input, dict):
+            return frozenset()
+        filled = host_keys & tool_input.keys()
+        if not isinstance(fallback, dict):
+            return filled
+        return filled - {
+            key for key in filled & fallback.keys() if _unchanged(tool_input[key], fallback[key])
         }
 
     def seam(tool_input, tool_call_id):
         if tool_call_id != call_id:
             raise RuntimeError("Recusal: a judging copy of a tool was used for a different call")
+        entered.append(True)
+        hosts = from_the_host(tool_input)
         try:
             args, kwargs = parse(copy, tool_input, tool_call_id)
         except Exception as exc:  # noqa: BLE001, an input the tool rejects is refused with its reason
             detail = f"arguments do not validate ({_sanitized(exc, host_keys)})"
             raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
-        if args:
-            detail = "a positional tool input cannot be judged by name"
-            raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
         try:
-            hosts = from_the_host(tool_input)
-            kwargs = _completed(kwargs, tool, hosts, is_async)
-            judged = {k: _faithful(v) for k, v in kwargs.items() if k not in hosts}
+            if args:
+                judged = {_single_input(tool, args, kwargs, is_async): _faithful(args[0])}
+            else:
+                kwargs = _completed(kwargs, tool, hosts, is_async)
+                judged = {k: _faithful(v) for k, v in kwargs.items() if k not in hosts}
         except TypeError as exc:
             raise RecusalRefusal(_unjudgeable(name, str(exc), proposal(tool_input), policy, record))
         try:
@@ -422,21 +584,25 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
         if decision == "deny":
             raise RecusalRefusal(reason)
         # a copy: the framework adds its own call-time names to the dict it is handed back
-        allowed[:] = [dict(kwargs)]
+        allowed[:] = [(tuple(args), dict(kwargs))]
         return args, kwargs
 
     def spend(func, args, kwargs):
         """Refuse a tool body unless it is entered with the invocation the parse step just
-        judged and allowed: the same objects under the same names, and beyond them only the
-        names the framework fills at call time."""
+        judged and allowed: the same objects in the same positions and under the same names,
+        and beyond them only the names the framework fills at call time."""
         if not allowed:
             detail = (
                 "the tool was reached without passing the gate's judging step, so the "
                 "invocation was never judged"
             )
             raise RecusalRefusal(_unjudgeable(name, detail, proposal(fallback), policy, record))
-        judged = allowed.pop()
-        same = not args and all(k in kwargs and kwargs[k] is v for k, v in judged.items())
+        positional, judged = allowed.pop()
+        same = (
+            len(args) == len(positional)
+            and all(arrived is sent for arrived, sent in zip(args, positional))
+            and all(k in kwargs and kwargs[k] is v for k, v in judged.items())
+        )
         if not same or not set(kwargs) - set(judged) <= _framework_keys(func):
             detail = (
                 "the tool was reached with arguments other than the ones the gate judged, "
@@ -486,9 +652,32 @@ def _judging(tool, call: dict[str, Any], policy: Policy, record: dict[str, Any],
     return copy
 
 
+_NEVER_JUDGED = (
+    "the call was answered without passing the gate's judging step, so it was never judged: "
+    "the installed LangGraph, or a hook or middleware between the gate and the tool, ran or "
+    "answered it another way. If the tool ran, what it did has happened; its result is "
+    "withheld"
+)
+
+
 def _judge(request, policy: Policy, *, is_async: bool = False, **record: Any):
-    """Return ``(refusal, request_to_execute)``: a refusal ToolMessage for a call that can
-    never reach the seam, else the request with its tool replaced by the judging copy.
+    """Return ``(refusal, request_to_execute, settle)``: a refusal ToolMessage for a call
+    that can never reach the seam, else the request with its tool replaced by the judging
+    copy, and the check the hook passes the executor's answer through.
+
+    Refused here, before the policy runs, each through ``decide`` so an audited gate records
+    it: a call whose ``id`` is empty or not a string (the entry is written without a call
+    id, which the kernel does not accept empty); a call for a tool this node does not have;
+    a call whose name is not the name of the tool that will run (an earlier hook attached
+    another tool: the policy would judge, and the record would name, something that does not
+    run; the refusal is made under the tool's own registered name); a tool that overrides
+    the standard lifecycle; and a tool whose host-injected arguments cannot be read.
+
+    ``settle(result)`` returns ``result`` when the judging copy's parse step was entered
+    for this call, and otherwise a refusal in its place: the executor answered without the
+    copy (an installed LangGraph that runs the tool another way, a hook or middleware after
+    the gate that swaps the tool or answers for it), so nothing was judged and the answer is
+    not passed on as a success. The tool may already have run by then; the refusal says so.
 
     ``is_async`` names the route the hook runs on (``awrap_tool_call`` executes the tool
     through ``arun``), so the copy holds the callable that route runs. ``record`` goes
@@ -498,22 +687,71 @@ def _judge(request, policy: Policy, *, is_async: bool = False, **record: Any):
     """
     call = request.tool_call
     name, call_id, raw = call["name"], call.get("id"), call.get("args")
+    tool = request.tool
+    has_id = isinstance(call_id, str) and bool(call_id)
+    if not has_id and "tool_use_id" in record:
+        record = {**record, "tool_use_id": None}
+    # the name every refusal is made and recorded under: the tool's own when there is one
+    known = name if tool is None else tool.name
 
     def refuse(detail):
         bound = raw if isinstance(raw, dict) else {"input": raw}
-        reason = _unjudgeable(name, detail, bound, policy, record)
-        return ToolMessage(content=reason, tool_call_id=call_id, name=name, status="error"), None
+        reason = _unjudgeable(known, detail, bound, policy, record)
+        answered = call_id if isinstance(call_id, str) else ""
+        return ToolMessage(content=reason, tool_call_id=answered, name=known, status="error")
 
-    tool = request.tool
     if tool is None:
-        return refuse("no tool by that name is registered with this node")
+        return refuse("no tool by that name is registered with this node"), None, None
+    if name != tool.name:
+        return (
+            refuse(
+                "the call names another tool than this one, which is the tool that would "
+                "run, so the name the policy judges would not be the tool that runs"
+            ),
+            None,
+            None,
+        )
+    if not has_id:
+        return (
+            refuse(
+                "the tool call has no id (it is empty or not a string), so its answer and "
+                "its record cannot be tied to the call"
+            ),
+            None,
+            None,
+        )
     why = _lifecycle_refusal(tool)
     if why is not None:
-        return refuse(
-            f"the tool's execution path cannot be judged ({why}); the gate judges inside the "
-            "standard BaseTool lifecycle, so build the tool with @tool or StructuredTool"
+        return (
+            refuse(
+                f"the tool's execution path cannot be judged ({why}); the gate judges inside "
+                "the standard BaseTool lifecycle, so build the tool with @tool or StructuredTool"
+            ),
+            None,
+            None,
         )
-    return None, request.override(tool=_judging(tool, call, policy, record, is_async))
+    entered: list[bool] = []
+    try:
+        judging = _judging(tool, call, policy, record, is_async, entered)
+    except TypeError as exc:
+        return refuse(str(exc)), None, None
+
+    def settle(result):
+        return result if entered else refuse(_NEVER_JUDGED)
+
+    return None, request.override(tool=judging), settle
+
+
+def _gated(request, execute, policy: Policy, **record: Any):
+    """One sync hook call: refuse, or execute the judging copy and settle its answer."""
+    refusal, judged, settle = _judge(request, policy, **record)
+    return refusal if refusal is not None else settle(execute(judged))
+
+
+async def _agated(request, execute, policy: Policy, **record: Any):
+    """One async hook call, the same decision on the async route."""
+    refusal, judged, settle = _judge(request, policy, is_async=True, **record)
+    return refusal if refusal is not None else settle(await execute(judged))
 
 
 #: Every hook this package has built, by ``id``: a weak reference to it, the ToolNode slot
@@ -571,16 +809,14 @@ def recusal_gate(policy: Policy):
 
     def gate(request, execute):
         _require_sync_slot("recusal_gate", execute)
-        refusal, judged = _judge(request, policy)
-        return refusal if refusal is not None else execute(judged)
+        return _gated(request, execute, policy)
 
     return _marked(gate, "sync", policy)
 
 
 def _agate(policy: Policy):
     async def gate(request, execute):
-        refusal, judged = _judge(request, policy, is_async=True)
-        return refusal if refusal is not None else await execute(judged)
+        return await _agated(request, execute, policy)
 
     return _marked(gate, "async", policy)
 
@@ -617,14 +853,47 @@ def _no_hooks_among(options: dict[str, Any]) -> None:
             )
 
 
+def _checked(node: ToolNode) -> ToolNode:
+    """The node, or ``TypeError`` for a tool the gate would refuse on every call for a
+    reason its definition already shows: a ``StructuredTool`` or ``Tool`` whose function
+    names a parameter ``config`` that is not its ``RunnableConfig``. LangChain keeps that
+    name for the run configuration, so the function never receives the model's value
+    (:func:`_fills_itself`). A function that cannot be inspected here is left to the gate,
+    which refuses it when it is called."""
+    for tool in node.tools_by_name.values():
+        if not isinstance(tool, (StructuredTool, Tool)):
+            continue
+        for func in (tool.func, tool.coroutine):
+            if func is None:
+                continue
+            try:
+                levels, framework_keys = _reached(func), _framework_keys(func)
+            except Exception:  # noqa: BLE001, refused at call time, with the reason
+                continue
+            for level in levels:
+                for name, parameter in level.items():
+                    if _variadic(parameter) or name in framework_keys:
+                        continue
+                    if name in _HOLDER_TAKES:
+                        raise TypeError(
+                            f"tool `{tool.name}`: its function's parameter `{name}` has a "
+                            "name LangChain fills itself at call time, so the function would "
+                            "never receive the model's value and the gate would refuse every "
+                            "call; rename the parameter"
+                        )
+    return node
+
+
 def gated_tool_node(tools, policy: Policy, **options: Any) -> ToolNode:
     """A ``ToolNode`` over ``tools`` with the gate on both of its hook slots.
 
     ``options`` are ToolNode's own (``name``, ``tags``, ``handle_tool_errors``,
-    ``messages_key``). Passing either hook slot raises ``TypeError``.
+    ``messages_key``). Passing either hook slot raises ``TypeError``. So does a tool whose
+    function names a parameter ``config`` that is not its ``RunnableConfig``
+    (:func:`_checked`).
     """
     _no_hooks_among(options)
-    return ToolNode(tools, **recusal_gates(policy), **options)
+    return _checked(ToolNode(tools, **recusal_gates(policy), **options))
 
 
 def is_gated(node: Any) -> bool:

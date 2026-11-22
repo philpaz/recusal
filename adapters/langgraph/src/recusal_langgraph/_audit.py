@@ -6,14 +6,19 @@ call the plain gate's own judging function with the recording arguments passed t
 path. If the log cannot be written the decision becomes a deny, so nothing runs unrecorded.
 
 Each entry carries the surface ``langgraph.toolnode`` and LangGraph's tool call id, and a
-SHA-256 fingerprint of the arguments, never the arguments themselves.
+SHA-256 fingerprint of the arguments, never the arguments themselves. A call whose id is
+empty or not a string is refused, and its entry carries no call id.
 
 What each entry is bound to:
 
 - a call that is judged: the invocation the tool executes, validated and completed, with
-  host-injected arguments left out;
+  the arguments the host filled left out;
 - a call refused before judgment (a tool that overrides the standard lifecycle, input that
-  does not validate, a parameter the schema omits): the arguments as proposed.
+  does not validate, a parameter the schema omits, a call that names another tool than the
+  one that would run, a call with no id): the arguments as proposed;
+- a call the executor answered without the judging step (:func:`recusal_langgraph._gate._judge`):
+  the arguments as proposed, with a deny. The tool may have run before that entry was
+  written; the entry says the call was never judged, not that the tool did not run.
 
 What is not on the log: a call another ``wrap_tool_call`` hook answered without reaching
 the gate.
@@ -29,7 +34,9 @@ from recusal.audit import AuditLog
 
 from ._gate import (
     Policy,
-    _judge,
+    _agated,
+    _checked,
+    _gated,
     _marked,
     _no_hooks_among,
     _require_sync_refusal,
@@ -72,20 +79,16 @@ def recusal_audited_gate(
 
     def gate(request, execute):
         _require_sync_slot("recusal_audited_gate", execute)
-        refusal, judged = _judge(
-            request, policy, **_recording(request, actor, control, log, surface)
-        )
-        return refusal if refusal is not None else execute(judged)
+        record = _recording(request, actor, control, log, surface)
+        return _gated(request, execute, policy, **record)
 
     return _marked(gate, "sync", policy, log)
 
 
 def _audited_agate(policy, log, actor, control, surface):
     async def gate(request, execute):
-        refusal, judged = _judge(
-            request, policy, is_async=True, **_recording(request, actor, control, log, surface)
-        )
-        return refusal if refusal is not None else await execute(judged)
+        record = _recording(request, actor, control, log, surface)
+        return await _agated(request, execute, policy, **record)
 
     return _marked(gate, "async", policy, log)
 
@@ -137,8 +140,11 @@ def audited_tool_node(
     **options: Any,
 ) -> ToolNode:
     """A ``ToolNode`` over ``tools`` with the recording gate on both of its hook slots.
-    ``options`` are ToolNode's own; passing either hook slot raises ``TypeError``."""
+    ``options`` are ToolNode's own; passing either hook slot raises ``TypeError``, and so
+    does a tool ``gated_tool_node`` refuses to build with."""
     _no_hooks_among(options)
-    return ToolNode(
-        tools, **recusal_audited_gates(policy, log, actor=actor, control=control), **options
+    return _checked(
+        ToolNode(
+            tools, **recusal_audited_gates(policy, log, actor=actor, control=control), **options
+        )
     )

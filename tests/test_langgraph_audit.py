@@ -722,6 +722,126 @@ class TestLangGraphAudit:
         with pytest.raises(AuditIntegrityError):
             example.AuditLog(path=str(log_path), expected_head=head)
 
+    # --- refusals made before, and after, the judging step: one entry each -----------------
+
+    @pytest.mark.parametrize("ident", ["", None], ids=["empty", "none"])
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_call_without_an_id_is_refused_and_recorded_once_without_an_id(
+        self, example, log, route, ident
+    ):
+        """Review round 1: an empty id made ``decide`` raise, which the gate reported as a
+        policy error; the policy was never called and nothing was written. The plain gate
+        ran the same call."""
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        calls = [_call("run_sql", {"sql": "SELECT * FROM audit_log"}, ident)]
+        if route == "sync":
+            messages, executed = example.run_calls(calls, log, policy=recording)
+        else:
+            messages, executed = asyncio.run(example.run_calls_async(calls, log, policy=recording))
+        assert executed == [] and seen == []
+        assert messages[0].status == "error"
+        assert "the tool call has no id" in messages[0].content
+        assert "RECUSAL_POLICY_ERROR" not in messages[0].content
+        assert len(log.entries) == 1
+        action = log.entries[0]["action"]
+        assert action["decision"] == "deny" and action["tool"] == "run_sql"
+        assert "tool_use_id" not in action
+        assert action["reason"] == messages[0].content
+
+    def test_a_call_whose_name_is_not_the_tool_that_would_run_is_recorded_under_the_tool(
+        self, example, gate, log
+    ):
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        hook = example.recusal_audited_gate(recording, log)
+
+        def repair(request, execute):
+            return hook(request.override(tool=gate.run_sql), execute)
+
+        node = gate.ToolNode([gate.echo, gate.run_sql], wrap_tool_call=repair)
+        gate.EXECUTED.clear()
+        messages = gate.run_in_graph(node, [_call("Run_SQL", {"sql": "DELETE FROM audit_log"})])
+        assert gate.EXECUTED == [] and seen == []
+        assert "the call names another tool than this one" in messages[0].content
+        entry = self.by_id(log)["c1"]
+        assert len(log.entries) == 1
+        assert entry["action"]["tool"] == "run_sql" and entry["action"]["decision"] == "deny"
+        assert "Run_SQL" not in json.dumps(entry)
+
+    def test_an_answer_that_never_passed_the_judging_step_is_one_recorded_refusal(
+        self, example, gate, log, monkeypatch
+    ):
+        """A ToolNode whose executor ran the registered tool instead of the judging copy:
+        the tool has run, the gate withholds the answer, and the one entry says the call was
+        never judged."""
+        original = gate.ToolNode._execute_tool_sync
+
+        def drifted(self, request, input_type, config):
+            registered = self.tools_by_name[request.tool_call["name"]]
+            return original(self, request.override(tool=registered), input_type, config)
+
+        monkeypatch.setattr(gate.ToolNode, "_execute_tool_sync", drifted)
+        messages, executed = example.run_calls(
+            [_call("run_sql", {"sql": "DELETE FROM audit_log"})], log
+        )
+        assert executed == [("run_sql", {"sql": "DELETE FROM audit_log"})]
+        assert messages[0].status == "error"
+        entry = self.by_id(log)["c1"]
+        assert len(log.entries) == 1 and entry["action"]["decision"] == "deny"
+        assert "without passing the gate's judging step" in entry["action"]["reason"]
+        assert entry["action"]["reason"] == messages[0].content
+
+    def test_limitation_a_call_toolnode_fails_before_the_tool_is_reached_leaves_no_entry(
+        self, example, gate, log
+    ):
+        """Documented in the package README: ToolNode injects the host's arguments before
+        it invokes the tool. When that fails (a required ``InjectedState`` field the state
+        does not have) the tool does not run, the gate has decided nothing, and nothing is
+        written."""
+        from typing import Annotated
+
+        from langchain_core.tools import tool
+        from langgraph.prebuilt import InjectedState
+
+        ran, seen = [], []
+
+        @tool
+        def act(what: str, role: Annotated[str, InjectedState("role")]) -> str:
+            """Act; the role is required from graph state."""
+            ran.append((what, role))
+            return "ok"
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        node = example.audited_tool_node([act], recording, log, handle_tool_errors=True)
+        messages = gate.run_in_graph(node, [_call("act", {"what": "x"})])
+        assert messages[0].status == "error" and "KeyError" in messages[0].content
+        assert ran == [] and seen == [] and log.entries == []
+
+    def test_a_record_that_cannot_be_started_refuses_the_call(self, example, gate, log):
+        """``decide`` raises on recording arguments it does not accept (an empty surface).
+        The gate's own answer to that is a refusal; nothing runs."""
+        node = gate.ToolNode(
+            [gate.echo, gate.run_sql],
+            wrap_tool_call=example.recusal_audited_gate(lambda name, args: [], log, surface=""),
+        )
+        gate.EXECUTED.clear()
+        messages = gate.run_in_graph(node, [_call("run_sql", {"sql": "SELECT * FROM audit_log"})])
+        assert gate.EXECUTED == []
+        assert messages[0].status == "error"
+        assert "RECUSAL_POLICY_ERROR (ValueError)" in messages[0].content
+
     # --- negative controls --------------------------------------------------------------
 
     def test_negative_control_plain_gate_writes_no_entries(self, gate, log, log_path):

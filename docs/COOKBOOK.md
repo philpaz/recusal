@@ -66,8 +66,8 @@ LangChain's [`create_agent` middleware example](../examples/langchain_agent_gate
 imports the same `recusal_gate` and uses `wrap_tool_call` with scripted model messages.
 It also requires Python 3.10+ and exactly `langchain==1.4.10` on top of the LangGraph pins;
 no model key or database is used and the Recusal package has no new dependency. List the
-gate last in `middleware=`, so it judges the call exactly as it will run, and use
-`agate_middleware` for `agent.ainvoke`.
+gate last in `middleware=`, so it judges the call exactly as it will run. The one
+middleware serves `agent.invoke` and `agent.ainvoke`.
 [`../examples/langchain_agent_audit.py`](../examples/langchain_agent_audit.py) is the same
 middleware with a record: `audited_gate_middleware(policy, log)` writes each decision to
 a hash-chained `AuditLog` entry labeled `langchain.create_agent`.

@@ -320,28 +320,133 @@ class TestLangChainAgentAudit:
         entry = self.by_id(log)["c1"]
         assert entry["action"]["input_sha256"] == _sha({"text": "rewritten after the gate"})
 
-    def test_a_middleware_that_answers_in_the_tools_place_leaves_no_entry(self, example, gate, log):
-        """As the example says: listed after the gate, a middleware that answers without
-        executing removes the judging copy, so the call is neither judged nor recorded.
-        Nothing ran either."""
+    @ROUTES
+    def test_a_middleware_that_answers_in_the_tools_place_is_refused_and_recorded_once(
+        self, example, gate, log, is_async
+    ):
+        """Listed after the gate, a middleware that answers without executing removes the
+        judging copy. The gate sees the answer come back without its judging step having
+        run, withholds it, and records one refusal that says the call was never judged."""
         from langchain.agents.middleware import wrap_tool_call
         from langchain_core.messages import HumanMessage, ToolMessage
 
-        @wrap_tool_call
-        def answer(request, handler):
+        def reply(request):
             return ToolMessage(
                 content="answered in the tool's place",
                 tool_call_id=request.tool_call["id"],
                 name=request.tool_call["name"],
             )
 
-        middleware = [example.audited_gate_middleware(gate.sql_scope_policy, log), answer]
+        if is_async:
+
+            @wrap_tool_call
+            async def answer(request, handler):
+                return reply(request)
+
+        else:
+
+            @wrap_tool_call
+            def answer(request, handler):
+                return reply(request)
+
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        middleware = [example.audited_gate_middleware(recording, log), answer]
         agent = gate.scripted_agent([_call("run_sql", {"sql": DELETE})], middleware)
         gate.EXECUTED.clear()
+        start = {"messages": [HumanMessage(content="go")]}
+        result = asyncio.run(agent.ainvoke(start)) if is_async else agent.invoke(start)
+        message = gate.tool_messages(result)[0]
+        assert gate.EXECUTED == [] and seen == []
+        assert message.status == "error"
+        assert "answered in the tool's place" not in str(message.content)
+        assert "without passing the gate's judging step" in str(message.content)
+        entry = self.by_id(log)["c1"]
+        assert len(log.entries) == 1 and entry["action"]["decision"] == "deny"
+        assert entry["action"]["reason"] == str(message.content)
+
+    # --- the name the policy judges is the tool that runs -----------------------------------
+
+    @staticmethod
+    def repair_tool_name(tools):
+        """LangChain's documented pattern for a call ToolNode could not resolve: an earlier
+        middleware attaches the registered tool with ``request.override(tool=...)``."""
+        from langchain.agents.middleware import wrap_tool_call
+
+        @wrap_tool_call
+        def repair(request, handler):
+            wanted = request.tool_call["name"].strip().lower()
+            if request.tool is None and wanted in tools:
+                return handler(request.override(tool=tools[wanted]))
+            return handler(request)
+
+        return repair
+
+    def test_a_call_whose_name_is_not_the_tool_that_runs_is_refused_and_recorded_under_the_tool(
+        self, example, gate, log
+    ):
+        """Review round 1, LangChain 2a: the model called ``Run_SQL``, an earlier middleware
+        attached ``run_sql``, and a policy keyed on ``run_sql`` judged ``Run_SQL`` and let
+        the DELETE run; the entry named ``Run_SQL``, PASS."""
+        from langchain_core.messages import HumanMessage
+
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return gate.sql_scope_policy(name, args)
+
+        middleware = [
+            self.repair_tool_name({"run_sql": gate.run_sql}),
+            example.audited_gate_middleware(recording, log),
+        ]
+        agent = gate.scripted_agent([_call("Run_SQL", {"sql": DELETE})], middleware)
+        gate.EXECUTED.clear()
         result = agent.invoke({"messages": [HumanMessage(content="go")]})
+        message = gate.tool_messages(result)[0]
+        assert gate.EXECUTED == [] and seen == [], "refused before the policy runs"
+        assert message.status == "error"
+        assert "the call names another tool than this one" in str(message.content)
+        assert "Run_SQL" not in str(message.content), "no model-chosen text in the reason"
+        entry = self.by_id(log)["c1"]
+        assert len(log.entries) == 1
+        assert entry["action"]["tool"] == "run_sql" and entry["action"]["decision"] == "deny"
+        assert "Run_SQL" not in json.dumps(entry)
+
+    def test_negative_control_ungated_the_repaired_call_runs_the_delete(self, gate):
+        _, executed = gate.run_calls(
+            [_call("Run_SQL", {"sql": DELETE})],
+            middleware=[self.repair_tool_name({"run_sql": gate.run_sql})],
+        )
+        assert executed == [("run_sql", {"sql": DELETE})]
+
+    # --- one middleware object serves both routes -------------------------------------------
+
+    @pytest.mark.parametrize("build", ["audited_gate_middleware", "audited_agate_middleware"])
+    def test_one_audited_middleware_records_under_invoke_and_under_ainvoke(
+        self, example, gate, log, build
+    ):
+        from langchain_core.messages import HumanMessage
+
+        middleware = [getattr(example, build)(gate.sql_scope_policy, log)]
+        start = {"messages": [HumanMessage(content="go")]}
+        gate.EXECUTED.clear()
+        gate.scripted_agent([_call("run_sql", {"sql": DELETE}, "s1")], middleware).invoke(start)
+        asyncio.run(
+            gate.scripted_agent([_call("run_sql", {"sql": DELETE}, "a1")], middleware).ainvoke(
+                start
+            )
+        )
         assert gate.EXECUTED == []
-        assert str(gate.tool_messages(result)[0].content) == "answered in the tool's place"
-        assert log.entries == []
+        entries = self.by_id(log)
+        assert {k: v["action"]["decision"] for k, v in entries.items()} == {
+            "s1": "deny",
+            "a1": "deny",
+        }
 
     # --- control identity, verification, tamper detection ---------------------------------
 
