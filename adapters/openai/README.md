@@ -341,7 +341,7 @@ call id, and the gate always fails closed.
 
 ## Status
 
-**In-depth review under way.** Its fixes are in [#296](https://github.com/philpaz/recusal/pull/296) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review complete.** Its fixes are released in 0.2.2. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).

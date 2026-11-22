@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
-- **`recusal-openai` 0.2.2 (unreleased): the gate refuses what it cannot tie to what
+- **`recusal-openai` 0.2.2: the gate refuses what it cannot tie to what
   would run, tells the model the truth about what ran, and both loops decide the same
   way.** Found by the adapter review of 2026-11-21 and reproduced on `openai` 3.49.0.
   - Arguments were parsed with Python's JSON defaults, which read `NaN`, `Infinity` and
