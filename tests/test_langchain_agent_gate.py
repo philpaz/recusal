@@ -976,6 +976,64 @@ class TestLangChainAgentGate:
         assert "fallback failed" not in str(messages[0].content)
         assert "did not allow the call" in str(messages[0].content)
 
+    # --- review round 4 ----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("is_async", [False, True], ids=["invoke", "ainvoke"])
+    def test_a_forwarder_that_names_only_what_langchain_fills_is_refused(self, example, is_async):
+        """``@tool`` over ``def wrapper(*args, config: RunnableConfig, **kwargs)``: the
+        policy judged ``{}`` and the function behind it ran ``limit=1000000``. Under an
+        explicit schema with no fields the model can put nothing through, and it runs."""
+        from typing import Any
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        def wrapper(*args: Any, config: RunnableConfig, **kwargs: Any) -> str:
+            return export_rows(*args, **kwargs)
+
+        async def awrapper(*args: Any, config: RunnableConfig, **kwargs: Any) -> str:
+            return export_rows(*args, **kwargs)
+
+        class NoInput(BaseModel):
+            pass
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        def go(tool, args):
+            kwargs = {"policy": recording, "tools": [tool]}
+            calls = [self.call("export_rows", args)]
+            if is_async:
+                return asyncio.run(example.arun_calls(calls, **kwargs))[0]
+            return example.run_calls(calls, **kwargs)[0]
+
+        inferred = StructuredTool.from_function(
+            func=wrapper, coroutine=awrapper, name="export_rows", description="d"
+        )
+        messages = go(inferred, {})
+        assert ran == [] and seen == []
+        assert "takes only `*args` or `**kwargs` (and `config`, which LangChain or the host" in (
+            str(messages[0].content)
+        )
+        closed = StructuredTool(
+            name="export_rows",
+            description="d",
+            func=wrapper,
+            coroutine=awrapper,
+            args_schema=NoInput,
+        )
+        messages = go(closed, {"limit": 5})
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("export_rows", {})] and ran == [("users", 1000000)]
+
     # --- the tool shapes the LangGraph gate takes, through the middleware -----------------
 
     @pytest.mark.parametrize("route", ["sync", "async"])

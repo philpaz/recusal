@@ -1128,3 +1128,37 @@ def test_a_call_id_parameter_is_still_filled_by_the_parse_step_not_by_toolnode(l
     )
     assert received == ["the-call-id"]
     assert seen.calls == [("note", {"text": "hi", "tool_call_id": "the-call-id"})]
+
+
+def test_a_tool_with_no_async_function_still_runs_through_run_in_executor(lg):
+    """The gate refuses a key named like a parameter of ``run_in_executor`` on the async
+    route of a tool that has no async function of its own, because ``BaseTool._arun`` runs
+    the sync callable through that function with the arguments as keywords. This pins that
+    it still does: ungated, such a key collides with the runner's own parameter."""
+    import asyncio
+    import inspect
+
+    from langchain_core.runnables.config import run_in_executor
+    from langchain_core.tools import BaseTool
+
+    named = {
+        name
+        for name, parameter in inspect.signature(run_in_executor).parameters.items()
+        if parameter.kind not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+    }
+    assert named == {"executor_or_config", "func"}, (
+        "langchain_core.runnables.config.run_in_executor changed its named parameters, "
+        f"got {named!r}; the gate refuses a model key of exactly these names"
+    )
+
+    class Loose(BaseTool):
+        name: str = "loose"
+        description: str = "No _arun of its own."
+
+        def _run(self, q: str, **extra) -> str:
+            return "ok"
+
+    for key in sorted(named):
+        with pytest.raises(TypeError, match=f"multiple values for argument '{key}'"):
+            asyncio.run(Loose().arun({"q": "x", key: "m"}))
+    assert asyncio.run(Loose().arun({"q": "x", "other": "m"})) == "ok"

@@ -4200,3 +4200,549 @@ class TestForwardersAndTheNamesLangChainKeeps:
             Args(sql="x")
         text = _adapter()._sanitized(caught.value, frozenset())
         assert text == "model: tenant_mismatch"
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
+class TestAForwarderThatNamesOnlyWhatOthersFill:
+    """Review round 4 of the package (2026-11): a forwarder whose only named parameter is
+    one the framework or the host fills, the schema a model can put nothing through, names
+    the thread runner takes, and three checks no test pinned. Each test names its
+    finding."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("langgraph")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_langgraph_round4_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    call = staticmethod(TestWhatRunsIsWhatWasJudged.call)
+    no_delete = staticmethod(TestWhatRunsIsWhatWasJudged.no_delete)
+    run = TestWhatRunsIsWhatWasJudged.run
+    ROUTES = TestWhatRunsIsWhatWasJudged.ROUTES
+    limit_under = staticmethod(TestWhatTheGateCannotReadIsRefused.limit_under)
+
+    ONLY_VARIADICS = "the tool's innermost callable takes only `*args` or `**kwargs`"
+
+    # --- finding A: the forwarder's only named parameter is filled by someone else -------------
+
+    @staticmethod
+    def forwarders(ran):
+        """Each hands what it gets to ``export_rows(table="users", limit=1000000)`` and
+        names, besides its variadics, only a parameter LangChain or ToolNode fills."""
+        from typing import Annotated
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool, InjectedToolArg
+        from langgraph.prebuilt import InjectedState, ToolRuntime
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        def with_tenant(tenant: Annotated[str, InjectedToolArg] = "t", **kwargs):
+            return export_rows(**kwargs)
+
+        def with_untyped_runtime(runtime: Any = None, **kwargs):
+            return export_rows(**kwargs)
+
+        def with_config(*args, config: RunnableConfig, **kwargs):
+            return export_rows(*args, **kwargs)
+
+        def with_runtime(runtime: ToolRuntime, **kwargs):
+            return export_rows(**kwargs)
+
+        def with_state(state: Annotated[dict, InjectedState], **kwargs):
+            return export_rows(**kwargs)
+
+        def with_callbacks(*args, callbacks: Any = None, **kwargs):
+            return export_rows(*args, **kwargs)
+
+        class Forwards(BaseTool):
+            name: str = "export_rows"
+            description: str = "Export rows of a table."
+
+            def _run(self, *args: Any, run_manager: Any = None, **kwargs: Any) -> str:
+                return export_rows(*args, **kwargs)
+
+        return {
+            "config": with_config,
+            "runtime": with_runtime,
+            "state": with_state,
+            "callbacks": with_callbacks,
+            "run_manager": Forwards,
+            "tenant": with_tenant,
+            "untyped_runtime": with_untyped_runtime,
+        }
+
+    @pytest.mark.parametrize(
+        "kept",
+        ["config", "runtime", "state", "callbacks", "run_manager", "tenant", "untyped_runtime"],
+    )
+    @ROUTES
+    def test_a_forwarder_that_names_only_what_the_framework_or_the_host_fills_is_refused(
+        self, example, route, kept
+    ):
+        """``def wrapper(*args, config: RunnableConfig, **kwargs)`` counted as naming a
+        parameter of its own: the policy judged ``{}`` and the function behind it ran
+        ``limit=1000000``. Under the schemaless ``BaseTool`` the model could send the limit
+        as well."""
+        from langchain_core.tools import StructuredTool
+
+        ran, seen = [], []
+        shape = self.forwarders(ran)[kept]
+        if kept == "run_manager":
+            tool = shape()
+            assert tool.args_schema is None
+        else:
+            tool = StructuredTool.from_function(func=shape, name="export_rows", description="d")
+        calls = [self.call("export_rows", {})]
+        messages = self.run(example, route, [tool], calls, self.limit_under(1000, seen))
+        assert ran == [] and seen == [], "refused before the policy, and not run"
+        assert self.ONLY_VARIADICS in messages[0].content
+        named = "runtime" if kept == "untyped_runtime" else kept
+        assert f"(and `{named}`, which LangChain or the host fills)" in messages[0].content
+        self.run(example, route, [tool], calls, None, gated=False)
+        assert ran == [("users", 1000000)], "ungated, the default nobody judged runs"
+
+    def test_a_forwarder_under_a_json_schema_is_refused_whatever_the_schema_closes(self, example):
+        """LangChain validates nothing against a dict schema: with ``additionalProperties``
+        false the model's ``limit`` still reaches the function."""
+        from langchain_core.tools import StructuredTool
+
+        ran, seen = [], []
+        forward = self.forwarders(ran)["config"]
+        closed = {"type": "object", "properties": {}, "additionalProperties": False}
+        for schema in (closed, {"type": "object"}):
+            tool = StructuredTool(
+                name="export_rows", description="d", func=forward, args_schema=schema
+            )
+            calls = [self.call("export_rows", {}, "a"), self.call("export_rows", {"limit": 5}, "b")]
+            messages = self.run(example, "sync", [tool], calls, self.limit_under(1000, seen))
+            assert ran == [] and seen == []
+            assert all(self.ONLY_VARIADICS in m.content for m in messages)
+            self.run(example, "sync", [tool], calls[1:], None, gated=False)
+            assert ran == [("users", 5)], "ungated, the dict schema let the key through"
+            ran.clear()
+
+    # --- the exception: a schema the model can put nothing through -----------------------------
+
+    @ROUTES
+    def test_a_forwarder_under_a_schema_with_no_fields_runs_with_nothing_of_the_models(
+        self, example, route
+    ):
+        """An explicit Pydantic ``args_schema`` with no fields: LangChain hands the function
+        only declared fields, so whatever the model sends is dropped. The call carries no
+        value the model chose; it is judged as ``{}`` and runs."""
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool, StructuredTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class NoInput(BaseModel):
+            pass
+
+        class CurrentPage(BaseTool):
+            name: str = "current_page"
+            description: str = "No input."
+            args_schema: type[BaseModel] = NoInput
+
+            def _run(self, config: RunnableConfig = None, **_: Any) -> str:  # type: ignore[assignment]
+                ran.append(("current_page", _))
+                return "page"
+
+            async def _arun(self, config: RunnableConfig = None, **_: Any) -> str:  # type: ignore[assignment]
+                ran.append(("current_page", _))
+                return "page"
+
+        function = StructuredTool(
+            name="export_rows",
+            description="d",
+            func=self.forwarders(ran)["config"],
+            args_schema=NoInput,
+        )
+        calls = [
+            self.call("current_page", {}, "a"),
+            self.call("current_page", {"limit": 5, "kwargs": {"limit": 5}}, "b"),
+            self.call("export_rows", {"limit": 5, "table": "secrets"}, "c"),
+        ]
+        messages = self.run(example, route, [CurrentPage(), function], calls, self.no_delete(seen))
+        assert [m.status for m in messages] == ["success"] * 3, [m.content for m in messages]
+        assert sorted(seen, key=str) == [
+            ("current_page", {}),
+            ("current_page", {}),
+            ("export_rows", {}),
+        ]
+        assert sorted(ran, key=str) == [
+            ("current_page", {}),
+            ("current_page", {}),
+            ("users", 1000000),
+        ], "nothing the model sent reached a function"
+
+    def test_which_schemas_the_model_can_put_nothing_through(self, example):
+        from langchain_core.tools import BaseTool, StructuredTool
+        from pydantic import BaseModel, ConfigDict
+
+        closed = _adapter()._closed_to_the_model
+
+        class NoInput(BaseModel):
+            pass
+
+        class Forbids(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+        class Allows(BaseModel):
+            model_config = ConfigDict(extra="allow")
+
+        class OneField(BaseModel):
+            q: str = ""
+
+        def forward(**kwargs):
+            return "ok"
+
+        def over(schema):
+            return StructuredTool(name="t", description="d", func=forward, args_schema=schema)
+
+        class Schemaless(BaseTool):
+            name: str = "t"
+            description: str = "d"
+
+            def _run(self, **kwargs: Any) -> str:
+                return "ok"
+
+        assert closed(over(NoInput)) is True and closed(over(Forbids)) is True
+        assert closed(over(Allows)) is False and closed(over(OneField)) is False
+        assert (
+            closed(over({"type": "object", "properties": {}, "additionalProperties": False}))
+            is False
+        )
+        assert (
+            closed(StructuredTool.from_function(func=forward, name="t", description="d")) is False
+        )
+        assert closed(Schemaless()) is False
+
+    def test_a_forwarder_under_an_empty_schema_that_allows_extras_is_refused(self, example):
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, ConfigDict
+
+        ran, seen = [], []
+
+        class Allows(BaseModel):
+            model_config = ConfigDict(extra="allow")
+
+        tool = StructuredTool(
+            name="export_rows",
+            description="d",
+            func=self.forwarders(ran)["config"],
+            args_schema=Allows,
+        )
+        messages = self.run(
+            example, "sync", [tool], [self.call("export_rows", {})], self.no_delete(seen)
+        )
+        assert ran == [] and seen == [] and self.ONLY_VARIADICS in messages[0].content
+
+    # --- the real tools the review's census found ----------------------------------------------
+
+    def test_the_shapes_of_the_census_tools_are_refused_and_the_named_function_runs(self, example):
+        """The signatures and schemas of langchain-aws 1.10.0's ``ThreadAwareNavigateBackTool``
+        (an empty Pydantic schema; ``config: Optional[RunnableConfig] = None``, which
+        LangChain does not fill because the annotation is not exactly ``RunnableConfig``)
+        and langchain-community's ``SlackGetChannel`` (no schema; ``*args`` and
+        ``run_manager``). Both are refused; a function of your own that calls the tool runs,
+        as the README says."""
+        from typing import Optional
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool, tool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class NavigateBackToolInput(BaseModel):
+            pass
+
+        class NavigateBack(BaseTool):
+            name: str = "navigate_back"
+            description: str = "Navigate back to the previous page"
+            args_schema: type[BaseModel] = NavigateBackToolInput
+
+            def _run(self, config: Optional[RunnableConfig] = None, **_: Any) -> str:
+                ran.append("back")
+                return "went back"
+
+        class GetChannel(BaseTool):
+            name: str = "get_channelid_name_dict"
+            description: str = "There is no input to this tool"
+
+            def _run(self, *args: Any, run_manager: Any = None) -> str:
+                ran.append("channels")
+                return "{}"
+
+        back, channels = NavigateBack(), GetChannel()
+        calls = [
+            self.call("navigate_back", {}, "a"),
+            self.call("get_channelid_name_dict", {}, "b"),
+        ]
+        messages = self.run(example, "sync", [back, channels], calls, self.no_delete(seen))
+        by_id = {m.tool_call_id: m.content for m in messages}
+        assert ran == [] and seen == []
+        assert "the callable's parameter `config` is absent from the argument schema" in by_id["a"]
+        assert self.ONLY_VARIADICS in by_id["b"]
+        assert "(and `run_manager`, which LangChain or the host fills)" in by_id["b"]
+
+        @tool
+        def navigate_back() -> str:
+            """Navigate back to the previous page."""
+            return back.invoke({})
+
+        @tool
+        def get_channels() -> str:
+            """Get the channels."""
+            return channels.invoke({})
+
+        calls = [self.call("navigate_back", {}, "a"), self.call("get_channels", {}, "b")]
+        messages = self.run(
+            example, "sync", [navigate_back, get_channels], calls, self.no_delete(seen)
+        )
+        assert [m.status for m in messages] == ["success", "success"]
+        assert sorted(seen) == [("get_channels", {}), ("navigate_back", {})]
+        assert sorted(ran) == ["back", "channels"]
+
+    # --- the review's surviving mutations, each pinned ----------------------------------------
+
+    def test_a_callable_of_only_star_args_is_a_forwarder_too(self, example):
+        """Pins X10: only ``**kwargs`` counted as forwarding."""
+        from langchain_core.tools import BaseTool, tool
+
+        ran, seen = [], []
+
+        def wrapper(*args):
+            ran.append(args)
+            return "ok"
+
+        wrapper.__doc__ = "Positional only."
+
+        class Positional(BaseTool):
+            name: str = "positional"
+            description: str = "d"
+
+            def _run(self, *args: Any) -> str:
+                ran.append(args)
+                return "ok"
+
+        calls = [self.call("wrapper", {}, "a"), self.call("positional", {}, "b")]
+        messages = self.run(
+            example, "sync", [tool(wrapper), Positional()], calls, self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert all(self.ONLY_VARIADICS in m.content for m in messages)
+
+    def test_the_names_langchain_keeps_are_read_from_the_method_the_route_runs(self, example):
+        """Pins X12: ``_arun`` names ``run_manager`` and ``_run`` does not. On ``ainvoke``
+        LangChain overwrites the model's value; on ``invoke`` the function receives it."""
+        from langchain_core.tools import BaseTool
+
+        ran, seen = [], []
+
+        class Split(BaseTool):
+            name: str = "split"
+            description: str = "d"
+
+            def _run(self, q: str, **extra: Any) -> str:
+                ran.append(("sync", q, extra))
+                return "ok"
+
+            async def _arun(self, q: str, run_manager: Any = None, **extra: Any) -> str:
+                ran.append(("async", q, extra))
+                return "ok"
+
+        calls = [self.call("split", {"q": "x", "run_manager": "m"})]
+        messages = self.run(example, "sync", [Split()], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("split", {"q": "x", "run_manager": "m"})]
+        assert ran == [("sync", "x", {"run_manager": "m"})]
+        seen.clear(), ran.clear()
+        messages = self.run(example, "async", [Split()], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert "the invocation sets `run_manager`, which LangChain fills itself" in (
+            messages[0].content
+        )
+
+    def test_callbacks_is_read_where_langchain_reads_it_behind_a_wraps_decorator(self, example):
+        """Pins X02: LangChain reads the function's signature through ``__wrapped__``, finds
+        ``callbacks`` and writes its own value there. The outer wrapper does not name it."""
+        import functools
+
+        from langchain_core.tools import StructuredTool
+
+        ran, seen = [], []
+
+        def lookup(q: str, callbacks: Any = "default") -> str:
+            ran.append((q, callbacks if isinstance(callbacks, str) else "LangChain's"))
+            return "ok"
+
+        @functools.wraps(lookup)
+        def logged(*args, **kwargs):
+            return lookup(*args, **kwargs)
+
+        schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+        tool = StructuredTool(name="lookup", description="d", func=logged, args_schema=schema)
+        assert "callbacks" in _adapter()._fills_itself(tool, logged)
+        calls = [self.call("lookup", {"q": "x", "callbacks": "model"})]
+        messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert "the invocation sets `callbacks`, which LangChain fills itself" in (
+            messages[0].content
+        )
+        self.run(example, "sync", [tool], calls, None, gated=False)
+        assert ran == [("x", "LangChain's")], "ungated, the model's value never arrives"
+
+    # --- names the thread runner takes ------------------------------------------------------------
+
+    @staticmethod
+    def threaded_tools(ran):
+        from langchain_core.tools import BaseTool, StructuredTool
+
+        schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+
+        class Loose(BaseTool):
+            name: str = "loose"
+            description: str = "No _arun of its own."
+
+            def _run(self, q: str, **extra: Any) -> str:
+                ran.append(("loose", q, extra))
+                return "ok"
+
+        def held(q: str, **extra: Any) -> str:
+            ran.append(("held", q, extra))
+            return "ok"
+
+        async def aheld(q: str, **extra: Any) -> str:
+            ran.append(("aheld", q, extra))
+            return "ok"
+
+        return [
+            Loose(),
+            StructuredTool(name="held", description="d", func=held, args_schema=schema),
+            StructuredTool(
+                name="both", description="d", func=held, coroutine=aheld, args_schema=schema
+            ),
+        ]
+
+    @pytest.mark.parametrize("key", ["func", "executor_or_config"])
+    def test_a_name_the_thread_runner_takes_is_refused_on_the_async_route(self, example, key):
+        """A ``BaseTool`` subclass with no ``_arun`` of its own runs ``_run`` through
+        ``run_in_executor`` on ``ainvoke``, with the arguments as keywords: a key named
+        like one of that function's parameters raised ``TypeError`` after the policy had
+        allowed the call. A ``StructuredTool`` does not run that way, with or without a
+        coroutine, and neither does the sync route: there the key is judged."""
+        ran, seen = [], []
+        calls = [
+            self.call("loose", {"q": "x", key: "m"}, "loose"),
+            self.call("held", {"q": "x", key: "m"}, "held"),
+            self.call("both", {"q": "x", key: "m"}, "both"),
+        ]
+        messages = self.run(example, "async", self.threaded_tools(ran), calls, self.no_delete(seen))
+        by_id = {m.tool_call_id: m for m in messages}
+        assert f"the invocation sets `{key}`, a parameter of the function LangChain runs" in (
+            by_id["loose"].content
+        )
+        assert by_id["held"].status == by_id["both"].status == "success"
+        assert sorted(seen) == [("both", {"q": "x", key: "m"}), ("held", {"q": "x", key: "m"})]
+        assert sorted(ran) == [("aheld", "x", {key: "m"}), ("held", "x", {key: "m"})]
+        seen.clear(), ran.clear()
+        messages = self.run(example, "sync", self.threaded_tools(ran), calls, self.no_delete(seen))
+        assert [m.status for m in messages] == ["success"] * 3
+        assert len(seen) == 3 and all(extra == {key: "m"} for _, _, extra in ran)
+        # negative control: ungated, the async route of the BaseTool subclass raises
+        with pytest.raises(TypeError, match=f"multiple values for argument '{key}'"):
+            self.run(example, "async", self.threaded_tools(ran), calls[:1], None, gated=False)
+
+    def test_the_names_the_thread_runner_takes_are_read_from_its_signature(self, example):
+        assert _adapter()._THREAD_TAKES == {"executor_or_config", "func"}
+
+    # --- a failure while the invocation is prepared is a refusal -----------------------------
+
+    @pytest.mark.parametrize("kind", [NameError, ValueError, TypeError])
+    def test_a_signature_read_that_raises_counts_every_reserved_name_as_kept(
+        self, example, monkeypatch, kind
+    ):
+        """Python 3.14 raises ``NameError`` from ``inspect.signature`` for an annotation it
+        cannot resolve; only ``TypeError`` and ``ValueError`` were caught."""
+        from langchain_core.tools import StructuredTool
+
+        adapter = _adapter()
+
+        def takes_extras(q: str, **extra: Any) -> str:
+            return "ok"
+
+        tool = StructuredTool.from_function(func=takes_extras, name="t", description="d")
+
+        def unreadable(func):
+            raise kind("name 'Later' is not defined")
+
+        monkeypatch.setattr(adapter.inspect, "signature", unreadable)
+        assert adapter._fills_itself(tool, takes_extras) == {"config", "run_manager", "callbacks"}
+
+    def test_anything_raised_while_the_invocation_is_prepared_is_a_refusal(
+        self, example, monkeypatch
+    ):
+        adapter = _adapter()
+        seen = []
+
+        def failing(kwargs, tool, host_keys, is_async):
+            raise NameError("name 'Later' is not defined")
+
+        monkeypatch.setattr(adapter, "_completed", failing)
+        messages, executed = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})], policy=self.no_delete(seen)
+        )
+        assert executed == [] and seen == []
+        assert messages[0].status == "error"
+        assert "the invocation could not be prepared for judgment (NameError)" in (
+            messages[0].content
+        )
+        assert "Later" not in messages[0].content
+
+    # --- what the README says about `self`, `config` and `run_manager`, to the letter ------------
+
+    def test_a_reserved_key_the_schema_drops_never_reaches_the_function(self, example):
+        """Under a Pydantic schema that does not declare them, LangChain drops ``self``,
+        ``config`` and ``run_manager`` before the gate's judging step: the call runs, judged
+        without them. They are refused only where the schema lets the key through."""
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        @tool
+        def lookup(q: str) -> str:
+            """Look up."""
+            ran.append(q)
+            return "found"
+
+        calls = [self.call("lookup", {"q": "x", "self": "m", "config": "m", "run_manager": "m"})]
+        messages = self.run(example, "sync", [lookup], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("lookup", {"q": "x"})] and ran == ["x"]
+
+    def test_a_single_input_tool_takes_a_key_named_self_as_its_one_value(self, example):
+        from langchain_core.tools import Tool
+
+        ran, seen = [], []
+
+        def lookup(q):
+            ran.append(q)
+            return "found"
+
+        tool = Tool(name="lookup", func=lookup, description="Look up.")
+        messages = self.run(
+            example, "sync", [tool], [self.call("lookup", {"self": "x"})], self.no_delete(seen)
+        )
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("lookup", {"q": "x"})] and ran == ["x"]

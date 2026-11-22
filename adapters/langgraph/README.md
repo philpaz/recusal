@@ -183,7 +183,10 @@ implements `_run` (and `_arun`), with an `args_schema` or without one (the gate 
 holds it to the schema LangChain infers from `_run`, and completes what the model left
 out from the defaults of the method the route runs, since LangChain validates nothing
 for such a tool: `_run`, or on `ainvoke` and `astream` the class's own `_arun` when it
-defines one, so the value the policy is shown is the one that method runs with); and a
+defines one, so the value the policy is shown is the one that method runs with; a
+`BaseTool` subclass without an `args_schema` whose `_run` names no parameter of its own
+besides `*args`, `**kwargs` and the ones LangChain fills is refused, see "A function
+that hands its arguments on" below); and a
 single-input `Tool(name, func, description)` or `@tool(infer_schema=False)` whose
 function takes exactly one named parameter. LangChain hands that function one positional
 value whatever key the model wrote it under, so the policy sees it under the function's
@@ -248,8 +251,15 @@ does not run, and an audited gate records it as one entry:
   `**kwargs`, every field the schema declares must be one of its parameters. Otherwise
   it passes those arguments on, and whatever receives them fills its own defaults after
   the policy has judged. The call is refused, naming one such field. And if that function
-  takes nothing but `*args` and `**kwargs`, the call is refused whatever the schema
-  declares. This refuses:
+  takes nothing but `*args` and `**kwargs`, the call is refused, with the one exception
+  given below. A parameter that LangChain or the host fills is not a parameter of the
+  function's own here: `run_manager`, `callbacks`, the function's `RunnableConfig`
+  parameter, and an injected one (`ToolRuntime`, `InjectedState`, `InjectedStore`,
+  `InjectedToolArg`, `InjectedToolCallId`). So
+  `def wrapper(*args, config: RunnableConfig, **kwargs)` and
+  `def _run(self, *args, run_manager=None, **kwargs)` are forwarders like
+  `def wrapper(*args, **kwargs)`, and the refusal names the parameter it set aside.
+  This refuses:
   - a decorator built without `functools.wraps` (`def wrapper(*args, **kwargs)`), under
     an explicit `args_schema` and under the schema `@tool` infers from the wrapper, whose
     fields are the wrapper's own `args` and `kwargs`. A `functools.wraps` decorator over
@@ -258,16 +268,32 @@ does not run, and an audited gate records it as one entry:
   - a `BaseTool` subclass whose `_arun(*args, **kwargs)` hands the call to `_run`, on
     `ainvoke` and `astream` (`invoke` and `stream` run `_run` and are judged). Name the
     parameters in `_arun`, or leave `_arun` out: LangChain then runs `_run` on a thread;
-  - a function that takes only `**kwargs`, under any schema:
-    `RunnableLambda(...).as_tool(args_schema=...)`, a `BaseTool` with an `args_schema`
-    whose `_run` is `(**kwargs)`, and a function of your own written as
-    `def call(**arguments)`, `@tool def call(**kwargs)` included. The gate cannot tell
-    such a function from a decorator that forwards. Give the node a function that names
-    the parameters and calls the tool
+  - a function that takes only `**kwargs` or only `*args`:
+    `RunnableLambda(...).as_tool(args_schema=...)`; a `BaseTool` whose `_run` is
+    `(**kwargs)`, `(*args)` or `(*args, run_manager=None, **kwargs)`, with an
+    `args_schema` that declares fields or with no `args_schema` at all; and a function
+    of your own written as `def call(**arguments)`, `@tool def call(**kwargs)`
+    included. Among published tools this is the shape of langchain-community's
+    `SlackGetChannel` (no `args_schema`; `_run(self, *args, run_manager=None)`), and of
+    its AINetwork tools (`AINBaseTool`), its `ConneryAction` and langchain-ibm's
+    `WatsonxTool` whenever their schema declares a field, which their `_run` does not
+    name. The gate cannot tell such a function from a decorator that forwards. Give the
+    node a function that names the parameters and calls the tool
     (`async def read_file(path: str, depth: int = 2): return await
-    other_tool.ainvoke({"path": path, "depth": depth})` under `@tool`). The one exception
+    other_tool.ainvoke({"path": path, "depth": depth})` under `@tool`). One exception
     is the function `langchain-mcp-adapters` defines for its tools (see "MCP tools"
     above), when it is the tool's own callable and the tool has no interceptors.
+
+  The other exception: a forwarder runs when the model can put nothing through the tool's
+  schema. That is an explicit Pydantic v2 `args_schema` that declares no field and does
+  not set `extra="allow"`. LangChain hands the function only the fields such a schema
+  declares, so whatever the model sends is dropped: the call carries no value the model
+  chose, it is judged as `{}`, and it runs. What the function then does is its own
+  body, which the gate does not read. No other schema counts: a JSON schema dict does
+  not, whatever its `properties` and `additionalProperties` say, because LangChain
+  validates nothing against a dict and passes every key on; the schema inferred from a
+  forwarder does not (it declares `args` and `kwargs`); and a `BaseTool` subclass with
+  no `args_schema` does not.
 
   A function that takes `**kwargs` and also names every schema field runs: the variadic
   then carries only keys the schema does not declare (the ones an `extra="allow"` schema
@@ -301,18 +327,39 @@ does not run, and an audited gate records it as one entry:
   `audited_tool_node` raise `TypeError` for such a tool when the node is built. Rename
   the parameter. A call is refused for the same reason when it sets a name under which
   the function would not receive the value, and only then: `config` or `run_manager` on
-  any `@tool` or `StructuredTool` (LangChain keeps both for itself there); `callbacks`
-  on one whose function names a parameter `callbacks` (LangChain overwrites it);
-  `run_manager` on a `BaseTool` subclass whose `_run` names it. Where the function does
-  receive the value, the call is judged with it: `callbacks` that reaches a function
-  through `**kwargs`, and `callbacks` on a `BaseTool` subclass's `_run`. A call that
-  sets `self` is refused on every tool: LangChain passes the arguments as keywords to a
-  method of the tool object, and Python raises for a second `self`.
+  a `@tool` or `StructuredTool` (LangChain keeps both for itself there); `callbacks`
+  on one whose function names a parameter `callbacks`, itself or behind a
+  `functools.wraps` decorator (LangChain overwrites it); `run_manager` on a `BaseTool`
+  subclass whose method for that route (`_run`, or its own `_arun`) names it. Where
+  the function does receive the value, the call is judged with it: `callbacks` that
+  reaches a function through `**kwargs`, and `callbacks` on a `BaseTool` subclass's
+  `_run`. Two more names are refused because the call could not be made at all:
+  `self` (LangChain passes the arguments as keywords to a method of the tool object,
+  and Python raises for a second `self`), and `func` or `executor_or_config` on
+  `ainvoke` and `astream` of a `BaseTool` subclass that has no `_arun` of its own
+  (LangChain runs `_run` through `run_in_executor`, which takes those two names).
+  All of this applies only when the key reaches the gate's judging step, which depends
+  on the schema. A Pydantic schema that does not declare the name drops the key before
+  that: under the schema `@tool` infers, a call that sets `self`, `config` or
+  `run_manager` runs, judged without the key, and the function never receives it. A
+  JSON schema dict, a `BaseTool` subclass with no `args_schema`, and a schema with
+  `extra="allow"` let the key through, and there the call is refused. A single-input
+  `Tool` takes one value whatever key the model wrote it under, `self` included, and
+  judges it under the function's parameter name.
   `RunnableLambda(...).as_tool()` over a function typed to take one string is
   refused as well, when the node is built and on every call: LangChain builds that tool
   around the runnable's own `invoke(input, config)`. Write a function that calls the
   runnable and give the node that
   (`def shout(text: str) -> str: return runnable.invoke(text)` under `@tool`).
+- A parameter annotated `Optional[RunnableConfig]`. LangChain fills only a parameter
+  annotated exactly `RunnableConfig`; any other annotation leaves it an ordinary
+  parameter, which the schema then omits, and the call is refused under the rule above
+  for a parameter the schema omits. The four no-input browser tools of langchain-aws
+  (`ThreadAwareNavigateBackTool`, `ThreadAwareExtractTextTool`,
+  `ThreadAwareExtractHyperlinksTool`, `ThreadAwareCurrentWebPageTool`) are written
+  `_run(self, config: Optional[RunnableConfig] = None, **_)` and are refused for it.
+  Give the node a function of your own that calls the tool
+  (`def navigate_back() -> str: return aws_tool.invoke({})` under `@tool`).
 - A parameter named `runtime` with a plain type such as `str`: ToolNode puts its runtime
   object under that name, so the input does not validate. Rename the parameter.
 - A Pydantic v1 `args_schema`: the gate reads no fields from it, so it cannot hold the
@@ -399,10 +446,15 @@ gate has decided nothing, and no entry is written.
   fact". After a call the judging step allowed, the gate withholds only a `ToolMessage`
   under another tool's name: an answer under the judged tool's name, with no name, or of
   another type (a `Command`) is passed on.
-- A function parameter named `run_manager` on a `@tool` or `StructuredTool` function,
-  and one named `callbacks` on a `BaseTool` subclass's `_run`: LangChain keeps those two
-  names out of every schema and, in these two places, does not fill them, so the
-  function runs with its own default for that parameter and the policy does not see it.
+- A parameter named `run_manager` or `callbacks` in a place where LangChain does not
+  fill it. LangChain keeps those two names out of every schema, and the gate does not
+  hold a parameter of either name to the schema. In four places nothing fills it, so
+  the function runs with its own default for that parameter and the policy does not
+  see it: `run_manager` on a `@tool` or `StructuredTool` function; `run_manager` on a
+  single-input `Tool` function; `callbacks` on a `BaseTool` subclass's `_run`; and a
+  `callbacks` keyword on a `functools.wraps` decorator over a `@tool` or
+  `StructuredTool` function that does not itself name `callbacks` (LangChain reads the
+  wrapped function's signature and finds none).
 - What a tool does once it runs.
 
 **Private names.** This package depends on ten names that are private to LangChain and

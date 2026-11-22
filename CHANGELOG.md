@@ -48,11 +48,19 @@ All notable changes to this project are documented here. The format follows
     and a `BaseTool` with an `args_schema` whose `_run` is `(**kwargs)`. These ran judged
     before. The README says what to give the node instead. A function that takes
     `**kwargs` and names every schema field still runs. A function that takes nothing but
-    `*args` and `**kwargs` is refused whatever the schema declares: under the schema
+    `*args` and `**kwargs` is refused: under the schema
     `@tool` infers from `def wrapper(*args, **kwargs)`, whose fields are `args` and
     `kwargs`, the policy judged `{}` and the function behind the wrapper ran
-    `limit=1000000`. A forwarder that names a parameter of its own is not told from an
-    ordinary function, and the README lists it under what the gate does not see.
+    `limit=1000000`. A parameter LangChain or the host fills (`run_manager`,
+    `callbacks`, a `RunnableConfig`, a `ToolRuntime`, an injected argument) is not a
+    parameter of the function's own for this rule:
+    `def wrapper(*args, config: RunnableConfig, **kwargs)` and a `BaseTool` with no
+    `args_schema` whose `_run` is `(*args, run_manager=None, **kwargs)` ran the same
+    unseen default, and are refused. Such a forwarder runs only under an explicit
+    Pydantic schema that declares no field and does not allow extras: the model can send
+    nothing through it, and the call is judged as `{}`. A forwarder that names a
+    parameter of its own is not told from an ordinary function, and the README lists it
+    under what the gate does not see.
   - The tools `langchain-mcp-adapters` builds are the one exception to that rule, and
     still run judged on the async routes: their function hands the judged arguments to
     the MCP server as they stand. It is recognised by the code object the library holds,
@@ -120,7 +128,11 @@ All notable changes to this project are documented here. The format follows
     `**kwargs`, or on a `BaseTool` subclass's `_run`) is judged; it was refused with a
     reason that was not true of it. For a tool `langchain-mcp-adapters` built, the
     refusal says the MCP server would not receive the argument. A call that sets `self`
-    is refused before the policy; it raised `TypeError` after the policy had allowed it.
+    is refused before the policy where the schema lets the key through; it raised
+    `TypeError` after the policy had allowed it. So is one that sets `func` or
+    `executor_or_config` on the async route of a `BaseTool` subclass with no `_arun` of
+    its own, which raised the same way. Anything else that fails while the invocation
+    is prepared for judgment is a refusal too, not an exception out of the gate.
     A function under more than 31 decorators is refused with that reason.
   - The package declares `langgraph-prebuilt` and `pydantic`, which it imports, each with
     an upper bound. The README lists the argument types the gate can judge and the ones it

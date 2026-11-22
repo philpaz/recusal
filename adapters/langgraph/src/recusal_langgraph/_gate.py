@@ -59,6 +59,7 @@ import weakref
 from typing import Any, Callable, List
 
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables.config import run_in_executor
 from langchain_core.tools import BaseTool, StructuredTool, Tool, ToolException
 from langchain_core.tools.base import FILTERED_ARGS, _get_runnable_config_param
 from langgraph.prebuilt import ToolNode
@@ -304,7 +305,12 @@ def _stacked(func) -> int:
     return depth
 
 
-def _read_to_the_end(levels: list, fields: frozenset[str]) -> None:
+def _read_to_the_end(
+    levels: list,
+    fields: frozenset[str],
+    filled: frozenset[str] = frozenset(),
+    closed: bool = False,
+) -> None:
     """Raise ``TypeError`` when the innermost callable hands on an argument the gate must
     account for.
 
@@ -323,16 +329,29 @@ def _read_to_the_end(levels: list, fields: frozenset[str]) -> None:
     the wrapper hands everything to a function whose defaults nobody read. A variadic's
     own name accounts for a field only on a callable that also names a parameter
     (``def f(q, **kwargs)``).
+
+    A parameter the framework or the host fills (``filled``: ``run_manager``,
+    ``callbacks``, the ``RunnableConfig`` parameter, the injected names) is not a parameter
+    of the callable's own for this purpose: ``def wrapper(*args, config: RunnableConfig,
+    **kwargs)`` forwards exactly as ``def wrapper(*args, **kwargs)`` does. The one such
+    callable that is let through is one under a schema the model can put nothing through
+    (``closed``, :func:`_closed_to_the_model`): the call then carries no value the model
+    chose, and what the function does with nothing is its own body.
     """
     innermost = levels[-1]
     if not any(_variadic(parameter) for parameter in innermost.values()):
         return
     unread = sorted(fields - innermost.keys())
-    if not unread and all(_variadic(parameter) for parameter in innermost.values()):
+    forwards_everything = all(
+        _variadic(parameter) or name in filled for name, parameter in innermost.items()
+    )
+    if not unread and forwards_everything and not closed:
+        kept = ", ".join(f"`{name}`" for name, p in innermost.items() if not _variadic(p))
+        besides = f" (and {kept}, which LangChain or the host fills)" if kept else ""
         raise TypeError(
-            "the tool's innermost callable takes only `*args` or `**kwargs`, so it passes "
-            "every argument on to code the gate cannot read; name the arguments in its "
-            "signature, build a decorator with `functools.wraps`, or give the tool the "
+            f"the tool's innermost callable takes only `*args` or `**kwargs`{besides}, so it "
+            "passes every argument on to code the gate cannot read; name the arguments in "
+            "its signature, build a decorator with `functools.wraps`, or give the tool the "
             "function itself"
         )
     if unread:
@@ -342,6 +361,45 @@ def _read_to_the_end(levels: list, fields: frozenset[str]) -> None:
             "name every argument in its signature, build a decorator with `functools.wraps`, "
             "or give the tool the function itself"
         )
+
+
+def _closed_to_the_model(tool) -> bool:
+    """Whether the tool's schema lets the model put nothing through to the function.
+
+    True only for a Pydantic v2 ``args_schema`` that declares no field and does not set
+    ``extra="allow"``: LangChain validates the input against it and hands the function
+    only the fields it declares, so every key the model sends is dropped. Everything else
+    lets a value through and is not closed: a schema with a field (the schema inferred
+    from ``def wrapper(*args, **kwargs)`` declares ``args`` and ``kwargs``); a JSON schema
+    dict, whatever its ``properties`` and ``additionalProperties`` say, because LangChain
+    validates nothing against a dict and passes every key on; and no schema at all on a
+    ``BaseTool`` subclass, for the same reason.
+    """
+    schema = tool.args_schema
+    if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+        return False
+    return not schema.model_fields and schema.model_config.get("extra") != "allow"
+
+
+#: The names ``run_in_executor`` takes for itself. A ``BaseTool`` subclass with no ``_arun``
+#: of its own runs ``_run`` through it on the async routes (``BaseTool._arun``), with the
+#: arguments as keywords, so a key of one of these names collides with the runner's own
+#: parameter. Read from the function's signature; ``tests/test_compat_langgraph.py`` pins
+#: that ``BaseTool._arun`` still runs the tool this way.
+_THREAD_TAKES = frozenset(
+    name
+    for name, parameter in inspect.signature(run_in_executor).parameters.items()
+    if not _variadic(parameter)
+)
+
+
+def _runs_on_a_thread(tool, is_async: bool) -> bool:
+    """Whether this route hands the tool's arguments, as keywords, to ``run_in_executor``:
+    the async route of a ``BaseTool`` subclass that has no ``_arun`` of its own. A
+    ``StructuredTool`` or ``Tool`` without a coroutine does not: its ``ainvoke`` runs the
+    whole sync ``invoke`` on a thread, with the arguments still inside the input, and its
+    class has an ``_arun`` of its own."""
+    return is_async and type(tool)._arun is BaseTool._arun
 
 
 #: Where ``langchain-mcp-adapters`` defines the function every tool it builds runs: the
@@ -413,13 +471,16 @@ def _fills_itself(tool, func) -> frozenset[str]:
     by anything either: the function receives it as judged, so it is judged like any other.
 
     The signature is read as LangChain reads it (``inspect.signature``, which follows
-    ``__wrapped__``). If it cannot be read, both names count as filled: refused, not guessed.
+    ``__wrapped__``: a ``callbacks`` parameter of the function behind a ``functools.wraps``
+    decorator counts). If it cannot be read, for whatever reason (Python 3.14 raises
+    ``NameError`` for an annotation it cannot resolve), every reserved name counts as
+    filled: refused, not guessed.
     """
     config_param = _get_runnable_config_param(func)
     names = {config_param} if config_param else set()
     try:
         parameters = inspect.signature(func).parameters
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001, a signature that cannot be read is not guessed at
         return frozenset(names | _RESERVED | _HOLDER_TAKES)
     if isinstance(tool, (StructuredTool, Tool)):
         names |= _HOLDER_TAKES
@@ -467,15 +528,18 @@ def _completed(
     names it) is refused: the framework would overwrite or keep it, and the function would
     not receive that value. So is one named ``self``: LangChain calls the tool's bound
     ``_run``/``_arun`` with the arguments as keywords, and Python raises for a second
-    ``self`` after the policy has allowed the call.
+    ``self`` after the policy has allowed the call. And so is one named like a parameter of
+    ``run_in_executor`` on a route that runs the tool through it (:data:`_THREAD_TAKES`),
+    for the same reason.
     """
     fields = _schema_fields(tool)
     func = _execution_callable(tool, is_async)
     levels = _reached(func)
     to_a_server = _calls_an_mcp_server(func)
-    if not to_a_server:
-        _read_to_the_end(levels, fields)
     framework_keys = _framework_keys(func)
+    if not to_a_server:
+        filled = framework_keys | _host_keys(tool) | _node_fills(tool)
+        _read_to_the_end(levels, fields, filled, _closed_to_the_model(tool))
     named = [{n for n, p in level.items() if not _variadic(p)} for level in levels]
     completed = dict(kwargs)
     for index, level in enumerate(levels):
@@ -520,6 +584,15 @@ def _completed(
             "calls the tool, so the call could not be made; an argument named `self` "
             "cannot be passed to a tool"
         )
+    if _runs_on_a_thread(tool, is_async):
+        clash = ", ".join(f"`{k}`" for k in sorted(completed) if k in _THREAD_TAKES)
+        if clash:
+            raise TypeError(
+                f"the invocation sets {clash}, a parameter of the function LangChain runs "
+                "this tool with on a thread (the tool has no `_arun` of its own), so "
+                "the call could not be made; an argument of that name cannot be passed to "
+                "this tool on the async routes"
+            )
     fills = _fills_itself(tool, func)
     taken = ", ".join(f"`{k}`" for k in sorted(completed) if k not in host_keys and k in fills)
     if taken and to_a_server:
@@ -797,8 +870,15 @@ def _judging(
             else:
                 kwargs = _completed(kwargs, tool, hosts, is_async)
                 judged = {k: _faithful(v) for k, v in kwargs.items() if k not in hosts}
-        except TypeError as exc:
-            raise RecusalRefusal(_unjudgeable(name, str(exc), proposal(tool_input), policy, record))
+        except Exception as exc:  # noqa: BLE001, an invocation that cannot be prepared is refused
+            # a TypeError is one of the gate's own reasons; anything else is reported by
+            # its class alone, since its text is not the gate's
+            detail = (
+                str(exc)
+                if isinstance(exc, TypeError)
+                else f"the invocation could not be prepared for judgment ({type(exc).__name__})"
+            )
+            raise RecusalRefusal(_unjudgeable(name, detail, proposal(tool_input), policy, record))
         try:
             decision, reason = decide(name, judged, policy, safe_errors=True, **record)
         except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
