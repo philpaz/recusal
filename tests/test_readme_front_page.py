@@ -231,3 +231,23 @@ def test_each_adapter_readme_shows_the_kernels_pictures_where_its_reader_needs_t
         assert 'An arrow means "depends on". No arrow leaves the kernel' in " ".join(
             more.split()
         ), directory
+
+
+def test_every_adapter_page_carries_the_website_and_scorecard_badges():
+    """The adapters live in this repository, so its OpenSSF Scorecard is theirs. Each
+    adapter's README shows the same website and Scorecard badges as the kernel's, so a
+    reader who lands on an adapter's page (on GitHub or on PyPI) sees both."""
+    website = (
+        "[![Website](https://img.shields.io/badge/website-recusal.io-2453c4)](https://recusal.io)"
+    )
+    scorecard = (
+        "[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/philpaz/recusal/badge)]"
+        "(https://scorecard.dev/viewer/?uri=github.com/philpaz/recusal)"
+    )
+    assert README.count(website) == 1 and README.count(scorecard) == 1
+    pages = sorted((ROOT / "adapters").glob("*/README.md"))
+    assert len(pages) == 8
+    for page in pages:
+        text = page.read_text(encoding="utf-8")
+        assert text.count(website) == 1, page
+        assert text.count(scorecard) == 1, page
