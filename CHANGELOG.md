@@ -15,18 +15,32 @@ All notable changes to this project are documented here. The format follows
     model chose, and ran with no policy asked. `RecusalGate` now judges it in
     `before_output_process`, under the function's name, before it runs; a refusal asks
     the model again and the function does not run.
+  - A `Choices` output whose value is callable ran that action when the model picked
+    it, with no policy asked. Every final `Choices` pick is now judged, as `choice`.
   - A `WrapperToolset` subclass whose `call_tool` changed the arguments ran after the gate
     judged them: judged `force=False`, ran `force=True`. A toolset runs after every
     capability hook, so a run with such a wrapper in its toolsets now has every call
-    refused, on the record; the wrappers Pydantic AI ships route a call and are not.
+    refused, on the record; the wrappers Pydantic AI ships route a call and are not. The
+    gate reads the run's toolset at the time of each call, so a wrapper another
+    capability adds, or one a dynamic toolset returns, is refused too, as is a toolset
+    with a `process_tool_call` function.
   - A call handed to the application to run (an `ExternalToolset`, `CallDeferred`) left
     the run with no policy asked. It is now judged in `handle_deferred_tool_calls`: a
-    refused one is answered with the refusal, an allowed one handed on as judged.
+    refused one is answered with the refusal, an allowed one handed on as judged. Where
+    another capability answers such calls (`HandleDeferredToolCalls`), it is offered them
+    before the gate, so there the gate judges every call as it is validated.
+  - A gated agent that offers the model a tool the provider runs (web search, code
+    execution and the like) is now refused before the request is sent: no hook sees
+    those calls. Provider-side tool search is allowed.
+  - Refused rather than run unjudged, and documented: an output function taking a
+    Pydantic model, and a union of output functions under `NativeOutput` or
+    `PromptedOutput` (use tool output).
   - `agent.override(spec=...)` with a spec naming capabilities replaces the gate, and
     `is_gated` still said `True` while the tool ran unjudged; it now reads the
     capabilities in effect.
   - The audited gate records each of these on its own surface
-    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`), by
+    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`,
+    `pydantic_ai.after_tool_validate`), by
     the plain gate's own decision. The README now says which tool name the policy is
     given (the prefixed or renamed one) and corrects two sentences on ordering: another
     `innermost` capability listed after the gate runs after it, and the plain `Hooks`

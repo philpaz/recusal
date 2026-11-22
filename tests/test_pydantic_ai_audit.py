@@ -578,6 +578,41 @@ class TestPydanticAiAudit:
             ("wipe_remote", "pydantic_ai.handle_deferred_tool_calls"),
         ]
 
+    def test_a_choice_and_a_call_judged_at_validation_are_recorded(self, example, log):
+        """A ``Choices`` pick is one entry. Where another capability answers deferred calls,
+        an external call is judged as it is validated: one entry on that surface, and none
+        from the gate's deferred hook, which it reaches already judged."""
+        from pydantic_ai import Agent, DeferredToolRequests
+        from pydantic_ai.capabilities import HandleDeferredToolCalls
+        from pydantic_ai.output import Choices
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.external import ExternalToolset
+
+        allow = lambda name, args: []  # noqa: E731
+        Agent(
+            self._model_calling("final_result", {"response": "a"}),
+            output_type=Choices(["a", "b"]),
+            capabilities=[example.RecusalAuditedGate(allow, log=log)],
+        ).run_sync("go")
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        external = ExternalToolset(
+            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
+        )
+        Agent(
+            self._model_calling("wipe_remote", {"table": "t"}),
+            toolsets=[external],
+            output_type=[str, DeferredToolRequests],
+            capabilities=[
+                HandleDeferredToolCalls(lambda ctx, requests: None),
+                example.RecusalAuditedGate(allow, log=log),
+            ],
+        ).run_sync("go")
+        actions = [(e["action"]["tool"], e["action"]["surface"]) for e in log.entries]
+        assert actions == [
+            ("choice", "pydantic_ai.before_output_process"),
+            ("wipe_remote", "pydantic_ai.after_tool_validate"),
+        ]
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):

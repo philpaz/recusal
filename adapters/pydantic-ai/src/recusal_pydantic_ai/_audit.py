@@ -5,8 +5,10 @@ log)`` call the plain gate's own ``_refusal`` with the recording arguments passe
 to ``recusal.decide``, which writes the entry before returning. There is no second decision
 path. If the log cannot be written the decision becomes a deny, so nothing runs unrecorded.
 
-Each entry carries the surface ``pydantic_ai.before_tool_execute`` and Pydantic AI's own
-tool call id, and a SHA-256 fingerprint of the arguments, never the arguments themselves.
+Each entry carries the surface, which is the hook that decided
+(``pydantic_ai.before_tool_execute`` for a tool call; ``RecusalAuditedGate`` also records
+on the other hooks the gate judges in), Pydantic AI's own tool call id, and a SHA-256
+fingerprint of the arguments, never the arguments themselves.
 
 What each entry is bound to:
 
@@ -38,7 +40,7 @@ if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 
-#: The surface label every entry carries: the runtime hook that adjudicated.
+#: The surface label of a tool call's entry: the runtime hook that adjudicated.
 SURFACE = "pydantic_ai.before_tool_execute"
 
 
@@ -110,8 +112,9 @@ class RecusalAuditedGate(RecusalGate):
     A ``RecusalGate`` (so ``is_gated`` sees it, and it keeps the ``innermost`` position)
     whose every decision is one entry on ``log``: a tool call (surface
     ``pydantic_ai.before_tool_execute``), an output function
-    (``pydantic_ai.before_output_process``) and a call handed to the application to run
-    (``pydantic_ai.handle_deferred_tool_calls``). The plain gate's hooks make each decision;
+    or a ``Choices`` pick (``pydantic_ai.before_output_process``), a call handed to the
+    application to run (``pydantic_ai.handle_deferred_tool_calls``) and a call judged as it
+    is validated (``pydantic_ai.after_tool_validate``). The plain gate's hooks make each decision;
     this class only says how to record it, so there is one decision path.
     """
 

@@ -75,10 +75,14 @@ the call (fail closed).
 `RecusalGate` declares Pydantic AI's `innermost` position, so its hooks run after every
 ordinary capability's. Another `innermost` capability listed after it still runs after it,
 so list the gate last. A toolset runs after every capability hook: one that wraps other
-tools and runs their calls itself (a `WrapperToolset` subclass overriding `call_tool`)
-could change the arguments after the gate judged them, so a run with one in its toolsets
-has every call refused; the wrappers Pydantic AI ships (prefixing, renaming, filtering,
-approval, tool search, durable execution) do not change arguments and are not refused.
+tools and runs their calls itself (a `WrapperToolset` subclass overriding `call_tool`, or
+a toolset with a `process_tool_call` function, such as an MCP server given one) could
+change the arguments after the gate judged them, so a run with one in its toolsets has
+every call refused. The gate reads the run's toolset at the time of each call, so this
+holds for a wrapper another capability adds and for one a dynamic toolset
+(`@agent.toolset`) returns. The wrappers Pydantic AI ships (prefixing, renaming,
+filtering, approval, tool search, durable execution) do not change arguments and are not
+refused.
 
 The same gate as a plain hook is
 `Hooks(before_tool_execute=recusal_before_tool_execute(policy))`. It judges tool calls
@@ -88,15 +92,39 @@ capability is added, since one runs after it wherever it is listed. Prefer `Recu
 
 **Output functions** (`output_type=fn`) run the application's function with values the
 model chose, so `RecusalGate` judges them too, under the function's name, before they
-run: a multi-argument function's arguments as a dict, a single-argument function's value
-as `{"output": value}`. A refusal asks the model again; the function does not run, and
-when the output retries run out the run ends with an error. Plain structured output, with
-no function, runs nothing and is not judged.
+run: a dict (a multi-argument function's arguments, or a single `dict` argument) is
+judged as it is, any other single value as `{"output": value}`. A refusal asks the model
+again; the function does not run, and when the output retries run out the run ends with
+an error. Plain structured output, with no function, runs nothing and is not judged.
+
+- The data-only rule holds here too: an output function whose parameter is a Pydantic
+  model, a dataclass or an Enum is refused. Declare plain fields (`str`, `int`, `list`,
+  `dict`) and build the model inside the function.
+- A union of output functions under `NativeOutput` or `PromptedOutput` is refused:
+  Pydantic AI does not tell the hook which of them it will call. Use tool output (the
+  default), where each function is its own output tool and is judged by name.
+- A `Choices` output is judged as `choice` with `{"choice": key}` when the pick is final.
+  Pydantic AI calls the picked value when it is callable, and the hook is handed the key
+  and not the values, so every `Choices` pick is judged, with or without an action.
+- With `run_stream`, Pydantic AI runs an output function on partial output as it arrives;
+  each of those calls is judged, so one answer can have several decisions.
 
 **Calls handed to the application** (an `ExternalToolset`, a tool that raises
 `CallDeferred`) are judged before they leave the run: a refused one is answered with the
 refusal, which the model reads; an allowed one is handed on with exactly the arguments
 judged. A call waiting for approval is judged when it runs.
+
+Pydantic AI offers such calls to each capability in turn, and the gate comes last. So
+where another capability answers them (`HandleDeferredToolCalls`, a `Hooks` with a
+deferred hook, or one of your own), the gate judges every call as it is validated,
+before any capability is offered it, as the model sent it. A call that then runs is
+judged again before it runs, so in such a run it has two decisions.
+
+**Tools the provider runs** (web search, code execution, web fetch, a provider-side MCP
+server and the like) run with arguments the model chose where no hook of your
+application sees them. A gated agent that offers one is refused with a `UserError`
+before the request is sent. Provider-side tool search is allowed: it finds tools, and
+the calls to them are judged like any other.
 
 **The name the policy is given** is the one the model calls the tool by: under a
 `PrefixedToolset` or `RenamedToolset` that is the prefixed or new name (`db_wipe` for a
@@ -114,8 +142,9 @@ agent = Agent(model, tools=[run_sql], capabilities=[RecusalAuditedGate(policy, l
 
 Each decision the gate makes, allowed or refused, is one hash-chained entry labeled with
 the hook that made it: `pydantic_ai.before_tool_execute` for a tool call,
-`pydantic_ai.before_output_process` for an output function and
-`pydantic_ai.handle_deferred_tool_calls` for a call handed to the application. Each
+`pydantic_ai.before_output_process` for an output function or a `Choices` pick,
+`pydantic_ai.handle_deferred_tool_calls` for a call handed to the application and
+`pydantic_ai.after_tool_validate` for a call judged as it is validated. Each
 carries Pydantic AI's tool call id and a SHA-256 fingerprint of the arguments (never the
 arguments). If the log cannot be written the call is refused. Check the log with
 `recusal audit verify decisions.jsonl`.
@@ -128,6 +157,11 @@ path.
 - **Capabilities an override puts in its place.** `agent.override(spec=...)` with a spec
   that names capabilities replaces the agent's own, the gate with them; `is_gated(agent)`
   reads the capabilities in effect, so it is `False` there.
+- **A wrapper toolset under a run context with no tool manager.** The gate reads the
+  run's toolset from `RunContext.tool_manager` at the time of each call. Where Pydantic AI
+  provides none (its Temporal activity context), the gate relies on the check it makes
+  when the run's toolsets are assembled, which does not see a wrapper another capability
+  adds afterwards or one a dynamic toolset returns.
 - **A delegated agent.** An agent called from inside a tool function runs under its own
   capabilities. Give every agent its own gate; `is_gated(agent)` reads only the agent it
   is given.

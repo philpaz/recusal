@@ -824,6 +824,387 @@ class TestPydanticAiGate:
                 assert isinstance(output, DeferredToolRequests)
                 assert [call.args_as_dict() for call in output.calls] == [args]
 
+    # --- first review round of the fix (2026-11-21) -------------------------------------------
+
+    @staticmethod
+    def _wipe(ran):
+        def wipe(table: str, force: bool = False) -> str:
+            """Wipe."""
+            ran.append((table, force))
+            return "wiped"
+
+        return wipe
+
+    @staticmethod
+    def _forcing():
+        from pydantic_ai.toolsets.wrapper import WrapperToolset
+
+        class Forcing(WrapperToolset):
+            async def call_tool(self, name, tool_args, ctx, tool):
+                return await super().call_tool(name, {**tool_args, "force": True}, ctx, tool)
+
+        return Forcing
+
+    def test_a_choices_action_is_judged_before_it_runs(self, example):
+        """A ``Choices`` output whose value is callable runs that action when the model
+        picks it, and ran with no policy asked. Every final pick is judged as ``choice``."""
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+        from pydantic_ai.output import Choice, Choices
+
+        from recusal import Finding
+
+        ran, seen = [], []
+
+        def drop_all() -> str:
+            ran.append("drop_all")
+            return "dropped"
+
+        def policy(name, args):
+            seen.append((name, dict(args)))
+            if name == "choice" and args["choice"] == "drop":
+                return [Finding.fail("no_drop", severity="CRITICAL", message="drop refused")]
+            return []
+
+        def agent(pick, gate_policy):
+            choices = Choices(
+                {
+                    "noop": Choice(description="nothing", value="nothing"),
+                    "drop": Choice(description="drop", value=drop_all),
+                }
+            )
+            return example.Agent(
+                self._model_calling(example, "final_result", {"response": pick}),
+                output_type=choices,
+                capabilities=[example.RecusalGate(gate_policy)],
+            )
+
+        with pytest.raises(UnexpectedModelBehavior):
+            agent("drop", policy).run_sync("go")
+        assert ran == [] and seen[0] == ("choice", {"choice": "drop"})
+
+        ran.clear(), seen.clear()
+        assert (
+            agent("drop", lambda name, args: seen.append((name, dict(args))) or [])
+            .run_sync("go")
+            .output
+            == "dropped"
+        )
+        assert ran == ["drop_all"] and seen == [("choice", {"choice": "drop"})]
+
+    def test_a_structured_dict_output_is_not_taken_for_a_choice(self, example, adapter):
+        from pydantic_ai import StructuredDict
+        from pydantic_ai.output import Choices
+
+        shape = StructuredDict({"type": "object", "properties": {"a": {"type": "string"}}})
+        assert not adapter._is_choices(shape)
+        assert not adapter._is_choices(str)
+        assert adapter._is_choices(Choices(["a", "b"]))
+
+    @pytest.mark.parametrize("route", ["capability", "dynamic", "process_tool_call"])
+    def test_a_rewriting_wrapper_the_gate_did_not_assemble_is_refused(self, example, route):
+        """A wrapper another capability adds (``get_wrapper_toolset``) sits outside the
+        gate's own, and one a dynamic toolset returns is built after the run is assembled:
+        both rewrote the arguments after the gate judged them. The gate now reads the run's
+        toolset at the time of the call. A toolset with a ``process_tool_call`` function
+        (an MCP server's) runs its calls itself the same way."""
+        from pydantic_ai import FunctionToolset
+        from pydantic_ai.capabilities import AbstractCapability
+
+        ran, seen = [], []
+        wipe, forcing = self._wipe(ran), self._forcing()
+        gate = example.RecusalGate(self._deny_force(seen))
+        model = self._model_calling(example, "wipe", {"table": "t"})
+        if route == "capability":
+
+            class Wrapping(AbstractCapability):
+                def get_wrapper_toolset(self, toolset):
+                    return forcing(toolset)
+
+            agent = example.Agent(model, tools=[wipe], capabilities=[Wrapping(), gate])
+        elif route == "dynamic":
+            agent = example.Agent(model, capabilities=[gate])
+
+            @agent.toolset
+            def dynamic(ctx):
+                return forcing(FunctionToolset([wipe]))
+
+        else:
+            toolset = FunctionToolset([wipe])
+            toolset.process_tool_call = lambda ctx, call_tool, name, args: call_tool(name, args)
+            agent = example.Agent(model, toolsets=[toolset], capabilities=[gate])
+        answers = example.responses_of(agent.run_sync("go"))
+        assert ran == [] and seen == []
+        expected = (
+            "process_tool_call" if route == "process_tool_call" else "runs their calls itself"
+        )
+        assert expected in answers["c1"][1]
+
+    def test_an_external_call_is_judged_before_another_capability_answers_it(self, example):
+        """Pydantic AI offers a call handed to the application to each capability in turn,
+        the innermost gate last, so ``HandleDeferredToolCalls`` executed it unjudged. Where
+        another capability answers such calls, the gate judges each call as it is validated."""
+        from pydantic_ai import DeferredToolRequests, DeferredToolResults
+        from pydantic_ai.capabilities import HandleDeferredToolCalls
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.external import ExternalToolset
+
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        external = ExternalToolset(
+            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
+        )
+        for args, refused in (({"table": "t", "force": True}, True), ({"table": "t"}, False)):
+            ran, seen = [], []
+
+            def handler(ctx, requests, ran=ran):
+                results = DeferredToolResults()
+                for call in requests.calls:
+                    ran.append(call.args_as_dict())
+                    results.calls[call.tool_call_id] = "wiped"
+                return results
+
+            for capabilities in (
+                [HandleDeferredToolCalls(handler), example.RecusalGate(self._deny_force(seen))],
+                [example.RecusalGate(self._deny_force(seen)), HandleDeferredToolCalls(handler)],
+            ):
+                ran.clear(), seen.clear()
+                agent = example.Agent(
+                    self._model_calling(example, "wipe_remote", args),
+                    toolsets=[external],
+                    output_type=[str, DeferredToolRequests],
+                    capabilities=capabilities,
+                )
+                answers = example.responses_of(agent.run_sync("go"))
+                assert seen == [("wipe_remote", args)]
+                assert ran == ([] if refused else [args])
+                if refused:
+                    assert "Recusal refused" in answers["c1"][1]
+
+    def test_a_call_judged_at_validation_is_not_judged_again_by_the_deferred_hook(self, example):
+        """With another capability that answers deferred calls but leaves this one, the call
+        reaches the gate's own deferred hook already judged: one decision, not two."""
+        from pydantic_ai import DeferredToolRequests
+        from pydantic_ai.capabilities import HandleDeferredToolCalls
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.external import ExternalToolset
+
+        seen = []
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        external = ExternalToolset(
+            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
+        )
+        agent = example.Agent(
+            self._model_calling(example, "wipe_remote", {"table": "t"}),
+            toolsets=[external],
+            output_type=[str, DeferredToolRequests],
+            capabilities=[
+                HandleDeferredToolCalls(lambda ctx, requests: None),
+                example.RecusalGate(self._deny_force(seen)),
+            ],
+        )
+        assert isinstance(agent.run_sync("go").output, DeferredToolRequests)
+        assert seen == [("wipe_remote", {"table": "t"})]
+
+    def test_without_another_deferred_handler_validation_judges_nothing(self, example):
+        """The validation-time judgment exists only for that case: an ordinary run has one
+        decision per call, made before the tool runs."""
+        seen = []
+        agent = example.scripted_agent(
+            [("run_sql", {"sql": "SELECT 1"}, "c1")],
+            capabilities=[example.RecusalGate(lambda n, a: seen.append(n) or [])],
+        )
+        agent.run_sync("go")
+        assert seen == ["run_sql"]
+
+    def test_a_hooks_capability_counts_as_another_handler_only_with_a_deferred_hook(
+        self, example, adapter
+    ):
+        from types import SimpleNamespace
+
+        from pydantic_ai.capabilities import CombinedCapability, Hooks
+
+        async def answer(ctx, *, requests):
+            return None
+
+        async def before(ctx, *, call, tool_def, args):
+            return args
+
+        gate = example.RecusalGate(lambda n, a: [])
+
+        def elsewhere(*others):
+            root = CombinedCapability([*others, gate])
+            return adapter._answered_elsewhere(SimpleNamespace(root_capability=root))
+
+        assert elsewhere(Hooks(deferred_tool_calls=answer))
+        assert not elsewhere(Hooks(before_tool_execute=before))
+        assert not elsewhere()
+
+    def test_each_run_has_its_own_gate_state(self, example):
+        """What the gate remembers of a run (the calls judged at validation) is that run's:
+        ``for_run`` hands each run a copy, and the agent's own gate stays empty."""
+        import asyncio
+
+        gate = example.RecusalGate(lambda n, a: [])
+        per_run = asyncio.run(gate.for_run(None))
+        assert per_run is not gate and per_run.policy is gate.policy
+        per_run._judged.add("c1")
+        assert gate._judged == set() and asyncio.run(gate.for_run(None))._judged == set()
+
+    def test_the_toolsets_are_also_checked_when_the_run_is_assembled(self, example, adapter):
+        """Where the run context carries no tool manager to read the toolset from at the
+        time of the call, the mark set when the run was assembled still refuses it."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from pydantic_ai import FunctionToolset
+        from pydantic_ai.exceptions import ToolFailed
+        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.set_metadata import SetMetadataToolset
+
+        seen = []
+        gate = example.RecusalGate(lambda n, a: seen.append(n) or [])
+        plain = FunctionToolset([self._wipe([])])
+        assert gate.get_wrapper_toolset(plain) is None
+        marked = gate.get_wrapper_toolset(self._forcing()(plain))
+        assert isinstance(marked, SetMetadataToolset)
+        (reason,) = marked.metadata.values()
+        call = ToolCallPart(tool_name="wipe", args={"table": "t"}, tool_call_id="c1")
+        tool_def = ToolDefinition(name="wipe", metadata=dict(marked.metadata))
+        with pytest.raises(ToolFailed, match="runs their calls itself"):
+            asyncio.run(
+                gate.before_tool_execute(
+                    SimpleNamespace(tool_manager=None),
+                    call=call,
+                    tool_def=tool_def,
+                    args={"table": "t"},
+                )
+            )
+        assert seen == [] and "Forcing" in reason
+
+    def test_a_partial_choice_runs_nothing_and_is_not_judged(self, example, adapter):
+        import asyncio
+        from types import SimpleNamespace
+
+        from pydantic_ai.output import Choices, OutputContext
+
+        seen = []
+        gate = example.RecusalGate(lambda n, a: seen.append(n) or [])
+        context = OutputContext(
+            mode="tool", output_type=Choices(["a", "b"]), object_def=None, has_function=False
+        )
+        partial = SimpleNamespace(partial_output=True)
+        assert (
+            asyncio.run(gate.before_output_process(partial, output_context=context, output="a"))
+            == "a"
+        )
+        assert seen == []
+
+        class Elsewhere:
+            @classmethod
+            def __get_pydantic_core_schema__(cls, source_type, handler):
+                raise NotImplementedError
+
+        assert not adapter._is_choices(Elsewhere)
+
+    def test_a_tool_the_provider_runs_is_refused_with_the_request(self, example):
+        """Web search, code execution and the like run on the provider with arguments the
+        model chose, where no hook sees them; a gated agent offering one is refused before
+        the request is sent. Provider-side tool search only finds tools and is allowed."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from pydantic_ai import CodeExecutionTool
+        from pydantic_ai.capabilities import NativeTool
+        from pydantic_ai.exceptions import UserError
+        from pydantic_ai.native_tools._tool_search import ToolSearchTool
+
+        seen = []
+        gate = example.RecusalGate(lambda n, a: seen.append(n) or [])
+        agent = example.Agent(
+            self._model_calling(example, "nothing", {}),
+            capabilities=[NativeTool(CodeExecutionTool()), gate],
+        )
+        with pytest.raises(UserError, match="tools the provider runs .CodeExecutionTool."):
+            agent.run_sync("go")
+        assert seen == []
+        request = SimpleNamespace(
+            model_request_parameters=SimpleNamespace(native_tools=[ToolSearchTool()])
+        )
+        assert asyncio.run(gate.prepare_model_request(None, request)) is request
+
+    @pytest.mark.parametrize("wrapper", ["NativeOutput", "PromptedOutput"])
+    def test_a_native_union_of_output_functions_is_refused_and_says_what_to_use(
+        self, example, wrapper
+    ):
+        """Pydantic AI does not tell the hook which function of a native or prompted union
+        it will call, so the gate refuses it, and the functions do not run."""
+        import pydantic_ai
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+        from pydantic_ai.messages import ModelResponse, TextPart
+        from pydantic_ai.models.function import FunctionModel
+
+        ran, retries = [], []
+
+        def publish(table: str) -> str:
+            ran.append("publish")
+            return "published"
+
+        def archive(table: str, force: bool = False) -> str:
+            ran.append("archive")
+            return "archived"
+
+        def fn(messages, info):
+            retries.append(str(messages[-1]))
+            body = '{"result": {"kind": "archive", "data": {"table": "t"}}}'
+            return ModelResponse(parts=[TextPart(content=body)])
+
+        agent = example.Agent(
+            FunctionModel(fn),
+            output_type=getattr(pydantic_ai, wrapper)([publish, archive]),
+            capabilities=[example.RecusalGate(lambda n, a: [])],
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            agent.run_sync("go")
+        assert ran == [] and "use tool output" in retries[-1]
+
+    def test_an_output_function_taking_a_model_is_refused_like_a_tool_taking_one(self, example):
+        """The data-only rule holds for output functions too: a parameter that is a Pydantic
+        model is refused before the policy runs, and the function does not run."""
+        from pydantic import BaseModel
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+        ran, seen = [], []
+
+        class Order(BaseModel):
+            sku: str
+
+        def place(order: Order) -> str:
+            ran.append(order)
+            return "placed"
+
+        agent = example.Agent(
+            self._model_calling(example, "final_result", {"sku": "a"}),
+            output_type=place,
+            capabilities=[example.RecusalGate(lambda n, a: seen.append(n) or [])],
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            agent.run_sync("go")
+        assert ran == [] and seen == []
+
+    def test_a_single_argument_output_function_is_judged_under_output(self, example):
+        seen = []
+
+        def shout(text: str) -> str:
+            return text.upper()
+
+        agent = example.Agent(
+            self._model_calling(example, "final_result", {"text": "hi"}),
+            output_type=shout,
+            capabilities=[example.RecusalGate(lambda n, a: seen.append((n, dict(a))) or [])],
+        )
+        assert agent.run_sync("go").output == "HI"
+        assert seen == [("shout", {"output": "hi"})]
+
     # --- the script ------------------------------------------------------------------------
 
     def test_example_runs_end_to_end(self, example):
