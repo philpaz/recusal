@@ -74,15 +74,22 @@ the call (fail closed).
 
 `RecusalGate` declares Pydantic AI's `innermost` position, so its hooks run after every
 ordinary capability's. Another `innermost` capability listed after it still runs after it,
-so list the gate last. A toolset runs after every capability hook: one that wraps other
-tools and runs their calls itself (a `WrapperToolset` subclass overriding `call_tool`, or
-a toolset with a `process_tool_call` function, such as an MCP server given one) could
-change the arguments after the gate judged them, so a run with one in its toolsets has
-every call refused. The gate reads the run's toolset at the time of each call, so this
-holds for a wrapper another capability adds and for one a dynamic toolset
-(`@agent.toolset`) returns. The wrappers Pydantic AI ships (prefixing, renaming,
-filtering, approval, tool search, durable execution) do not change arguments and are not
-refused.
+so list the gate last. A toolset runs after every capability hook, so one that runs other
+tools' calls itself could change the arguments after the gate judged them. A run with
+one in its toolsets has every call refused:
+
+- a toolset of yours that holds other toolsets and has its own `call_tool` (a
+  `WrapperToolset` subclass overriding it, or a container written from scratch, which
+  would also hide what it holds);
+- a subclass of a Pydantic AI toolset that replaces its `call_tool`;
+- a toolset with a `process_tool_call` function, such as an MCP server given one.
+
+The gate reads the run's toolset at the time of each call, so this holds for a wrapper
+another capability adds and for one a dynamic toolset (`@agent.toolset`) returns. Not
+refused: the toolsets Pydantic AI ships (prefixing, renaming, filtering, approval, tool
+search, durable execution), a subclass of one that leaves `call_tool` alone, and a
+toolset of your own that holds no other toolset: that one is the tool itself, and its
+body is yours, like a tool function's.
 
 The same gate as a plain hook is
 `Hooks(before_tool_execute=recusal_before_tool_execute(policy))`. It judges tool calls
@@ -103,28 +110,46 @@ an error. Plain structured output, with no function, runs nothing and is not jud
 - A union of output functions under `NativeOutput` or `PromptedOutput` is refused:
   Pydantic AI does not tell the hook which of them it will call. Use tool output (the
   default), where each function is its own output tool and is judged by name.
-- A `Choices` output is judged as `choice` with `{"choice": key}` when the pick is final.
-  Pydantic AI calls the picked value when it is callable, and the hook is handed the key
-  and not the values, so every `Choices` pick is judged, with or without an action.
+- A `Choices` output is judged as `choice` with `{"choice": key, "set": name}` when the
+  pick is final, `name` being the set's (`Choices(..., name=...)`, `"Choices"` by
+  default). Pydantic AI calls the picked value when it is callable, and the hook is
+  handed the key and not the values, so a pick is judged with or without an action.
+  Inside a `NativeOutput` or `PromptedOutput` union Pydantic AI does not call the action,
+  and the pick is not judged.
 - With `run_stream`, Pydantic AI runs an output function on partial output as it arrives;
   each of those calls is judged, so one answer can have several decisions.
 
 **Calls handed to the application** (an `ExternalToolset`, a tool that raises
-`CallDeferred`) are judged before they leave the run: a refused one is answered with the
+`CallDeferred`) are judged before they leave the run, as the model sent them, which is
+what the application receives: no defaults are filled in and no types converted, so
+write the policy for such a tool against the JSON. A refused call is answered with the
 refusal, which the model reads; an allowed one is handed on with exactly the arguments
-judged. A call waiting for approval is judged when it runs.
+judged. A call waiting for approval is judged when it runs, with the arguments it runs
+with, an approver's overrides included.
 
-Pydantic AI offers such calls to each capability in turn, and the gate comes last. So
-where another capability answers them (`HandleDeferredToolCalls`, a `Hooks` with a
-deferred hook, or one of your own), the gate judges every call as it is validated,
-before any capability is offered it, as the model sent it. A call that then runs is
-judged again before it runs, so in such a run it has two decisions.
+To answer deferred calls inside the run, give the handler to the gate:
+
+```python
+agent = Agent(model, toolsets=[external], capabilities=[RecusalGate(policy, deferred=handler)])
+```
+
+`handler(ctx, requests)` is the function `HandleDeferredToolCalls` takes. The gate judges
+the calls first and calls it with the ones it allowed. Pydantic AI offers deferred calls
+to each capability in turn and the gate comes last, so a handler in any other capability
+(`HandleDeferredToolCalls`, a `Hooks` with a deferred hook, or one of your own) would be
+handed calls no policy has judged: a run with one is refused with a `UserError` that
+says this.
 
 **Tools the provider runs** (web search, code execution, web fetch, a provider-side MCP
 server and the like) run with arguments the model chose where no hook of your
 application sees them. A gated agent that offers one is refused with a `UserError`
-before the request is sent. Provider-side tool search is allowed: it finds tools, and
-the calls to them are judged like any other.
+before the request is sent, as is one whose model settings switch such a tool on
+(`openai_native_tools`, or `tools`, `plugins` or `web_search_options` in `extra_body`).
+The gate asks the model what the request will carry, so a tool the model drops, or
+replaces with its local version (`WebSearch`, `WebFetch` and `MCP` on a model without
+the provider side), is not refused; where the provider side would be used, turn it off
+with `native=False`. Provider-side tool search is allowed: it finds tools, and the calls
+to them are judged like any other.
 
 **The name the policy is given** is the one the model calls the tool by: under a
 `PrefixedToolset` or `RenamedToolset` that is the prefixed or new name (`db_wipe` for a
@@ -142,9 +167,8 @@ agent = Agent(model, tools=[run_sql], capabilities=[RecusalAuditedGate(policy, l
 
 Each decision the gate makes, allowed or refused, is one hash-chained entry labeled with
 the hook that made it: `pydantic_ai.before_tool_execute` for a tool call,
-`pydantic_ai.before_output_process` for an output function or a `Choices` pick,
-`pydantic_ai.handle_deferred_tool_calls` for a call handed to the application and
-`pydantic_ai.after_tool_validate` for a call judged as it is validated. Each
+`pydantic_ai.before_output_process` for an output function or a `Choices` pick and
+`pydantic_ai.handle_deferred_tool_calls` for a call handed to the application. Each
 carries Pydantic AI's tool call id and a SHA-256 fingerprint of the arguments (never the
 arguments). If the log cannot be written the call is refused. Check the log with
 `recusal audit verify decisions.jsonl`.
@@ -157,6 +181,13 @@ path.
 - **Capabilities an override puts in its place.** `agent.override(spec=...)` with a spec
   that names capabilities replaces the agent's own, the gate with them; `is_gated(agent)`
   reads the capabilities in effect, so it is `False` there.
+- **A gate that is not loaded.** Pydantic AI runs no hook of a capability loaded on
+  demand until it is loaded. `RecusalGate(..., defer_loading=True)` is refused when it is
+  built, and a gate inside a group loaded on demand does not count for `is_gated`. List
+  the gate directly.
+- **`is_gated` reads the capabilities as listed.** For a gate a capability function
+  returns (`lambda ctx: RecusalGate(...)`), or one inside a `WrapperCapability`, it says
+  `False` although the gate runs.
 - **A wrapper toolset under a run context with no tool manager.** The gate reads the
   run's toolset from `RunContext.tool_manager` at the time of each call. Where Pydantic AI
   provides none (its Temporal activity context), the gate relies on the check it makes

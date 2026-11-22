@@ -12,14 +12,15 @@ separately. Every toolset the agent runs, ``tools=``, ``toolsets=`` or a capabil
 tools, executes through the same ``ToolManager``, so the hook sees each call by name and
 validated arguments. Output tools skip that hook; ``RecusalGate`` judges an output function
 (``output_type=fn``) in ``before_output_process`` before it runs, and a call handed to the
-application to run (an ``ExternalToolset``) in ``handle_deferred_tool_calls``, or as it
-is validated (``after_tool_validate``) where another capability answers such calls ahead
-of the gate. A ``Choices`` pick, whose value Pydantic AI calls when it is callable, is
-judged as ``choice``. A toolset that wraps other tools and runs their calls itself runs
-after every hook, so a run with one (other than those Pydantic AI ships) has every call
-refused: the run's toolset is read at the time of each call, and when the run is
-assembled (``get_wrapper_toolset``). A request offering the model a tool the provider
-runs is refused (``prepare_model_request``).
+application to run (an ``ExternalToolset``) in ``handle_deferred_tool_calls``, where it
+then calls the application's own handler (``deferred=``) with the calls it allowed.
+Another capability that answers deferred calls is offered them before the gate, so a run
+with one is refused. A ``Choices`` pick, whose value Pydantic AI calls when it is
+callable, is judged as ``choice``. A toolset runs after every hook, so a run holding an
+application toolset that runs other tools' calls itself has every call refused
+(``_rewriting_wrapper`` says which): the run's toolset is read at the time of each call,
+and when the run is assembled (``get_wrapper_toolset``). A request offering the model a
+tool the provider runs is refused (``prepare_model_request``).
 The policy is given the name the model calls the tool by: prefixed or renamed, if a
 ``PrefixedToolset`` or ``RenamedToolset`` says so.
 
@@ -40,8 +41,10 @@ What the hook cannot see:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Optional
+import inspect
+from collections.abc import Awaitable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai.capabilities import (
@@ -49,14 +52,15 @@ from pydantic_ai.capabilities import (
     CapabilityOrdering,
     CombinedCapability,
     Hooks,
+    WrapperCapability,
 )
+from pydantic_ai.capabilities.combined import is_deferred_group
 from pydantic_ai.exceptions import ModelRetry, ToolFailed, UserError
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.native_tools._tool_search import ToolSearchTool
 from pydantic_ai.output import OutputContext
 from pydantic_ai.tools import ToolDefinition
-from pydantic_ai.toolsets import AbstractToolset, CombinedToolset, WrapperToolset
-from pydantic_ai.toolsets._dynamic import DynamicToolset
+from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.set_metadata import SetMetadataToolset
 
 from recusal import Finding, decide
@@ -69,6 +73,13 @@ if TYPE_CHECKING:
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict[str, Any]], list[Finding]]
+
+#: A deferred-call handler, as ``HandleDeferredToolCalls`` takes one: ``handler(ctx,
+#: requests)`` returns the results it has, or None. Sync or async.
+DeferredHandler = Callable[
+    [Any, DeferredToolRequests],
+    Union[Optional[DeferredToolResults], Awaitable[Optional[DeferredToolResults]]],
+]
 
 
 def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict[str, Any]) -> str:
@@ -175,19 +186,30 @@ class RecusalGate(AbstractCapability[Any]):
 
     ``policy`` is required. A gate has no default policy: what to refuse is the adopter's
     decision, never the adapter's.
+
+    ``deferred`` is the application's handler for deferred calls (approvals, and calls it
+    executes itself), the function ``HandleDeferredToolCalls`` would take. Pydantic AI
+    offers deferred calls to each capability in turn and the innermost gate comes last, so
+    a handler in any other capability would be handed calls no policy has judged; a run
+    with one is refused. Given here, the handler is called by the gate, after the gate has
+    judged the calls, with the ones it allowed.
+
+    A gate cannot be loaded on demand (``defer_loading``): Pydantic AI runs no hook of a
+    capability that is not loaded, so the gate would not judge anything.
     """
 
     policy: Policy
+    deferred: Optional[DeferredHandler] = field(default=None, kw_only=True)
 
-    #: The calls this run's gate already judged when they were validated, so the deferred
-    #: hook does not judge (and record) them a second time. Per run: ``for_run`` copies.
-    _judged: set[str] = field(default_factory=set, init=False, repr=False, compare=False)
+    def __post_init__(self) -> None:
+        if self.defer_loading:
+            raise UserError(
+                "A Recusal gate cannot be loaded on demand (`defer_loading=True`): Pydantic AI "
+                "runs no hook of a capability that is not loaded, so it would judge nothing."
+            )
 
     def get_ordering(self) -> CapabilityOrdering:
         return CapabilityOrdering(position="innermost")
-
-    async def for_run(self, ctx: RunContext[Any]) -> RecusalGate:
-        return replace(self)
 
     # --- what the audited gate records; the plain gate records nothing -------------------
 
@@ -225,60 +247,37 @@ class RecusalGate(AbstractCapability[Any]):
             raise ToolFailed(reason)
         return args
 
-    async def after_tool_validate(
-        self,
-        ctx: RunContext[Any],
-        *,
-        call: ToolCallPart,
-        tool_def: ToolDefinition,
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Where another capability answers calls handed to the application, judge every
-        call as it is validated. Pydantic AI offers those calls to each capability in turn and
-        the innermost gate comes last, so a call another capability answers would never reach
-        ``handle_deferred_tool_calls`` here. Judged now, before any is offered, it is judged
-        as the model sent it, which is what a handler receives; a refusal answers it as a
-        failed call. A call that then runs is judged again before it runs, so it has two
-        entries. Without another such capability, this does nothing."""
-        if not _answered_elsewhere(ctx):
-            return args
-        try:
-            proposed: Any = call.args_as_dict()
-        except Exception:  # noqa: BLE001, arguments that are not an object are refused
-            proposed = call.args
-        reason = _refusal(
-            call.tool_name,
-            proposed,
-            self.policy,
-            proposal=self._proposal(call),
-            **self._record(call.tool_call_id, SURFACE_VALIDATE),
-        )
-        self._judged.add(call.tool_call_id)
-        if reason is not None:
-            raise ToolFailed(reason)
-        return args
-
     async def prepare_model_request(
         self,
         ctx: RunContext[Any],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
-        """Refuse a request that offers the model a tool the provider runs (web search, code
-        execution, web fetch, a provider-side MCP server, ...): the provider runs it with
-        arguments the model chose, where no hook of the application sees them. Provider-side
-        tool search is allowed: it finds tools, and the calls to them are judged as any
-        other. Read before each attempt, once every capability has shaped the request."""
-        unjudged = [
-            tool
-            for tool in request_context.model_request_parameters.native_tools
-            if not isinstance(tool, ToolSearchTool)
-        ]
-        if unjudged:
-            names = ", ".join(sorted({type(tool).__name__ for tool in unjudged}))
+        """Refuse a request the gate could not hold to its policy, before it is sent. Read
+        before each attempt, once every capability has shaped the request.
+
+        - A tool the provider runs (web search, code execution, web fetch, a provider-side
+          MCP server, ...): it runs with arguments the model chose where no hook of the
+          application sees them. The model itself is asked which native tools the request
+          will carry, so one it drops, or replaces with its local version, is not counted.
+          Provider-side tool search is allowed: it finds tools, and the calls to them are
+          judged as any other.
+        - Another capability that answers deferred calls: it is offered them before the
+          gate (see ``deferred``)."""
+        elsewhere = _deferred_handlers_elsewhere(getattr(ctx, "root_capability", None))
+        if elsewhere:
+            raise UserError(
+                f"Recusal refused the model request: {', '.join(elsewhere)} answers deferred "
+                "tool calls, and Pydantic AI offers them to it before the gate, so it would "
+                "be handed calls no policy has judged. Give its handler to the gate instead: "
+                "`RecusalGate(policy, deferred=handler)`."
+            )
+        provider_run = _provider_run_tools(request_context)
+        if provider_run:
             raise UserError(
                 f"Recusal refused the model request: it offers tools the provider runs "
-                f"({names}), and their calls cannot be judged before they run. Remove them "
-                "from the gated agent."
+                f"({', '.join(provider_run)}), and their calls cannot be judged before they "
+                "run. Remove them from the gated agent; where a tool has a local version, "
+                "turn its provider side off (`native=False`)."
             )
         return request_context
 
@@ -288,7 +287,8 @@ class RecusalGate(AbstractCapability[Any]):
         the arguments after the gate judged them. When one is in the tree, every tool of the
         run is marked, and ``before_tool_execute`` refuses each call, on the record. The
         wrappers Pydantic AI ships (prefixing, renaming, filtering, approval, tool search,
-        durable execution) route or re-validate a call and do not change its arguments."""
+        durable execution) route or re-validate a call and do not change its arguments.
+        ``before_tool_execute`` also reads the run's toolset at the time of each call."""
         reason = _rewriting_wrapper(toolset)
         if reason is None:
             return None
@@ -338,14 +338,16 @@ class RecusalGate(AbstractCapability[Any]):
     ) -> Any:
         """Judge a ``Choices`` pick, whose value Pydantic AI calls when it is callable (an
         action). The hook is handed the picked key, not the values, so every final pick is
-        judged, as ``choice`` with ``{"choice": key}``; a partial pick runs nothing."""
+        judged, as ``choice`` with ``{"choice": key, "set": name}``, the name being the
+        set's (``Choices(..., name=...)``, ``"Choices"`` by default). A partial pick runs
+        nothing."""
         if getattr(ctx, "partial_output", False):
             return output
         call = output_context.tool_call
         record = self._record(call.tool_call_id if call is not None else None, SURFACE_OUTPUT)
-        reason = _refusal(
-            "choice", {"choice": output}, self.policy, proposal=self._proposal(call), **record
-        )
+        name = getattr(output_context.output_type, "__name__", "Choices")
+        picked = {"choice": output, "set": name}
+        reason = _refusal("choice", picked, self.policy, proposal=self._proposal(call), **record)
         if reason is not None:
             raise ModelRetry(reason)
         return output
@@ -359,18 +361,17 @@ class RecusalGate(AbstractCapability[Any]):
         requests: DeferredToolRequests,
     ) -> Optional[DeferredToolResults]:
         """Judge the calls the run hands to the application to execute (an
-        ``ExternalToolset``, a tool that raises ``CallDeferred``) before they leave it: a
-        refused call is answered with the refusal, which the model reads; an allowed one is
-        handed on with exactly the arguments judged. Calls waiting for approval are judged
-        when they run, by ``before_tool_execute``."""
-        results = DeferredToolResults()
+        ``ExternalToolset``, a tool that raises ``CallDeferred``) before they leave it, as
+        the model sent them, which is what the application receives: a refused call is
+        answered with the refusal, which the model reads. Then ``deferred``, if given, is
+        called with what is left; a result it returns for a refused call is dropped. Calls
+        waiting for approval are judged when they run, by ``before_tool_execute``."""
+        refused: dict[str, ToolFailed] = {}
         for call in requests.calls:
-            if call.tool_call_id in self._judged:
-                continue  # judged as it was validated (``after_tool_validate``)
             try:
-                args: Any = call.args_as_dict()
+                args: Any = call.args_as_dict(raise_if_invalid=True)
             except Exception:  # noqa: BLE001, arguments that are not an object are refused
-                args = call.args
+                args = None
             reason = _refusal(
                 call.tool_name,
                 args,
@@ -379,15 +380,28 @@ class RecusalGate(AbstractCapability[Any]):
                 **self._record(call.tool_call_id, SURFACE_DEFERRED),
             )
             if reason is not None:
-                results.calls[call.tool_call_id] = ToolFailed(reason)
-        return results if results.calls else None
+                refused[call.tool_call_id] = ToolFailed(reason)
+        results = DeferredToolResults()
+        if self.deferred is not None:
+            left = (
+                requests.remaining(DeferredToolResults(calls=dict(refused)))
+                if refused
+                else requests
+            )
+            if left is not None:
+                answer = self.deferred(ctx, left)
+                if inspect.isawaitable(answer):
+                    answer = await answer
+                if answer is not None:
+                    results.update(answer)
+        results.calls.update(refused)
+        return results if results.calls or results.approvals else None
 
 
 #: The audit surfaces, one per hook that adjudicates.
 SURFACE_TOOL = "pydantic_ai.before_tool_execute"
 SURFACE_OUTPUT = "pydantic_ai.before_output_process"
 SURFACE_DEFERRED = "pydantic_ai.handle_deferred_tool_calls"
-SURFACE_VALIDATE = "pydantic_ai.after_tool_validate"
 
 #: The tool metadata key ``get_wrapper_toolset`` sets on every tool of a run it cannot see
 #: all of; its value is the reason.
@@ -407,64 +421,143 @@ def _is_choices(output_type: Any) -> bool:
     )
 
 
-def _capability_leaves(capability: Any) -> list[Any]:
-    leaves: list[Any] = []
-    capability.apply(leaves.append)
-    return leaves
+def _deferred_handlers_elsewhere(capability: Any) -> list[str]:
+    """The capabilities in this tree, other than a gate, that answer deferred calls.
+
+    A ``WrapperCapability`` that only passes the question on (a capability function is
+    one) is read through to what it wraps. A ``Hooks`` counts when a deferred hook is
+    registered on it."""
+    if capability is None or isinstance(capability, RecusalGate):
+        return []
+    if isinstance(capability, CombinedCapability):
+        return [
+            name
+            for child in capability.capabilities
+            for name in _deferred_handlers_elsewhere(child)
+        ]
+    own = type(capability).handle_deferred_tool_calls
+    if isinstance(capability, WrapperCapability):
+        if own is WrapperCapability.handle_deferred_tool_calls:
+            return _deferred_handlers_elsewhere(capability.wrapped)
+    elif isinstance(capability, Hooks):
+        try:
+            registered = bool(capability._get("handle_deferred_tool_calls"))
+        except Exception:  # noqa: BLE001, a Hooks this cannot read may answer them
+            registered = True
+        return ["Hooks"] if registered else []
+    if own is AbstractCapability.handle_deferred_tool_calls:
+        return []
+    return [type(capability).__name__]
 
 
-def _answered_elsewhere(ctx: Any) -> bool:
-    """True if a capability of this run other than a gate answers deferred calls."""
-    root = getattr(ctx, "root_capability", None)
-    if root is None:
-        return False
-    for leaf in _capability_leaves(root):
-        if isinstance(leaf, RecusalGate):
-            continue
-        if isinstance(leaf, Hooks):
-            try:
-                if leaf._get("handle_deferred_tool_calls"):
-                    return True
-            except Exception:  # noqa: BLE001, a Hooks this cannot read may answer them
-                return True
-            continue
-        own = type(leaf).handle_deferred_tool_calls
-        if own is not AbstractCapability.handle_deferred_tool_calls:
-            return True
-    return False
+#: Settings that switch a provider-run tool on without it being among the native tools.
+_PROVIDER_TOOL_SETTINGS = ("openai_native_tools",)
+_PROVIDER_TOOL_BODY_KEYS = ("tools", "plugins", "web_search_options")
 
 
-def _rewriting_wrapper(toolset: Any, depth: int = 0) -> Optional[str]:
-    """Why a toolset in this tree can change a call's arguments after the gate, or None."""
+def _provider_run_tools(request_context: Any) -> list[str]:
+    """What this request would have the provider run, by name; empty if nothing."""
+    settings = request_context.model_settings
+    params = request_context.model_request_parameters
+    try:
+        # The model's own resolution: it drops a native tool it does not support, or takes
+        # the tool's local version instead, and merges in its own settings.
+        settings, params = request_context.model.prepare_request(settings, params)
+    except Exception:  # noqa: BLE001, unresolved: judge the request as it was handed over
+        pass
+    found = {
+        type(tool).__name__ for tool in params.native_tools if not isinstance(tool, ToolSearchTool)
+    }
+    if isinstance(settings, Mapping):
+        found.update(f"`{key}`" for key in _PROVIDER_TOOL_SETTINGS if settings.get(key))
+        body = settings.get("extra_body")
+        if isinstance(body, Mapping):
+            found.update(f"`extra_body.{key}`" for key in _PROVIDER_TOOL_BODY_KEYS if body.get(key))
+    return sorted(found)
+
+
+def _held_toolsets(toolset: Any) -> list[Any]:
+    """The toolsets this one holds, in its attributes or one container deep."""
+    try:
+        values = list(vars(toolset).values())
+    except TypeError:
+        return []
+    held: list[Any] = []
+    for value in values:
+        if isinstance(value, AbstractToolset):
+            held.append(value)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            held.extend(item for item in value if isinstance(item, AbstractToolset))
+        elif isinstance(value, dict):
+            held.extend(item for item in value.values() if isinstance(item, AbstractToolset))
+    return held
+
+
+def _stock(obj: Any) -> bool:
+    module = getattr(obj, "__module__", None) or ""
+    return module == "pydantic_ai" or module.startswith("pydantic_ai.")
+
+
+def _rewriting_wrapper(
+    toolset: Any, depth: int = 0, seen: Optional[set[int]] = None
+) -> Optional[str]:
+    """Why a toolset in this tree can change a call's arguments after the gate, or None.
+
+    A toolset whose ``call_tool`` is Pydantic AI's own is trusted to pass a call on
+    unchanged, and the toolsets it holds are checked in turn. One whose ``call_tool`` is
+    the application's is refused when it holds other toolsets (it runs their calls, and a
+    pass-through container would also hide what it holds), and when it replaces the
+    ``call_tool`` of a Pydantic AI toolset it extends. An application toolset that holds
+    none and extends none is the tool itself: its body is the application's, like a tool
+    function's."""
+    seen = set() if seen is None else seen
+    if id(toolset) in seen:
+        return None
+    seen.add(id(toolset))
     if depth > 32:
         return "the toolsets are nested too deep to check"
+    cls = type(toolset)
     if getattr(toolset, "process_tool_call", None) is not None:
         return (
-            f"toolset {type(toolset).__name__} has a `process_tool_call` function, which runs "
+            f"toolset {cls.__name__} has a `process_tool_call` function, which runs "
             "each call itself and could change the arguments after the gate judged them"
         )
-    if isinstance(toolset, DynamicToolset):
-        inner = toolset._toolset
-        return _rewriting_wrapper(inner, depth + 1) if inner is not None else None
-    if isinstance(toolset, WrapperToolset):
-        cls = type(toolset)
-        runs_calls = cls.call_tool is not WrapperToolset.call_tool or "call_tool" in vars(toolset)
-        if runs_calls and not cls.__module__.startswith("pydantic_ai."):
+    held = _held_toolsets(toolset)
+    try:
+        own_instance = "call_tool" in vars(toolset)
+    except TypeError:
+        own_instance = False
+    if own_instance or not _stock(getattr(cls, "call_tool", None)):
+        if held:
             return (
                 f"toolset {cls.__name__} wraps other tools and runs their calls itself "
                 "(`call_tool`), so it could change the arguments after the gate judged them"
             )
-        return _rewriting_wrapper(toolset.wrapped, depth + 1)
-    if isinstance(toolset, CombinedToolset):
-        for inner in toolset.toolsets:
-            reason = _rewriting_wrapper(inner, depth + 1)
-            if reason is not None:
-                return reason
+        extends_stock = any(
+            _stock(base)
+            and "call_tool" in vars(base)
+            and not getattr(vars(base)["call_tool"], "__isabstractmethod__", False)
+            for base in cls.__mro__
+        )
+        if extends_stock:
+            return (
+                f"toolset {cls.__name__} replaces the `call_tool` of the Pydantic AI toolset "
+                "it extends, so it could change the arguments after the gate judged them"
+            )
+        return None
+    for inner in held:
+        reason = _rewriting_wrapper(inner, depth + 1, seen)
+        if reason is not None:
+            return reason
     return None
 
 
 def _leaves(capability: AbstractCapability[Any]) -> list[AbstractCapability[Any]]:
+    """The capabilities listed in this tree that are in effect from the start of a run:
+    the members of a deferred group are loaded on demand, and are left out."""
     if isinstance(capability, CombinedCapability):
+        if is_deferred_group(capability):
+            return []
         return [leaf for child in capability.capabilities for leaf in _leaves(child)]
     return [capability]
 
@@ -474,8 +567,12 @@ def is_gated(agent: Agent[Any, Any]) -> bool:
 
     Inside ``agent.override(spec=...)`` whose spec names capabilities, those replace the
     agent's own, and a gate among the originals no longer runs; this reads the ones in
-    effect. Reads only this agent: an agent it calls from inside a tool function runs
-    under its own capabilities and must be checked, and gated, itself.
+    effect. A gate inside a group that is loaded on demand does not count: it judges
+    nothing until the group is loaded. Nor does one a capability function returns or a
+    ``WrapperCapability`` wraps: this reads the capabilities as listed, so for those it
+    says False although the gate runs. Reads only this agent: an agent it calls from
+    inside a tool function runs under its own capabilities and must be checked, and gated,
+    itself.
     """
     override = getattr(agent, "_override_root_capability", None)
     current = override.get() if override is not None else None

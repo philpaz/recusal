@@ -578,15 +578,11 @@ class TestPydanticAiAudit:
             ("wipe_remote", "pydantic_ai.handle_deferred_tool_calls"),
         ]
 
-    def test_a_choice_and_a_call_judged_at_validation_are_recorded(self, example, log):
-        """A ``Choices`` pick is one entry. Where another capability answers deferred calls,
-        an external call is judged as it is validated: one entry on that surface, and none
-        from the gate's deferred hook, which it reaches already judged."""
-        from pydantic_ai import Agent, DeferredToolRequests
-        from pydantic_ai.capabilities import HandleDeferredToolCalls
+    def test_a_choice_is_recorded_and_output_entries_carry_the_call_id(self, example, log):
+        """A ``Choices`` pick is one entry, and an entry made in the output hook carries the
+        id of the output tool call it decided."""
+        from pydantic_ai import Agent
         from pydantic_ai.output import Choices
-        from pydantic_ai.tools import ToolDefinition
-        from pydantic_ai.toolsets.external import ExternalToolset
 
         allow = lambda name, args: []  # noqa: E731
         Agent(
@@ -594,24 +590,10 @@ class TestPydanticAiAudit:
             output_type=Choices(["a", "b"]),
             capabilities=[example.RecusalAuditedGate(allow, log=log)],
         ).run_sync("go")
-        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
-        external = ExternalToolset(
-            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
-        )
-        Agent(
-            self._model_calling("wipe_remote", {"table": "t"}),
-            toolsets=[external],
-            output_type=[str, DeferredToolRequests],
-            capabilities=[
-                HandleDeferredToolCalls(lambda ctx, requests: None),
-                example.RecusalAuditedGate(allow, log=log),
-            ],
-        ).run_sync("go")
-        actions = [(e["action"]["tool"], e["action"]["surface"]) for e in log.entries]
-        assert actions == [
-            ("choice", "pydantic_ai.before_output_process"),
-            ("wipe_remote", "pydantic_ai.after_tool_validate"),
-        ]
+        (entry,) = log.entries
+        assert entry["action"]["tool"] == "choice"
+        assert entry["action"]["surface"] == "pydantic_ai.before_output_process"
+        assert entry["action"]["tool_use_id"] == "c1"
 
     # --- the script itself --------------------------------------------------------------
 

@@ -16,22 +16,32 @@ All notable changes to this project are documented here. The format follows
     `before_output_process`, under the function's name, before it runs; a refusal asks
     the model again and the function does not run.
   - A `Choices` output whose value is callable ran that action when the model picked
-    it, with no policy asked. Every final `Choices` pick is now judged, as `choice`.
+    it, with no policy asked. A final `Choices` pick is now judged, as `choice` with the
+    key and the set's name.
   - A `WrapperToolset` subclass whose `call_tool` changed the arguments ran after the gate
     judged them: judged `force=False`, ran `force=True`. A toolset runs after every
     capability hook, so a run with such a wrapper in its toolsets now has every call
     refused, on the record; the wrappers Pydantic AI ships route a call and are not. The
     gate reads the run's toolset at the time of each call, so a wrapper another
-    capability adds, or one a dynamic toolset returns, is refused too, as is a toolset
-    with a `process_tool_call` function.
+    capability adds, or one a dynamic toolset returns, is refused too. The check is not a
+    list of wrapper classes: an application toolset is refused when it holds other
+    toolsets and has its own `call_tool`, when it replaces the `call_tool` of the Pydantic
+    AI toolset it extends, or when it has a `process_tool_call` function.
   - A call handed to the application to run (an `ExternalToolset`, `CallDeferred`) left
     the run with no policy asked. It is now judged in `handle_deferred_tool_calls`: a
-    refused one is answered with the refusal, an allowed one handed on as judged. Where
-    another capability answers such calls (`HandleDeferredToolCalls`), it is offered them
-    before the gate, so there the gate judges every call as it is validated.
+    refused one is answered with the refusal, an allowed one handed on as judged.
+    Pydantic AI offers deferred calls to every other capability before the gate, so
+    `HandleDeferredToolCalls` executed an external call unjudged: a run with another
+    capability that answers deferred calls is now refused, and the handler goes to the
+    gate, `RecusalGate(policy, deferred=handler)`, which judges first and hands it the
+    calls it allowed.
   - A gated agent that offers the model a tool the provider runs (web search, code
     execution and the like) is now refused before the request is sent: no hook sees
-    those calls. Provider-side tool search is allowed.
+    those calls. Provider-side tool search is allowed, and so is a tool the model drops
+    or replaces with its local version.
+  - A gate marked `defer_loading=True`, or placed in a group loaded on demand, judged
+    nothing while `is_gated` said `True`. The first is now refused when the gate is
+    built, and the second does not count for `is_gated`.
   - Refused rather than run unjudged, and documented: an output function taking a
     Pydantic model, and a union of output functions under `NativeOutput` or
     `PromptedOutput` (use tool output).
@@ -39,8 +49,7 @@ All notable changes to this project are documented here. The format follows
     `is_gated` still said `True` while the tool ran unjudged; it now reads the
     capabilities in effect.
   - The audited gate records each of these on its own surface
-    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`,
-    `pydantic_ai.after_tool_validate`), by
+    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`), by
     the plain gate's own decision. The README now says which tool name the policy is
     given (the prefixed or renamed one) and corrects two sentences on ordering: another
     `innermost` capability listed after the gate runs after it, and the plain `Hooks`

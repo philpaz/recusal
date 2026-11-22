@@ -13,7 +13,8 @@ fingerprint of the arguments, never the arguments themselves.
 What each entry is bound to:
 
 - a call that is judged (allowed or refused by the policy): the validated arguments the
-  tool is called with;
+  tool is called with; for a call handed to the application to run, the arguments as the
+  model sent them, which is what the application receives;
 - a call refused before judgment (arguments the gate cannot detach): the call as the model
   proposed it, since the validated arguments are not data a fingerprint can cover.
 
@@ -112,9 +113,9 @@ class RecusalAuditedGate(RecusalGate):
     A ``RecusalGate`` (so ``is_gated`` sees it, and it keeps the ``innermost`` position)
     whose every decision is one entry on ``log``: a tool call (surface
     ``pydantic_ai.before_tool_execute``), an output function
-    or a ``Choices`` pick (``pydantic_ai.before_output_process``), a call handed to the
-    application to run (``pydantic_ai.handle_deferred_tool_calls``) and a call judged as it
-    is validated (``pydantic_ai.after_tool_validate``). The plain gate's hooks make each decision;
+    or a ``Choices`` pick (``pydantic_ai.before_output_process``) and a call handed to
+    the application to run (``pydantic_ai.handle_deferred_tool_calls``). The plain gate's
+    hooks make each decision;
     this class only says how to record it, so there is one decision path.
     """
 
