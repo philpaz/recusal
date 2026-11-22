@@ -626,6 +626,58 @@ def _takes_keywords(level: Any) -> bool:
     return any(parameter.kind is parameter.VAR_KEYWORD for parameter in level.values())
 
 
+def _forwards(level: Any) -> bool:
+    """True for a callable that takes ``*args`` or ``**kwargs``: it passes on what it is not
+    told about, and keeps for itself what it names."""
+    return any(
+        parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+        for parameter in level.values()
+    )
+
+
+def _names(level: Any, name: str) -> bool:
+    """True if this callable has a parameter of that name that a keyword can be bound to
+    or taken by: its variadic parameters (``*args``, ``**options``) name nothing."""
+    parameter = level.get(name)
+    return parameter is not None and parameter.kind not in (
+        parameter.VAR_POSITIONAL,
+        parameter.VAR_KEYWORD,
+    )
+
+
+def _without_mirrors(levels: list[Any]) -> list[Any]:
+    """The levels without a callable that shows exactly the parameters of the one it wraps
+    (name, kind and default alike). Proxy decorators do this (``wrapt`` and what is built on
+    it): they bind nothing themselves and pass every argument through, so the two are one
+    level. Two real wrappers with the same parameters and defaults fill in the same value,
+    so reading them as one changes nothing that is judged."""
+
+    def shape(level: Any) -> list[tuple[Any, Any, Any]]:
+        return [(name, p.kind, p.default) for name, p in level.items()]
+
+    kept: list[Any] = []
+    for level in levels:
+        if kept and shape(kept[-1]) == shape(level):
+            continue
+        kept.append(level)
+    return kept
+
+
+def _wraps_another(function: Any) -> bool:
+    """True if this callable says it wraps another (``__wrapped__``), at any depth."""
+    seen = 0
+    while function is not None and seen < 64:
+        try:
+            inner = getattr(function, "__wrapped__", None)
+        except Exception:  # noqa: BLE001, an attribute that raises is not a readable wrapper
+            return True
+        if inner is not None:
+            return True
+        function = getattr(function, "__func__", None)
+        seen += 1
+    return False
+
+
 def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[str]]:
     """The arguments the function will run with, or why they cannot be known.
 
@@ -639,9 +691,14 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     - on the outermost callable, Python fills it in at the call: it is added;
     - further in, it is added when every callable above takes ``**kwargs`` and none names
       it, so a value written out is carried down to it unchanged;
-    - further in and named by a callable above, that one's value is what is passed on, and
-      it was dealt with at its own level;
+    - further in and named by a callable above with a fixed signature, that one's value is
+      what it passes on, and it was dealt with at its own level;
     - otherwise it cannot be passed down or known, and the call is refused.
+
+    A name taken both by a wrapper that forwards (``*args`` or ``**kwargs``) and by a
+    function under it is refused whatever was sent: the wrapper keeps the value, and the
+    function under it runs with its own default. A decorator stack with a callable the
+    kernel cannot read is refused as a whole.
 
     What is added is judged, and the function is called with it written out. A default
     that is not plain data cannot be shown to a policy and is refused by name.
@@ -665,10 +722,20 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
         unread = "the function this tool runs cannot be inspected for its defaults"
         if not validated:
             return args, unread
+        if _wraps_another(function):
+            # The walk fails as a whole when one callable in a decorator stack cannot be read
+            # (a class-based decorator that is also a descriptor, a stack too deep). Reading
+            # the outermost alone would leave every default below it unread.
+            return args, (
+                "a decorator on the function this tool runs cannot be inspected, so the "
+                "defaults of the functions under it cannot be read; call the decorated "
+                "function from a plain function and register that one"
+            )
         try:
             levels = [inspect.signature(function, follow_wrapped=False).parameters]
         except Exception:  # noqa: BLE001, nothing readable: the defaults cannot be known
             return args, unread
+    levels = _without_mirrors(levels)
     if not validated:
         for level in levels:
             for name, parameter in level.items():
@@ -682,8 +749,17 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     missing: dict[str, Any] = {}
     for index, level in enumerate(levels):
         above = levels[:index]
+        # only a parameter with a default further in can run on a value nobody passed: a
+        # required one must be handed on, or the call fails
+        for name in _defaulted(level, False):
+            if any(_forwards(upper) and _names(upper, name) for upper in above):
+                return args, (
+                    f"`{name}` is taken by a wrapper and by a function it wraps: the wrapper "
+                    "keeps the value it is given, and the function under it runs with one no "
+                    "policy judged; give the two parameters different names"
+                )
         for name, default in _defaulted(level, takes_ctx and index == 0).items():
-            if name in args or name in missing or any(name in upper for upper in above):
+            if name in args or any(_names(upper, name) for upper in above):
                 continue
             if not all(_takes_keywords(upper) for upper in above):
                 return args, (

@@ -87,27 +87,45 @@ schema from the innermost one and calls the outermost. Its validation fills in t
 innermost function's defaults, so the policy sees those. Every wrapper on the way can
 have a keyword default of its own (`def wrapper(*args, retries=3, **kwargs)`) that
 nothing has read. All four forms of the gate (the two capabilities and the two hook
-functions) read every function the call reaches and, for each named parameter with a
-default that the arguments leave out:
+functions) read every function the call reaches. For each named parameter with a default
+that the arguments leave out, the gate:
 
-- add it, judge it, and pass it to the function written out, when it will reach the
+- adds it, judges it, and passes it to the function written out, when it will reach the
   function it belongs to: it is on the outermost function, or every wrapper above it
   passes `**kwargs` through and none names it;
-- refuse the call when it cannot be passed down or known: a wrapper above it takes
-  neither that parameter nor `**kwargs`. Name the parameter on the wrapper, or let the
-  wrapper pass `**kwargs` through;
-- refuse the call when the default is not plain data (a logger, a client, a sentinel
-  object), naming the parameter: it cannot be shown to a policy. Give it a JSON default
-  or `None` and resolve the object inside the function;
-- refuse the call when a function on the way declares a signature of its own
-  (`__signature__`): the parameters Python binds cannot be read.
+- leaves it to a wrapper above that has a fixed signature and names it: that wrapper's
+  own value was dealt with at its level, and is what it passes on.
+
+A call is refused, before the policy runs and with a reason that says which of these it
+is, when the value a function would run with cannot be read or judged:
+
+- **A default that is hidden.** A wrapper above it takes neither that parameter nor
+  `**kwargs`. Name the parameter on the wrapper, or let the wrapper pass `**kwargs`
+  through.
+- **A keyword two functions share.** A wrapper that forwards (`*args` or `**kwargs`) and
+  a function under it both have the keyword, and the one under it has a default: the
+  wrapper keeps the value it is given and the function under it runs on its own default.
+  Refused whatever was sent. Give the two different names.
+- **A default that is not plain data** (a logger, a client, a sentinel object): it cannot
+  be shown to a policy. The refusal names the parameter. Give it a JSON default or `None`
+  and resolve the object inside the function. A decorator that keeps such an object in
+  a keyword default of its wrapper is refused the same way (`beartype`'s is one).
+- **A function that declares a signature of its own** (`__signature__`): the parameters
+  Python binds cannot be read. The decorators the `decorator` library builds do this.
+- **A decorator that cannot be inspected**: a class-based decorator that is also a
+  descriptor, such as `cachetools.cached`, or a stack more than 32 deep. Call the
+  decorated function from a plain function and register that one.
+
+A decorator that shows exactly the parameters of the function it wraps and passes
+everything through (those built with `wrapt` do) is read as one level with it.
 
 A tool given its schema by hand (`Tool.from_schema`) is not validated by Pydantic AI, so
 nothing has filled in anything, and a parameter the model leaves out is completed the
 same way. There a function that takes `*args` or `**kwargs` can fill a value in in its
 own body, which cannot be read, so such a tool is refused; the tools
-`pydantic_ai.ext.langchain` builds are of this kind. Give the function named parameters,
-or build the tool from its signature.
+`pydantic_ai.ext.langchain` builds are of this kind. A function the gate cannot inspect
+(a callable object with an unusual `__call__`) is refused there too. Give the function
+named parameters, or build the tool from its signature.
 
 A toolset runs after every capability hook, so one that runs other tools' calls itself
 could also change the arguments after the gate judged them. A run with one in its

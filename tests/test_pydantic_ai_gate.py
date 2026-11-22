@@ -1932,6 +1932,197 @@ class TestPydanticAiGate:
         )
         assert reason is None and completed == {"first": "a", "table": "x"}
 
+    def test_a_decorator_the_kernel_cannot_read_is_refused_wherever_it_sits(self, example):
+        """A class-based decorator that is also a descriptor (it defines ``__get__`` so it
+        works on methods; ``cachetools.cached`` is one) has no signature Python will give,
+        and the walk fails as a whole. Read by its outermost callable alone, a stack with
+        one in the middle left the default under it unjudged: the transfer ran with
+        ``skip_review=True``. Such a stack is refused, outermost or in the middle."""
+        import functools
+
+        ran, seen = [], []
+
+        class Counted:
+            def __init__(self, function):
+                functools.update_wrapper(self, function)
+                self.function = function
+
+            def __call__(self, *args, **kwargs):
+                return self.function(*args, **kwargs)
+
+            def __get__(self, instance, owner=None):
+                return self if instance is None else functools.partial(self, instance)
+
+        def fast_path(function):
+            @functools.wraps(function)
+            def wrapper(*args, skip_review=True, **kwargs):
+                ran.append(("skip_review", skip_review))
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def timed(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def transfer(account: str, amount: int) -> str:
+            """Transfer."""
+            ran.append(("transfer", account, amount))
+            return "sent"
+
+        for build in (
+            lambda: timed(Counted(fast_path(transfer))),
+            lambda: Counted(fast_path(transfer)),
+        ):
+            ran.clear(), seen.clear()
+            agent = example.Agent(
+                self._model_calling(example, "transfer", {"account": "x", "amount": 5}),
+                tools=[build()],
+                capabilities=[example.RecusalGate(lambda n, a: seen.append(dict(a)) or [])],
+            )
+            answers = example.responses_of(agent.run_sync("go"))
+            assert ran == [] and seen == []
+            assert (
+                "a decorator on the function this tool runs cannot be inspected"
+                in (answers["c1"][1])
+            )
+
+    def test_a_keyword_two_functions_share_is_refused_when_one_can_run_on_its_default(
+        self, example, adapter
+    ):
+        """A wrapper that forwards (``*args`` or ``**kwargs``) keeps a keyword it names. When
+        a function under it has the same keyword with a default, that function runs on its
+        own default whatever the wrapper was given: the model sent ``refresh=False``
+        (allowed) and ``purge`` ran with ``refresh=True``. Refused whatever was sent. A
+        ``**options`` parameter names no keyword, a required parameter cannot fall back on
+        a default, and a proxy that mirrors the function it wraps is the same level."""
+        import functools
+
+        def purge(table: str, force: bool = True, refresh: bool = True) -> str:
+            return "purged"
+
+        @functools.wraps(purge)
+        def cached(*args, refresh=False, **kwargs):
+            return purge(*args, **kwargs)
+
+        for sent in ({"table": "t", "force": True, "refresh": False}, {"table": "t"}):
+            same, reason = adapter._with_defaults(self._ctx_for(cached), "t", dict(sent))
+            assert same == sent and "`refresh` is taken by a wrapper and by a function" in reason
+
+        # two decorators with the same keyword and different defaults are not one level:
+        # the outer keeps its 1 and the inner runs on its 50
+        def send(to: str) -> str:
+            return "sent"
+
+        def retrying(default):
+            def decorate(function):
+                @functools.wraps(function)
+                def wrapper(*args, retries=default, **kwargs):
+                    return function(*args, **kwargs)
+
+                return wrapper
+
+            return decorate
+
+        twice = retrying(1)(retrying(50)(send))
+        same, reason = adapter._with_defaults(self._ctx_for(twice), "t", {"to": "x"})
+        assert same == {"to": "x"} and "`retries` is taken by a wrapper" in reason
+
+        # a wrapper's ** parameter is not a keyword named `options`
+        def transfer(account: str) -> str:
+            return "sent"
+
+        @functools.wraps(transfer)
+        def with_options(*args, options="skip_review", **kwargs):
+            return transfer(*args, **kwargs)
+
+        @functools.wraps(with_options)
+        def traced(*args, **options):
+            return with_options(*args, **options)
+
+        completed, reason = adapter._with_defaults(self._ctx_for(traced), "t", {"account": "a"})
+        assert reason is None and completed == {"account": "a", "options": "skip_review"}
+
+        # a required parameter named on a forwarding wrapper is handed on, or the call fails
+        def wipe(table: str, force: bool = False) -> str:
+            return "ok"
+
+        @functools.wraps(wipe)
+        def logged(table, **kwargs):
+            return wipe(table, **kwargs)
+
+        validated = {"table": "t", "force": False}
+        assert adapter._with_defaults(self._ctx_for(logged), "t", validated) == (validated, None)
+
+        # a proxy that shows exactly the parameters of what it wraps is one level with it
+        @functools.wraps(with_options)
+        def mirror(*args, options="skip_review", **kwargs):
+            return with_options(*args, **kwargs)
+
+        completed, reason = adapter._with_defaults(self._ctx_for(mirror), "t", {"account": "a"})
+        assert reason is None and completed == {"account": "a", "options": "skip_review"}
+        shapes = adapter._without_mirrors(adapter._reached_parameters(mirror))
+        assert [list(level) for level in shapes] == [["args", "options", "kwargs"], ["account"]]
+
+    def test_every_level_of_a_deep_stack_is_read(self, example, adapter):
+        """Defaults three and four callables in are found, each wrapper above must pass
+        ``**kwargs`` for a value to be carried down, and a name is completed once."""
+        import functools
+
+        def base(table: str) -> str:
+            return "ok"
+
+        def passes(function):
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def third(function):
+            @functools.wraps(function)
+            def wrapper(*args, depth_three=3, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def fourth(function):
+            @functools.wraps(function)
+            def wrapper(*args, depth_four=4, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def fifth(function):
+            @functools.wraps(function)
+            def wrapper(*args, depth_five=5, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def blocks(function):
+            @functools.wraps(function)
+            def wrapper(table):
+                return function(table)
+
+            return wrapper
+
+        stack = passes(passes(third(fourth(fifth(base)))))
+        completed, reason = adapter._with_defaults(self._ctx_for(stack), "t", {"table": "t"})
+        assert reason is None
+        assert completed == {"table": "t", "depth_three": 3, "depth_four": 4, "depth_five": 5}
+        # one wrapper above that cannot carry a keyword is enough to refuse, wherever it is
+        for hidden in (
+            passes(blocks(third(base))),
+            blocks(passes(third(base))),
+            passes(passes(blocks(fourth(base)))),
+        ):
+            same, reason = adapter._with_defaults(self._ctx_for(hidden), "t", {"table": "t"})
+            assert same == {"table": "t"} and "hides `depth_" in reason
+
     def test_a_default_on_a_decorator_in_the_middle_of_a_stack_is_judged(self, example):
         """Pydantic AI builds a tool's schema from the innermost function and calls the
         outermost, so a keyword default on a decorator between the two was read by nobody:
@@ -2029,15 +2220,16 @@ class TestPydanticAiGate:
         monkeypatch.setattr(adapter, "_reached_parameters", unreadable)
         completed, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
         assert reason is None and completed == {"table": "x", "mode": "hard"}  # the fallback
-        # the fallback reads the callable itself, not what it wraps
+        # a decorator stack that cannot be walked is refused as a whole: reading the
+        # outermost callable alone would leave every default under it unread
         import functools
 
         @functools.wraps(tool)
         def outer(*args, attempts=2, **kwargs):
             return tool(*args, **kwargs)
 
-        completed, _ = adapter._with_defaults(self._ctx_for(outer), "t", {"table": "x"})
-        assert completed == {"table": "x", "attempts": 2}
+        same, reason = adapter._with_defaults(self._ctx_for(outer), "t", {"table": "x"})
+        assert same == {"table": "x"} and "a decorator on the function" in reason
         # for a tool that is not validated there is nothing to fall back on
         by_hand = self._ctx_for(tool, validated=False)
         same, reason = adapter._with_defaults(by_hand, "t", {"table": "x"})
