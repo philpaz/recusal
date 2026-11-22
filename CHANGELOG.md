@@ -76,21 +76,53 @@ All notable changes to this project are documented here. The format follows
     entry.
   - A `functools.lru_cache` tool handed a list or an object, which the cache cannot
     hash, raised `TypeError` out of the turn. That call is now refused with a reason
-    before the policy runs.
+    before the policy runs, also when the cached function is in the tool table as a
+    `staticmethod` object.
+  - The package allowed `recusal>=0.14.0`. The check of a decorated tool's wrappers is
+    the kernel's and is new in 0.15.0: with a 0.14 kernel a `functools.wraps` wrapper's
+    own parameter ran with a value no policy judged (26 such calls in the review's
+    probe). The package now requires `recusal>=0.15.0`, and raises `ImportError` if it
+    is imported beside an older kernel. Whatever the kernel's signature check says, a
+    reason or an error, refuses the one call before the policy runs and is one audit
+    entry.
+  - With an audit log, a `surface=` or `control=` that `recusal.decide` does not record
+    (an empty surface, one with a leading space, the reserved `claude_code.pretooluse`,
+    a value that is not a string; a control that is not a dict) refused every call as
+    a "policy error" and wrote no entry. Each now raises `ValueError` naming the
+    keyword before any tool call is looked at, as does an empty `tool_use_id=` given to
+    `judge_and_run`. The rule is `decide`'s own: the gate asks it and restates nothing.
+  - A model-chosen call id had no bound: a 1,000,000 character id was written to the
+    audit entry and listed in the message of a duplicate-id refusal. The id goes back
+    in the answer and onto the entry exactly as sent, so it cannot be shortened there;
+    the gate now takes a call id of at most 256 characters, and a longer one raises
+    `ValueError` before anything in the turn runs. A message the gate raises quotes an
+    id only if it is printable with no backtick, names at most four, and otherwise
+    describes each by its length.
+  - In the audited loop, a call refused before decoding whose arguments, on an item
+    the SDK did not validate, were not JSON data (bytes, a number that is not finite,
+    an object with a key that is not a string) was answered "tool_input cannot be
+    fingerprinted" where the plain loop said what was refused. Both loops now give
+    the same reason, and the one deny entry is bound to a fixed stand-in.
 
   One change accepts what was refused:
   - Any recording keyword without a log (`audit=None`, `actor=`, `surface=`, `control=`,
     `allow_on_pass=`) refused every call as a "policy error" although no policy had run,
-    so a loop with an optional log (`audit=maybe_log`) ran nothing. `audit=None` is now
-    the plain gate. `surface=`, `actor=` or `control=` with a value and no `audit=`,
-    `audit=` with no `surface=`, and a caller's own `tool_use_id=` (each call is recorded
-    under its own id) raise `TypeError` before anything is judged, whether or not the
-    turn has calls.
+    so a loop with an optional log (`audit=maybe_log`) ran nothing. `audit=None`, passed
+    explicitly, is now the plain gate, and `surface=`, `actor=` and `control=` beside it
+    are accepted and not used, so such a loop is one call (`audit=maybe_log,
+    surface=...`). When `audit=` is not passed at all, `surface=`, `actor=` or
+    `control=` with a value raises `TypeError` before anything is judged, whether or
+    not the turn has calls, as do `audit=` with a log and no `surface=` and a caller's
+    own `tool_use_id=` (each call is recorded under its own id). The two audited
+    functions need a log and raise `TypeError` for `None`.
 
   The README now also says which tools and annotations the gate can judge and what to
   write instead, that the gate keeps no state between turns, that it has no helper
   for streaming, and that a function call marked `async` or made by a program is judged
-  and run like any other.
+  and run like any other. It names two shapes the gate does not see: a
+  `functools.wraps` wrapper that restates the function's parameters and does not pass
+  one on in its body, which no check of a signature can read, and, with a kernel that
+  does not detect it, a decorator applied inside another decorator's closure.
 
 ## [0.15.0] - 2026-11-21
 

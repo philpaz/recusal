@@ -36,6 +36,10 @@ not looked through, because it may await or consume what it wraps. A tool cached
 ``functools.lru_cache`` is refused, before the policy runs, for a call that hands it a
 list or an object: the cache cannot hash one.
 
+Whether a tool's signature can be judged is the kernel's answer
+(``recusal.invocation.unsupported_signature``). A reason it gives, and any exception it
+raises, is a refusal of that one call before the policy runs.
+
 A refusal names a tool the application has by its name. Any other name is the model's
 text: one of 1 to 64 printable characters with no backtick is used as sent, and any other
 (longer, empty, not a string, or holding a backtick or a character that does not print)
@@ -53,9 +57,18 @@ this gate does not handle (``custom_tool_call``, a hosted tool call, a type adde
 SDK release) raises, naming the type, instead of being skipped. So does a Chat Completions
 message that carries the legacy ``function_call`` field, which this gate does not read.
 The SDK's answer types do not require a call id, so the gate refuses a call without one
-and checks that every call got exactly one answer. A keyword argument the gate does not
-take raises ``TypeError`` before anything is judged, as does ``surface=``, ``actor=`` or
-``control=`` without ``audit=``.
+and checks that every call got exactly one answer. A call id is echoed in its answer and
+written on its audit entry exactly as sent, so the gate takes one of at most 256
+characters: a longer one raises before anything in the turn runs. A message the gate
+raises quotes a call id only if it is printable and holds no backtick, and otherwise
+describes it by its length.
+
+A keyword argument the gate does not take raises ``TypeError`` before anything is judged,
+as does ``audit=`` without ``surface=``, and ``surface=``, ``actor=`` or ``control=`` with
+a value when ``audit=`` is not passed at all. ``audit=None`` passed explicitly is the
+plain gate: those keywords are then accepted and not used. A ``surface=`` or ``control=``
+that ``recusal.decide`` would refuse raises ``ValueError`` naming the keyword, before
+anything is judged.
 
 The gate keeps no state between turns: a call id is checked within one turn only.
 
@@ -81,9 +94,22 @@ from typing import Any, Callable, List, Optional
 from openai.types.chat import ChatCompletion
 from openai.types.responses import Response
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
+from recusal.invocation import json_data as _json_data
 from recusal.invocation import unsupported_signature as _unsupported_signature
+
+# ``reached_parameters`` is the kernel's walk of every callable a call reaches, new in
+# recusal 0.15.0, and ``unsupported_signature`` refuses a decorated tool through it. With
+# an older kernel that check is absent and such a tool would run with values no policy
+# judged, so the package does not import there. The declared dependency says the same;
+# this holds where an installer was told to ignore it.
+if not hasattr(_invocation, "reached_parameters"):
+    raise ImportError(
+        "recusal-openai requires recusal>=0.15.0: an older kernel does not check the "
+        "wrappers of a decorated tool"
+    )
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -137,9 +163,22 @@ _RECORD_KEYWORDS = frozenset({"audit", "surface", "actor", "control", "allow_on_
 #: The keywords ``judge_and_run`` takes: the loops', and the id of the one call it judges.
 _CALL_KEYWORDS = _RECORD_KEYWORDS | {"tool_use_id"}
 
-#: The keywords that mean something only on an audit log. Given a value without
-#: ``audit=`` they raise, so a caller who believes it is recording is never not recording.
+#: The keywords that mean something only on an audit log. Given a value when ``audit=``
+#: is not passed at all they raise, so a caller who believes it is recording is never not
+#: recording. With ``audit=None`` passed explicitly they are accepted and not used.
 _NEED_AUDIT = ("surface", "tool_use_id", "actor", "control")
+
+#: The recording keywords ``recusal.decide`` holds to a rule of its own (a surface that is
+#: a nonempty name and not a reserved one, a control that is a dict, a call id that is a
+#: nonempty string). ``_recording`` asks ``decide`` about each one, once, before any call
+#: is looked at.
+_CHECKED_BY_DECIDE = ("surface", "control", "tool_use_id")
+
+#: A surface ``decide`` accepts, passed while it checks a keyword other than ``surface``.
+_CHECK_SURFACE = "openai.keyword_check"
+
+#: Told apart from ``audit=None``: the keyword was not passed at all.
+_ABSENT: Any = object()
 
 #: Keywords of ``recusal.decide`` a caller might expect here, and why each is not taken.
 _NOT_TAKEN = {
@@ -150,13 +189,23 @@ _NOT_TAKEN = {
 #: The longest tool name a refusal carries when the application has no tool of that name.
 _NAME_SHOWN = 64
 
+#: The longest call id the gate takes. The id is echoed in the answer and written on the
+#: audit entry exactly as sent, since both are how the call is found again, so it cannot
+#: be shortened there: a longer one refuses the turn before anything runs.
+_ID_MAX = 256
+
+#: What an audit entry is bound to when a call is refused before decoding and its
+#: arguments, on an item the SDK did not validate, are not JSON data and so cannot be
+#: fingerprinted.
+_NOT_JSON_DATA = {"input": "<arguments that are not JSON data>"}
+
 #: ``functools.lru_cache`` and ``functools.cache``: a wrapper that passes the call on to
 #: the function it wraps, and hashes every argument to do so.
 _LRU_CACHE = type(functools.lru_cache(maxsize=None)(lambda: None))
 
 #: How many levels below the arguments object a value may sit. The kernel's ``json_data``
-#: draws the same line for a default from 0.15.0; the gate holds its own so that it
-#: refuses the same calls on every kernel release it supports.
+#: draws the same line for a default; the gate holds its own so that it refuses the same
+#: calls whatever a later kernel release does with that line.
 _MAX_DEPTH = 64
 
 _TOO_DEEP = "arguments are nested too deeply"
@@ -164,12 +213,63 @@ _TOO_DEEP = "arguments are nested too deeply"
 _LOG = logging.getLogger("recusal_openai")
 
 
+class _NoLog:
+    """Stands where the audit log would be while ``decide`` checks a recording value:
+    whatever is appended to it is dropped."""
+
+    def append(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def _no_findings(_name: str, _input: dict) -> List[Any]:
+    """The policy ``decide`` is given while it checks a recording value."""
+    return []
+
+
+def _check_values(record: dict) -> None:
+    """Raise ``ValueError``, naming the keyword, for a recording value ``decide`` refuses.
+
+    The rule for each value is ``decide``'s own and is not restated here: ``decide`` is
+    called once per keyword with a log that drops the entry, and a keyword it raises for
+    is the one named. Left to the calls of the turn, ``decide`` would refuse every one of
+    them, the gate could only report that as an error of a policy that never ran, and no
+    entry would be written.
+
+    A call id is also held to the gate's own bound (``_ID_MAX``).
+    """
+    for keyword in _CHECKED_BY_DECIDE:
+        value = record.get(keyword)
+        if value is None:
+            continue
+        asked: dict[str, Any] = {"audit": _NoLog(), "surface": _CHECK_SURFACE, keyword: value}
+        try:
+            decide("recusal_openai", {}, _no_findings, **asked)
+        except Exception as exc:  # noqa: BLE001, whatever decide raises, the value is refused
+            raise ValueError(
+                f"Recusal refused the turn: {keyword}= is not a value recusal.decide "
+                f"records ({exc})"
+            ) from None
+    call_id = record.get("tool_use_id")
+    if isinstance(call_id, str) and len(call_id) > _ID_MAX:
+        raise ValueError(
+            f"Recusal refused the turn: tool_use_id= is {len(call_id)} characters long; "
+            f"the gate takes a call id of at most {_ID_MAX}"
+        )
+
+
 def _recording(record: dict, taken: frozenset = _RECORD_KEYWORDS) -> dict:
     """The recording arguments to pass on to ``decide``: ``record`` with an audit log,
-    nothing without one (``audit=None`` is the plain gate).
+    nothing without one.
+
+    ``audit=None`` passed explicitly is the plain gate, written so that a loop whose log
+    is optional is one call (``audit=maybe_log, surface=...``): the other recording
+    keywords are accepted and not used (their values are still checked). When ``audit=``
+    is not passed at all, a keyword that needs it and has a value raises, so a caller who
+    believes it is recording is never silently not recording.
 
     Raises ``TypeError`` for a keyword that is not in ``taken``, for ``audit=`` without
-    ``surface=`` and for a keyword that needs ``audit=`` and has a value without it:
+    ``surface=`` and for a keyword that needs ``audit=`` and has a value when ``audit=``
+    is absent, and ``ValueError`` for a value ``decide`` would refuse (``_check_values``).
     ``decide`` would refuse each of these on every call, and the gate could only report
     that as an error of a policy that never ran.
     """
@@ -181,17 +281,19 @@ def _recording(record: dict, taken: frozenset = _RECORD_KEYWORDS) -> dict:
             f"{f' ({why})' if why else ''}; the "
             f"keywords passed on to recusal.decide are {', '.join(sorted(_RECORD_KEYWORDS))}"
         )
-    if record.get("audit") is not None:
-        if record.get("surface") is None:
-            raise TypeError("Recusal refused the turn: audit= requires surface=")
-        return record
-    needs = [keyword for keyword in _NEED_AUDIT if record.get(keyword) is not None]
-    if needs:
-        raise TypeError(
-            f"Recusal refused the turn: {needs[0]}= requires audit=; without an audit log "
-            "the gate records nothing"
-        )
-    return {}
+    audit = record.get("audit", _ABSENT)
+    if audit is _ABSENT:
+        needs = [keyword for keyword in _NEED_AUDIT if record.get(keyword) is not None]
+        if needs:
+            raise TypeError(
+                f"Recusal refused the turn: {needs[0]}= requires audit=; without an audit "
+                "log the gate records nothing (pass audit=None for a log that is optional)"
+            )
+        return {}
+    if audit is not None and record.get("surface") is None:
+        raise TypeError("Recusal refused the turn: audit= requires surface=")
+    _check_values(record)
+    return record if audit is not None else {}
 
 
 def _shown(name: Any, tools: Tools) -> str:
@@ -299,9 +401,15 @@ def _is_generator(func: Callable[..., Any]) -> bool:
 
 
 def _cached(func: Callable[..., Any]) -> bool:
-    """Whether ``func`` is a ``functools.lru_cache`` of a function, or a method of one:
-    the two forms of a cached tool the gate can judge. Every argument is then hashed."""
-    target = func.__func__ if inspect.ismethod(func) else func
+    """Whether ``func`` is a ``functools.lru_cache`` of a function, a method of one, or
+    a ``staticmethod`` object around either: the forms of a cached tool the gate can
+    judge. Every argument is then hashed."""
+    target: Any = func
+    for _ in range(16):  # a bound, not a rule: these wrappers do not nest this deep
+        if isinstance(target, staticmethod) or inspect.ismethod(target):
+            target = target.__func__
+        else:
+            break
     return isinstance(target, _LRU_CACHE)
 
 
@@ -386,9 +494,17 @@ def _unjudgeable(name: str, plain: str, detail: str, proposal: Any, record: dict
     With them (the audited loop) the refusal goes through ``decide`` like
     every other, so it is one entry on the log, bound to the call as the model proposed it,
     and the text the model reads is the reason on the record.
+
+    The entry is bound to ``proposal``: an object as it is, anything else as
+    ``{"input": proposal}``. Arguments on an item the SDK did not validate can be
+    something no fingerprint can be taken of (bytes, a number that is not finite, an
+    object with a key that is not a string). The refusal is the same one either way, so
+    the entry is then bound to ``_NOT_JSON_DATA`` and carries the same reason.
     """
     if not record:
         return plain
+    if not _json_data(proposal):
+        proposal = _NOT_JSON_DATA
     bound = proposal if isinstance(proposal, dict) else {"input": proposal}
 
     def unjudgeable(_name, _input):
@@ -461,10 +577,33 @@ def judge_and_run(
     decoded object, or the text as sent when it is the text that was refused.
 
     A keyword in ``record`` that is not one of those raises ``TypeError`` (``fail_closed``
-    among them: this gate always fails closed), as does ``audit=`` without ``surface=``
-    and ``surface=``, ``tool_use_id=``, ``actor=`` or ``control=`` without ``audit=``.
+    among them: this gate always fails closed), as does ``audit=`` without ``surface=``,
+    and ``surface=``, ``tool_use_id=``, ``actor=`` or ``control=`` with a value when
+    ``audit=`` is not passed at all. With ``audit=None`` passed explicitly those keywords
+    are accepted and not used. A ``surface=``, ``control=`` or ``tool_use_id=`` that
+    ``decide`` would refuse (an empty one, a reserved surface, a control that is not a
+    dict), and a ``tool_use_id=`` of more than 256 characters, raise ``ValueError``
+    naming the keyword. All of these raise before the call is looked at.
+
+    Whether the tool's signature can be judged is asked of the kernel
+    (``recusal.invocation.unsupported_signature``): a reason it gives, and any exception
+    it raises, refuses the call before the policy runs.
     """
-    record = _recording(record, _CALL_KEYWORDS)
+    return _judge(
+        name, arguments, tools, policy, answer_tool_errors, _recording(record, _CALL_KEYWORDS)
+    )
+
+
+def _judge(
+    name: str,
+    arguments: Any,
+    tools: Tools,
+    policy: Policy,
+    answer_tool_errors: bool,
+    record: dict,
+) -> str:
+    """``judge_and_run`` with recording arguments ``_recording`` has already checked: the
+    loops check the turn's once and then judge each call here."""
     shown = _shown(name, tools)
     if not isinstance(arguments, str):
         detail = "arguments are not a string"
@@ -509,7 +648,10 @@ def judge_and_run(
     if _is_generator(func):
         detail = "it is a generator function, and calling it would run none of its body"
         return _unjudgeable(shown, f"Recusal refused `{shown}`: {detail}", detail, args, record)
-    why = _unsupported_signature(func)
+    try:
+        why = _unsupported_signature(func)
+    except Exception:  # noqa: BLE001, a signature the kernel cannot read is not judged
+        why = "its signature cannot be inspected"
     if why is not None:
         detail = f"its signature cannot be judged ({why})"
         return _unjudgeable(shown, f"Recusal refused `{shown}`: {detail}", detail, args, record)
@@ -570,16 +712,42 @@ def _answer_call(
         return _unjudgeable(
             shown, f"Recusal refused `{shown}`: {refused}", refused, arguments, record
         )
-    return judge_and_run(
-        name, arguments, tools, policy, answer_tool_errors=answer_tool_errors, **record
-    )
+    return _judge(name, arguments, tools, policy, answer_tool_errors, record)
 
 
 def _require_id(call_id: Any, what: str) -> str:
-    """The SDK does not require an id on the answer; the adapter does, or the answer is lost."""
+    """The SDK does not require an id on the answer; the adapter does, or the answer is lost.
+
+    The id is the model's text, and it goes back in the answer and onto the audit entry
+    exactly as sent. One longer than ``_ID_MAX`` characters is refused here, before
+    anything in the turn runs, so neither can be grown without bound.
+    """
     if not isinstance(call_id, str) or not call_id:
         raise ValueError(f"Recusal refused {what}: it has no call id to answer")
+    if len(call_id) > _ID_MAX:
+        raise ValueError(
+            f"Recusal refused {what}: its call id is {len(call_id)} characters long; "
+            f"the gate takes a call id of at most {_ID_MAX}"
+        )
     return call_id
+
+
+def _id_shown(call_id: Any) -> str:
+    """A call id as a message the gate raises carries it: quoted if it is a string of 1 to
+    ``_ID_MAX`` printable characters with no backtick, and otherwise described by its
+    length, the rule ``_shown`` applies to a tool name."""
+    if not isinstance(call_id, str):
+        return "<a call id that is not a string>"
+    if 0 < len(call_id) <= _ID_MAX and call_id.isprintable() and "`" not in call_id:
+        return repr(call_id)
+    return f"<a call id of {len(call_id)} characters, not shown>"
+
+
+def _ids_shown(call_ids: list) -> str:
+    """Up to four call ids for a message, each as ``_id_shown`` gives it, and how many more."""
+    shown = ", ".join(_id_shown(call_id) for call_id in call_ids[:4])
+    more = len(call_ids) - 4
+    return f"[{shown}{f', and {more} more' if more > 0 else ''}]"
 
 
 def _for_call(record: dict, call_id: str) -> dict:
@@ -592,17 +760,29 @@ def _check_ids(call_ids: list[str]) -> None:
     keyed by id, so a duplicate could not be answered once, and a refusal raised after
     dispatch would leave a side effect behind for the caller's retry to repeat."""
     if len(set(call_ids)) != len(call_ids):
-        raise ValueError(f"Recusal refused the turn: duplicate call ids {call_ids}")
+        raise ValueError(f"Recusal refused the turn: duplicate call ids {_repeated(call_ids)}")
+
+
+def _repeated(call_ids: list[str]) -> str:
+    """The call ids that occur more than once, in the order they first repeat, for a message."""
+    seen: set[str] = set()
+    repeated: list[str] = []
+    for call_id in call_ids:
+        if call_id in seen and call_id not in repeated:
+            repeated.append(call_id)
+        seen.add(call_id)
+    return _ids_shown(repeated)
 
 
 def _check_answered_once(call_ids: list[str], answered: list[str]) -> None:
     """Every proposed call gets exactly one answer, and no answer invents a call."""
     if sorted(call_ids) != sorted(answered):
         raise ValueError(
-            f"Recusal refused the turn: calls {sorted(call_ids)} but answers {sorted(answered)}"
+            f"Recusal refused the turn: calls {_ids_shown(sorted(call_ids))} but answers "
+            f"{_ids_shown(sorted(answered))}"
         )
     if len(set(call_ids)) != len(call_ids):
-        raise ValueError(f"Recusal refused the turn: duplicate call ids {call_ids}")
+        raise ValueError(f"Recusal refused the turn: duplicate call ids {_repeated(call_ids)}")
 
 
 def gate_function_calls(
@@ -617,7 +797,9 @@ def gate_function_calls(
     """Responses API: judge every ``function_call`` item; return ``function_call_output`` items.
 
     Raises TypeError for an output item type this adapter does not handle or a keyword it
-    does not take, and ValueError for a call without an id. Pass the returned list as the
+    does not take, and ValueError for a call without an id, a call id of more than 256
+    characters, a duplicate id, or a ``surface=`` or ``control=`` that ``recusal.decide``
+    would refuse. Pass the returned list as the
     next request's ``input``. A ``function_call`` item that carries a ``namespace``, one
     whose ``status`` is not ``completed`` (no status passes), and every function call of
     a response whose ``status`` is not ``completed`` (no status passes) are refused with a
@@ -630,8 +812,11 @@ def gate_function_calls(
     ``record`` is the recording arguments for the turn: ``audit=`` with ``surface=``, and
     optionally ``actor=``, ``control=`` and ``allow_on_pass=``; see ``judge_and_run``.
     Each call is recorded under its own ``call_id``, so ``tool_use_id=`` is not taken.
-    ``audit=None`` is the plain gate, which records nothing; ``surface=``, ``actor=`` or
-    ``control=`` without ``audit=`` raises TypeError, whether or not the turn has calls.
+    ``audit=None`` passed explicitly is the plain gate, which records nothing and with
+    which ``surface=``, ``actor=`` and ``control=`` are accepted and not used, so a loop
+    whose log is optional is one call. When ``audit=`` is not passed at all, ``surface=``,
+    ``actor=`` or ``control=`` with a value raises TypeError, whether or not the turn has
+    calls.
     A turn refused as a whole raises before anything is judged, so it runs nothing and
     writes no entry.
     """
@@ -750,9 +935,11 @@ def gate_tool_calls(
     messages, and only the one the application selects is dispatched. Raises TypeError for
     a tool call type this adapter does not handle (``custom``), a chosen message that
     carries the legacy ``function_call`` field, a keyword it does not take or a non-int
-    ``choice``, and ValueError for a call without an id, no choices, or an out-of-range
-    ``choice``. Append the returned messages after the chosen assistant message in the
-    next request. When the chosen choice's ``finish_reason`` is not ``stop``,
+    ``choice``, and ValueError for a call without an id, a call id of more than 256
+    characters, a duplicate id, no choices, an out-of-range ``choice``, or a ``surface=``
+    or ``control=`` that ``recusal.decide`` would refuse. Append the returned messages
+    after the chosen assistant message in the next request. When the chosen choice's
+    ``finish_reason`` is not ``stop``,
     ``tool_calls`` or ``function_call`` (``length``: the message was cut off), every tool
     call in it is refused with a reason under its own id, before the policy runs.
     ``record`` is the recording arguments for the turn, and ``answer_tool_errors`` the

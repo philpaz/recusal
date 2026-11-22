@@ -1333,6 +1333,49 @@ UNSHOWN_NAMES = {
 }
 
 
+def test_the_package_requires_the_kernel_that_walks_every_callable():
+    """The check of a decorated tool's wrappers lives in the kernel
+    (``recusal.invocation.reached_parameters``, new in 0.15.0). Installed with an older
+    kernel, recusal-openai would lack it and a wrapper's own ``force=True`` would run
+    unjudged (review round three: 26 such calls on 0.14.x). The floor is stated in the
+    package and in its README, with no "0.15.0 or later" condition left on what the gate
+    refuses, and the kernel in this tree is at or past it."""
+    import recusal
+    from recusal import invocation
+
+    floor = "0.15.0"
+    pyproject = (ROOT / "adapters" / "openai" / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (ROOT / "adapters" / "openai" / "README.md").read_text(encoding="utf-8")
+    assert f'"recusal>={floor},<1"' in pyproject
+    assert f"`recusal>={floor}`" in readme
+    assert "recusal>=0.14" not in pyproject and "recusal>=0.14" not in readme
+    assert "or later" not in readme
+    assert hasattr(invocation, "reached_parameters")
+
+    def parts(version):
+        return tuple(int(part) for part in version.split("."))
+
+    assert parts(recusal.__version__) >= parts(floor)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="the OpenAI SDK requires Python 3.10+")
+def test_the_package_does_not_import_beside_a_kernel_without_the_walk():
+    """An installer told to ignore the declared dependency can still pair the package with
+    an older kernel. It then fails at import, naming the floor, instead of gating without
+    the wrapper check."""
+    pytest.importorskip("openai", reason="the openai package is not installed")
+    paths = [str(ROOT), str(ROOT / "adapters" / "openai" / "src")]
+    older = "import recusal.invocation as kernel; del kernel.reached_parameters; "
+    for prepare, imports in ((older, False), ("", True)):
+        code = f"import sys; sys.path[:0] = {paths!r}; {prepare}import recusal_openai"
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+        assert (result.returncode == 0) is imports, result.stderr
+        if not imports:
+            assert "ImportError: recusal-openai requires recusal>=0.15.0" in result.stderr
+
+
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="the OpenAI SDK requires Python 3.10+")
 class TestWhatCannotBeTiedToWhatRuns:
     """recusal-openai 0.2.2: where the gate cannot tie what it judged to what would run, it
@@ -2043,13 +2086,13 @@ class TestWhatCannotBeTiedToWhatRuns:
     @pytest.mark.parametrize(
         "keyword, value", [("surface", "my.loop"), ("actor", "agent-7"), ("control", {"k": 1})]
     )
-    @pytest.mark.parametrize("audit", [{}, {"audit": None}], ids=["absent", "none"])
     def test_a_recording_keyword_without_an_audit_log_raises_before_anything_is_judged(
-        self, ex, calls, keyword, value, audit
+        self, ex, calls, keyword, value
     ):
+        """``audit=`` is not passed at all: the caller believes it is recording."""
         seen: list = []
         policy = lambda n, a: seen.append(a) or []  # noqa: E731
-        record = {**audit, keyword: value}
+        record = {keyword: value}
         for shape in ("responses", "chat"):
             with pytest.raises(TypeError, match=f"{keyword}= requires audit="):
                 self.turn(ex, shape, calls, {"pay": _pay}, policy, **record)
@@ -2064,6 +2107,12 @@ class TestWhatCannotBeTiedToWhatRuns:
         with pytest.raises(TypeError, match="tool_use_id= requires audit="):
             ex.judge_and_run("pay", '{"amount": 1}', {"pay": _pay}, policy, tool_use_id="c1")
         assert RAN == []
+        # an optional log that is off: the id is taken and not used
+        out = ex.judge_and_run(
+            "pay", '{"amount": 2}', {"pay": _pay}, policy, audit=None, tool_use_id="c1"
+        )
+        assert out == "paid 2" and RAN == [("pay", 2, "acct-1")]
+        RAN.clear()
         log = AuditLog(path=str(tmp_path / "log.jsonl"))
         out = ex.judge_and_run(
             "pay",
@@ -2124,7 +2173,9 @@ class TestWhatCannotBeTiedToWhatRuns:
     # --- round two, F4: a cached tool and an argument the cache cannot hash ----------------
 
     @pytest.mark.parametrize("shape", ["responses", "chat"])
-    @pytest.mark.parametrize("form", ["function", "method"])
+    @pytest.mark.parametrize(
+        "form", ["function", "method", "staticmethod", "staticmethod_of_method"]
+    )
     def test_a_cached_tool_handed_a_list_or_an_object_is_refused_before_the_policy(
         self, ex, shape, form
     ):
@@ -2141,7 +2192,12 @@ class TestWhatCannotBeTiedToWhatRuns:
                 RAN.append(key)
                 return f"found {key}"
 
-        tool = lookup if form == "function" else Store().lookup
+        tool = {
+            "function": lookup,
+            "method": Store().lookup,
+            "staticmethod": staticmethod(lookup),
+            "staticmethod_of_method": staticmethod(Store().lookup),
+        }[form]
         with pytest.raises(TypeError, match="unhashable"):
             tool(key=["a"])  # the negative control: what the cache does with a list
         seen: list = []
@@ -2310,3 +2366,445 @@ class TestWhatCannotBeTiedToWhatRuns:
         assert outs[0]["output"].startswith("Recusal refused `pay` [FAIL]")
         assert outs[1]["output"] == "paid 1"
         assert [args["amount"] for _, args in seen] == [500, 1] and RAN == [("pay", 1, "acct-1")]
+
+    # --- round three, F2: whatever the kernel's signature check says is a refusal ----------
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    @pytest.mark.parametrize(
+        "says, detail",
+        [
+            ("hidden", "its signature cannot be inspected"),
+            ("runtime", "its signature cannot be inspected"),
+            ("reason", "a wrapper it cannot see through"),
+        ],
+    )
+    def test_whatever_the_kernels_signature_check_says_is_a_refusal_before_the_policy(
+        self, ex, monkeypatch, shape, says, detail
+    ):
+        """The walk of a decorated tool is the kernel's. A kernel that learns to refuse a
+        shape it accepts today (a decorator applied inside another's closure) says so by
+        a new reason or by raising: both refuse the one call, and the turn goes on."""
+        import importlib
+
+        module = importlib.import_module("recusal_openai._gate")
+
+        class HiddenWrapper(ValueError):
+            pass
+
+        def check(func):
+            if func is not _pay:
+                return None
+            if says == "hidden":
+                raise HiddenWrapper("a wrapper applied inside a closure")
+            if says == "runtime":
+                raise RuntimeError("the walk failed")
+            return "a wrapper it cannot see through"
+
+        monkeypatch.setattr(module, "_unsupported_signature", check)
+        seen: list = []
+        answers = self.turn(
+            ex,
+            shape,
+            [
+                ("nest", {"path": "a"}, "c1"),
+                ("pay", {"amount": 1}, "c2"),
+                ("nest", {"path": "z"}, "c3"),
+            ],
+            {"pay": _pay, "nest": _nest},
+            lambda n, a: seen.append(n) or [],
+        )
+        refusal = f"Recusal refused `pay`: its signature cannot be judged ({detail})"
+        assert answers == ["nested", refusal, "nested"]
+        assert seen == ["nest", "nest"] and RAN == [("nest", "a"), ("nest", "z")]
+
+    def test_a_decorator_applied_inside_anothers_closure_is_refused_or_not_seen(self, ex):
+        """The README's limit, held to both outcomes: a kernel that detects the hidden
+        wrapper refuses the call before the policy; one that does not lets the function
+        run with its own default where the policy judged the model's value. Nothing else
+        happens: no exception leaves the gate."""
+        import functools
+
+        got: list = []
+
+        def with_timeout(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, timeout: int = 30, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def robust(fn):
+            inner = with_timeout(fn)  # not on the ``__wrapped__`` chain of what is returned
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return inner(*args, **kwargs)
+
+            return wrapper
+
+        @robust
+        def fetch(url: str, timeout: int = 5) -> str:
+            got.append((url, timeout))
+            return "fetched"
+
+        seen: list = []
+        out = ex.judge_and_run(
+            "fetch",
+            '{"url": "u", "timeout": 9999}',
+            {"fetch": fetch},
+            lambda n, a: seen.append(a) or [],
+        )
+        if out.startswith("Recusal refused `fetch`: its signature cannot be judged"):
+            assert seen == [] and got == []
+        else:
+            assert out == "fetched" and seen == [{"url": "u", "timeout": 9999}]
+            assert got == [("u", 5)]  # the value the policy judged did not reach the body
+
+    # --- round three, F3: what a wrapper does in its own body is not read -------------------
+
+    def test_a_named_wrapper_that_does_not_pass_an_argument_on_is_not_seen(self, ex):
+        """The README's limit: a ``functools.wraps`` wrapper that restates the function's
+        parameters is judged by them, and what its body then passes on is not something a
+        signature shows. The forwarding form of the same wrapper is refused."""
+        import functools
+
+        from recusal import Finding
+
+        got: list = []
+
+        def named(fn):
+            @functools.wraps(fn)
+            def wrapper(path: str, dry_run: bool = False):
+                return fn(path)  # ``dry_run`` is not passed on
+
+            return wrapper
+
+        def forwarding(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, dry_run: bool = False, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def delete_tree(path: str, dry_run: bool = False) -> str:
+            got.append((path, dry_run))
+            return f"would delete {path}" if dry_run else f"deleted {path}"
+
+        def dry_runs_only(name, args):
+            if args.get("dry_run") is not True:
+                return [Finding.fail("dry_run_only", severity="CRITICAL", message="dry runs only")]
+            return []
+
+        arguments = '{"path": "/data", "dry_run": true}'
+        out = ex.judge_and_run(
+            "delete_tree", arguments, {"delete_tree": named(delete_tree)}, dry_runs_only
+        )
+        assert out == "deleted /data" and got == [("/data", False)]
+        got.clear()
+        out = ex.judge_and_run(
+            "delete_tree", arguments, {"delete_tree": forwarding(delete_tree)}, dry_runs_only
+        )
+        assert out.startswith("Recusal refused `delete_tree`: its signature cannot be judged")
+        assert "`dry_run` is taken by a wrapper and by the function it wraps" in out
+        assert got == []
+
+    # --- round three, F4: a loop whose log is optional is one call -------------------------
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    @pytest.mark.parametrize(
+        "keywords",
+        [
+            {"surface": "my.loop"},
+            {"actor": "agent-7"},
+            {"control": {"policy_id": "p"}},
+            {"surface": "my.loop", "actor": "agent-7", "control": {"policy_id": "p"}},
+            {"surface": "my.loop", "allow_on_pass": True},
+        ],
+        ids=["surface", "actor", "control", "all", "allow_on_pass"],
+    )
+    def test_an_explicit_audit_none_takes_the_recording_keywords_and_is_the_plain_gate(
+        self, ex, shape, keywords
+    ):
+        seen: list = []
+        policy = self.over_100(seen)
+        calls = [
+            ("pay", '{"amount": 1}', "a"),
+            ("pay", '{"amount": 500}', "b"),
+            ("gone", "{}", "c"),
+        ]
+        plain = self.turn(ex, shape, calls, {"pay": _pay}, policy)
+        assert plain[0] == "paid 1" and plain[2] == "Recusal refused: unknown tool 'gone'"
+        RAN.clear()
+        assert self.turn(ex, shape, calls, {"pay": _pay}, policy, audit=None, **keywords) == plain
+        assert RAN == [("pay", 1, "acct-1")] and len(seen) == 4
+        assert self.turn(ex, shape, [], {"pay": _pay}, policy, audit=None, **keywords) == []
+        out = ex.judge_and_run(
+            "pay", '{"amount": 500}', {"pay": _pay}, policy, audit=None, **keywords
+        )
+        assert out == plain[1]
+
+    # --- round three, F5: a recording value decide would refuse raises at the call ----------
+
+    @pytest.mark.parametrize("calls", [[], [("pay", {"amount": 1}, "c1")]], ids=["none", "one"])
+    @pytest.mark.parametrize("log_given", [True, False], ids=["log", "audit_none"])
+    @pytest.mark.parametrize(
+        "keyword, value",
+        [
+            ("surface", ""),
+            ("surface", " my.loop"),
+            ("surface", "my.loop "),
+            ("surface", "claude_code.pretooluse"),
+            ("surface", 5),
+            ("surface", ["my.loop"]),
+            ("control", "v1"),
+            ("control", ["policy"]),
+            ("control", 0),
+        ],
+    )
+    def test_a_recording_value_decide_would_refuse_raises_naming_the_keyword(
+        self, ex, tmp_path, calls, log_given, keyword, value
+    ):
+        """Left to the calls, ``decide`` refused every one of them as a "policy error" and
+        wrote no entry. It is refused at the call instead, before any tool call is looked
+        at, with a log and with an optional log that is off."""
+        from recusal.audit import AuditLog
+
+        log = AuditLog(path=str(tmp_path / "log.jsonl"))
+        record = {"audit": log if log_given else None, "surface": "my.loop", keyword: value}
+        seen: list = []
+        policy = lambda n, a: seen.append(a) or []  # noqa: E731
+        match = f"Recusal refused the turn: {keyword}= is not a value recusal.decide records"
+        for shape in ("responses", "chat"):
+            with pytest.raises(ValueError, match=match):
+                self.turn(ex, shape, calls, {"pay": _pay}, policy, **record)
+        with pytest.raises(ValueError, match=match):
+            ex.judge_and_run("pay", '{"amount": 1}', {"pay": _pay}, policy, **record)
+        assert seen == [] and RAN == [] and log.entries == []
+        assert not (tmp_path / "log.jsonl").exists()
+
+    @pytest.mark.parametrize("log_given", [True, False], ids=["log", "audit_none"])
+    @pytest.mark.parametrize(
+        "value, why",
+        [
+            ("", "tool_use_id= is not a value recusal.decide records"),
+            (5, "tool_use_id= is not a value recusal.decide records"),
+            (
+                "i" * 257,
+                "tool_use_id= is 257 characters long; the gate takes a call id of at most 256",
+            ),
+        ],
+        ids=["empty", "not_a_string", "257_characters"],
+    )
+    def test_judge_and_run_refuses_a_call_id_it_cannot_record(
+        self, ex, tmp_path, log_given, value, why
+    ):
+        from recusal.audit import AuditLog
+
+        log = AuditLog(path=str(tmp_path / "log.jsonl"))
+        seen: list = []
+        with pytest.raises(ValueError, match=why) as bad:
+            ex.judge_and_run(
+                "pay",
+                '{"amount": 1}',
+                {"pay": _pay},
+                lambda n, a: seen.append(a) or [],
+                audit=log if log_given else None,
+                surface="my.loop",
+                tool_use_id=value,
+            )
+        assert len(str(bad.value)) < 200
+        assert seen == [] and RAN == [] and log.entries == []
+
+    def test_judge_and_run_records_a_call_id_of_256_characters_exactly(self, ex, tmp_path):
+        from recusal.audit import AuditLog
+
+        log = AuditLog(path=str(tmp_path / "log.jsonl"))
+        out = ex.judge_and_run(
+            "pay",
+            '{"amount": 1}',
+            {"pay": _pay},
+            lambda n, a: [],
+            audit=log,
+            surface="my.loop",
+            tool_use_id="i" * 256,
+        )
+        assert out == "paid 1"
+        assert [entry["action"]["tool_use_id"] for entry in log.entries] == ["i" * 256]
+
+    def test_the_rule_for_a_recording_value_is_decides_own(self, ex, tmp_path, monkeypatch):
+        """One authority: the gate asks ``recusal.decide`` about each value and restates no
+        rule. A rule ``decide`` gains is enforced at the call, the keyword it raised for is
+        the one named, and the question writes nothing to the caller's log."""
+        import importlib
+
+        from recusal import decide
+        from recusal.audit import AuditLog
+
+        module = importlib.import_module("recusal_openai._gate")
+        asked: list = []
+
+        def stricter(tool_name, tool_input, policy, **keywords):
+            asked.append({k: v for k, v in keywords.items() if k != "audit"})
+            assert keywords.get("audit") is not log  # never the caller's log
+            if keywords.get("surface") == "my.loop":
+                raise ValueError("this kernel reserves my.loop")
+            if (keywords.get("control") or {}).get("forbidden"):
+                raise RuntimeError("no such control")
+            return decide(tool_name, tool_input, policy, **keywords)
+
+        log = AuditLog(path=str(tmp_path / "log.jsonl"))
+        monkeypatch.setattr(module, "decide", stricter)
+        response = ex.response_with([ex.function_call("pay", {"amount": 1}, "c1")])
+        with pytest.raises(
+            ValueError, match="surface= is not a value .*this kernel reserves my.loop"
+        ):
+            ex.gate_function_calls(
+                response, {"pay": _pay}, lambda n, a: [], audit=log, surface="my.loop"
+            )
+        with pytest.raises(ValueError, match="control= is not a value .*no such control"):
+            ex.gate_function_calls(
+                response,
+                {"pay": _pay},
+                lambda n, a: [],
+                audit=log,
+                surface="other.loop",
+                control={"forbidden": True},
+            )
+        assert RAN == [] and log.entries == []
+        assert asked[0] == {"surface": "my.loop"}
+        # the surface handed over while another keyword is checked is one decide accepts
+        assert asked[-1] == {"surface": module._CHECK_SURFACE, "control": {"forbidden": True}}
+        monkeypatch.undo()
+        asked.clear()
+        outs = ex.gate_function_calls(
+            ex.response_with([]),
+            {"pay": _pay},
+            lambda n, a: [],
+            audit=log,
+            surface="other.loop",
+            control={"policy_id": "p"},
+        )
+        assert outs == [] and log.entries == []  # a turn with no calls: the check wrote nothing
+
+    # --- round three: a call id is the model's text too -------------------------------------
+
+    @pytest.mark.parametrize("shape", ["responses", "chat"])
+    def test_a_call_id_longer_than_256_characters_refuses_the_turn_before_anything_runs(
+        self, ex, shape
+    ):
+        seen: list = []
+        policy = lambda n, a: seen.append(a) or []  # noqa: E731
+        for length in (257, 1_000_000):
+            calls = [("pay", {"amount": 1}, "c1"), ("pay", {"amount": 2}, "i" * length)]
+            with pytest.raises(ValueError, match="the gate takes a call id of at most 256") as bad:
+                self.turn(ex, shape, calls, {"pay": _pay}, policy)
+            assert f"its call id is {length} characters long" in str(bad.value)
+            assert len(str(bad.value)) < 200
+        assert seen == [] and RAN == []
+        longest = "i" * 256
+        calls = [("pay", {"amount": 1}, "c1"), ("pay", {"amount": 2}, longest)]
+        assert self.turn(ex, shape, calls, {"pay": _pay}, policy) == ["paid 1", "paid 2"]
+
+    def test_a_call_id_is_echoed_exactly_and_quoted_in_a_message_only_if_it_is_plain(self, ex):
+        """The answer carries the id exactly as sent, whatever it holds: that is how the API
+        matches it. A message the gate raises describes an id that is not plain text."""
+        odd = ["id\nwith a newline", "id`tick` [PASS]", "id\u202egnp", "i" * 256]
+        tools, policy = {"pay": _pay}, (lambda n, a: [])
+        items = [{"call_id": i, "name": "pay", "arguments": '{"amount": 1}'} for i in odd]
+        outs = ex.gate_function_calls(self.loose_response(*items), tools, policy)
+        assert [o["call_id"] for o in outs] == odd
+        outs = ex.gate_tool_calls(
+            self.loose_completion(*(("pay", '{"amount": 1}', i) for i in odd)), tools, policy
+        )
+        assert [o["tool_call_id"] for o in outs] == odd
+        RAN.clear()
+        twice = [*items, *items, {"call_id": "plain", "name": "pay", "arguments": "{}"}] * 2
+        with pytest.raises(ValueError, match="duplicate call ids") as bad:
+            ex.gate_function_calls(self.loose_response(*twice), tools, policy)
+        message = str(bad.value)
+        assert message == (
+            "Recusal refused the turn: duplicate call ids ["
+            "<a call id of 17 characters, not shown>, <a call id of 15 characters, not shown>, "
+            "<a call id of 6 characters, not shown>, '" + "i" * 256 + "', and 1 more]"
+        )
+        assert RAN == []
+        many = [
+            {"call_id": f"{n}`" + "x" * 250, "name": "pay", "arguments": "{}"} for n in range(500)
+        ] * 2
+        with pytest.raises(ValueError, match="duplicate call ids") as bad:
+            ex.gate_function_calls(self.loose_response(*many), tools, policy)
+        assert len(str(bad.value)) < 300 and "and 496 more" in str(bad.value)
+
+    def test_the_answered_once_check_describes_the_ids_it_names(self):
+        import importlib
+
+        pytest.importorskip("openai", reason="the openai package is not installed")
+        module = importlib.import_module("recusal_openai._gate")
+        with pytest.raises(ValueError) as bad:
+            module._check_answered_once(["a\nb", "c"], ["c", "\x00", "x" * 300])
+        assert str(bad.value) == (
+            "Recusal refused the turn: calls [<a call id of 3 characters, not shown>, 'c'] but "
+            "answers [<a call id of 1 characters, not shown>, 'c', "
+            "<a call id of 300 characters, not shown>]"
+        )
+        assert module._id_shown(7) == "<a call id that is not a string>"
+        assert module._id_shown("") == "<a call id of 0 characters, not shown>"
+        assert module._id_shown("i" * 256) == repr("i" * 256)
+        assert module._id_shown("i" * 257) == "<a call id of 257 characters, not shown>"
+        assert module._id_shown("a`b") == "<a call id of 3 characters, not shown>"
+        with pytest.raises(ValueError, match="duplicate call ids \\['a'\\]"):
+            module._check_answered_once(["a", "a"], ["a", "a"])
+
+    # --- round three: the surviving mutants -------------------------------------------------
+
+    @pytest.mark.parametrize("answer_tool_errors", [False, True])
+    def test_the_tool_is_called_with_the_invocation_the_policy_judged(self, ex, answer_tool_errors):
+        """Not with the arguments as the model sent them: a wrapper that restates a
+        parameter with a default of its own would then fill it in after the policy had
+        judged the function's default."""
+        import functools
+
+        got: list = []
+
+        def redefault(fn):
+            @functools.wraps(fn)
+            def wrapper(x: int, limit: int = 1000):
+                got.append(("wrapper", x, limit))
+                return fn(x, limit)
+
+            return wrapper
+
+        @redefault
+        def search(x: int, limit: int = 10) -> str:
+            got.append(("body", x, limit))
+            return "found"
+
+        seen: list = []
+        out = ex.judge_and_run(
+            "search",
+            '{"x": 1}',
+            {"search": search},
+            lambda n, a: seen.append(a) or [],
+            answer_tool_errors=answer_tool_errors,
+        )
+        assert out == "found" and seen == [{"x": 1, "limit": 10}]
+        assert got == [("wrapper", 1, 10), ("body", 1, 10)]
+
+    def test_the_depth_check_walks_every_value_of_an_object(self, ex):
+        import importlib
+
+        module = importlib.import_module("recusal_openai._gate")
+        deep = json.loads("[" * 65 + "]" * 65)
+        for value in (
+            {"first": deep, "last": 1},
+            {"first": 1, "last": deep},
+            {"first": 1, "middle": deep, "last": 1},
+            {"outer": {"first": deep, "last": [1]}},
+            [deep, 1],
+            [1, deep],
+        ):
+            assert module._too_deep(value) is True, list(value)
+        assert module._too_deep({"first": deep[0], "last": 1}) is False
+        arguments = '{"extra": ' + "[" * 65 + "]" * 65 + ', "path": "p"}'
+        out = ex.judge_and_run("nest", arguments, {"nest": _nest}, lambda n, a: [])
+        assert out == "Recusal refused `nest`: arguments are nested too deeply" and RAN == []

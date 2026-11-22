@@ -182,10 +182,23 @@ a Chat Completions choice whose `finish_reason` is not `stop`, `tool_calls` or
 tool call of a type the adapter does not handle raises, naming it, as does a Chat
 Completions message with the legacy `function_call` field and a keyword argument the gate
 does not take (a mistyped one, `fail_closed`, `tool_use_id`, `surface`, `actor` or
-`control` without `audit`, `audit` without `surface`), and a call without an id is refused
-because the SDK's answer types do not require one. `audit=None` is the plain gate. The
-gate keeps no state between turns and has no helper for streaming: it takes a complete
-response.
+`control` with a value when `audit` is not passed at all, `audit` with a log and no
+`surface`), and a call without an id is refused because the SDK's answer types do not
+require one. A call id goes back in the answer and onto the audit entry exactly as sent,
+so the gate takes one of at most 256 characters and a longer one raises before anything
+runs. `audit=None` passed explicitly is the plain gate, with which `surface`, `actor` and
+`control` are accepted and not used, so a loop whose log is optional is one call
+(`audit=maybe_log, surface=...`); the two audited functions need a log and raise for
+`None`. A `surface` or `control` that `recusal.decide` would refuse (an empty or reserved
+surface, a control that is not a dict) raises `ValueError` naming the keyword before any
+call is looked at. The gate keeps no state between turns and has no helper for streaming:
+it takes a complete response.
+Whether a tool's signature can be judged is the kernel's answer, which is why the package
+requires `recusal>=0.15.0`, the first kernel that walks the wrappers of a decorated tool:
+any reason the kernel gives, and any error it raises, refuses the call before the policy
+runs. Two shapes are not seen: a wrapper that restates the function's parameters and
+does not pass one on in its body, which no signature shows, and, with a kernel that does
+not detect it, a decorator applied inside another decorator's closure.
 The gate calls tools synchronously: an `async def` tool and a generator function are
 refused before the policy runs, read through a `functools.partial`, a `staticmethod`, a
 bound method and `functools.lru_cache` but not through a wrapper the application wrote.

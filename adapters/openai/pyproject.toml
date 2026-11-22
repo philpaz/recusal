@@ -33,8 +33,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
-    "recusal>=0.14.0,<1",
+    # 0.15.0 is the first release whose `recusal.invocation` walks every callable a call
+    # reaches (`reached_parameters`). With an older kernel a decorated tool is not checked
+    # and can run with values no policy judged, so the floor is not lower.
+    "recusal>=0.15.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "openai>=3.49.0,<4",

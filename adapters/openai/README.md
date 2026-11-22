@@ -46,9 +46,10 @@ Install it from PyPI:
 pip install recusal-openai
 ```
 
-Requires Python 3.10+ (the SDK's minimum), `recusal>=0.14.0` and `openai>=3.49.0`. It is
+Requires Python 3.10+ (the SDK's minimum), `recusal>=0.15.0` and `openai>=3.49.0`. It is
 tested on every pull request against exactly `openai==3.49.0`, and weekly against the
-newest release.
+newest release. The kernel floor is what checks a decorated tool: beside an older
+kernel the package raises `ImportError` instead of gating without that check.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 
@@ -128,7 +129,9 @@ answers = audited_function_calls(response, tools, policy, log)
 `audited_tool_calls` is the Chat Completions form. Each call the model proposes, run or
 refused, is one hash-chained entry labeled `openai.responses.function_call` or
 `openai.chat_completions.tool_call` with the API's own call id and a SHA-256 fingerprint
-of the arguments (never the arguments). A refusal's reason on the log never quotes an
+of the arguments (never the arguments). The call id is on the entry exactly as the API
+sent it, and is at most 256 characters (see call ids below). A refusal's reason on the
+log never quotes an
 argument's key or value: a call that does not bind names the parameters the tool declares
 and counts the arguments it does not take. A tool you have is on the entry under the
 name you gave it. A name you have no tool for is the model's text: it is on the entry,
@@ -145,11 +148,30 @@ and both forms take `actor=` and `control=` for the entry. Called directly, the 
 functions also take `allow_on_pass=True`, which records a passing call as `allow`
 instead of `defer` and changes nothing about what runs.
 
-`audit=None` is the plain gate: nothing is recorded, so a loop whose log is optional can
-pass `audit=maybe_log`. `surface=`, `actor=` or `control=` with a value and no `audit=`,
-and `audit=` with no `surface=`, raise `TypeError` before anything is judged, so a loop
-that believes it is recording is never silently not recording. `tool_use_id=` and
-`fail_closed=` are not taken and raise the same way: each call is recorded under its own
+A loop whose log is optional is one call to the plain function:
+
+```python
+from recusal_openai import SURFACE_RESPONSES, gate_function_calls
+
+maybe_log = AuditLog(path="decisions.jsonl") if recording else None
+answers = gate_function_calls(response, tools, policy, audit=maybe_log, surface=SURFACE_RESPONSES)
+```
+
+`audit=None`, passed explicitly, is the plain gate: nothing is recorded, and `surface=`,
+`actor=` and `control=` are accepted and not used. When `audit=` is not passed at
+all, `surface=`, `actor=` or `control=` with a value raises `TypeError` before anything
+is judged, so a loop that believes it is recording is never silently not recording.
+`audit=` with a log and no `surface=` raises the same way. The two audited functions
+need a log: `audited_function_calls(response, tools, policy, None)` raises `TypeError`
+and runs nothing, because a function named "audited" that recorded nothing would
+mislead.
+
+A `surface=` or `control=` the kernel would not record raises `ValueError` naming the
+keyword, before any tool call is looked at, with a log and with `audit=None`: a surface
+that is empty, starts or ends with a space, is not a string or is the reserved
+`claude_code.pretooluse`, and a control that is not a dict. The rule is
+`recusal.decide`'s own: the gate asks it and restates nothing. `tool_use_id=` and
+`fail_closed=` are not taken and raise `TypeError`: each call is recorded under its own
 call id, and the gate always fails closed.
 
 ## What the gate refuses, and what it does not see
@@ -197,8 +219,13 @@ call id, and the gate always fails closed.
   - variadic (`*args`, `**kwargs`) and positional-only parameters;
   - a `functools.partial` and a callable object (an instance with `__call__`), because
     the kernel cannot read their annotations;
-  - with `recusal` 0.15.0 or later, a `functools.wraps` wrapper that adds a parameter of
-    its own to the function it wraps.
+  - a `functools.wraps` wrapper that adds a parameter of its own to the function it
+    wraps, and one that takes `*args, **kwargs` and also names a parameter the function
+    has: either would run with a value the policy never judged.
+
+  Whether a tool's signature can be judged is the kernel's answer. Whatever reason it
+  gives, and any error it raises while reading the tool, refuses that one call before
+  the policy runs.
 
   What to do instead: write a plain function with supported annotations and resolve
   richer types inside its body. Take a `str` and check it against the allowed values in
@@ -216,15 +243,70 @@ call id, and the gate always fails closed.
   `<a tool name that is not a string>`. So a tool name cannot close the backticks a
   refusal sets it in, start a new line, or put more than 64 characters of the model's
   text into an answer or an entry.
+- **Call ids.** A call id is the model's text too, and it has to go back exactly as
+  sent: in the answer, which is how the API matches it to the call, and on the audit
+  entry, which is how the entry is tied to the call. So the gate does not shorten or
+  describe it there. It takes a call id of at most 256 characters instead: a longer
+  one raises `ValueError` before anything in the turn runs, and writes no entry. That
+  bounds what one id can add to an answer or an entry at 256 characters. An id may
+  hold any character; on the log it is JSON-escaped, so it cannot start a line. A
+  message the gate raises (a duplicate id) quotes an id only if it is printable with
+  no backtick, names at most four, and otherwise describes each by its length, as
+  `<a call id of 17 characters, not shown>`.
 - **Refused by raising, before anything in the turn runs:** an output item or tool call
   of a type the gate does not handle (`custom_tool_call`, the provider's record of a
   hosted tool call, a type a later SDK adds), a Chat Completions message that carries
   the legacy `function_call` field (alone or beside `tool_calls`; the gate reads
   `tool_calls` only, so declare functions with `tools`, not `functions`), a call without
-  an id, a duplicate id, and a keyword argument the gate does not take (`TypeError`
-  naming it, whether or not the turn has calls): a mistyped one, `fail_closed`,
-  `tool_use_id`, `surface`, `actor` or `control` with a value and no `audit`, and
-  `audit` with no `surface`. A turn refused this way writes no audit entry.
+  an id, a call id of more than 256 characters, a duplicate id, and a keyword argument
+  the gate does not take (`TypeError` naming it, whether or not the turn has calls): a
+  mistyped one, `fail_closed`, `tool_use_id`, `surface`, `actor` or `control` with a
+  value when `audit` is not passed at all, and `audit` with a log and no `surface`. A
+  `surface` or `control` the kernel would not record raises `ValueError` naming it. A
+  turn refused this way writes no audit entry.
+- **Not seen: what a wrapper does in its own body.** The gate reads signatures, not
+  code. A `functools.wraps` wrapper that restates the function's parameters is judged
+  by them, and if its body then does not pass one on, the function runs on its own
+  default while the policy judged the model's value:
+
+  ```python
+  def logged(fn):
+      @functools.wraps(fn)
+      def wrapper(path: str, dry_run: bool = False):
+          return fn(path)  # dry_run is not passed on
+
+      return wrapper
+
+
+  @logged
+  def delete_tree(path: str, dry_run: bool = False) -> str: ...
+  ```
+
+  A call with `dry_run=true` is judged with `dry_run` true and `delete_tree` runs with
+  `dry_run` false. No check of a signature can see this. Give the gate the function
+  itself, or a wrapper that passes on every parameter it names.
+- **Not seen by a kernel that does not detect it: a decorator applied inside another
+  decorator.** The kernel follows a wrapper to what it wraps through `__wrapped__`. A
+  decorator that builds a second wrapper in its closure and calls that one hides it
+  from the walk:
+
+  ```python
+  def robust(fn):
+      inner = with_timeout(fn)  # takes timeout= itself, does not pass it on
+
+      @functools.wraps(fn)
+      def wrapper(*args, **kwargs):
+          return inner(*args, **kwargs)
+
+      return wrapper
+  ```
+
+  With a kernel that does not detect the hidden wrapper, a tool decorated this way is
+  judged and called, and a parameter the hidden wrapper keeps for itself reaches the
+  function at the function's default, not at the value the policy judged. A kernel
+  that detects it says so through its signature check, and the gate then refuses the
+  call before the policy runs. Until then, apply each decorator at the top level,
+  where the walk sees it, or give the gate the undecorated function.
 - **No state between turns.** Within one turn a duplicate or empty call id raises. The
   gate remembers nothing from one turn to the next, so a call id used again in a later
   turn is not detected: each turn is judged, answered and recorded on its own.

@@ -471,7 +471,11 @@ USERS = {
         "reached_parameters",
         "unsupported_signature",
     },
-    "adapters/openai/src/recusal_openai/_gate.py": {"detached", "unsupported_signature"},
+    "adapters/openai/src/recusal_openai/_gate.py": {
+        "detached",
+        "json_data",
+        "unsupported_signature",
+    },
     "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
 }
 
