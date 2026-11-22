@@ -131,8 +131,11 @@ The policy judges the invocation the tool executes, not the dict the model wrote
 input is validated once, defaults the model omitted are completed, and those same
 objects are passed to the function. Arguments the host supplies (state, store, runtime)
 are left out of judgment. An argument counts as the host's only when ToolNode put it in
-the tool's input for this call: a value the model sent that reaches the tool unchanged is
-judged like any other, whatever the tool's annotations say. An injected argument that
+the tool's input for this call, which it does for the tool's state, store and runtime
+parameters and for no other: a value that reaches the tool under any other injected name
+is judged, whoever wrote it (the model, or a hook that ran after the gate), and so is a
+value the model sent that reaches the tool unchanged, whatever the tool's annotations
+say. An injected argument that
 nothing filled is judged too, at the value the function runs with: the default behind an
 `InjectedState("role")` parameter when the state has no `role`, and the default of an
 `InjectedToolArg` parameter no host supplies. ToolNode strips whatever the model wrote
@@ -159,9 +162,11 @@ node = audited_tool_node([run_sql], policy, log)
 `ToolNode(tools, **recusal_audited_gates(policy, log))` is the same pair for a node you
 build yourself. Each call the gate sees, allowed or refused,
 is one hash-chained entry labeled `langgraph.toolnode` with LangGraph's tool call id and
-a SHA-256 fingerprint of the arguments (never the arguments). A call whose id is empty
-or not a string is refused, and its entry carries no call id. If the log cannot be
-written the call is refused. Check the log with `recusal audit verify decisions.jsonl`.
+a SHA-256 fingerprint of the arguments (never the arguments). An answer the gate
+withholds (see "Refused after the fact" below) is one more entry for that call. A call
+whose id is empty or not a string is refused, and its entry carries no call id. If the
+log cannot be written the call is refused. Check the log with
+`recusal audit verify decisions.jsonl`.
 
 The audited gates call the plain gate's own judging function, so there is one decision
 path.
@@ -171,11 +176,36 @@ path.
 **Tools it takes.** A `@tool` or `StructuredTool` function; a `BaseTool` subclass that
 implements `_run` (and `_arun`), with an `args_schema` or without one (the gate then
 holds it to the schema LangChain infers from `_run`, and completes what the model left
-out from `_run`'s defaults, since LangChain validates nothing for such a tool); and a
+out from the defaults of the method the route runs, since LangChain validates nothing
+for such a tool: `_run`, or on `ainvoke` and `astream` the class's own `_arun` when it
+defines one, so the value the policy is shown is the one that method runs with); and a
 single-input `Tool(name, func, description)` or `@tool(infer_schema=False)` whose
 function takes exactly one named parameter. LangChain hands that function one positional
 value whatever key the model wrote it under, so the policy sees it under the function's
 own parameter name: `Tool(name="lookup", func=lambda q: ...)` is judged as `{"q": ...}`.
+
+**MCP tools.** The tools `langchain-mcp-adapters` builds (`MultiServerMCPClient.get_tools()`,
+`load_mcp_tools`) are judged and run on `ainvoke` and `astream`. The policy is shown the
+arguments the adapter sends to the MCP server, exactly as it sends them, under the tool's
+name. Three things to know:
+
+- The adapter does not validate the arguments or fill a default the server's schema
+  gives: when the model leaves an argument out, the server applies its own default and
+  the policy is shown the call without it. See "Not seen" below.
+- A tool built with tool interceptors (`tool_interceptors=`) is refused before the policy
+  runs: an interceptor runs between the adapter and the server and can replace the
+  arguments after they were judged. Build the tools without interceptors, or give the
+  node a function of your own that names the parameters and calls the tool.
+- The library gives its tools no sync function, so `invoke` and `stream` refuse them (an
+  ungated `ToolNode` raises there).
+
+This is the one exception to the rule below about a function that takes only `**kwargs`,
+and it is made for that library's own function, recognised by the code object the
+library holds, not by its name or signature: a function of your own of the same shape,
+and a decorator or forwarder in front of the library's function, are held to the rule.
+It was checked with a real MCP server against every `langchain-mcp-adapters` release
+from 0.1.12 to 0.3.2. A tool from 0.1.11 or earlier is refused: those releases have no
+interceptors, and their function does not have the variable the gate reads to know that.
 
 **Argument values it can judge.** `None`, `bool`, `int`, `str` and a finite `float`; an
 `Enum` (by its value); `datetime`, `date` and `time` (as `isoformat()` text); a finite
@@ -195,32 +225,77 @@ does not run, and an audited gate records it as one entry:
   `_arun` (it would execute something other than the function the gate inspects). Build
   the tool with `@tool` or `StructuredTool`.
 - Input that does not validate against the tool's schema.
-- A parameter the schema omits, on the tool's function or on any decorator around it:
-  that is a value no proposal can carry and the policy would never see. A
-  `functools.wraps` decorator that adds a keyword of its own
-  (`def wrapper(*args, force=True, **kwargs)`) is the common case. Declare the parameter
-  in the schema, or set the value inside the function.
+- A parameter the schema omits, on the tool's function or on a decorator the gate can
+  read around it: that is a value no proposal can carry and the policy would never see.
+  The gate reads a decorator built with `functools.wraps`, and each one in a stack of
+  them. One that adds a keyword of its own (`def wrapper(*args, force=True, **kwargs)`)
+  is the common case. Declare the parameter in the schema, or set the value inside the
+  function.
+- A function that hands its arguments on to code the gate cannot read. The gate reads
+  the tool's function and, through `functools.wraps`, each function a decorator wraps.
+  The rule is on the innermost one it reaches: if that function takes `*args` or
+  `**kwargs`, every field the schema declares must be one of its parameters. Otherwise
+  it passes those arguments on, and whatever receives them fills its own defaults after
+  the policy has judged. The call is refused, naming one such field. This refuses:
+  - a decorator built without `functools.wraps` (`def wrapper(*args, **kwargs)`), on a
+    tool with an explicit `args_schema`. Build the decorator with `functools.wraps`, or
+    give the tool the function itself. Without an explicit schema LangChain infers one
+    from the wrapper itself, with the fields `args` and `kwargs`, and the gate holds
+    the wrapper to that;
+  - a `BaseTool` subclass whose `_arun(*args, **kwargs)` hands the call to `_run`, on
+    `ainvoke` and `astream` (`invoke` and `stream` run `_run` and are judged). Name the
+    parameters in `_arun`, or leave `_arun` out: LangChain then runs `_run` on a thread;
+  - a function that takes only `**kwargs` under a schema that declares fields:
+    `RunnableLambda(...).as_tool(args_schema=...)`, a `BaseTool` with an `args_schema`
+    whose `_run` is `(**kwargs)`, and a function of your own written as
+    `def call(**arguments)`. The gate cannot tell such a function from a decorator that
+    forwards. Give the node a function that names the parameters and calls the tool
+    (`async def read_file(path: str, depth: int = 2): return await
+    other_tool.ainvoke({"path": path, "depth": depth})` under `@tool`). The one exception
+    is the function `langchain-mcp-adapters` defines for its tools (see "MCP tools"
+    above), when it is the tool's own callable and the tool has no interceptors.
+
+  A function that takes `**kwargs` and also names every schema field runs: the variadic
+  then carries only keys the schema does not declare (the ones an `extra="allow"` schema
+  accepts, which are judged). The schema LangChain infers for `def f(q, **kwargs)`
+  declares `kwargs` itself, which is a parameter of the function, so that runs too.
 - A parameter that a forwarding decorator (`*args`, `**kwargs`) names and the function it
   wraps names too (`def wrapper(*args, timeout=30, **kwargs)` around
   `def fetch(url, timeout=...)`): the decorator keeps the judged argument and the
   function runs with its own default. Drop the name from the decorator's signature and
   read the argument from `kwargs` there, so it still reaches the function.
-- A function that declares `__signature__`, or whose parameters cannot be inspected: the
-  gate cannot tell which parameters it runs with.
+- A function that declares `__signature__`: the gate cannot tell which parameters it
+  runs with. LangSmith's `@traceable` and the `decorator` package's
+  `decorator.decorator` both set one on the function they return, so `@tool` over either
+  is refused. Apply `@traceable` inside the tool's function (to a function it calls), or
+  trace at the graph level; for `decorator.decorator`, call the decorated function from
+  the tool's function.
+- A function whose parameters cannot be inspected. A class-based decorator that is also a
+  descriptor (its class defines `__get__`) is one: Python's `inspect.signature` finds no
+  signature for it. `cachetools.cached` returns such an object. A stack of more
+  decorators than the kernel's walk follows is another. Call the decorated function from
+  a plain function and give the tool that.
 - A positional-only parameter.
 - A function parameter named `config` on a `@tool` or `StructuredTool` function, unless
   it is the function's `RunnableConfig`: LangChain writes the run configuration under
   that name, so the function never receives the model's value. `gated_tool_node` and
   `audited_tool_node` raise `TypeError` for such a tool when the node is built. Rename
   the parameter. A call that sets `run_manager` or `callbacks` is refused for the same
-  reason.
+  reason. `RunnableLambda(...).as_tool()` over a function typed to take one string is
+  refused as well, when the node is built and on every call: LangChain builds that tool
+  around the runnable's own `invoke(input, config)`. Write a function that calls the
+  runnable and give the node that
+  (`def shout(text: str) -> str: return runnable.invoke(text)` under `@tool`).
 - A parameter named `runtime` with a plain type such as `str`: ToolNode puts its runtime
   object under that name, so the input does not validate. Rename the parameter.
-- A Pydantic v1 `args_schema`: the gate reads no fields from it, so every parameter is
-  refused as absent from the schema. Use a Pydantic v2 model.
-- A single-input `Tool` whose function names a second parameter, or does not take its
-  input as its first named parameter (a decorator with `*args` in front of it, for
-  example). Use `@tool` with a schema.
+- A Pydantic v1 `args_schema`: the gate reads no fields from it, so it cannot hold the
+  function to it and every call is refused. Use a Pydantic v2 model.
+- A single-input `Tool` when any function the call reaches names a second parameter;
+  when its function does not take the input as its first named parameter (a decorator
+  with `*args` in front of it, or a builtin such as `Tool(func=str.upper)` or
+  `Tool(func=len)`, whose one parameter is positional-only); or when the innermost
+  function the gate reaches takes `*args` or `**kwargs` and does not name the input.
+  Use `@tool` with a schema, or wrap the builtin (`func=lambda text: text.upper()`).
 - A call whose name is not the name of the tool that would run. That happens when an
   earlier hook attaches a tool to a call ToolNode could not resolve
   (`request.override(tool=...)`): the policy would judge the model's string and the
@@ -233,19 +308,33 @@ does not run, and an audited gate records it as one entry:
   LangGraph (see the private names below).
 - A tool the node does not have.
 
-**Refused after the fact, when the tool may have run.** The gate judges inside the copy
-of the tool it hands to execution. When execution comes back without that copy's judging
-step having run, nothing was judged: the gate withholds the answer and returns a refusal
-that says so, and an audited gate records that refusal as its one entry. This is what
-happens if an installed LangGraph ran the tool some other way than through the copy, or
-if a hook between the gate and the tool swapped the tool or answered for it. The refusal
-does not undo anything: if the tool ran, what it did has happened.
+**Refused after the fact, when a tool may have run.** The gate judges inside the copy
+of the tool it hands to execution, and it passes an answer on only when the answer fits
+what that copy's judging step last did for the call. In three cases it withholds the
+answer and returns a refusal that says so, and an audited gate records that refusal as
+one entry:
+
+- The judging step never ran. Nothing was judged. This is what happens if an installed
+  LangGraph ran the tool some other way than through the copy, or if a hook between the
+  gate and the tool swapped the tool or answered for it.
+- The judging step refused the call, and the answer that came back is not that refusal
+  (an error `ToolMessage` whose text holds the gate's reason). This is what happens if a
+  hook between the gate and the tool answers a refused call by running another tool, a
+  fallback to a replica for example. The log then holds two entries for the call: the
+  refusal, and the withheld answer.
+- The judging step allowed the call, and the answer is a `ToolMessage` under another
+  tool's name. The gate cannot tell who made such a message, so this also withholds the
+  answer of a judged tool that builds its own `ToolMessage` and gives it a `name` other
+  than the tool's, after that tool has run. In such a tool leave `name` out, or set it
+  to the tool's name.
+
+The refusal does not undo anything: if a tool ran, what it did has happened.
 
 **Refused, never run unjudged.** A tool body reached without the gate's judging step.
 The copy of the tool the gate hands to execution runs its function only once per
 allowance, and only with the argument objects that step judged. This covers the callable
 the tool calls; a decorator that changes the arguments on their way to the function it
-wraps is covered only by the two decorator refusals above.
+wraps is covered only by the decorator refusals above.
 
 **Not on the audit log.** A call another `wrap_tool_call` hook answered without reaching
 the gate. And a call ToolNode itself fails before it invokes the tool, for example
@@ -260,6 +349,25 @@ gate has decided nothing, and no entry is written.
 - A tool that calls another tool directly, for example through `runtime.tools`: it
   bypasses every hook.
 - `runtime.tool_call_id`, as said above.
+- A default an MCP server applies. For a `langchain-mcp-adapters` tool the policy is
+  shown what is sent to the server. An argument the model leaves out is not sent, the
+  server fills it from its own schema or code, and neither the adapter nor the gate sees
+  that value. A policy that must bound such an argument has to refuse the call when the
+  argument is absent.
+- With a kernel that does not detect it, a decorator that applies another decorator
+  inside itself is not read. `functools.wraps(fn)` makes the outer wrapper point at
+  `fn`, and the gate follows that pointer, not what the wrapper calls:
+  `def resilient(fn): guarded = with_timeout(30)(fn)` with a `functools.wraps(fn)`
+  wrapper that calls `guarded`. A keyword the inner decorator adds, or keeps from the
+  function, then runs with a value the policy did not see. Apply each decorator to the
+  function directly, one above the other; the gate reads that stack.
+- A decorator, or any function, that names every parameter and calls another function
+  with different values. The gate reads signatures, not function bodies.
+- A tool that a hook between the gate and the tool ran besides the judged call, unless
+  the answer that comes back fails one of the three checks under "Refused after the
+  fact". After a call the judging step allowed, the gate withholds only a `ToolMessage`
+  under another tool's name: an answer under the judged tool's name, with no name, or of
+  another type (a `Command`) is passed on.
 - A function parameter named `run_manager` on a `@tool` or `StructuredTool` function,
   and one named `callbacks` on a `BaseTool` subclass's `_run`: LangChain keeps those two
   names out of every schema and, in these two places, does not fill them, so the
@@ -270,7 +378,8 @@ gate has decided nothing, and no entry is written.
 LangGraph (each begins with an underscore and carries no compatibility promise):
 
 - two helpers it imports, `langchain_core.tools.base._get_runnable_config_param` and
-  `langgraph.prebuilt.tool_node._get_all_injected_args`;
+  `langgraph.prebuilt.tool_node._get_all_injected_args` (of what the second returns it
+  reads `all_injected_keys`, `state`, `store` and `runtime`);
 - four members of `BaseTool`: `_injected_args_keys`, which it reads;
   `_to_args_and_kwargs`, which it replaces on a per-call copy of the tool; and `_run` and
   `_arun`, which it reads and guards on that copy;
@@ -286,6 +395,14 @@ answers False for a node that is not laid out as it expects. This is why `langgr
 bound at the next major version, and why the weekly lane against the newest releases
 exists: a release inside those bounds can still move a private name, and
 `tests/test_compat_langgraph.py` fails when one does.
+
+For `langchain-mcp-adapters`, which this package does not import or require, the gate
+reads three names when that library is loaded: the module `langchain_mcp_adapters.tools`,
+its function `convert_mcp_tool_to_langchain_tool`, and the variable `tool_interceptors`
+that function's inner `call_tool` holds. If a release moves any of them, its tools are
+refused (as a function that hands its arguments on, or as one whose interceptors cannot
+be read); none is run unjudged. A test pins the three against the library where it is
+installed; the pull request lanes do not install it.
 
 ## Compatibility
 

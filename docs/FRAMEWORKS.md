@@ -25,20 +25,31 @@ route reaches to the schema (a parameter that the function, or a `functools.wrap
 around it, declares and the schema omits, and that neither the host nor the framework fills,
 refuses the call: Python would fill it after judgment and the policy would never see the
 value that runs; so does a parameter a forwarding decorator names that the function it wraps
-names too), completes any schema parameter the framework's parse dropped (an `exclude=True`
+names too; and so does an innermost function that takes `*args` or `**kwargs` without naming
+every schema field, which hands arguments on to code the gate cannot read: a decorator built
+without `functools.wraps`, an `_arun(*args, **kwargs)` that hands the call to `_run`, and a
+function that takes only `**kwargs` under a schema; the one exception is the function
+`langchain-mcp-adapters` defines for its tools, recognised by its code object, which hands
+the judged arguments to the MCP server as they stand, so those tools are judged and run on
+the async routes unless they were built with tool interceptors, and a default the server
+applies to an argument the model left out is not seen), completes any schema parameter the framework's parse dropped (an `exclude=True`
 field, a root serializer) from the default that would run, projects every model-controlled
 argument field by field through a projection that runs no serializer of its own, decides,
 and passes those same completed objects to the function. Host arguments are not judged, and
 an argument counts as the host's only when ToolNode put it in the tool's input for this
-call: a value the model sent that arrives unchanged is judged, whatever the tool's
+call, which it does for state, store and runtime only: a value under any other injected name
+is judged, whoever wrote it, and a value the model sent that arrives unchanged is judged, whatever the tool's
 annotations say, and so is a value the tool's own parse step fills under an injected name,
 which is the tool call id (the model writes it) for an `InjectedToolCallId` parameter and
 the schema default for an injected argument no host supplied. A suppressed parameter with no
 default, a value the projection does not support, a tool whose class or instance overrides
 the standard `invoke`/`run` lifecycle, a call whose name is not the name of the tool that
 would run, and a call with an empty id, are refused before the policy runs. An answer that
-comes back without the judging copy's parse step having run is withheld and refused after
-the fact; the tool may have run by then. The package README lists every refusal and what to
+does not fit what the judging copy's parse step last did for the call is withheld and refused
+after the fact: one that comes back without that step having run, one that is not the gate's
+refusal after that step refused, and one under another tool's name after it allowed. A tool
+may have run by then. With a kernel that does not detect it, a decorator that applies another
+decorator inside itself is not read. The package README lists every refusal and what to
 do about it. A ToolNode's sync route consults only its sync hook slot,
 so the gate goes on both slots: `gated_tool_node(tools, policy)`, or `ToolNode(tools,
 **recusal_gates(policy))`, refuses the same way on `invoke`, `stream`, `ainvoke` and `astream`,
@@ -80,7 +91,10 @@ human-in-the-loop edit that redirects the call to another tool does not: `HumanI
 swaps the tool object, the other tool runs unjudged, and so does any middleware that swaps
 the tool or answers in its place (`LLMToolEmulator`). The gate sees that its judging step
 never ran, withholds the answer and returns a refusal that says so, but a swapped-in tool
-has run by then. Listed last, the gate judges whatever the others produced. One middleware
+has run by then. A middleware listed there that answers a call the gate refused by running
+another tool is withheld the same way, because the answer is not the gate's refusal, and so
+is an answer under another tool's name after an allowed call; an answer under the judged
+tool's name is passed on. Listed last, the gate judges whatever the others produced. One middleware
 object serves `agent.invoke` and `agent.ainvoke`; `agate_middleware(policy)` is the same
 middleware under the name earlier releases used for `ainvoke`. A tool given to
 `create_agent` as a dict is run by the model provider and reaches no tool-call middleware,
@@ -91,7 +105,8 @@ swaps in `audited_gate_middleware(policy, log)`: the LangGraph audited gate as m
 for both routes, writing each decision as a hash-chained `AuditLog` entry labeled
 `langchain.create_agent` with the tool call id. A middleware listed after it that answers in
 the tool's place leaves that call unjudged; the entry written for it is the refusal saying
-so, which is the same reason to list the gate last.
+so, which is the same reason to list the gate last. A withheld answer to a call the gate had
+already refused is a second entry for that call.
 
 ## OpenAI Agents SDK, function tools
 

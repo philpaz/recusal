@@ -15,7 +15,8 @@ tool's own lifecycle, so an argument rewrite by a middleware listed after it is 
 judged and recorded as rewritten. A middleware listed after it that swaps the tool object,
 or answers in the tool's place, removes the judging copy: the gate withholds that answer,
 refuses, and records the refusal as a call that was never judged, but a swapped-in tool has
-run by then.
+run by then. One that answers a call the gate refused by running another tool is withheld
+the same way, and the log then holds the refusal and the withheld answer, two entries.
 
 Not on the log: a model call refused because it offers a provider-run tool. No tool call
 exists at that point, so there is nothing to make an entry of.

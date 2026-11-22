@@ -117,9 +117,10 @@ agent = create_agent(
 It serves `invoke` and `ainvoke` alike; `audited_agate_middleware` is the same
 middleware under its earlier name. Each tool call the gate sees, allowed or
 refused, is one hash-chained entry labeled `langchain.create_agent` with LangChain's tool
-call id and a SHA-256 fingerprint of the arguments (never the arguments). A call whose id
-is empty or not a string is refused, and its entry carries no call id. If the log
-cannot be written the call is refused. Check the log with
+call id and a SHA-256 fingerprint of the arguments (never the arguments). An answer the
+gate withholds (see "What the gate does not see" below) is one more entry for that call.
+A call whose id is empty or not a string is refused, and its entry carries no call id. If
+the log cannot be written the call is refused. Check the log with
 `recusal audit verify decisions.jsonl`.
 
 A model call refused because it offers a provider-run tool is not on the log: no tool
@@ -134,16 +135,31 @@ In short, before the policy runs:
 
 - a tool that overrides the standard execution lifecycle, and input that does not
   validate;
-- a parameter the schema omits, on the tool's function or on a decorator around it
-  (`def wrapper(*args, force=True, **kwargs)`), and a parameter a forwarding decorator
-  names that the function it wraps names too;
+- a parameter the schema omits, on the tool's function or on a `functools.wraps`
+  decorator around it (`def wrapper(*args, force=True, **kwargs)`), and a parameter a
+  forwarding decorator names that the function it wraps names too;
+- a function that hands its arguments on to code the gate cannot read: the innermost
+  function the gate reaches takes `*args` or `**kwargs` and does not name every field of
+  the schema. That is a decorator built without `functools.wraps`, a `BaseTool` whose
+  `_arun(*args, **kwargs)` hands the call to `_run` (under `ainvoke`), and a function
+  that takes only `**kwargs` under a schema, `RunnableLambda(...).as_tool(args_schema=...)`
+  for one. Give the agent a function of your own that names the parameters and calls
+  the tool. The one exception is a tool `langchain-mcp-adapters` built, below;
+- a function that declares `__signature__`, which LangSmith's `@traceable` and
+  `decorator.decorator` set (apply `@traceable` inside the tool's function, or trace at
+  the graph level), and one Python cannot inspect, which `cachetools.cached` returns
+  (call the cached function from a plain function and give the agent that);
 - an argument value the policy cannot be shown faithfully: `pathlib.Path`, `set`,
   `bytes`, `timedelta`, Pydantic's `HttpUrl` and `SecretStr` among them. Declare the
   parameter as `str` and convert it inside the tool;
-- a function parameter named `config` that is not the function's `RunnableConfig`;
+- a function parameter named `config` that is not the function's `RunnableConfig`.
+  `RunnableLambda(...).as_tool()` over a function typed to take one string is refused
+  for its `config`: LangChain builds it around the runnable's own
+  `invoke(input, config)`;
 - a single-input `Tool(name, func, description)` whose function names more than one
-  parameter. One whose function takes exactly one named parameter is judged under that
-  parameter's name;
+  parameter, or is a builtin such as `str.upper` or `len`, whose parameter is
+  positional-only. One whose function takes exactly one named parameter is judged under
+  that parameter's name;
 - a call whose name is not the name of the tool that would run. An earlier middleware
   that attaches a tool to a call (`request.override(tool=...)`) must set the call's name
   to that tool's name in the same override; otherwise the policy would judge the model's
@@ -152,6 +168,13 @@ In short, before the policy runs:
 
 The call id is the model's. A parameter annotated `InjectedToolCallId` is shown to the
 policy under its own name; `runtime.tool_call_id` cannot be, so do not use it as data.
+
+**MCP tools.** The tools `langchain-mcp-adapters` builds are judged and run under
+`ainvoke` and `astream`; the policy is shown the arguments the adapter sends to the MCP
+server, exactly as it sends them. A tool built with `tool_interceptors=` is refused,
+because an interceptor can replace the arguments after they were judged. Under `invoke`
+such tools are refused, as the library gives them no sync function. The
+`recusal-langgraph` README has the detail and the releases this is checked against.
 
 ## What the gate does not see
 
@@ -165,11 +188,32 @@ hands on for execution. That decides what it sees:
   request and call the handler instead, so the gate runs it.
 - **A middleware listed after the gate that swaps the tool object or answers in the
   tool's place** (a human-in-the-loop edit that redirects the call to another tool, a
-  tool emulator). The gate's copy is gone, so the call is not judged. The gate notices
-  that its judging step never ran: it withholds the answer, returns a refusal saying so,
-  and the audited form records that refusal. A tool that was swapped in has run by then.
-  A middleware listed after the gate that only rewrites the arguments is still judged,
-  and recorded, as rewritten. This is why the gate goes last.
+  tool emulator, a fallback that answers an error by running another tool). The gate
+  does not judge what such a middleware runs, and a tool it swapped in has run by the
+  time the gate sees the answer. The gate passes an answer on only when it fits what
+  its judging step last did for the call, and otherwise withholds it, returns a refusal
+  saying so, and in the audited form records that refusal as one more entry. It
+  withholds an answer when its judging step never ran; when that step refused the call
+  and the answer is not that refusal (an error `ToolMessage` whose text holds the
+  gate's reason, with or without a reviewer's note in front); and when that step
+  allowed the call and the answer is a `ToolMessage` under another tool's name (a tool
+  of your own that builds its `ToolMessage` under a `name` other than the tool's is
+  withheld by this too, after it ran: leave `name` out, or use the tool's name). It
+  passes on any other answer: after an allowed call, one under the judged tool's name,
+  with no name, or of another type (a `Command`), even if the middleware ran a second
+  tool to produce it. A middleware listed after the gate that only rewrites the
+  arguments is still judged, and recorded, as rewritten, including a value it writes
+  under a parameter the tool's function marks as injected: only the state, store and
+  runtime the agent's `ToolNode` fills itself are left out of judgment. This is why the
+  gate goes last.
+- **A decorator that applies another decorator inside itself**, with a kernel that does
+  not detect it. `functools.wraps(fn)` makes the outer wrapper point at `fn`, and the
+  gate follows that pointer, not what the wrapper calls, so a keyword the inner
+  decorator adds or keeps runs with a value the policy did not see. Apply each
+  decorator to the function directly, one above the other.
+- **A default an MCP server applies.** For a `langchain-mcp-adapters` tool the policy
+  is shown what is sent to the server. An argument the model leaves out is not sent, and
+  the server fills it from its own schema or code; the gate does not see that value.
 - **A provider-run tool the gate was not shown.** The refusal above reads the tools of
   the model call as the gate receives them. A middleware listed after the gate that adds
   a dict tool to the model call adds it after the gate looked, and a tool the provider is

@@ -8,14 +8,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
-- **`recusal-langgraph` 0.3.0 (unreleased): the policy is shown every value the function
-  runs with, and the gate refuses where it cannot tie what it judged to what runs.** Found
-  by the adapter review of 2026-11-21 and reproduced on `langgraph` 1.2.20 with
-  `langchain-core` 1.7.7. No bypass by the model against an ordinary setup was found;
-  these are values the function ran with that the policy never saw, tools that were
-  always refused, and refusals that did not say why. This is why the release is 0.3.0:
-  calls that ran are now refused, and a policy can be shown an argument it was not shown
-  before.
+- **`recusal-langgraph` 0.3.0 (unreleased): the policy is shown the call id and the
+  defaults that run, and the gate refuses a function it cannot read to the end and an
+  answer it cannot tie to what it judged.** Found by the two adapter reviews of
+  2026-11-21 and reproduced on `langgraph` 1.2.20 with `langchain-core` 1.7.7. No bypass
+  by the model against an ordinary setup was found; these are values the function ran
+  with that the policy never saw, tools that were always refused, and refusals that did
+  not say why. This is why the release is 0.3.0: calls that ran are now refused, and a
+  policy can be shown an argument it was not shown before. One shape is still not read,
+  and the README lists it under what the gate does not see: with a kernel that does not
+  detect it, a decorator that applies another decorator inside itself.
   - The tool call id is written by the model, and a parameter annotated
     `InjectedToolCallId` receives it. It counted as the host's and was left out of
     judgment (judged `{'title': 'x'}`, ran with the id `DELETE-ALL'; --`). The policy is
@@ -29,10 +31,37 @@ All notable changes to this project are documented here. The format follows
     way. The gate now walks every callable the call reaches with the kernel's
     `recusal.invocation.reached_parameters` and refuses all three, naming the parameter and
     never its default. It therefore requires `recusal>=0.15.0`, and a test pins the floor.
+    Whatever that walk raises is a refusal before the policy runs.
+  - A decorator built without `functools.wraps`, on a tool with an explicit
+    `args_schema`, was read as the whole tool: the gate judged `timeout=5`, the decorator
+    kept it, and the function ran `timeout=999999`; and a default the schema omits ran
+    unseen behind `def wrapper(*args, **kwargs)`. The innermost function the gate reaches
+    must now account for the schema: if it takes `*args` or `**kwargs`, every schema
+    field must be one of its parameters, or the call is refused before the policy runs.
+    This also refuses a function that takes only `**kwargs` under a schema, which the
+    gate cannot tell from a forwarding decorator: `RunnableLambda(...).as_tool(args_schema=...)`
+    and a `BaseTool` with an `args_schema` whose `_run` is `(**kwargs)`. These ran judged
+    before. The README says what to give the node instead. A function that takes
+    `**kwargs` and names every schema field still runs.
+  - The tools `langchain-mcp-adapters` builds are the one exception to that rule, and
+    still run judged on the async routes: their function hands the judged arguments to
+    the MCP server as they stand. It is recognised by the code object the library holds,
+    so a function of the same shape, or a forwarder in front of it, is not excepted.
+    A tool built with `tool_interceptors=` is now refused: an interceptor can replace
+    the arguments after the policy judged them (judged `depth=3`, the server received
+    `depth=99`). A default the server applies to an argument the model left out is not
+    seen, and the README says so.
+  - A `BaseTool` subclass with no `args_schema` whose `_arun(*args, **kwargs)` hands the
+    call to `_run` ran `_run`'s default unseen on `ainvoke` (judged `{'table': 'users'}`,
+    ran `limit=1000000`, while `invoke` judged the limit and refused). It is refused on
+    the async routes by the rule above.
   - An injected argument that nothing filled ran the function's default unseen: the
     default behind `InjectedState("role")` when the state has no `role`, and the default of
     an `InjectedToolArg` no host supplies. An argument now counts as the host's only when
-    ToolNode put it in the tool's input; the default that runs is judged.
+    ToolNode put it in the tool's input; the default that runs is judged. ToolNode fills
+    state, store and runtime and nothing else, so a value under any other injected name
+    is judged: a hook after the gate that rewrote such a value had it read as the host's
+    (judged `{'x': 1}`, ran `secret='evil'`).
   - A call whose name is not the name of the tool that would run is refused before the
     policy runs, under the tool's own registered name. An earlier hook can attach a tool
     to a call ToolNode could not resolve (`request.override(tool=...)`); the policy then
@@ -42,7 +71,14 @@ All notable changes to this project are documented here. The format follows
     longer passes the answer on: it returns a refusal saying the call was never judged and
     that the tool may have run, and an audited gate records it. A ToolNode that ran the
     registered tool instead of the copy returned the tool's result as a success with the
-    policy never asked.
+    policy never asked. The same holds when that step refused the call and the answer is
+    not that refusal, and when it allowed the call and the answer is a `ToolMessage`
+    under another tool's name: a hook between the gate and the tool that answered a
+    refused `DELETE` by running it on another tool had its success passed on. An audited
+    gate writes one more entry for the withheld answer. An answer under the judged tool's
+    name after an allowed call is passed on; the README says so. A tool that returns its
+    own `ToolMessage` under a `name` other than the tool's now has that answer withheld,
+    after it ran; the README says to leave the name out or use the tool's.
   - An audited gate given a call with an empty id answered "policy error", never called
     the policy and wrote nothing, while the plain gate ran the same call. Both now refuse a
     call whose id is empty or not a string, before the policy, and the audited form writes
@@ -51,9 +87,17 @@ All notable changes to this project are documented here. The format follows
     `_injected_args_keys` was silently treated as having no host arguments.
   - Tools that were always refused now run judged: a `BaseTool` subclass with no
     `args_schema` (held to the schema LangChain infers from `_run`, and completed from
-    `_run`'s defaults, since LangChain validates nothing for it), and a single-input
-    `Tool(name, func, description)` or `@tool(infer_schema=False)` whose function takes
-    exactly one named parameter (judged under that parameter's name).
+    the defaults of the method the route runs, `_run` or the class's own `_arun`, since
+    LangChain validates nothing for it), and a single-input `Tool(name, func,
+    description)` or `@tool(infer_schema=False)` whose function takes exactly one named
+    parameter (judged under that parameter's name).
+  - A Pydantic v1 `args_schema` refuses the call with that reason; its parameters were
+    refused one by one as absent from the schema, and a function taking only `**kwargs`
+    under it was not refused at all. A callable Python cannot inspect is refused with
+    what to do about it: `@tool` over `cachetools.cached` is one, new in this release.
+    The README names the decorators and tool builders it refuses (LangSmith's
+    `@traceable`, `decorator.decorator`, `cachetools.cached`,
+    `RunnableLambda(...).as_tool()`, `Tool(func=str.upper)`) and what to use instead.
   - A function parameter named `config` on a `@tool` or `StructuredTool` function never
     receives the model's value, because LangChain writes the run configuration there. It
     was refused after the policy had run, as "arguments other than the ones the gate
@@ -88,9 +132,13 @@ All notable changes to this project are documented here. The format follows
     tool's place (a human-in-the-loop edit that redirects the call to another tool, a tool
     emulator) still leaves the call unjudged, and a swapped-in tool still runs. The gate
     now withholds that answer and refuses, and the audited form records the refusal; the
-    call was unrecorded before. `docs/FRAMEWORKS.md` said a human-in-the-loop edit listed
-    after the gate always reaches the judging copy; it does only when the edit keeps the
-    tool.
+    call was unrecorded before. It also withholds the answer of a middleware listed after
+    it that answers a refused call by running another tool (a fallback to a replica ran a
+    refused `DELETE` and its success was passed on), and an answer under another tool's
+    name after an allowed call; the audited form records one more entry for it. An answer
+    under the judged tool's name after an allowed call is passed on, and the README says
+    so. `docs/FRAMEWORKS.md` said a human-in-the-loop edit listed after the gate always
+    reaches the judging copy; it does only when the edit keeps the tool.
   - The README lists what the gate does not see: a middleware listed before the gate that
     runs a tool itself, a provider-run tool the gate was not shown, a sub-agent's tools
     and `runtime.tools`.

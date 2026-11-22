@@ -2461,3 +2461,1247 @@ class TestWhatRunsIsWhatWasJudged:
         assert seen == [] and example.EXECUTED == []
         assert answer.status == "error" and answer.tool_call_id == ""
         assert "the tool call has no id" in answer.content
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
+class TestWhatTheGateCannotReadIsRefused:
+    """Review round 2 of the package (2026-11): arguments handed on to code the gate could
+    not read (a decorator built without ``functools.wraps``, an ``_arun`` that hands the
+    call to ``_run``), an answer that did not come from the execution the gate judged, and
+    six checks no test pinned. Each test names its finding."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("langgraph")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_langgraph_round2_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    call = staticmethod(TestWhatRunsIsWhatWasJudged.call)
+    no_delete = staticmethod(TestWhatRunsIsWhatWasJudged.no_delete)
+    run = TestWhatRunsIsWhatWasJudged.run
+    ROUTES = TestWhatRunsIsWhatWasJudged.ROUTES
+
+    HANDS_ON = "the tool's innermost callable takes `*args` or `**kwargs` and does not name `{}`"
+
+    # --- F-B: a decorator built without functools.wraps -------------------------------------
+
+    @staticmethod
+    def unwrapped_tools(ran):
+        """The review's two shapes: a decorator without ``functools.wraps`` that keeps the
+        judged ``timeout`` for itself, and one that hides the function's own default."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        def with_timeout(fn):
+            def wrapper(*args, timeout=30, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def logged(fn):
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def fetch(url: str, timeout: int = 999999) -> str:
+            ran.append((url, timeout))
+            return "fetched"
+
+        class UrlTimeout(BaseModel):
+            url: str
+            timeout: int = 30
+
+        class UrlOnly(BaseModel):
+            url: str
+
+        return [
+            StructuredTool.from_function(
+                func=with_timeout(fetch), name="keeps", description="d", args_schema=UrlTimeout
+            ),
+            StructuredTool.from_function(
+                func=logged(fetch), name="hides", description="d", args_schema=UrlOnly
+            ),
+        ]
+
+    @ROUTES
+    def test_a_decorator_without_functools_wraps_is_refused_before_the_policy(self, example, route):
+        ran, seen = [], []
+        calls = [
+            self.call("keeps", {"url": "u", "timeout": 5}, "a"),
+            self.call("hides", {"url": "u"}, "b"),
+        ]
+        messages = self.run(example, route, self.unwrapped_tools(ran), calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert [m.status for m in messages] == ["error", "error"]
+        for message in messages:
+            assert self.HANDS_ON.format("url") in message.content
+            assert "build a decorator with `functools.wraps`" in message.content
+
+    def test_negative_control_ungated_the_unwrapped_decorators_run_the_unseen_default(
+        self, example
+    ):
+        ran = []
+        calls = [
+            self.call("keeps", {"url": "u", "timeout": 5}, "a"),
+            self.call("hides", {"url": "u"}, "b"),
+        ]
+        self.run(example, "sync", self.unwrapped_tools(ran), calls, None, gated=False)
+        assert ran == [("u", 999999), ("u", 999999)], "neither ran the 5 the model sent"
+
+    def test_a_function_with_kwargs_runs_when_it_names_every_schema_field(self, example):
+        """``**kwargs`` alone is not refused: the variadic then carries only what the schema
+        does not declare. LangChain's inferred schema declares the variadic itself, under
+        its own name, and that is a parameter of the function too."""
+        from langchain_core.tools import StructuredTool, tool
+
+        ran, seen = [], []
+
+        def js(table, **rest):
+            ran.append((table, rest))
+            return "ok"
+
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        named = StructuredTool(name="js", description="d", func=js, args_schema=schema)
+
+        @tool
+        def inferred(q: str, **kwargs: Any) -> str:
+            """Inferred."""
+            ran.append((q, kwargs))
+            return "ok"
+
+        assert set(inferred.args_schema.model_fields) == {"q", "kwargs"}
+        calls = [self.call("js", {"table": "t"}, "a"), self.call("inferred", {"q": "x"}, "b")]
+        messages = self.run(example, "sync", [named, inferred], calls, self.no_delete(seen))
+        assert [m.status for m in messages] == ["success", "success"], messages
+        assert sorted(seen, key=str) == [("inferred", {"q": "x"}), ("js", {"table": "t"})]
+        assert sorted(ran, key=str) == [("t", {}), ("x", {})]
+
+    @ROUTES
+    def test_a_function_that_takes_only_kwargs_under_a_schema_is_refused(self, example, route):
+        """A function of your own with the shape ``langchain-mcp-adapters`` gives its tools
+        (``call_tool(runtime=None, **arguments)`` under a JSON schema), and a ``BaseTool``
+        whose ``_run`` is ``(**kwargs)``: the gate cannot tell either from a decorator that
+        forwards. Only the function that library itself defines is the exception."""
+        from langchain_core.tools import BaseTool, StructuredTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        def call_tool(runtime=None, **arguments):
+            ran.append(arguments)
+            return "ok"
+
+        async def acall_tool(runtime=None, **arguments):
+            ran.append(arguments)
+            return "ok"
+
+        schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "depth": {"type": "integer", "default": 2}},
+        }
+        mcp_shaped = StructuredTool(
+            name="mcp", description="d", func=call_tool, coroutine=acall_tool, args_schema=schema
+        )
+
+        class Args(BaseModel):
+            q: str
+
+        class Loose(BaseTool):
+            name: str = "loose"
+            description: str = "d"
+            args_schema: type[BaseModel] = Args
+
+            def _run(self, **kwargs: Any) -> str:
+                ran.append(kwargs)
+                return "ok"
+
+        calls = [self.call("mcp", {"path": "/x"}, "a"), self.call("loose", {"q": "x"}, "b")]
+        messages = self.run(example, route, [mcp_shaped, Loose()], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        by_id = {m.tool_call_id: m.content for m in messages}
+        assert self.HANDS_ON.format("depth") in by_id["a"]
+        assert self.HANDS_ON.format("q") in by_id["b"]
+
+    def test_a_function_with_no_variadic_is_not_held_to_fields_it_does_not_name(self, example):
+        """The rule is about a function that can hand arguments on. One with no ``*args``
+        or ``**kwargs`` cannot receive a name it does not declare: the call is judged, and
+        Python refuses the extra argument when the tool is called."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class Args(BaseModel):
+            q: str
+            note: str = "n"
+
+        def lookup(q: str) -> str:
+            ran.append(q)
+            return "found"
+
+        tool = StructuredTool(name="lookup", description="d", func=lookup, args_schema=Args)
+        call = self.call("lookup", {"q": "x"})
+        copy = _adapter()._judging(tool, call, self.no_delete(seen), {}, False)
+        args, kwargs = copy._to_args_and_kwargs({"q": "x"}, "c1")
+        assert seen == [("lookup", {"q": "x", "note": "n"})] and kwargs == {"q": "x", "note": "n"}
+        with pytest.raises(TypeError, match="unexpected keyword argument 'note'"):
+            copy.func(*args, **kwargs)
+        assert ran == []
+
+    def test_the_innermost_callable_is_the_last_one_the_kernels_walk_returns(self, example):
+        """The check reads the last level of ``reached_parameters``. A class-based decorator
+        built with ``functools.update_wrapper`` has a ``__call__(*args, **kwargs)`` and a
+        ``__wrapped__``: the function it wraps must stay the last level, or this ordinary
+        tool would be refused."""
+        import functools
+
+        from langchain_core.tools import StructuredTool
+
+        ran, seen = [], []
+
+        class Counted:
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        def lookup(key: str, limit: int = 10) -> str:
+            ran.append((key, limit))
+            return "found"
+
+        levels = _adapter()._reached(Counted(lookup))
+        assert list(levels[-1]) == ["key", "limit"]
+        tool = StructuredTool.from_function(func=Counted(lookup), name="lookup", description="d")
+        messages = self.run(
+            example, "sync", [tool], [self.call("lookup", {"key": "k"})], self.no_delete(seen)
+        )
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("lookup", {"key": "k", "limit": 10})] and ran == [("k", 10)]
+
+    # --- F-C: a schemaless BaseTool whose async method hands the call to _run ---------------
+
+    @staticmethod
+    def export_tools(ran):
+        from langchain_core.tools import BaseTool
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "Export rows."
+
+            def _run(self, table: str, limit: int = 1000000) -> str:
+                ran.append(("export", table, limit))
+                return "exported"
+
+            async def _arun(self, *args: Any, **kwargs: Any) -> str:
+                return await asyncio.to_thread(self._run, *args, **kwargs)
+
+        class Count(BaseTool):
+            name: str = "count"
+            description: str = "Count rows."
+
+            def _run(self, table: str, limit: int = 10) -> str:
+                ran.append(("sync", table, limit))
+                return "counted"
+
+            async def _arun(self, table: str, limit: int = 99) -> str:
+                ran.append(("async", table, limit))
+                return "counted"
+
+        return [Export(), Count()]
+
+    @staticmethod
+    def limit_under(cap, seen):
+        from recusal import Finding
+
+        def policy(name, args):
+            seen.append((name, dict(args)))
+            if args.get("limit", 0) > cap:
+                return [Finding.fail("limit", severity="CRITICAL", message="limit too high")]
+            return []
+
+        return policy
+
+    def test_an_arun_that_hands_the_call_to_run_is_refused_on_the_async_route(self, example):
+        """The schema is inferred from ``_run``; ``_arun(*args, **kwargs)`` names none of it,
+        so the default ``_run`` fills (``limit=1000000``) ran unseen on ``ainvoke``."""
+        ran, seen = [], []
+        calls = [self.call("export", {"table": "users"})]
+        policy = self.limit_under(1000, seen)
+        messages = self.run(example, "sync", self.export_tools(ran), calls, policy)
+        assert seen == [("export", {"table": "users", "limit": 1000000})] and ran == []
+        assert "limit too high" in messages[0].content
+        seen.clear()
+        messages = self.run(example, "async", self.export_tools(ran), calls, policy)
+        assert seen == [] and ran == [], "refused before the policy, and not run"
+        assert messages[0].status == "error"
+        assert self.HANDS_ON.format("limit") in messages[0].content
+
+    def test_negative_control_ungated_the_async_route_runs_the_unseen_limit(self, example):
+        ran = []
+        calls = [self.call("export", {"table": "users"})]
+        self.run(example, "async", self.export_tools(ran), calls, None, gated=False)
+        assert ran == [("export", "users", 1000000)]
+
+    @ROUTES
+    def test_a_schemaless_tool_is_completed_from_the_method_its_route_runs(self, example, route):
+        """With ``_run`` and ``_arun`` both defined, each route is completed from, and
+        runs, its own method's default."""
+        ran, seen = [], []
+        calls = [self.call("count", {"table": "users"})]
+        messages = self.run(
+            example, route, self.export_tools(ran), calls, self.limit_under(1000, seen)
+        )
+        assert messages[0].status == "success", messages[0].content
+        limit = 99 if route == "async" else 10
+        assert seen == [("count", {"table": "users", "limit": limit})]
+        assert ran == [(route, "users", limit)]
+
+    # --- F-A: any failure of the kernel's walk is a refusal ---------------------------------
+
+    @pytest.mark.parametrize("kind", [ValueError, RuntimeError])
+    def test_a_walk_failure_of_a_kind_the_gate_does_not_know_is_a_refusal(
+        self, example, monkeypatch, kind
+    ):
+        """The kernel decides what its walk refuses. Whatever it raises, the adapter turns
+        into a refusal before the policy; it does not need to know the type."""
+
+        class AppliesAnotherDecoratorInside(kind):
+            pass
+
+        def unreadable(func):
+            raise AppliesAnotherDecoratorInside("a wrapper holds another wrapper of its function")
+
+        ran, seen = [], []
+        monkeypatch.setattr(_adapter(), "_reached_parameters", unreadable)
+        messages, executed = example.run_calls(
+            [self.call("run_sql", {"sql": SELECT})], policy=self.no_delete(seen)
+        )
+        assert executed == [] and seen == [] and ran == []
+        assert messages[0].status == "error"
+        assert "cannot be inspected for its parameters (AppliesAnotherDecoratorInside)" in (
+            messages[0].content
+        )
+        assert "a wrapper holds another wrapper" not in messages[0].content
+
+    def test_a_class_based_decorator_that_is_a_descriptor_is_refused_with_what_to_do(self, example):
+        """``cachetools.cached`` returns such an object. ``inspect.signature`` takes an
+        object whose class defines ``__get__`` for a builtin and finds no signature."""
+        import functools
+        import types
+
+        from langchain_core.tools import StructuredTool, tool
+
+        ran, seen = [], []
+
+        class Cached:
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+            def __get__(self, obj, objtype=None):
+                return self if obj is None else types.MethodType(self, obj)
+
+        @Cached
+        def lookup(key: str) -> str:
+            """Look a key up."""
+            ran.append(key)
+            return "found"
+
+        calls = [self.call("lookup", {"key": "k"})]
+        messages = self.run(example, "sync", [tool(lookup)], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert "cannot be inspected for its parameters (ValueError)" in messages[0].content
+        assert "call the decorated function from a plain function" in messages[0].content
+        # negative control: ungated it runs, and the README's advice runs gated
+        self.run(example, "sync", [tool(lookup)], calls, None, gated=False)
+        assert ran == ["k"]
+
+        def plain(key: str) -> str:
+            return lookup(key)
+
+        advised = StructuredTool.from_function(func=plain, name="lookup", description="d")
+        messages = self.run(example, "sync", [advised], calls, self.no_delete(seen))
+        assert messages[0].status == "success" and seen == [("lookup", {"key": "k"})]
+
+    def test_a_schema_the_gate_cannot_read_is_refused(self, example):
+        """A Pydantic v1 ``args_schema`` declares no fields the gate reads. A function
+        that takes only ``**kwargs`` would otherwise pass every check against it."""
+        import pydantic.v1
+        from langchain_core.tools import StructuredTool
+
+        ran, seen = [], []
+
+        class V1Args(pydantic.v1.BaseModel):
+            q: str
+
+        def loose(**kwargs):
+            ran.append(kwargs)
+            return "ok"
+
+        tool = StructuredTool(name="v1", description="d", func=loose, args_schema=V1Args)
+        messages = self.run(
+            example, "sync", [tool], [self.call("v1", {"q": "x"})], self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert "neither a Pydantic v2 model nor a JSON schema dict" in messages[0].content
+
+    # --- the review's surviving mutations, each pinned ----------------------------------------
+
+    def test_a_keyword_default_on_a_decorator_in_the_middle_of_a_stack_is_refused(self, example):
+        """Pins M26: the absent-from-schema refusal applied only to the first callable."""
+        import functools
+
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def confirmable(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, force=True, **kwargs):
+                ran.append(("force", force))
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        @tool
+        @logged
+        @confirmable
+        @logged
+        def drop_table(table: str) -> str:
+            """Drop a table."""
+            ran.append(("drop_table", table))
+            return "dropped"
+
+        calls = [self.call("drop_table", {"table": "t"})]
+        messages = self.run(example, "sync", [drop_table], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert "the callable's parameter `force` is absent from the argument schema" in (
+            messages[0].content
+        )
+        self.run(example, "sync", [drop_table], calls, None, gated=False)
+        assert ran == [("force", True), ("drop_table", "t")]
+
+    @pytest.mark.parametrize("shape", ["inner_adds", "wrapper_in_front", "inner_forwards"])
+    def test_a_single_input_tool_is_held_to_every_callable_it_reaches(self, example, shape):
+        """Pins M24 (another parameter looked for only on the first callable) and N48 (the
+        input's name taken from the innermost callable, so a ``*args`` decorator in front
+        went unnoticed), and holds a single input to the innermost callable too."""
+        import functools
+
+        from langchain_core.tools import Tool
+
+        ran, seen = [], []
+
+        if shape == "inner_adds":
+
+            def inner(q, mode="DELETE"):
+                ran.append((q, mode))
+                return "found"
+
+            @functools.wraps(inner)
+            def lookup(q):
+                return inner(q)
+
+            expected = "the callable's parameter `mode` is not the tool's single input"
+        elif shape == "wrapper_in_front":
+
+            def inner(q):
+                ran.append(q)
+                return "found"
+
+            @functools.wraps(inner)
+            def lookup(*args, **kwargs):
+                return inner(*args, **kwargs)
+
+            expected = "does not take its input as a first named parameter"
+        else:
+
+            def inner(*parts, **options):
+                ran.append(parts)
+                return "found"
+
+            @functools.wraps(inner)
+            def lookup(q):
+                return inner(q)
+
+            expected = self.HANDS_ON.format("q")
+
+        tool = Tool(name="lookup", func=lookup, description="Look up.")
+        calls = [self.call("lookup", {"__arg1": "x"})]
+        messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
+        assert ran == [] and seen == []
+        assert messages[0].status == "error" and expected in messages[0].content
+        self.run(example, "sync", [tool], calls, None, gated=False)
+        assert ran != []
+
+    def test_a_single_input_function_with_kwargs_that_names_its_input_runs(self, example):
+        from langchain_core.tools import Tool
+
+        ran, seen = [], []
+
+        def lookup(q, **options):
+            ran.append((q, options))
+            return "found"
+
+        tool = Tool(name="lookup", func=lookup, description="Look up.")
+        calls = [self.call("lookup", {"__arg1": "x"})]
+        messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("lookup", {"q": "x"})] and ran == [("x", {})]
+
+    @staticmethod
+    def request(tool, name="run_sql", args=None, ident="c1"):
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        call = {"name": name, "args": args or {"sql": SELECT}, "id": ident, "type": "tool_call"}
+        return ToolCallRequest(tool_call=call, tool=tool, state={}, runtime=None)
+
+    def test_a_refusal_before_the_judging_copy_is_answered_under_the_calls_id(self, example):
+        """Pins M30: ``refuse()`` could answer every such call with an empty id."""
+        seen = []
+        gate = example.recusal_gate(self.no_delete(seen))
+
+        def never(request):
+            raise AssertionError("a refused call is not executed")
+
+        unknown = gate(self.request(None, name="nope"), never)
+        misnamed = gate(self.request(example.run_sql, name="Run_SQL"), never)
+        assert seen == []
+        for answer in (unknown, misnamed):
+            assert answer.status == "error" and answer.tool_call_id == "c1"
+        assert "no tool by that name" in unknown.content
+        assert "names another tool" in misnamed.content
+
+    def test_the_node_helpers_read_a_coroutine_for_a_parameter_named_config(self, example):
+        """Pins N38: ``_checked`` read ``func`` only, so a coroutine-only tool was built and
+        then refused on every call."""
+        from langchain_core.tools import StructuredTool
+
+        async def setup(name: str, config: str = "safe") -> str:
+            return "ok"
+
+        tool = StructuredTool.from_function(coroutine=setup, name="setup", description="d")
+        assert tool.func is None
+        with pytest.raises(TypeError, match="tool `setup`: its function's parameter `config`"):
+            example.gated_tool_node([tool], lambda name, args: [])
+
+    def test_a_tool_that_overrides_ainvoke_is_refused_on_both_routes(self, example):
+        """Pins N51: ``ainvoke`` could be dropped from the lifecycle the gate checks, and a
+        tool that overrides it reaches its body on the async route without the parse step."""
+        from langchain_core.messages import ToolMessage
+        from langchain_core.tools import BaseTool
+
+        ran = []
+
+        class Direct(BaseTool):
+            name: str = "direct"
+            description: str = "Overrides only ainvoke."
+
+            def _run(self, sql: str) -> str:
+                ran.append(sql)
+                return "recorded"
+
+            async def ainvoke(self, input, config=None, **kwargs):
+                content = self._run(**input["args"])
+                return ToolMessage(content=content, tool_call_id=input["id"], name=self.name)
+
+        calls = [self.call("direct", {"sql": DELETE})]
+        for route in ("sync", "async"):
+            messages = self.run(example, route, [Direct()], calls, self.no_delete([]))
+            assert ran == [], route
+            assert "Direct overrides `ainvoke`" in messages[0].content
+        self.run(example, "async", [Direct()], calls, None, gated=False)
+        assert ran == [DELETE]
+
+    # --- F-D: the answer is the judged execution's ----------------------------------------------
+
+    @staticmethod
+    def replica():
+        from langchain_core.tools import tool
+
+        ran = []
+
+        @tool
+        def run_sql_replica(sql: str) -> str:
+            """Run SQL on the replica."""
+            ran.append(sql)
+            return "replica ran " + sql
+
+        return run_sql_replica, ran
+
+    def falling_back(self, example, route, policy, other, when):
+        """A node whose gate is followed by a step that runs ``other`` in the tool's place:
+        ``when="error"`` after an error answer, ``when="always"`` after any answer."""
+        gates = example.recusal_gates(policy)
+
+        def again(first):
+            return when == "always" or getattr(first, "status", None) == "error"
+
+        def after(request, execute):
+            def fallback(judged):
+                first = execute(judged)
+                return execute(judged.override(tool=other)) if again(first) else first
+
+            return gates["wrap_tool_call"](request, fallback)
+
+        async def aafter(request, execute):
+            async def fallback(judged):
+                first = await execute(judged)
+                return await execute(judged.override(tool=other)) if again(first) else first
+
+            return await gates["awrap_tool_call"](request, fallback)
+
+        return example.ToolNode(
+            [example.echo, example.run_sql, other], wrap_tool_call=after, awrap_tool_call=aafter
+        )
+
+    def in_graph(self, example, route, node, calls):
+        example.EXECUTED.clear()
+        if route == "async":
+            return asyncio.run(example.run_in_graph_async(node, calls))
+        return example.run_in_graph(node, calls)
+
+    @ROUTES
+    def test_a_refused_call_cannot_come_back_as_another_tools_answer(self, example, route):
+        """The policy refused ``run_sql``; a step after the gate then ran the same DELETE
+        on another tool and returned its success. The judging step had been entered once,
+        so that answer was passed on."""
+        seen = []
+        other, ran = self.replica()
+        node = self.falling_back(example, route, self.no_delete(seen), other, "error")
+        messages = self.in_graph(example, route, node, [self.call("run_sql", {"sql": DELETE})])
+        assert seen == [("run_sql", {"sql": DELETE})]
+        assert ran == [DELETE] and example.EXECUTED == [], "the other tool ran; that is done"
+        assert messages[0].status == "error" and messages[0].name == "run_sql"
+        assert messages[0].tool_call_id == "c1"
+        assert "replica ran" not in messages[0].content
+        assert "did not allow the call" in messages[0].content
+        assert "its result is withheld" in messages[0].content
+
+    @ROUTES
+    def test_an_answer_under_another_tools_name_is_withheld(self, example, route):
+        """The judged call was allowed and ran; a step after the gate then ran another tool
+        and returned that tool's answer in its place."""
+        seen = []
+        other, ran = self.replica()
+        node = self.falling_back(example, route, self.no_delete(seen), other, "always")
+        messages = self.in_graph(example, route, node, [self.call("run_sql", {"sql": SELECT})])
+        assert seen == [("run_sql", {"sql": SELECT})]
+        assert example.EXECUTED == [("run_sql", {"sql": SELECT})] and ran == [SELECT]
+        assert messages[0].status == "error" and messages[0].name == "run_sql"
+        assert "replica ran" not in messages[0].content
+        assert "under the name of another tool than the one the gate judged" in (
+            messages[0].content
+        )
+        assert "run_sql_replica" not in messages[0].content
+
+    def test_a_tool_that_names_its_own_message_otherwise_is_withheld_as_the_readme_says(
+        self, example
+    ):
+        """The gate cannot tell who made a ``ToolMessage`` under another name. A tool that
+        builds its own must leave the name out or use the tool's; both of those pass."""
+        from typing import Annotated
+
+        from langchain_core.messages import ToolMessage
+        from langchain_core.tools import InjectedToolCallId, tool
+
+        def answering(tool_name, **named):
+            @tool(tool_name)
+            def answer(sql: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> ToolMessage:
+                """Answer with a message of its own."""
+                return ToolMessage(content="own " + sql, tool_call_id=tool_call_id, **named)
+
+            return answer
+
+        tools = [
+            answering("unnamed"),
+            answering("named", name="named"),
+            answering("misnamed", name="something_else"),
+        ]
+        calls = [self.call(t.name, {"sql": SELECT}, t.name) for t in tools]
+        messages = self.run(example, "sync", tools, calls, self.no_delete([]))
+        by_id = {m.tool_call_id: m for m in messages}
+        assert by_id["unnamed"].content == by_id["named"].content == "own " + SELECT
+        assert by_id["misnamed"].status == "error"
+        assert "under the name of another tool" in by_id["misnamed"].content
+
+    def test_what_fits_the_judging_step_is_passed_on_and_nothing_else(self, example):
+        from langchain_core.messages import ToolMessage
+        from langgraph.types import Command
+
+        settled = _adapter()._settled
+
+        def answer(content, status="success", name="run_sql"):
+            return ToolMessage(content=content, tool_call_id="c1", name=name, status=status)
+
+        reason = "Recusal refused `run_sql` [FAIL]: no delete"
+        # never entered
+        assert "never judged" in settled(answer("ran"), [], "run_sql")
+        # allowed: the tool's answer, an error the node made of the tool's exception, a
+        # message the tool built itself without a name, a Command
+        for result in (
+            answer("ran"),
+            answer("boom", status="error"),
+            answer("ran", name=None),
+            Command(update={}),
+        ):
+            assert settled(result, [True], "run_sql") is None
+        assert "another tool" in settled(answer("ran", name="other"), [True], "run_sql")
+        # refused: only the refusal itself, bare or with a note in front of it
+        assert settled(answer(reason, status="error"), [reason], "run_sql") is None
+        assert settled(answer("Note. " + reason, status="error"), [reason], "run_sql") is None
+        for result in (
+            answer(reason),
+            answer("another error", status="error"),
+            answer([{"type": "text", "text": reason}], status="error"),
+            answer([reason], status="error"),
+            Command(update={}),
+        ):
+            assert "did not allow the call" in settled(result, [reason], "run_sql")
+        # what the step did last is what counts
+        assert settled(answer(reason, status="error"), [True, reason], "run_sql") is None
+        assert settled(answer("ran"), [reason, True], "run_sql") is None
+        unsettled = answer("boom", status="error")
+        assert "did not allow the call" in settled(unsettled, [True, None], "run_sql")
+
+    def test_a_retry_of_the_judging_copy_is_judged_again_and_its_answer_passed_on(self, example):
+        """A step after the gate that calls the same request again reaches the judging
+        copy again: nothing is withheld."""
+        seen = []
+        gate = example.recusal_gate(self.no_delete(seen))
+
+        def retrying(request, execute):
+            def twice(judged):
+                execute(judged)
+                return execute(judged)
+
+            return gate(request, twice)
+
+        node = example.ToolNode([example.echo, example.run_sql], wrap_tool_call=retrying)
+        for sql, status in ((SELECT, "success"), (DELETE, "error")):
+            seen.clear()
+            messages = self.in_graph(example, "sync", node, [self.call("run_sql", {"sql": sql})])
+            assert seen == [("run_sql", {"sql": sql})] * 2
+            assert messages[0].status == status and "withheld" not in messages[0].content
+
+    # --- an injected name ToolNode does not fill is never the host's --------------------------
+
+    @staticmethod
+    def disagreeing_tool(ran):
+        """The function marks ``secret`` injected; the schema declares it as an ordinary
+        argument, and ToolNode reads the schema: it neither strips nor fills ``secret``."""
+        from typing import Annotated
+
+        from langchain_core.tools import InjectedToolArg, StructuredTool
+        from pydantic import BaseModel
+
+        class Args(BaseModel):
+            x: int
+            secret: str = "safe"
+
+        def act(x: int, secret: Annotated[str, InjectedToolArg] = "safe") -> str:
+            ran.append((x, secret))
+            return "acted"
+
+        return StructuredTool.from_function(func=act, name="act", description="d", args_schema=Args)
+
+    @ROUTES
+    @pytest.mark.parametrize("sent", [{"x": 1, "secret": "a"}, {"x": 1}], ids=["sent", "unsent"])
+    def test_a_value_written_after_the_gate_under_an_injected_name_is_judged(
+        self, example, route, sent
+    ):
+        """A hook between the gate and the tool rewrote ``secret``. It arrived changed, so
+        it was read as the host's and left out of judgment (judged ``{'x': 1}``, ran
+        ``secret='DELETE'``). ToolNode fills state, store and runtime only; a value under
+        any other injected name is judged."""
+        ran, seen = [], []
+        gates = example.recusal_gates(self.no_delete(seen))
+
+        def rewritten(judged):
+            call = dict(judged.tool_call)
+            call["args"] = {**call["args"], "secret": "DELETE"}
+            return judged.override(tool_call=call)
+
+        def after(request, execute):
+            return gates["wrap_tool_call"](request, lambda judged: execute(rewritten(judged)))
+
+        async def aafter(request, execute):
+            async def rewriting(judged):
+                return await execute(rewritten(judged))
+
+            return await gates["awrap_tool_call"](request, rewriting)
+
+        node = example.ToolNode(
+            [self.disagreeing_tool(ran)], wrap_tool_call=after, awrap_tool_call=aafter
+        )
+        messages = self.in_graph(example, route, node, [self.call("act", sent)])
+        assert seen == [("act", {"x": 1, "secret": "DELETE"})]
+        assert ran == [] and messages[0].status == "error"
+
+    def test_a_value_toolnode_fills_is_still_the_hosts_whatever_a_hook_wrote_there(self, example):
+        """ToolNode removes what a hook wrote under a state parameter and puts the state
+        there: the host's value runs, and it is left out of judgment."""
+        from typing import Annotated
+
+        from langchain_core.tools import tool
+        from langgraph.prebuilt import InjectedState
+
+        ran, seen = [], []
+
+        @tool
+        def act(x: int, state: Annotated[dict, InjectedState]) -> str:
+            """Act on the graph state."""
+            ran.append((x, sorted(state)))
+            return "acted"
+
+        gate = example.recusal_gate(self.no_delete(seen))
+
+        def after(request, execute):
+            def rewriting(judged):
+                call = dict(judged.tool_call)
+                call["args"] = {**call["args"], "state": "DELETE"}
+                return execute(judged.override(tool_call=call))
+
+            return gate(request, rewriting)
+
+        node = example.ToolNode([act], wrap_tool_call=after)
+        messages = self.in_graph(example, "sync", node, [self.call("act", {"x": 1})])
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("act", {"x": 1})] and ran == [(1, ["messages"])]
+        adapter = _adapter()
+        assert adapter._node_fills(act) == {"state"}
+        assert adapter._node_fills(self.disagreeing_tool([])) == frozenset()
+        assert adapter._host_keys(self.disagreeing_tool([])) == {"secret"}
+
+    def test_a_value_the_parse_step_writes_itself_under_a_state_name_is_judged(self, example):
+        """The host's keys are read before the tool's own parse step runs. A tool whose
+        parse step writes a value under a state parameter the host did not fill (the state
+        has no ``role``) wrote that value itself: it is judged, not taken for the host's."""
+        from typing import Annotated
+
+        from langchain_core.tools import StructuredTool
+        from langgraph.prebuilt import InjectedState
+
+        ran, seen = [], []
+
+        class WritesItself(StructuredTool):
+            def _parse_input(self, tool_input, tool_call_id):
+                tool_input["role"] = "DELETE"
+                return super()._parse_input(tool_input, tool_call_id)
+
+        def act(what: str, role: Annotated[str, InjectedState("role")] = "viewer") -> str:
+            ran.append((what, role))
+            return "acted"
+
+        tool = WritesItself.from_function(func=act, name="act", description="d")
+        assert _adapter()._node_fills(tool) == {"role"}
+        call = self.call("act", {"what": "x"})
+        copy = _adapter()._judging(tool, call, self.no_delete(seen), {}, False)
+        with pytest.raises(example.RecusalRefusal, match="no delete"):
+            copy._to_args_and_kwargs({"what": "x"}, "c1")
+        assert seen == [("act", {"what": "x", "role": "DELETE"})] and ran == []
+
+    def test_the_names_toolnode_fills_that_cannot_be_read_refuse_the_call(
+        self, example, monkeypatch
+    ):
+        adapter = _adapter()
+        real = adapter._get_all_injected_args
+        seen = []
+
+        class WithoutState:
+            def __init__(self, injected):
+                self.all_injected_keys = injected.all_injected_keys
+                self.store, self.runtime = injected.store, injected.runtime
+
+        monkeypatch.setattr(
+            adapter, "_get_all_injected_args", lambda tool: WithoutState(real(tool))
+        )
+        gate = example.recusal_gate(self.no_delete(seen))
+        answer = gate(self.request(example.run_sql), lambda judged: "ran")
+        assert seen == [] and answer.status == "error"
+        assert "cannot be read from the installed LangChain and LangGraph (AttributeError)" in (
+            answer.content
+        )
+
+    # --- the one exception: the function langchain-mcp-adapters defines to call a server ----
+
+    MCP_SCHEMA = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "depth": {"type": "integer", "default": 2}},
+        "required": ["path"],
+    }
+
+    @staticmethod
+    def mcp_library(monkeypatch, holds_interceptors=True):
+        """A stand-in for ``langchain_mcp_adapters.tools`` with the library's own structure
+        (0.2.2 to 0.3.2): a builder ``convert_mcp_tool_to_langchain_tool`` whose nested
+        ``call_tool(runtime=None, **arguments)`` hands ``arguments`` to the server through
+        its ``tool_interceptors``. The stand-in is put where the library would be imported,
+        so the gate's recognition runs as it does against the library. Returns the builder;
+        ``received`` collects what the server is handed."""
+        import types
+        from typing import Annotated
+
+        from langchain_core.tools import InjectedToolArg, StructuredTool
+
+        if holds_interceptors:
+
+            def convert_mcp_tool_to_langchain_tool(received, schema, tool_interceptors=None):
+                async def call_tool(
+                    runtime: Annotated[object, InjectedToolArg()] = None, **arguments: Any
+                ) -> tuple:
+                    for interceptor in tool_interceptors or ():
+                        arguments = interceptor(arguments)
+                    received.append(arguments)
+                    return "served", None
+
+                return StructuredTool(
+                    name="read_file",
+                    description="Read a file.",
+                    args_schema=schema,
+                    coroutine=call_tool,
+                    response_format="content_and_artifact",
+                )
+
+        else:
+
+            def convert_mcp_tool_to_langchain_tool(received, schema, tool_interceptors=None):
+                async def call_tool(
+                    runtime: Annotated[object, InjectedToolArg()] = None, **arguments: Any
+                ) -> tuple:
+                    received.append(arguments)
+                    return "served", None
+
+                return StructuredTool(
+                    name="read_file",
+                    description="Read a file.",
+                    args_schema=schema,
+                    coroutine=call_tool,
+                    response_format="content_and_artifact",
+                )
+
+        module = types.ModuleType("langchain_mcp_adapters.tools")
+        module.convert_mcp_tool_to_langchain_tool = convert_mcp_tool_to_langchain_tool
+        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.tools", module)
+        return convert_mcp_tool_to_langchain_tool
+
+    def test_a_tool_langchain_mcp_adapters_built_runs_with_exactly_the_judged_arguments(
+        self, example, monkeypatch
+    ):
+        """Its function takes only ``**arguments`` under the server's schema, which the
+        hand-on rule refuses. What it hands on is the judged arguments as they stand, to
+        the server, so it is the one exception. A default the server applies is not seen:
+        the adapter does not fill ``depth``, and the policy is shown the call without it."""
+        received, seen = [], []
+        build = self.mcp_library(monkeypatch)
+        tool = build(received, self.MCP_SCHEMA)
+        calls = [
+            self.call("read_file", {"path": "/x", "depth": 3}, "both"),
+            self.call("read_file", {"path": "/y"}, "omitted"),
+            self.call("read_file", {"path": "/z", "mode": "DELETE"}, "refused"),
+        ]
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        assert {m.tool_call_id: m.status for m in messages} == {
+            "both": "success",
+            "omitted": "success",
+            "refused": "error",
+        }
+        judged = sorted((args for _, args in seen), key=str)
+        assert judged == [
+            {"path": "/x", "depth": 3},
+            {"path": "/y"},
+            {"path": "/z", "mode": "DELETE"},
+        ]
+        assert sorted(received, key=str) == [{"path": "/x", "depth": 3}, {"path": "/y"}]
+        # the library gives its tools no sync function: refused there, as ungated it raises
+        seen.clear(), received.clear()
+        messages = self.run(example, "sync", [tool], calls[:1], self.no_delete(seen))
+        assert "the tool has no callable for this route" in messages[0].content
+        assert seen == [] and received == []
+
+    def test_anything_in_front_of_the_mcp_function_is_held_to_the_ordinary_rule(
+        self, example, monkeypatch
+    ):
+        """The exception is for the library's function as the tool's own callable. A
+        forwarder in front of it, with or without ``functools.wraps``, is refused."""
+        import functools
+
+        from langchain_core.tools import StructuredTool
+
+        received, seen = [], []
+        inner = self.mcp_library(monkeypatch)(received, self.MCP_SCHEMA).coroutine
+
+        async def forwarder(*args, **kwargs):
+            return await inner(*args, **kwargs)
+
+        @functools.wraps(inner)
+        async def wrapped(*args, **kwargs):
+            return await inner(*args, **kwargs)
+
+        for front in (forwarder, wrapped):
+            tool = StructuredTool(
+                name="read_file",
+                description="d",
+                args_schema=self.MCP_SCHEMA,
+                coroutine=front,
+                response_format="content_and_artifact",
+            )
+            calls = [self.call("read_file", {"path": "/x"})]
+            messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+            assert seen == [] and received == []
+            assert self.HANDS_ON.format("depth") in messages[0].content
+
+    def test_a_look_alike_of_the_mcp_function_is_refused(self, example, monkeypatch):
+        """Same name, same signature, the library's ``__module__`` and ``__qualname__``
+        written onto it: it is not the code object the library's builder holds."""
+        from langchain_core.tools import StructuredTool
+
+        received, seen = [], []
+        real = self.mcp_library(monkeypatch)(received, self.MCP_SCHEMA).coroutine
+
+        async def call_tool(runtime=None, **arguments):
+            received.append(arguments)
+            return "served", None
+
+        call_tool.__module__ = real.__module__ = "langchain_mcp_adapters.tools"
+        call_tool.__qualname__ = real.__qualname__
+        tool = StructuredTool(
+            name="read_file",
+            description="d",
+            args_schema=self.MCP_SCHEMA,
+            coroutine=call_tool,
+            response_format="content_and_artifact",
+        )
+        calls = [self.call("read_file", {"path": "/x"})]
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        assert seen == [] and received == []
+        assert self.HANDS_ON.format("depth") in messages[0].content
+        assert _adapter()._calls_an_mcp_server(real) is True
+        assert _adapter()._calls_an_mcp_server(call_tool) is False
+
+    def test_the_mcp_function_is_recognised_only_while_the_library_holds_it(
+        self, example, monkeypatch
+    ):
+        received = []
+        real = self.mcp_library(monkeypatch)(received, self.MCP_SCHEMA).coroutine
+        adapter = _adapter()
+        assert adapter._calls_an_mcp_server(real) is True
+        # a callable that is not a function, and a builder that is not one
+        assert adapter._calls_an_mcp_server(lambda **arguments: None) is False
+        assert adapter._calls_an_mcp_server(print) is False
+        module = sys.modules["langchain_mcp_adapters.tools"]
+        monkeypatch.setattr(module, "convert_mcp_tool_to_langchain_tool", None)
+        assert adapter._calls_an_mcp_server(real) is False
+        monkeypatch.delitem(sys.modules, "langchain_mcp_adapters.tools")
+        assert adapter._calls_an_mcp_server(real) is False
+
+    def test_an_mcp_tool_built_with_interceptors_is_refused_before_the_policy(
+        self, example, monkeypatch
+    ):
+        """A tool interceptor runs between the library's function and the server and can
+        replace the arguments (judged ``depth=3``, the server received ``depth=99``)."""
+        received, seen = [], []
+        build = self.mcp_library(monkeypatch)
+        tool = build(received, self.MCP_SCHEMA, [lambda arguments: {**arguments, "depth": 99}])
+        calls = [self.call("read_file", {"path": "/x", "depth": 3})]
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        assert seen == [] and received == []
+        assert "built by langchain-mcp-adapters with tool interceptors" in messages[0].content
+        # negative control: ungated, the server receives what no policy saw
+        self.run(example, "async", [tool], calls, None, gated=False)
+        assert received == [{"path": "/x", "depth": 99}]
+        # an empty list of interceptors is none
+        received.clear()
+        tool = build(received, self.MCP_SCHEMA, [])
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        assert messages[0].status == "success" and received == [{"path": "/x", "depth": 3}]
+
+    def test_an_mcp_function_that_does_not_show_its_interceptors_is_refused(
+        self, example, monkeypatch
+    ):
+        """A release whose function does not hold ``tool_interceptors`` where the gate
+        reads it: the gate cannot tell whether the arguments are sent as judged."""
+        received, seen = [], []
+        build = self.mcp_library(monkeypatch, holds_interceptors=False)
+        tool = build(received, self.MCP_SCHEMA)
+        calls = [self.call("read_file", {"path": "/x"})]
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        assert seen == [] and received == []
+        assert "does not show the gate whether the tool has interceptors" in messages[0].content
+
+    def test_the_names_read_from_langchain_mcp_adapters_are_the_librarys_own(self, example):
+        """Against the library itself, where it is installed: the builder, the function it
+        defines, the variable that holds its interceptors, and a tool it builds running
+        with exactly the judged arguments."""
+        pytest.importorskip("mcp")
+        tools = pytest.importorskip("langchain_mcp_adapters.tools")
+        from mcp.types import CallToolResult, TextContent
+        from mcp.types import Tool as MCPTool
+
+        adapter = _adapter()
+        assert tools.__name__ == adapter._MCP_MODULE
+        builder = getattr(tools, adapter._MCP_BUILDER)
+        received, seen = [], []
+
+        class Session:
+            async def call_tool(self, name, arguments, **options):
+                received.append((name, arguments))
+                return CallToolResult(content=[TextContent(type="text", text="served")])
+
+        described = MCPTool(name="read_file", description="d", inputSchema=self.MCP_SCHEMA)
+        tool = builder(Session(), described)
+        assert adapter._MCP_INTERCEPTORS in tool.coroutine.__code__.co_freevars
+        assert adapter._calls_an_mcp_server(tool.coroutine) is True
+        calls = [self.call("read_file", {"path": "/x"})]
+        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("read_file", {"path": "/x"})]
+        assert received == [("read_file", {"path": "/x"})]
+
+        async def rewrite(request, handler):
+            return await handler(request.override(args={**request.args, "depth": 99}))
+
+        intercepted = builder(Session(), described, tool_interceptors=[rewrite])
+        messages = self.run(example, "async", [intercepted], calls, self.no_delete(seen))
+        assert "with tool interceptors" in messages[0].content
+        assert received == [("read_file", {"path": "/x"})], "nothing more was sent"
+
+    # --- the refusals the README names, and what it says to use instead ----------------------
+
+    def test_the_readme_advice_for_a_kwargs_only_tool_runs_gated(self, example):
+        """A function of your own that names the parameters and calls the tool."""
+        from langchain_core.tools import StructuredTool, tool
+
+        ran, seen = [], []
+
+        async def call_tool(runtime=None, **arguments):
+            ran.append(arguments)
+            return "ok"
+
+        schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "depth": {"type": "integer", "default": 2}},
+        }
+        mcp_tool = StructuredTool(
+            name="mcp", description="d", coroutine=call_tool, args_schema=schema
+        )
+
+        @tool
+        async def read_file(path: str, depth: int = 2) -> str:
+            """Read a file."""
+            return await mcp_tool.ainvoke({"path": path, "depth": depth})
+
+        calls = [self.call("read_file", {"path": "/x"})]
+        messages = self.run(example, "async", [read_file], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("read_file", {"path": "/x", "depth": 2})]
+        assert ran == [{"path": "/x", "depth": 2}]
+
+    def test_a_tool_over_langsmith_traceable_is_refused_and_tracing_inside_it_runs(self, example):
+        langsmith = pytest.importorskip("langsmith")
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        @tool
+        @langsmith.traceable
+        def traced(q: str) -> str:
+            """Traced from outside."""
+            ran.append(q)
+            return "ok"
+
+        @langsmith.traceable
+        def work(q: str) -> str:
+            ran.append(q)
+            return "ok"
+
+        @tool
+        def inside(q: str) -> str:
+            """Traced from inside."""
+            return work(q)
+
+        calls = [self.call("traced", {"q": "x"}, "a"), self.call("inside", {"q": "x"}, "b")]
+        messages = self.run(example, "sync", [traced, inside], calls, self.no_delete(seen))
+        by_id = {m.tool_call_id: m for m in messages}
+        assert "declares a signature that is not its own" in by_id["a"].content
+        assert by_id["b"].status == "success", by_id["b"].content
+        assert seen == [("inside", {"q": "x"})] and ran == ["x"]
+
+    def test_a_runnable_made_into_a_tool_is_refused_and_a_function_that_calls_it_runs(
+        self, example
+    ):
+        import warnings
+
+        from langchain_core.runnables import RunnableLambda
+        from langchain_core.tools import tool
+        from pydantic import BaseModel
+
+        seen = []
+
+        def exclaim(text: str) -> str:
+            return text + "!"
+
+        shout = RunnableLambda(exclaim)
+
+        class Pair(BaseModel):
+            a: int
+            b: int
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            of_a_string = shout.as_tool(name="shout", description="d")
+            of_a_schema = RunnableLambda(lambda d: d["a"] + d["b"]).as_tool(
+                Pair, name="add", description="d"
+            )
+        with pytest.raises(TypeError, match="tool `shout`: its function's parameter `config`"):
+            example.gated_tool_node([of_a_string], self.no_delete(seen))
+        calls = [self.call("shout", {"__arg1": "x"}, "a"), self.call("add", {"a": 1, "b": 2}, "b")]
+        messages = self.run(
+            example, "sync", [of_a_string, of_a_schema], calls, self.no_delete(seen)
+        )
+        by_id = {m.tool_call_id: m.content for m in messages}
+        assert seen == []
+        assert "the callable's parameter `config` is not the tool's single input" in by_id["a"]
+        assert self.HANDS_ON.format("a") in by_id["b"]
+
+        @tool("shout")
+        def advised(text: str) -> str:
+            """Shout."""
+            return shout.invoke(text)
+
+        messages = self.run(
+            example, "sync", [advised], [self.call("shout", {"text": "x"})], self.no_delete(seen)
+        )
+        assert messages[0].content == "x!" and seen == [("shout", {"text": "x"})]
+
+    def test_a_single_input_tool_over_a_builtin_is_refused_and_a_wrapped_one_runs(self, example):
+        from langchain_core.tools import Tool
+
+        seen = []
+        builtin = Tool(name="upper", func=str.upper, description="d")
+        wrapped = Tool(name="upper", func=lambda text: text.upper(), description="d")
+        calls = [self.call("upper", {"__arg1": "x"})]
+        messages = self.run(example, "sync", [builtin], calls, self.no_delete(seen))
+        assert seen == []
+        assert "does not take its input as a first named parameter" in messages[0].content
+        messages = self.run(example, "sync", [wrapped], calls, self.no_delete(seen))
+        assert messages[0].content == "X" and seen == [("upper", {"text": "x"})]

@@ -424,6 +424,71 @@ class TestLangChainAgentAudit:
         )
         assert executed == [("run_sql", {"sql": DELETE})]
 
+    # --- review round 2: an answer that is not the judged execution's ----------------------
+
+    @ROUTES
+    def test_a_refused_call_answered_by_another_tool_is_withheld_and_recorded_once_more(
+        self, example, gate, log, is_async
+    ):
+        """The review's reproduction: a fallback listed after the gate answered a refused
+        ``run_sql`` by running the same DELETE on a replica tool. The agent was handed the
+        replica's success and the log held only the deny. The answer is now withheld, and
+        the withheld answer is one more entry, a deny under the judged tool's name."""
+        from langchain.agents.middleware import wrap_tool_call
+        from langchain_core.messages import HumanMessage
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        @tool
+        def run_sql_replica(sql: str) -> str:
+            """Run SQL on the replica."""
+            ran.append(sql)
+            return "replica ran " + sql
+
+        if is_async:
+
+            @wrap_tool_call
+            async def fallback(request, handler):
+                result = await handler(request)
+                if getattr(result, "status", None) != "error":
+                    return result
+                return await handler(request.override(tool=run_sql_replica))
+
+        else:
+
+            @wrap_tool_call
+            def fallback(request, handler):
+                result = handler(request)
+                if getattr(result, "status", None) != "error":
+                    return result
+                return handler(request.override(tool=run_sql_replica))
+
+        def recording(name, args):
+            seen.append(name)
+            return gate.sql_scope_policy(name, args)
+
+        middleware = [example.audited_gate_middleware(recording, log), fallback]
+        agent = gate.scripted_agent(
+            [_call("run_sql", {"sql": DELETE})], middleware, [gate.run_sql, run_sql_replica]
+        )
+        gate.EXECUTED.clear()
+        start = {"messages": [HumanMessage(content="go")]}
+        result = asyncio.run(agent.ainvoke(start)) if is_async else agent.invoke(start)
+        message = gate.tool_messages(result)[0]
+        assert seen == ["run_sql"] and gate.EXECUTED == []
+        assert ran == [DELETE], "listed after the gate, the fallback ran the other tool"
+        assert message.status == "error" and message.name == "run_sql"
+        assert "replica ran" not in str(message.content)
+        actions = [
+            (e["action"]["tool"], e["action"]["decision"], e["action"]["tool_use_id"])
+            for e in log.entries
+        ]
+        assert actions == [("run_sql", "deny", "c1"), ("run_sql", "deny", "c1")]
+        assert all(e["action"]["surface"] == SURFACE for e in log.entries)
+        assert "did not allow the call" in log.entries[1]["action"]["reason"]
+        assert log.entries[1]["action"]["reason"] == str(message.content)
+
     # --- one middleware object serves both routes -------------------------------------------
 
     @pytest.mark.parametrize("build", ["audited_gate_middleware", "audited_agate_middleware"])

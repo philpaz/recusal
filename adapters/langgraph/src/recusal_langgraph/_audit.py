@@ -14,11 +14,15 @@ What each entry is bound to:
 - a call that is judged: the invocation the tool executes, validated and completed, with
   the arguments the host filled left out;
 - a call refused before judgment (a tool that overrides the standard lifecycle, input that
-  does not validate, a parameter the schema omits, a call that names another tool than the
-  one that would run, a call with no id): the arguments as proposed;
-- a call the executor answered without the judging step (:func:`recusal_langgraph._gate._judge`):
-  the arguments as proposed, with a deny. The tool may have run before that entry was
-  written; the entry says the call was never judged, not that the tool did not run.
+  does not validate, a parameter the schema omits, a function that hands its arguments on
+  to code the gate cannot read, a call that names another tool than the one that would
+  run, a call with no id): the arguments as proposed;
+- an answer the gate withholds (:func:`recusal_langgraph._gate._settled`: the executor
+  answered without the judging step, or answered a call that step refused with something
+  other than the refusal, or answered under another tool's name): the arguments as
+  proposed, with a deny. A tool may have run before that entry was written; the entry
+  says why the answer was withheld, not that no tool ran. It is one entry more than the
+  judging step wrote for the call.
 
 What is not on the log: a call another ``wrap_tool_call`` hook answered without reaching
 the gate.

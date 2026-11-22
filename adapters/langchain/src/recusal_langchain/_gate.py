@@ -16,9 +16,10 @@ the model is not called, and the agent's answer is the refusal.
 List the middleware LAST in ``middleware=``. The first middleware in the list is the
 outermost, so anything listed after the gate runs between the gate and the tool: a
 middleware that swaps the tool object or answers in the tool's place would act on a call
-the gate never judged (the gate then withholds the answer and refuses, but a swapped-in
-tool has already run), and one that adds a provider-run tool to the model call does so
-after the gate looked. Listed last, the gate judges the call exactly as it will run.
+the gate never judged, and one that answers a refused call by running another tool would
+run it unjudged (the gate withholds such an answer and refuses, but a swapped-in tool has
+already run), and one that adds a provider-run tool to the model call does so after the
+gate looked. Listed last, the gate judges the call exactly as it will run.
 """
 
 from __future__ import annotations

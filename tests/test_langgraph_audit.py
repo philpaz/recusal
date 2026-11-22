@@ -842,6 +842,176 @@ class TestLangGraphAudit:
         assert messages[0].status == "error"
         assert "RECUSAL_POLICY_ERROR (ValueError)" in messages[0].content
 
+    @pytest.mark.parametrize("ident", [5, b"c1", ["c1"]], ids=["int", "bytes", "list"])
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_an_id_that_is_not_a_string_is_one_recorded_refusal_without_an_id(
+        self, example, gate, log, route, ident
+    ):
+        """A model message cannot carry most of these, so the hooks are called directly."""
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        seen = []
+
+        def recording(name, args):
+            seen.append(name)
+            return []
+
+        call = {"name": "run_sql", "args": {"sql": "SELECT 1"}, "id": ident, "type": "tool_call"}
+        request = ToolCallRequest(tool_call=call, tool=gate.run_sql, state={}, runtime=None)
+        gates = example.recusal_audited_gates(recording, log)
+        gate.EXECUTED.clear()
+        if route == "async":
+
+            async def never(judged):
+                raise AssertionError("a refused call is not executed")
+
+            answer = asyncio.run(gates["awrap_tool_call"](request, never))
+        else:
+
+            def never(judged):
+                raise AssertionError("a refused call is not executed")
+
+            answer = gates["wrap_tool_call"](request, never)
+        assert seen == [] and gate.EXECUTED == []
+        assert answer.status == "error" and answer.tool_call_id == ""
+        assert "the tool call has no id" in answer.content
+        assert [e["action"]["decision"] for e in log.entries] == ["deny"]
+        assert "tool_use_id" not in log.entries[0]["action"]
+
+    # --- review round 2: what the gate cannot read, and an answer that is not its own -------
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_walk_failure_of_a_kind_the_gate_does_not_know_is_one_recorded_refusal(
+        self, example, gate, log, route, monkeypatch
+    ):
+        """Whatever the kernel's walk raises is a refusal before the policy, written once
+        with the call's id: the adapter does not need to know the type."""
+        adapter = importlib.import_module("recusal_langgraph._gate")
+
+        class AppliesAnotherDecoratorInside(ValueError):
+            pass
+
+        def unreadable(func):
+            raise AppliesAnotherDecoratorInside("a wrapper holds another wrapper of its function")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", unreadable)
+        seen = []
+        messages = self.audited(
+            example,
+            gate,
+            log,
+            route,
+            gate.run_sql,
+            [self.call("run_sql", {"sql": "SELECT * FROM audit_log"}, "c1")],
+            self.budget(seen),
+        )
+        assert seen == [] and gate.EXECUTED == []
+        assert "cannot be inspected for its parameters (AppliesAnotherDecoratorInside)" in (
+            messages[0].content
+        )
+        actions = [(e["action"]["decision"], e["action"]["tool_use_id"]) for e in log.entries]
+        assert actions == [("deny", "c1")]
+        assert log.entries[0]["action"]["reason"] == messages[0].content
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_decorator_without_functools_wraps_is_refused_and_recorded_as_one_deny(
+        self, example, gate, log, route
+    ):
+        """The review's audited reproduction: the record bound ``timeout=5`` while the
+        function ran its own ``timeout=999999``."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        def with_timeout(fn):
+            def wrapper(*args, timeout=30, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        @with_timeout
+        def fetch(url: str, timeout: int = 999999) -> str:
+            ran.append((url, timeout))
+            return "fetched"
+
+        class Args(BaseModel):
+            url: str
+            timeout: int = 30
+
+        tool = StructuredTool.from_function(
+            func=fetch, name="fetch", description="d", args_schema=Args
+        )
+        calls = [self.call("fetch", {"url": "u", "timeout": 5}, "c1")]
+        messages = self.audited(example, gate, log, route, tool, calls, self.budget(seen))
+        assert seen == [] and ran == []
+        assert "takes `*args` or `**kwargs` and does not name `url`" in messages[0].content
+        actions = [(e["action"]["decision"], e["action"]["tool_use_id"]) for e in log.entries]
+        assert actions == [("deny", "c1")]
+
+    @pytest.mark.parametrize("route", ["sync", "async"])
+    def test_a_refused_call_answered_by_another_tool_is_withheld_and_recorded_once_more(
+        self, example, gate, log, route
+    ):
+        """The policy refused the call (one entry). A step after the gate then ran the same
+        statement on another tool and returned its success: that answer is withheld, and
+        the withheld answer is one more entry, a deny with the call's id."""
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        @tool
+        def run_sql_replica(sql: str) -> str:
+            """Run SQL on the replica."""
+            ran.append(sql)
+            return "replica ran " + sql
+
+        def no_delete(name, args):
+            seen.append(name)
+            return gate.sql_scope_policy(name, args)
+
+        gates = example.recusal_audited_gates(no_delete, log)
+
+        def after(request, execute):
+            def fallback(judged):
+                first = execute(judged)
+                if first.status != "error":
+                    return first
+                return execute(judged.override(tool=run_sql_replica))
+
+            return gates["wrap_tool_call"](request, fallback)
+
+        async def aafter(request, execute):
+            async def fallback(judged):
+                first = await execute(judged)
+                if first.status != "error":
+                    return first
+                return await execute(judged.override(tool=run_sql_replica))
+
+            return await gates["awrap_tool_call"](request, fallback)
+
+        node = gate.ToolNode(
+            [gate.run_sql, run_sql_replica], wrap_tool_call=after, awrap_tool_call=aafter
+        )
+        calls = [self.call("run_sql", {"sql": "DELETE FROM audit_log"}, "c1")]
+        gate.EXECUTED.clear()
+        if route == "async":
+            messages = asyncio.run(gate.run_in_graph_async(node, calls))
+        else:
+            messages = gate.run_in_graph(node, calls)
+        assert seen == ["run_sql"] and gate.EXECUTED == []
+        assert ran == ["DELETE FROM audit_log"], "the other tool ran; the record cannot undo it"
+        assert messages[0].status == "error" and "replica ran" not in messages[0].content
+        actions = [
+            (e["action"]["tool"], e["action"]["decision"], e["action"]["tool_use_id"])
+            for e in log.entries
+        ]
+        assert actions == [("run_sql", "deny", "c1"), ("run_sql", "deny", "c1")]
+        judged, withheld = (e["action"]["reason"] for e in log.entries)
+        assert "did not allow the call" not in judged
+        assert "did not allow the call" in withheld and withheld == messages[0].content
+        assert "run_sql_replica" not in json.dumps(log.entries)
+
     # --- negative controls --------------------------------------------------------------
 
     def test_negative_control_plain_gate_writes_no_entries(self, gate, log, log_path):

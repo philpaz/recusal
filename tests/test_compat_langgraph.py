@@ -976,8 +976,9 @@ def test_private_helper_get_all_injected_args_still_names_every_injected_argumen
     """``_host_keys`` passes the gate a tool and trusts ``all_injected_keys`` on what
     this helper returns to leave host-supplied arguments out of judgment. The tool
     with no injected arguments is the negative control: a helper that had stopped
-    observing anything and answered a key anyway would fail it, not pass. Only
-    ``all_injected_keys`` is pinned, because that is all the gate reads."""
+    observing anything and answered a key anyway would fail it, not pass.
+    ``all_injected_keys`` is pinned, and ``state``, ``store`` and ``runtime``, which
+    ``_node_fills`` reads; the gate reads nothing else."""
     pytest.importorskip("langgraph")
     from typing import Annotated
 
@@ -1014,7 +1015,17 @@ def test_private_helper_get_all_injected_args_still_names_every_injected_argumen
         f"argument no longer gives all of their names, got {injected.all_injected_keys!r}; "
         "an argument it misses would be judged as the model's"
     )
+    filled = {*injected.state, injected.store, injected.runtime}
+    assert filled == {"state", "store", "runtime"}, (
+        f"{where} changed: `state`, `store` and `runtime` no longer name the parameters "
+        f"ToolNode fills, got {filled!r}; `_node_fills` reads them to tell the host's "
+        "values from a generic injected argument, which ToolNode strips and never fills"
+    )
     plain = helper(without_injected)
+    assert {*plain.state, plain.store, plain.runtime} == {None}, (
+        f"{where} changed (negative control): a tool with no injected arguments names a "
+        "parameter ToolNode fills"
+    )
     assert hasattr(plain, "all_injected_keys"), (
         f"{where} changed: what it returns no longer has `all_injected_keys`, "
         "which is what `_host_keys` reads"
