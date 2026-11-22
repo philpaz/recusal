@@ -21,6 +21,9 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 
 **Website: [recusal.io](https://recusal.io)**, with an interactive demo of the gate.
 
+**On PyPI: [recusal](https://pypi.org/project/recusal/)**, with the
+[eight adapter packages](#the-kernel-and-its-adapters), each published under its own name.
+
 **Status:** Beta (`0.x`) and in active development, not a finished or certified security
 product. The adapters are at different stages of security review, and help is welcome:
 [project status](#project-status).
@@ -162,16 +165,16 @@ change is answered by a release of that framework's adapter, not by a release of
 kernel.
 
 <!-- adapter-packages:start -->
-| Package | For | Import |
-|---|---|---|
-| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | every agent, task and crew in a CrewAI process | `from recusal_crewai import install_recusal_hooks` |
-| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
-| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | a LangChain `create_agent` agent | `from recusal_langchain import gate_middleware, agate_middleware` |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | a LangGraph `ToolNode` | `from recusal_langgraph import gated_tool_node, recusal_gates` |
-| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
-| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | MCP tools on an OpenAI Agents SDK `Agent`: local servers and hosted MCP | `from recusal_openai_agents_mcp import gated_agent, gate_mcp_server` |
-| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | a Pydantic AI `Agent` | `from recusal_pydantic_ai import RecusalGate` |
+| Package | On PyPI | For | Import |
+|---|---|---|---|
+| [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | [![PyPI](https://img.shields.io/pypi/v/recusal-crewai)](https://pypi.org/project/recusal-crewai/) | every agent, task and crew in a CrewAI process | `from recusal_crewai import install_recusal_hooks` |
+| [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | [![PyPI](https://img.shields.io/pypi/v/recusal-google-adk)](https://pypi.org/project/recusal-google-adk/) | a Google ADK `LlmAgent`, or every agent a runner drives | `from recusal_google_adk import gated_agent, RecusalPlugin` |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | [![PyPI](https://img.shields.io/pypi/v/recusal-langchain)](https://pypi.org/project/recusal-langchain/) | a LangChain `create_agent` agent | `from recusal_langchain import gate_middleware, agate_middleware` |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | [![PyPI](https://img.shields.io/pypi/v/recusal-langgraph)](https://pypi.org/project/recusal-langgraph/) | a LangGraph `ToolNode` | `from recusal_langgraph import gated_tool_node, recusal_gates` |
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | [![PyPI](https://img.shields.io/pypi/v/recusal-openai)](https://pypi.org/project/recusal-openai/) | a Responses or Chat Completions loop you own | `from recusal_openai import gate_function_calls, gate_tool_calls` |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | [![PyPI](https://img.shields.io/pypi/v/recusal-openai-agents)](https://pypi.org/project/recusal-openai-agents/) | the function tools of an OpenAI Agents SDK `Agent` | `from recusal_openai_agents import gated_agent, gate_tools` |
+| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | [![PyPI](https://img.shields.io/pypi/v/recusal-openai-agents-mcp)](https://pypi.org/project/recusal-openai-agents-mcp/) | MCP tools on an OpenAI Agents SDK `Agent`: local servers and hosted MCP | `from recusal_openai_agents_mcp import gated_agent, gate_mcp_server` |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | [![PyPI](https://img.shields.io/pypi/v/recusal-pydantic-ai)](https://pypi.org/project/recusal-pydantic-ai/) | a Pydantic AI `Agent` | `from recusal_pydantic_ai import RecusalGate` |
 <!-- adapter-packages:end -->
 
 
@@ -181,7 +184,8 @@ a pinned version of its framework and weekly against the newest release. How the
 packages are built, signed and released is in
 [`adapters/README.md`](https://github.com/philpaz/recusal/blob/main/adapters/README.md).
 
-Each is on PyPI under its own name. Install the one for your framework:
+Each is on PyPI under its own name. The badge in the table links its page there and
+shows the version PyPI serves now. Install the one for your framework:
 
 ```bash
 pip install recusal-pydantic-ai

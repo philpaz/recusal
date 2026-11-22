@@ -288,6 +288,19 @@ def test_the_readme_table_lists_exactly_the_packages():
         assert f"from {module} import" in table, module
 
 
+def test_the_readme_links_every_package_to_its_page_on_pypi():
+    """Each adapter is published under its own name. Its row in the README's table links its
+    PyPI page with a badge of the version PyPI serves, and the top of the README links the
+    kernel's page beside the website."""
+    table = _table("README.md")
+    for dist, _module, _framework in PACKAGES.values():
+        badge = f"[![PyPI](https://img.shields.io/pypi/v/{dist})](https://pypi.org/project/{dist}/)"
+        assert table.count(badge) == 1, dist
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    top = readme.split("**Contents:**", 1)[0]
+    assert "**On PyPI: [recusal](https://pypi.org/project/recusal/)**" in top
+
+
 def _diagram_edges(rel):
     """The ``a --> b`` edges of the one Mermaid diagram in a document."""
     text = (ROOT / rel).read_text(encoding="utf-8")
