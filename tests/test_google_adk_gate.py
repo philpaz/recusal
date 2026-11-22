@@ -537,6 +537,34 @@ class TestGoogleAdkGate:
             in (responses["c1"]["error"])
         )
 
+    def test_the_walk_for_none_defaults_is_given_the_parameters_the_adk_injects(self):
+        """A decorator that holds a second wrapper taking ``tool_context`` is judged with
+        the names the ADK injects, at both places the gate walks the tool: the walk that
+        decides which ``None`` defaults to write must not refuse what the signature check
+        just accepted, or every ``None`` default is written for no reason."""
+        import functools
+
+        def lookup(topic: str, region: str = None, tool_context=None) -> str:  # type: ignore[assignment]
+            return topic
+
+        def with_context(function):
+            @functools.wraps(function)
+            def guarded(*args, tool_context=None, **kwargs):
+                return function(*args, tool_context=tool_context, **kwargs)
+
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return guarded(*args, **kwargs)
+
+            return wrapper
+
+        adapter, tool, skip = _adapter(), with_context(lookup), ("tool_context",)
+        assert adapter._unsupported_signature(tool, skip) is None
+        assert adapter._none_defaults_to_write(tool, ["region"], skip) == []
+        # without the injected names the same walk refuses, and the conservative answer is
+        # to write them all
+        assert adapter._none_defaults_to_write(tool, ["region"]) == ["region"]
+
     def test_arguments_the_validation_would_change_again_are_refused(self, example, monkeypatch):
         """``run_async`` validates the dict the gate writes once more. If that validation is
         not a fixed point the function would get a value the policy never saw; the gate
