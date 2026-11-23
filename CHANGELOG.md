@@ -28,6 +28,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **`recusal-crewai` 0.2.2: it requires a CrewAI that does not install `chromadb`, and
+  every function is annotated.** No change to the gate: it is the one 0.2.1 shipped,
+  and its tests pass unchanged on `crewai` 1.15.44. The floor rises to
+  `crewai>=1.15.42` (see Security below). The functions that had no annotations have
+  them, and CI checks the installed wheel with `--disallow-untyped-defs
+  --disallow-incomplete-defs`, so the package's inline types are complete. Thanks to
+  @hananbahi527 for the work (#303). The README, which is the PyPI page, carries the
+  website and OpenSSF Scorecard badges and a Status section that says what review the
+  adapter has had.
+
 - **`recusal-google-adk` 0.2.1: every function is annotated, and its page shows where the
   project stands.** No change to the gate: it is the one 0.2.0 shipped. The three
   functions that had no annotations have them (the `Finding` contract, the callback's
@@ -53,7 +63,7 @@ All notable changes to this project are documented here. The format follows
   package keeps the seven days, and a test asks for the exception to be removed once the
   lock's own cutoff reaches it. The floor of `recusal-crewai` rises from
   `crewai>=1.15.40` to `crewai>=1.15.42`, so an install can no longer resolve to a
-  CrewAI that installs `chromadb`; it reaches users with the package's next release.
+  CrewAI that installs `chromadb`; it reaches users in `recusal-crewai` 0.2.2.
   The adapter's own tests pass unchanged on 1.15.44, its compatibility probes included.
 
 - **`recusal-openai` 0.2.2: the gate refuses what it cannot tie to what
