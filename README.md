@@ -989,7 +989,9 @@ Thank you to the people who have made Recusal better:
   mypy checks for three adapters, `recusal-pydantic-ai`, `recusal-google-adk` and
   `recusal-crewai`, in [#270](https://github.com/philpaz/recusal/pull/270),
   [#301](https://github.com/philpaz/recusal/pull/301) and
-  [#303](https://github.com/philpaz/recusal/pull/303).
+  [#303](https://github.com/philpaz/recusal/pull/303); and the check that the
+  `recusal-google-adk` wheel installs, runs and type-checks on its minimum Python as
+  well as on 3.12, in [#310](https://github.com/philpaz/recusal/pull/310).
 - [@noqt](https://github.com/noqt): the weekly lane that smoke-tests each installed adapter
   wheel against the newest framework release, in
   [#268](https://github.com/philpaz/recusal/pull/268).

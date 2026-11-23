@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The `recusal-google-adk` wheel is checked on its minimum Python.** CI builds the
+  wheel once and installs those same files on Python 3.12 and on the package's declared
+  minimum, read from `pyproject.toml`; both environments run the smoke test, `pip check`
+  and the installed-package type check, and a test holds the job to that. Thanks to
+  @hananbahi527 for the work (#310, the first part of #262).
 - **The review tooling for `recusal-openai` is in the repository, and its README says
   what was tested.** `tools/review/openai/` holds the three scripts the numbers come
   from: `corpus.py` runs a generated corpus of model output through the plain and the
