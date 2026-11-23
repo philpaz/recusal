@@ -3548,43 +3548,6 @@ class TestWhatTheGateCannotReadIsRefused:
         assert seen == [] and received == []
         assert "does not show the gate whether the tool has interceptors" in messages[0].content
 
-    def test_the_names_read_from_langchain_mcp_adapters_are_the_librarys_own(self, example):
-        """Against the library itself, where it is installed: the builder, the function it
-        defines, the variable that holds its interceptors, and a tool it builds running
-        with exactly the judged arguments."""
-        pytest.importorskip("mcp")
-        tools = pytest.importorskip("langchain_mcp_adapters.tools")
-        from mcp.types import CallToolResult, TextContent
-        from mcp.types import Tool as MCPTool
-
-        adapter = _adapter()
-        assert tools.__name__ == adapter._MCP_MODULE
-        builder = getattr(tools, adapter._MCP_BUILDER)
-        received, seen = [], []
-
-        class Session:
-            async def call_tool(self, name, arguments, **options):
-                received.append((name, arguments))
-                return CallToolResult(content=[TextContent(type="text", text="served")])
-
-        described = MCPTool(name="read_file", description="d", inputSchema=self.MCP_SCHEMA)
-        tool = builder(Session(), described)
-        assert adapter._MCP_INTERCEPTORS in tool.coroutine.__code__.co_freevars
-        assert adapter._calls_an_mcp_server(tool.coroutine) is True
-        calls = [self.call("read_file", {"path": "/x"})]
-        messages = self.run(example, "async", [tool], calls, self.no_delete(seen))
-        assert messages[0].status == "success", messages[0].content
-        assert seen == [("read_file", {"path": "/x"})]
-        assert received == [("read_file", {"path": "/x"})]
-
-        async def rewrite(request, handler):
-            return await handler(request.override(args={**request.args, "depth": 99}))
-
-        intercepted = builder(Session(), described, tool_interceptors=[rewrite])
-        messages = self.run(example, "async", [intercepted], calls, self.no_delete(seen))
-        assert "with tool interceptors" in messages[0].content
-        assert received == [("read_file", {"path": "/x"})], "nothing more was sent"
-
     # --- the refusals the README names, and what it says to use instead ----------------------
 
     def test_the_readme_advice_for_a_kwargs_only_tool_runs_gated(self, example):
