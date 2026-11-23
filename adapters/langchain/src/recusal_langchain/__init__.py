@@ -7,19 +7,21 @@
 
 ``policy(tool_name, tool_input)`` is an ordinary Recusal policy returning findings. A
 refused call is answered with an error ``ToolMessage`` carrying Recusal's reason, and its
-tool does not run. ``agate_middleware`` is the form for ``agent.ainvoke``, and
-``audited_gate_middleware`` and ``audited_agate_middleware`` put each decision on a
-hash-chained audit log. List the middleware last.
+tool does not run. The one middleware serves ``agent.invoke`` and ``agent.ainvoke``;
+``audited_gate_middleware`` puts each decision on a hash-chained audit log.
+``agate_middleware`` and ``audited_agate_middleware`` are the same two middleware under
+the names earlier releases used for ``ainvoke``. List the middleware last.
 
 The gate is ``recusal-langgraph``'s ``ToolNode`` gate, and the decision is made by
-``recusal.decide``. This package adds only what is LangChain's: the middleware wrapper and
-the surface label on the record.
+``recusal.decide``. This package adds only what is LangChain's: the middleware object, the
+refusal of a model call that offers the model a provider-run tool, and the surface label
+on the record.
 """
 
 from ._audit import SURFACE, audited_agate_middleware, audited_gate_middleware
 from ._gate import agate_middleware, gate_middleware
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 __all__ = [
     "SURFACE",

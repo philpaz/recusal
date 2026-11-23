@@ -73,15 +73,17 @@ def gate_middleware(policy=sql_scope_policy):
     List it LAST in ``middleware=``.
 
     The first middleware in the list is the outermost, so anything listed after the gate
-    runs between the gate and the tool: a middleware that rewrites the arguments, a
-    human-in-the-loop edit, or a tool emulator would act on a call the gate never saw.
-    Listed last, the gate judges the call exactly as it will run.
+    runs between the gate and the tool: a middleware that swaps the tool object, or a tool
+    emulator that answers in the tool's place, would act on a call the gate never judged.
+    Listed last, the gate judges the call exactly as it will run. The one object serves
+    ``agent.invoke`` and ``agent.ainvoke``.
     """
     return _gate_middleware(policy)
 
 
 def agate_middleware(policy=sql_scope_policy):
-    """The async gate for ``agent.ainvoke``; the sync gate alone raises there. List it LAST."""
+    """The same middleware under its earlier name; ``gate_middleware`` alone is enough.
+    List it LAST."""
     return _agate_middleware(policy)
 
 
@@ -125,7 +127,7 @@ async def arun_calls(
     middleware: list[Any] | None = None,
     tools: list[Any] | None = None,
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
-    """The same run through ``agent.ainvoke``, gated by the async gate by default."""
+    """The same run through ``agent.ainvoke``, gated the same way by default."""
     EXECUTED.clear()
     if middleware is None:
         middleware = [agate_middleware(policy)]

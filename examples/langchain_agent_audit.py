@@ -10,8 +10,9 @@ SHA-256 fingerprint of each call's arguments, never the arguments themselves.
 
 The audited middleware is the ``recusal-langchain`` package (``adapters/langchain`` in
 this repository), imported here. Its decision logic is the LangGraph gate's:
-``audited_gate_middleware(policy, log)`` and ``audited_agate_middleware(policy, log)``
-wrap the audited ToolNode hooks of ``recusal-langgraph``, which call the plain gate's own
+``audited_gate_middleware(policy, log)`` (``audited_agate_middleware`` is the same
+middleware under its earlier name) holds the audited ToolNode hooks of
+``recusal-langgraph`` for both routes, which call the plain gate's own
 judging function with the recording arguments passed through to ``recusal.decide``. If
 the log cannot be written the
 decision becomes a deny, so nothing runs unrecorded. Each entry is bound to the invocation
@@ -20,8 +21,9 @@ the tool runs with, as the LangGraph audited gate binds it.
 List the middleware LAST, as with the plain gate. The gate judges, and records, inside the
 tool's own lifecycle, so an argument rewrite by a middleware listed after it is still
 judged and recorded as rewritten; but a middleware listed after it that swaps the tool
-object, or answers in the tool's place, removes the judging copy, and that call is neither
-judged nor recorded.
+object, or answers in the tool's place, removes the judging copy: the gate withholds that
+answer and records a refusal saying the call was never judged, and a swapped-in tool has
+run by then.
 
 Requires Python 3.10+, langgraph==1.2.20, langchain-core==1.7.7 and langchain==1.4.10.
 Recusal itself remains Python 3.9+ and has no LangChain dependency. No model, credential
@@ -122,7 +124,7 @@ async def arun_calls(
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
 ) -> tuple[list[ToolMessage], list[tuple[str, dict[str, Any]]]]:
-    """The same run through ``agent.ainvoke`` behind the audited async gate."""
+    """The same run through ``agent.ainvoke`` behind the audited gate."""
     EXECUTED.clear()
     middleware = [audited_agate_middleware(policy, log, actor=actor, control=control)]
     agent = scripted_agent(calls, middleware, tools)

@@ -199,14 +199,14 @@ certified security product, and it is provided under Apache-2.0 without warranty
 [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) says what is stable and what may still change.
 
 The adapters are at different stages of security review. Of the 8 adapters,
-3 have completed the in-depth review and 5 are in it now:
+5 have completed the in-depth review and 3 are in it now:
 
 | Package | Security review | Where it stands |
 |---|---|---|
 | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | In-depth review complete | Its fixes are released in 0.2.1. |
 | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | In-depth review complete | Its fixes are released in 0.2.0. |
-| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review under way | Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review under way | Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review complete | Its fixes are released in 0.2.0. |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review complete | Its fixes are released in 0.3.0. |
 | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review complete | Its fixes are released in 0.2.2. |
 | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
 | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |

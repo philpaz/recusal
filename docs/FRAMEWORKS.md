@@ -20,18 +20,47 @@ puts existing `@tool` functions unchanged into LangGraph's `ToolNode` and attach
 `recusal_gate(policy)` with `wrap_tool_call`, so `recusal.claude_code.decide` runs immediately
 before each individual tool call. The policy judges the invocation the tool executes:
 execution gets a per-call copy of the tool whose parse step validates the input once,
-after ToolNode has injected the host's state, store and runtime, holds the callable the
-route executes to the schema (a parameter the callable declares that the schema omits, and
-that neither the host nor the framework fills, refuses the call: Python would fill it after
-judgment and the policy would never see the value that runs), completes any schema
-parameter the framework's parse dropped (an `exclude=True` field, a root serializer)
-from that callable's default, projects every model-controlled argument field by field
-through a projection that runs no serializer of its own, decides, and passes those same
-completed objects to the function. Host arguments are not judged, and an argument counts as
-the host's only when ToolNode replaced it for this call: a value the model sent that arrives
-unchanged is judged, whatever the tool's annotations say. A suppressed parameter with no default, a value the
-projection does not support, and a tool whose class or instance overrides the standard
-`invoke`/`run` lifecycle, are refused. A ToolNode's sync route consults only its sync hook slot,
+after ToolNode has injected the host's state, store and runtime, holds every callable the
+route reaches to the schema (a parameter that the function, or a `functools.wraps` decorator
+around it, declares and the schema omits, and that neither the host nor the framework fills,
+refuses the call: Python would fill it after judgment and the policy would never see the
+value that runs; so does a parameter a forwarding decorator names that the function it wraps
+names too; and so does an innermost function that takes `*args` or `**kwargs` without naming
+every schema field, or that takes nothing else besides parameters that never count as its
+own (one LangChain or ToolNode fills, one the tool marks injected, one named `run_manager`,
+`callbacks`, `config` or `runtime` whatever its annotation, and one whose annotation, resolved
+with `typing.get_type_hints` and opened through the forms the package README lists, is or is
+built from `RunnableConfig`, `ToolRuntime`, an injected-argument marker or a callback manager
+or run manager type),
+which hands arguments on to code the gate cannot read: a decorator built without
+`functools.wraps` that names no parameter of its own (`def wrapper(*args, **kwargs)`, under a
+JSON schema dict or the schema inferred from it; one that names a parameter and then calls
+the function is not read, like any function that calls another), an `_arun(*args, **kwargs)`
+that hands the call to `_run`, and a function that takes only `**kwargs`; such a forwarder
+runs only under an explicit Pydantic schema that declares no field and does not allow extras,
+through which the model can send nothing; the other exception is the function
+`langchain-mcp-adapters` defines for its tools, recognised by its code object, which hands
+the judged arguments to the MCP server as they stand, so those tools are judged and run on
+the async routes unless they were built with tool interceptors, and a default the server
+applies to an argument the model left out is not seen), completes any schema parameter the framework's parse dropped (an `exclude=True`
+field, a root serializer) from the default that would run, projects every model-controlled
+argument field by field through a projection that runs no serializer of its own, decides,
+and passes those same completed objects to the function. Host arguments are not judged, and
+an argument counts as the host's only when ToolNode put it in the tool's input for this
+call, which it does for state, store and runtime only: a value under any other injected name
+is judged, whoever wrote it, and a value the model sent that arrives unchanged is judged, whatever the tool's
+annotations say, and so is a value the tool's own parse step fills under an injected name,
+which is the tool call id (the model writes it) for an `InjectedToolCallId` parameter and
+the schema default for an injected argument no host supplied. A suppressed parameter with no
+default, a value the projection does not support, a tool whose class or instance overrides
+the standard `invoke`/`run` lifecycle, a call whose name is not the name of the tool that
+would run, and a call with an empty id, are refused before the policy runs. An answer that
+does not fit what the judging copy's parse step last did for the call is withheld and refused
+after the fact: one that comes back without that step having run, one that is not the gate's
+refusal after that step refused, and one under another tool's name after it allowed. A tool
+may have run by then. With a kernel that does not detect it, a decorator that applies another
+decorator inside itself is not read. The package README lists every refusal and what to
+do about it. A ToolNode's sync route consults only its sync hook slot,
 so the gate goes on both slots: `gated_tool_node(tools, policy)`, or `ToolNode(tools,
 **recusal_gates(policy))`, refuses the same way on `invoke`, `stream`, `ainvoke` and `astream`,
 and `is_gated(node)` checks a node. The async hook cannot be built on its own unless the caller states `host_refuses_sync_runs=True`. It is offline and deterministic (no model or API key), requires
@@ -66,19 +95,28 @@ implementation. It is offline and needs Python 3.10+ with `langgraph==1.2.20`,
 `langchain-core==1.7.7` and `langchain==1.4.10` (example-only pins). List the gate **last**
 in `middleware=`, so it judges the call exactly as it will run: the first middleware is the
 outermost, and one listed after the gate acts between the gate and the tool. An argument
-rewriter or a human-in-the-loop edit listed there still reaches the gate's judging copy,
-so the rewritten call is judged as rewritten; but a middleware that swaps the tool object
-for another, or answers in the tool's place (`LLMToolEmulator`), removes that copy and
-the call is never judged. Listed last, the gate judges whatever the others produced. For `agent.ainvoke`, use
-`agate_middleware(policy)`; the sync gate alone raises there and runs nothing, and so does
-the async one under `agent.invoke`.
+rewriter listed there, or a human-in-the-loop edit that changes only the arguments, still
+reaches the gate's judging copy, so the rewritten call is judged as rewritten. A
+human-in-the-loop edit that redirects the call to another tool does not: `HumanInTheLoopMiddleware`
+swaps the tool object, the other tool runs unjudged, and so does any middleware that swaps
+the tool or answers in its place (`LLMToolEmulator`). The gate sees that its judging step
+never ran, withholds the answer and returns a refusal that says so, but a swapped-in tool
+has run by then. A middleware listed there that answers a call the gate refused by running
+another tool is withheld the same way, because the answer is not the gate's refusal, and so
+is an answer under another tool's name after an allowed call; an answer under the judged
+tool's name is passed on. Listed last, the gate judges whatever the others produced. One middleware
+object serves `agent.invoke` and `agent.ainvoke`; `agate_middleware(policy)` is the same
+middleware under the name earlier releases used for `ainvoke`. A tool given to
+`create_agent` as a dict is run by the model provider and reaches no tool-call middleware,
+so the gate refuses a model call that offers one: the model is not called.
 To put every one of those calls on the record,
 [`examples/langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py)
-swaps in `audited_gate_middleware(policy, log)` (or `audited_agate_middleware` for
-`ainvoke`): the LangGraph audited gate as middleware, writing each decision as a
-hash-chained `AuditLog` entry labeled `langchain.create_agent` with the tool call id. A
-middleware listed after it that answers in the tool's place leaves that call unjudged and
-unrecorded, which is the same reason to list the gate last.
+swaps in `audited_gate_middleware(policy, log)`: the LangGraph audited gate as middleware,
+for both routes, writing each decision as a hash-chained `AuditLog` entry labeled
+`langchain.create_agent` with the tool call id. A middleware listed after it that answers in
+the tool's place leaves that call unjudged; the entry written for it is the refusal saying
+so, which is the same reason to list the gate last. A withheld answer to a call the gate had
+already refused is a second entry for that call.
 
 ## OpenAI Agents SDK, function tools
 
