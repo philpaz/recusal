@@ -849,21 +849,25 @@ class TestPydanticAiAudit:
             named(functools.partial(keeps(purge_rows), "tenant-MARKER"), "purge_tenant"),
             lookup,
         ]
-
-        def policy(name, args):
-            asked.append(name)
-            return []
-
         calls = [
             ("delete_orders", {"limit": 500}, "c1"),
             ("fetch_capped", {"table": "MARKER-table"}, "c2"),
             ("purge_tenant", {"limit": 5, "note": "MARKER-note"}, "c3"),
             ("lookup", {"key": "MARKER-key"}, "c4"),
         ]
+        if sys.version_info < (3, 12):
+            # `inspect.signature` raises for this partial before 3.12, and Pydantic AI
+            # refuses to build the tool at all; the other three are recorded the same way.
+            del tools[1], calls[1]
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
         responses, _ = example.run_calls(
             calls, log, policy=policy, tools=tools, via_hooks=via_hooks
         )
-        assert ran == [] and asked == [] and len(log.entries) == 4
+        assert ran == [] and asked == [] and len(log.entries) == len(calls)
         entries = self.by_id(log)
         causes = {
             "c1": "takes `limit` as a positional or keyword parameter where the function takes",

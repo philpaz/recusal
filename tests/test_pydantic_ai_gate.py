@@ -3627,6 +3627,11 @@ class TestPydanticAiGate:
             "parameter, which a keyword does not reach"
         )
         function, wrapper = "the function this tool runs", "a wrapper around the function"
+        # Before Python 3.12 `inspect.signature` raises for a keyword partial over a
+        # positional-only parameter ("has incorrect arguments"): the gate refuses such a
+        # tool as one it cannot inspect, and Pydantic AI refuses to build it at all.
+        inspected = sys.version_info >= (3, 12)
+        uninspectable = "cannot be inspected, so the values it would run with cannot be read"
         for tool, cause, takes_ctx in (
             (functools.partial(fetch, limit=77), whose.format(function, "positional-only"), False),
             (
@@ -3653,7 +3658,8 @@ class TestPydanticAiGate:
             for validated in (True, False):
                 ctx = self._ctx_for(tool, takes_ctx=takes_ctx, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", {"table": "t"})
-                assert same == {"table": "t"} and cause in reason, (tool, reason)
+                expected = cause if inspected or "positional-only" not in cause else uninspectable
+                assert same == {"table": "t"} and expected in reason, (tool, reason)
 
         # a keyword that names a parameter a keyword reaches is the default it looks like
         def by_keyword(table: str, /, limit: int = 10, **extra: int) -> str:
@@ -3672,6 +3678,12 @@ class TestPydanticAiGate:
         capped = functools.partial(fetch, limit=77)
         capped.__name__ = capped.__qualname__ = "fetch_capped"
         capped.__doc__ = "Fetch rows."
+        if not inspected:
+            from pydantic_ai.exceptions import UserError
+
+            with pytest.raises(UserError, match="incorrect arguments"):
+                example.Agent(self._model_calling(example, "fetch_capped", {}), tools=[capped])
+            return
         for capabilities in (
             [example.RecusalGate(policy)],
             [example.Hooks(before_tool_execute=example.recusal_before_tool_execute(policy))],
