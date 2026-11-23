@@ -3309,6 +3309,197 @@ class TestBothRoutes:
             assert error is None and ran == [] and seen == [] and decisions == ["FAIL"]
 
     @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_a_partialmethod_over_a_callable_object_is_refused(self, kit, native):
+        """``functools.partialmethod`` over a callable object (a class-based decorator)
+        hands out a method of a function ``functools`` builds, which names nothing as
+        ``__wrapped__``; ``inspect.signature`` reads a mark on it and shows the object's
+        parameters less what is bound. The walk read that one level and nothing under the
+        object, so a wrapper there ran its own default with no policy judging it. Over a
+        plain function the same ``partialmethod`` is a ``functools.partial`` of the bound
+        function, which is read in full and still runs."""
+        import functools
+        import inspect
+
+        gate = _adapter()
+        ran, seen = [], []
+
+        def forcing(function):
+            @functools.wraps(function)
+            def wrapper(*args, force=True, **kwargs):
+                ran.append(("force", force))
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        class Typed:
+            """A class-based decorator that restates the parameters and passes them on."""
+
+            def __init__(self, function):
+                functools.update_wrapper(self, function)
+                self.function = function
+
+            def __call__(self, account, amount: int) -> str:
+                return self.function(account, amount)
+
+        def charge(account, amount: int) -> str:
+            ran.append(("charged", amount))
+            return "charged"
+
+        class Account:
+            over_object = functools.partialmethod(Typed(forcing(charge)))
+            over_function = functools.partialmethod(charge)
+            over_wrapped_function = functools.partialmethod(forcing(charge))
+
+        def as_tool(func):
+            def placeholder(amount: int) -> str:
+                """Charge."""
+                return "x"
+
+            built = kit.tool("charge")(placeholder)
+            built.func = func
+            return built
+
+        account = Account()
+        assert list(inspect.signature(account.over_object).parameters) == ["amount"]
+        assert type(account.over_function) is functools.partial
+        uninspectable = "its callable cannot be inspected for its parameters"
+        absent = "its callable's parameter `force` is absent from the argument schema"
+        check = gate._incomplete_callable
+        assert check(as_tool(account.over_object).to_structured_tool()) == uninspectable
+        assert check(as_tool(Account.over_function).to_structured_tool()) == uninspectable
+        assert check(as_tool(account.over_wrapped_function).to_structured_tool()) == absent
+        assert check(as_tool(account.over_function).to_structured_tool()) is None
+
+        # both names are looked for on every Python, and only a ``functools.partialmethod``
+        # under one of them is a mark: ``inspect.signature`` reads nothing else there
+        for mark in ("_partialmethod", "__partialmethod__"):
+
+            def plain(amount: int) -> str:
+                return "charged"
+
+            setattr(plain, mark, "a setting of the application's")
+            gate._refuse_partialmethod(plain)
+            assert check(as_tool(plain).to_structured_tool()) is None
+            setattr(plain, mark, functools.partialmethod(Typed(charge)))
+            with pytest.raises(TypeError):
+                gate._refuse_partialmethod(plain)
+            assert check(as_tool(plain).to_structured_tool()) == uninspectable
+
+        for func, runs in ((account.over_object, False), (account.over_function, True)):
+            ran.clear()
+            seen.clear()
+            _, decisions, error = kit.run(
+                [self.proposal(native, "charge", {"amount": 5})],
+                [as_tool(func)],
+                lambda name, args: seen.append((name, dict(args))) or [],
+                native=native,
+            )
+            assert error is None
+            if runs:
+                assert decisions == ["PASS"] and seen == [("charge", {"amount": 5})]
+                assert ran == [("charged", 5)]
+            else:
+                assert ran == [] and seen == [] and decisions == ["FAIL"]
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
+    def test_the_two_refusals_a_later_kernel_makes_by_name_are_asked_of_it(
+        self, kit, native, monkeypatch
+    ):
+        """This package's own walk follows ``__wrapped__`` alone. A decorator that applies
+        another wrapper inside itself kept the judged ``timeout`` and the function ran with
+        its own ``5``; a single-dispatch function ran a registered implementation's own
+        default. A kernel later than 0.15.0 finds both, so it is asked, and the reason
+        says what it found and what to do. Beside an older kernel neither is found: both
+        outcomes are held here."""
+        import functools
+
+        from recusal import invocation
+
+        gate = _adapter()
+        ran, seen = [], []
+
+        def with_timeout(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, timeout: int = 30, **kwargs):
+                return fn(*args, **kwargs)  # keeps the judged timeout
+
+            return wrapper
+
+        def robust(fn):
+            inner = with_timeout(fn)  # not on the ``__wrapped__`` chain of what is returned
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return inner(*args, **kwargs)
+
+            return wrapper
+
+        @robust
+        def fetch(url: str, timeout: int = 5) -> str:
+            """Fetch a url."""
+            ran.append((url, timeout))
+            return "fetched"
+
+        @functools.singledispatch
+        def lookup(key: str, deep: bool = False) -> str:
+            """Look a key up."""
+            ran.append(("base", key, deep))
+            return "found"
+
+        @lookup.register
+        def _(key: int, deep: bool = False, skip_review: bool = True) -> str:
+            return "found"
+
+        class Released:  # the names 0.15.0 has
+            pass
+
+        for name in ("HiddenWrapper", "DispatchedAtCallTime"):
+            assert gate._walk_refusal(Released, name) is gate._NotInThisKernel
+            expected = getattr(invocation, name, gate._NotInThisKernel)
+            assert gate._walk_refusal(invocation, name) is expected
+            assert getattr(gate, "_" + name) is expected
+
+        later = hasattr(invocation, "HiddenWrapper")
+        hidden = gate._unsupported_tool(kit.tool("fetch")(fetch).to_structured_tool())
+        chosen = gate._unsupported_tool(kit.tool("lookup")(lookup).to_structured_tool())
+        if later:
+            assert hidden.startswith("a decorator on its callable holds a second wrapper of it")
+            assert "`timeout` is taken by a wrapper and by the function it wraps" in hidden
+            assert "call the decorated function from a plain function" in hidden
+            assert "30" not in hidden
+            assert chosen.startswith("its callable is a single-dispatch function")
+            assert "chosen at call time" in chosen
+        else:
+            assert hidden is None and chosen is None
+
+        _, decisions, error = kit.run(
+            [self.proposal(native, "fetch", {"url": "u", "timeout": 9999})],
+            [kit.tool("fetch")(fetch)],
+            lambda name, args: seen.append((name, dict(args))) or [],
+            native=native,
+        )
+        assert error is None
+        if later:
+            assert ran == [] and seen == [] and decisions == ["FAIL"]
+        else:
+            assert seen == [("fetch", {"url": "u", "timeout": 9999})] and ran == [("u", 5)]
+
+        # a kernel without the walk, or without the two names, is not asked anything
+        monkeypatch.setattr(gate, "_HiddenWrapper", gate._NotInThisKernel)
+        assert gate._kernel_refusal(fetch) is None and gate._kernel_refusal(lookup) is None
+        monkeypatch.undo()
+        monkeypatch.setattr(gate, "_invocation", Released)
+        assert gate._kernel_refusal(fetch) is None
+        monkeypatch.undo()
+
+        # and a failure of the kernel's walk that is not one of the two decides nothing
+        def failing(func):
+            raise RuntimeError("the walk failed")
+
+        monkeypatch.setattr(invocation, "reached_parameters", failing)
+        assert gate._kernel_refusal(fetch) is None
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "text"])
     def test_a_tool_class_with_its_own_attribute_lookup_is_refused(self, kit, native):
         """``BaseTool.run`` reads ``self._run`` through ``__getattribute__``; a class of its
         own can answer with another function than the class's, which the gate inspected."""

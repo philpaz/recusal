@@ -248,11 +248,25 @@ hands on for execution. That decides what it sees:
   under a parameter the tool's function marks as injected: only the state, store and
   runtime the agent's `ToolNode` fills itself are left out of judgment. This is why the
   gate goes last.
-- **A decorator that applies another decorator inside itself**, with a kernel that does
-  not detect it. `functools.wraps(fn)` makes the outer wrapper point at `fn`, and the
-  gate follows that pointer, not what the wrapper calls, so a keyword the inner
-  decorator adds or keeps runs with a value the policy did not see. Apply each
-  decorator to the function directly, one above the other.
+- **A decorator that applies another decorator inside itself.** `functools.wraps(fn)`
+  makes the outer wrapper point at `fn`, and the kernel's walk follows that pointer,
+  not what the wrapper calls. Beside `recusal` 0.15.0 the inner wrapper is not read,
+  so a keyword it adds or keeps runs with a value the policy did not see. A kernel
+  later than 0.15.0 (0.15.0 is the newest release as this is written) refuses the
+  call before the policy runs when the inner wrapper is
+  itself a `functools.wraps` wrapper of the same function, held in the outer wrapper's
+  closure or on a class-based decorator's instance, and takes a parameter of its own.
+  Held any other way, it is not found by either kernel. Apply each decorator to the
+  function directly, one above the other.
+- **A single-dispatch function and a `partialmethod` over a callable object**, beside
+  `recusal` 0.15.0. A `functools.singledispatch` function with an implementation
+  registered beside its base one, behind a wrapper that passes its first argument by
+  position, runs that implementation, chosen by the type of the argument, with
+  defaults of its own (the bare function, called by keyword, fails in Python). A
+  `functools.partialmethod` over a callable
+  object is read one level deep, and what is under the object is not read. A kernel
+  later than 0.15.0 refuses a call to either before the policy runs. Call the function
+  from a plain function and give the tool that.
 - **A function that names its parameters and then calls another function.** The gate
   reads signatures, not function bodies. The function that is called runs with its own
   defaults, and the policy is shown only the arguments of the first. A decorator built

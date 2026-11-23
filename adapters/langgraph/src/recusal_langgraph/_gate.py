@@ -70,12 +70,35 @@ from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from pydantic import BaseModel, ValidationError
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import DeclaredSignature as _DeclaredSignature
 from recusal.invocation import reached_parameters as _reached_parameters
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the walk that the installed kernel does not have.
+    ``recusal`` 0.15.0, the oldest this package allows, has neither ``HiddenWrapper`` nor
+    ``DispatchedAtCallTime``. Nothing raises this class, so a handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.0).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
 
 
 class RecusalRefusal(ToolException):
@@ -411,6 +434,12 @@ def _reached(func) -> list:
     defines ``__get__`` (``cachetools.cached`` returns one), which ``inspect.signature``
     takes for a builtin. A stack of ``functools.wraps`` decorators deeper than the walk
     follows is the other failure that has a cause the gate can state (:func:`_stacked`).
+
+    Two refusals the kernel's walk makes by name (a kernel later than 0.15.0; beside
+    0.15.0 neither shape is found) are reported as what they are: a decorator that holds
+    a second wrapper with a parameter of its own (``HiddenWrapper``, whose text names the
+    parameter and never a value), and a single-dispatch function that can run more than
+    its base implementation (``DispatchedAtCallTime``).
     """
     try:
         return _reached_parameters(func)
@@ -418,6 +447,21 @@ def _reached(func) -> list:
         raise TypeError(
             "the tool's callable declares a signature that is not its own (`__signature__`), "
             "so the gate cannot tell which parameters it runs with"
+        ) from None
+    except _HiddenWrapper as refused:
+        raise TypeError(
+            "a decorator on the tool's function holds a second wrapper of that function (in "
+            "its closure or on the decorator object), which is not reached through "
+            f"`__wrapped__` and so is not read like one applied directly: {refused}; call "
+            "the decorated function from a plain function and give the tool that"
+        ) from None
+    except _DispatchedAtCallTime:
+        raise TypeError(
+            "the tool's function is a single-dispatch function (`functools.singledispatch` "
+            "or `singledispatchmethod`) with an implementation registered beside its base "
+            "one or in its place: the implementation that runs is chosen at call time, by "
+            "the type of an argument, so its parameters and defaults cannot be read; call "
+            "it from a plain function and give the tool that"
         ) from None
     except Exception as exc:  # noqa: BLE001, an uninspectable callable cannot be judged
         if _stacked(func) > _READ_DEPTH:

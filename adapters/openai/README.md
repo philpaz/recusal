@@ -286,7 +286,7 @@ call id, and the gate always fails closed.
   A call with `dry_run=true` is judged with `dry_run` true and `delete_tree` runs with
   `dry_run` false. No check of a signature can see this. Give the gate the function
   itself, or a wrapper that passes on every parameter it names.
-- **Not seen by a kernel that does not detect it: a decorator applied inside another
+- **Not seen beside `recusal` 0.15.0: a decorator applied inside another
   decorator.** The kernel follows a wrapper to what it wraps through `__wrapped__`. A
   decorator that builds a second wrapper in its closure and calls that one hides it
   from the walk:
@@ -302,12 +302,28 @@ call id, and the gate always fails closed.
       return wrapper
   ```
 
-  With a kernel that does not detect the hidden wrapper, a tool decorated this way is
-  judged and called, and a parameter the hidden wrapper keeps for itself reaches the
-  function at the function's default, not at the value the policy judged. A kernel
-  that detects it says so through its signature check, and the gate then refuses the
-  call before the policy runs. Until then, apply each decorator at the top level,
-  where the walk sees it, or give the gate the undecorated function.
+  Beside `recusal` 0.15.0, a tool decorated this way is judged and called, and a
+  parameter the hidden wrapper keeps for itself reaches the function at the function's
+  default, not at the value the policy judged. A kernel later than 0.15.0 (0.15.0 is
+  the newest release as this is written) detects one case and says so through its signature check, and the gate then refuses the call
+  before the policy runs, with what to do: the hidden wrapper is itself a
+  `functools.wraps` wrapper of the same function, it is held in the outer wrapper's
+  closure or on a class-based decorator's instance, and it takes a parameter of its
+  own. Held any other way (a plain function or a lambda that names nothing as
+  `__wrapped__`, a callable object, a module global), it is not found by either
+  kernel. Apply each decorator at the top level, where the walk sees it, or give the
+  gate the undecorated function.
+- **Not seen beside `recusal` 0.15.0: a single-dispatch function, and a
+  `partialmethod` with nothing left to judge.** A `functools.singledispatch` function
+  with an implementation registered beside its base one, behind a wrapper that passes
+  its first argument by position, runs that implementation, chosen by the type of the
+  argument, with defaults of its own that the policy did not see (the bare function,
+  which the gate calls by keyword, fails in Python). A `functools.partialmethod` over
+  a callable object that binds every parameter
+  is judged as a call with no arguments, and what is under the object is not read (one
+  that leaves a parameter is refused by either kernel, as not annotated). A kernel
+  later than 0.15.0 refuses a call to either before the policy runs. Call the function
+  from a plain function and register that one.
 - **No state between turns.** Within one turn a duplicate or empty call id raises. The
   gate remembers nothing from one turn to the next, so a call id used again in a later
   turn is not detected: each turn is judged, answered and recorded on its own.

@@ -143,6 +143,25 @@ path.
   `functools.wraps` wrapper that adds a parameter of its own or names one the function it
   wraps also takes; an unknown or missing
   parameter; arguments that do not validate, or that validating again would change.
+- **Not seen beside `recusal` 0.15.0, refused beside a later kernel.** Whether a
+  signature can be judged is the kernel's answer, and three shapes are found only by a
+  kernel later than 0.15.0 (0.15.0 is the newest release as this is written). A
+  decorator that applies another `functools.wraps` wrapper
+  of the same function inside itself, holds it in its closure or on a class-based
+  decorator's instance and calls that one, where the inner wrapper takes a parameter
+  of its own: beside 0.15.0 that parameter runs with a value the policy did not see.
+  A `functools.singledispatch` function with an implementation registered beside its
+  base one, behind a wrapper that passes its first argument by position: the
+  implementation that runs is chosen by the type of the argument and has defaults of
+  its own (the bare function, which the ADK calls by keyword, fails in Python). A
+  `functools.partialmethod` over a callable object that leaves
+  no parameter to judge (it binds them all, or leaves only the ones the ADK fills): it
+  is judged as a call with no arguments, and what is under the object is not read (one
+  that leaves a parameter is refused beside either kernel, as not annotated). For each,
+  call the function from a plain function and register
+  that one. An inner wrapper held any other way (a plain function or a lambda that
+  names nothing as `__wrapped__`, a callable object, a module global) is not found by
+  either kernel.
 - **Agent tools:** a call to a plain `AgentTool` is judged as the sub-agent receives it
   (the `request` text, or the arguments as JSON), and only when the sub-agent's own tool
   calls are judged too: it is gated (`gated_agent` gates it), or it inherits

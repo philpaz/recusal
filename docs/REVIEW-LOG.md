@@ -72,7 +72,9 @@ decorated tool. `recusal-crewai` still carries its own copy.
   for both is being written and is not committed.
 - Round twelve of `recusal-pydantic-ai` found that the walk does not read under
   `functools.partialmethod` over a callable object. See that package's open items. The
-  decision whether the fix goes in the kernel is open.
+  fix goes in the kernel, so that every adapter that uses the walk gets it: the walk
+  refuses a callable that `inspect.signature` reads as a `functools.partialmethod`.
+  It is written, with its tests, and is not committed.
 - The changelog entry in #299 lists what the walk does not find by design, under "Not
   found, by design". Those are stated limits, not fixed.
 
@@ -293,6 +295,8 @@ not, and the package page states the first two.
   can judge one value while the tool runs another, and a default can run unjudged. Over
   a plain function the same `partialmethod` is read correctly. The gap is in the
   kernel's walk (`own_parameters`, `_next_callables`) and in the adapter's `_steps`.
+  A fix in the kernel's walk is written and is not committed; the released kernel,
+  0.15.0, has the gap.
 - **Wrong advice, fixed in 0.2.0.** The README and two refusal reasons said to set
   `__name__` and `__doc__` on a partial. Pydantic AI needs `__name__` and
   `__qualname__`, which they now say.

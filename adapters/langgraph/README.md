@@ -527,13 +527,35 @@ gate has decided nothing, and no entry is written.
   server fills it from its own schema or code, and neither the adapter nor the gate sees
   that value. A policy that must bound such an argument has to refuse the call when the
   argument is absent.
-- With a kernel that does not detect it, a decorator that applies another decorator
-  inside itself is not read. `functools.wraps(fn)` makes the outer wrapper point at
-  `fn`, and the gate follows that pointer, not what the wrapper calls:
+- A decorator that applies another decorator inside itself.
+  `functools.wraps(fn)` makes the outer wrapper point at `fn`, and the kernel's walk
+  follows that pointer, not what the wrapper calls:
   `def resilient(fn): guarded = with_timeout(30)(fn)` with a `functools.wraps(fn)`
-  wrapper that calls `guarded`. A keyword the inner decorator adds, or keeps from the
-  function, then runs with a value the policy did not see. Apply each decorator to the
-  function directly, one above the other; the gate reads that stack.
+  wrapper that calls `guarded`. Beside `recusal` 0.15.0 the inner wrapper is not read,
+  and a keyword it adds, or keeps from the function, runs with a value the policy did
+  not see. A kernel later than 0.15.0 (0.15.0 is the newest release as this is
+  written) refuses the call before the policy runs in one case: the inner wrapper
+  is itself a `functools.wraps` wrapper of the same function,
+  it is held in the outer wrapper's closure or on a class-based decorator's instance,
+  and it takes a parameter of its own. The reason names the parameter. Held any other
+  way (a plain function or a lambda that names nothing as `__wrapped__`, a callable
+  object, a module global), the inner wrapper is not found by either kernel. Apply
+  each decorator to the function directly, one above the other; the gate reads that
+  stack.
+- A `functools.singledispatch` function, or a `singledispatchmethod`, with an
+  implementation registered beside its base one or in its place. The implementation
+  that runs is chosen at call time by the type of an argument, and the walk reads the
+  base one only. Beside `recusal` 0.15.0 this is not detected. Called by keyword, as
+  a tool's function is, the bare function fails in Python (a single-dispatch function
+  takes its first argument by position); behind a wrapper that passes that argument by
+  position, a registered implementation runs with defaults of its own that the policy
+  did not see. A kernel later than 0.15.0 refuses the call before the policy runs.
+  Call the function from a plain function and give the tool that.
+- A `functools.partialmethod` over a callable object (a class-based decorator's
+  instance, for example) as a tool's function. Beside `recusal` 0.15.0 it is read one
+  level deep: what is under the object is not read, so a default there can run that
+  the policy did not see. A kernel later than 0.15.0 refuses it before the policy runs,
+  as a callable that cannot be inspected.
 - A function that names its parameters and then calls another function. The gate reads
   signatures, not function bodies: the function it calls runs with its own defaults and
   with whatever values the first one hands it, and the policy is shown only the

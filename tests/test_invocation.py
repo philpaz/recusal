@@ -3337,6 +3337,298 @@ def inspect_signature(func):
     return inspect.signature(func).parameters
 
 
+# --- functools.partialmethod over a callable that does not bind as a method ---------------
+#
+# ``functools.partialmethod(f, ...)`` over a plain function hands out a ``functools.partial``
+# of the bound function, which the walk follows. Over a callable object it hands out a
+# method of a function ``functools`` builds, which calls ``f`` from its closure and names
+# nothing as ``__wrapped__``; ``inspect.signature`` reads a mark on it and shows the
+# parameters of ``f`` less what is bound. The walk read that one level and nothing under
+# the object.
+
+_RAN: List[Any] = []
+
+
+def _shows(func) -> List[str]:
+    import inspect
+
+    return [str(inspect.Signature(list(level.values()))) for level in reached_parameters(func)]
+
+
+def _refused_as_a_partialmethod(func) -> None:
+    with pytest.raises(TypeError, match="functools.partialmethod") as refused:
+        reached_parameters(func)
+    assert type(refused.value) is TypeError  # what every gate already refuses on
+    assert str(refused.value) == invocation._PARTIALMETHOD
+
+
+class _Fetcher:
+    """Q1: the tool's code is a callable object; ``table`` is positional-only beside
+    ``**extra``."""
+
+    def __call__(self, repo, table, /, limit=10, **extra):
+        _RAN.append({"table": table, "limit": limit, **{"extra." + k: v for k, v in extra.items()}})
+        return "ok"
+
+
+def _fetch_rows(repo, table, /, limit=10, **extra):
+    _RAN.append({"table": table, "limit": limit, **{"extra." + k: v for k, v in extra.items()}})
+    return "ok"
+
+
+class _Fetcher2:
+    """Q2: ``limit`` is positional-only, so a keyword of that name lands in ``**extra``."""
+
+    def __call__(self, repo, table, limit=10, /, **extra):
+        _RAN.append({"table": table, "limit": limit, **{"extra." + k: v for k, v in extra.items()}})
+        return "ok"
+
+
+def _fetch_rows_capped(repo, table, limit=10, /, **extra):
+    _RAN.append({"table": table, "limit": limit, **{"extra." + k: v for k, v in extra.items()}})
+    return "ok"
+
+
+def _scoped(fn):
+    """D1: the tenant is the decorator's parameter, not the function's."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(repo, tenant, *args, **kwargs):
+        return fn(repo, *args, **kwargs)
+
+    return wrapper
+
+
+def _default_table(fn):
+    """D1: the table defaults to the archive."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(repo, table="archive", *, limit=100):
+        return fn(repo, table, limit=limit)
+
+    return wrapper
+
+
+class _Audited:
+    """D1: a class-based decorator that states what it takes and passes all of it on."""
+
+    def __init__(self, fn):
+        import functools
+
+        functools.update_wrapper(self, fn)
+        self.fn = fn
+
+    def __call__(self, repo, tenant, *, limit=100):
+        return self.fn(repo, tenant, limit=limit)
+
+
+def _purge(repo, table, *, limit=100):
+    _RAN.append({"table": table, "limit": limit})
+    return "ok"
+
+
+def _repo():
+    import functools
+
+    class Repo:
+        q1 = functools.partialmethod(_Fetcher(), "customers")
+        q1_function = functools.partialmethod(_fetch_rows, "customers")
+        q2 = functools.partialmethod(_Fetcher2(), limit=77)
+        q2_function = functools.partialmethod(_fetch_rows_capped, limit=77)
+        d1 = functools.partialmethod(_Audited(_scoped(_default_table(_purge))), "acme")
+        d1_function = functools.partialmethod(_scoped(_default_table(_purge)), "acme")
+        nothing_bound = functools.partialmethod(_Fetcher())
+        twice = functools.partialmethod(functools.partialmethod(_Fetcher(), "customers"), 3)
+        as_static = functools.partialmethod(staticmethod(_fetch_rows), None, "customers")
+        as_class = functools.partialmethod(classmethod(_fetch_rows), "customers")
+
+    return Repo
+
+
+def test_q1_a_partialmethod_over_a_callable_object_binding_by_position_is_refused():
+    """The model sends ``table='orders'`` and a policy that allows only that table passes
+    it; the object runs with the bound ``'customers'`` and the model's value lands in
+    ``**extra``. The walk showed one level, ``(limit=10, **extra)``, and read nothing of
+    the object."""
+    tool = _repo()().q1
+    _RAN.clear()
+    tool(table="orders", limit=5)
+    assert _RAN == [{"table": "customers", "limit": 5, "extra.table": "orders"}]
+    assert inspect_signature(tool).keys() == {"limit", "extra"}
+    _refused_as_a_partialmethod(tool)
+    assert unsupported_signature(tool) is not None
+
+
+def test_q2_a_partialmethod_over_a_callable_object_binding_a_keyword_is_refused():
+    """``limit=77`` is bound by keyword to a positional-only parameter: it never reaches
+    it, and the object runs with its own default, which nothing read."""
+    tool = _repo()().q2
+    _RAN.clear()
+    tool("orders")
+    assert _RAN == [{"table": "orders", "limit": 10, "extra.limit": 77}]
+    _refused_as_a_partialmethod(tool)
+    assert unsupported_signature(tool) is not None
+
+
+def test_d1_a_partialmethod_over_a_class_based_decorator_is_refused():
+    """A value bound by position hides the leading parameter, and its default, of every
+    wrapper under the object: judged ``{'limit': 5}``, ran ``table='archive'``."""
+    tool = _repo()().d1
+    _RAN.clear()
+    tool(limit=5)
+    assert _RAN == [{"table": "archive", "limit": 5}]
+    assert list(inspect_signature(tool)) == ["limit"]
+    _refused_as_a_partialmethod(tool)
+    assert unsupported_signature(tool) is not None
+
+
+def test_a_partialmethod_over_a_plain_function_is_still_read_in_full():
+    """Over a function the same ``partialmethod`` is a ``functools.partial`` of the bound
+    function: it carries no mark, and every callable under it is read as before."""
+    import functools
+
+    repo = _repo()()
+    for name in ("q1_function", "q2_function", "d1_function", "as_static", "as_class"):
+        tool = getattr(repo, name)
+        assert type(tool) is functools.partial, name
+        assert not any(hasattr(tool, mark) for mark in invocation._PARTIALMETHOD_MARKS)
+    assert _shows(repo.q1_function) == ["(limit=10, **extra)"]
+    # the wrapper that names the tenant, then the one that defaults the table, then the
+    # function: each level less what the partial and the method bind
+    assert _shows(repo.d1_function) == ["(*args, **kwargs)", "(*, limit=100)", "(*, limit=100)"]
+    assert _shows(repo.as_static) == ["(limit=10, **extra)"]
+    assert _shows(repo.as_class) == ["(limit=10, **extra)"]
+    _RAN.clear()
+    assert repo.q1_function(limit=5) == "ok" and _RAN == [{"table": "customers", "limit": 5}]
+
+
+def test_a_partialmethod_is_refused_whatever_it_binds_and_wherever_it_stands():
+    """With nothing bound, bound twice, taken from the class (where a plain function gets
+    the same built method), and behind a ``functools.partial``: the level the walk would
+    read is in every case the one ``inspect.signature`` makes up from the mark."""
+    import functools
+
+    Repo = _repo()
+    repo = Repo()
+    for tool in (
+        repo.nothing_bound,
+        repo.twice,
+        Repo.q1,
+        Repo.q1_function,
+        functools.partial(repo.q1, limit=2),
+        functools.partial(functools.partial(repo.d1), limit=2),
+    ):
+        _refused_as_a_partialmethod(tool)
+
+    class Calls:
+        __call__ = functools.partialmethod(_Fetcher(), "customers")
+
+    _refused_as_a_partialmethod(Calls())
+    # everything bound: no parameter is left to judge, and the object under it is still
+    # not read. ``unsupported_signature`` accepted this one.
+    assert list(inspect_signature(repo.twice)) == ["extra"]
+
+    class Quiet:
+        def __call__(self, repo, table, limit=10):
+            return "ok"
+
+    class Bound:
+        all_bound = functools.partialmethod(Quiet(), "customers", 3)
+
+    assert list(inspect_signature(Bound().all_bound)) == []
+    _refused_as_a_partialmethod(Bound().all_bound)
+    assert unsupported_signature(Bound().all_bound) == "its signature cannot be inspected"
+
+
+def test_a_wrapper_that_carries_a_partialmethods_mark_is_refused():
+    """``functools.update_wrapper`` copies the mark onto a wrapper of such a method, and
+    ``inspect.signature`` then shows the partialmethod's parameters in place of the
+    wrapper's own: a parameter the wrapper adds would not be read."""
+    import functools
+
+    method = _repo()().q1
+
+    def forcing(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, force=True, **kwargs):
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    wrapper = forcing(method)
+    assert any(hasattr(wrapper, mark) for mark in invocation._PARTIALMETHOD_MARKS)
+    assert "force" not in inspect_signature(wrapper)
+    import inspect
+
+    assert "force" not in inspect.signature(wrapper, follow_wrapped=False).parameters
+    _refused_as_a_partialmethod(wrapper)
+    _refused_as_a_partialmethod(functools.lru_cache(maxsize=None)(method))
+
+    class Traced:
+        def __init__(self, fn):
+            functools.update_wrapper(self, fn)
+
+        def __call__(self, *args, force=True, **kwargs):
+            return "ok"
+
+    _refused_as_a_partialmethod(Traced(method))
+
+
+@pytest.mark.parametrize("mark", ["_partialmethod", "__partialmethod__"])
+def test_the_mark_is_refused_under_either_name_and_only_for_a_partialmethod(mark):
+    """Both names are looked for on every Python (``functools`` writes one of them, by
+    version). The test is the one ``inspect.signature`` makes: an attribute that is not a
+    ``functools.partialmethod`` is not a mark, and the callable is read as before."""
+    import functools
+
+    def plain(table: str, limit: int = 10) -> str:
+        return table
+
+    setattr(plain, mark, "a setting of the application's")
+    assert _shows(plain) == ["(table: str, limit: int = 10)"]
+    assert unsupported_signature(plain) is None
+
+    def marked(table: str, limit: int = 10) -> str:
+        return table
+
+    setattr(marked, mark, functools.partialmethod(_Fetcher(), "customers"))
+    _refused_as_a_partialmethod(marked)
+
+    class Sub(functools.partialmethod):
+        pass
+
+    def by_subclass(table: str, limit: int = 10) -> str:
+        return table
+
+    setattr(by_subclass, mark, Sub(_Fetcher(), "customers"))
+    _refused_as_a_partialmethod(by_subclass)
+
+    # a ``functools.partialmethod`` set on a class under one of the names is a method of
+    # that class, not a mark: read from an object it is what the descriptor hands out,
+    # which ``inspect.signature`` does not take for one either
+    class Carries:
+        def __call__(self, table: str, limit: int = 10) -> str:
+            return table
+
+    setattr(Carries, mark, functools.partialmethod(_Fetcher(), "customers"))
+    assert _shows(Carries()) == ["(table: str, limit: int = 10)"] * 2
+    assert list(inspect_signature(Carries())) == ["table", "limit"]
+
+
+def test_the_partialmethod_check_prepares_nothing_and_runs_before_any_walk_state():
+    """The refusal needs none of what the first walk prepares: it holds where both of the
+    other checks are off."""
+    tool = _repo()().d1
+    ready = invocation._READY
+    try:
+        invocation._READY = False
+        _refused_as_a_partialmethod(tool)
+    finally:
+        invocation._READY = ready
+
+
 # --- detached -----------------------------------------------------------------------------
 
 

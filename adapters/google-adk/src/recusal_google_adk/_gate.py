@@ -57,6 +57,7 @@ from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
 from recusal.invocation import json_data as _json_data
@@ -68,6 +69,28 @@ if TYPE_CHECKING:
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the walk that the installed kernel does not have.
+    ``recusal`` 0.15.0, the oldest this package allows, has neither ``HiddenWrapper`` nor
+    ``DispatchedAtCallTime``. Nothing raises this class, so a handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.0).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
 #: Given the call's ``ToolContext``, the recording arguments ``decide`` takes for it
 #: (``audit=``, ``surface=``, ``tool_use_id=``, ...). ``recusal_google_adk.recording``
 #: builds one.
@@ -131,7 +154,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     skip = tuple(getattr(tool, "_ignore_params", ()) or ())
     why = _unsupported_signature(func, skip)
     if why is not None:
-        return None, f"its signature cannot be judged ({why})"
+        return None, f"its signature cannot be judged ({_with_remedy(func, why, skip)})"
     parameters = inspect.signature(func).parameters
     raw: dict[str, Any] = {}
     # A parameter whose default is ``None`` (``region: str = None``) and that the call
@@ -216,6 +239,37 @@ def _takes_skip(walk: Any) -> bool:
 
 #: Decided once, at import, from the kernel that is installed.
 _WALK_TAKES_SKIP = _takes_skip(_reached_parameters)
+
+
+def _with_remedy(func: Any, why: str, skip: tuple = ()) -> str:
+    """``why``, the kernel's reason a tool's signature cannot be judged, with what to do
+    about it where the reason is one of the two the kernel's walk raises by name: a
+    decorator that holds a second wrapper with a parameter of its own (``HiddenWrapper``)
+    and a single-dispatch function that can run more than its base implementation
+    (``DispatchedAtCallTime``). A kernel later than 0.15.0 raises them; beside 0.15.0
+    neither shape is found, no handler here runs and ``why`` is returned as it is. The
+    walk is made a second time only for a call that is refused already, and the remedy is
+    added only when what it raises is, word for word, the reason the kernel gave."""
+    try:
+        _reached_parameters(func, skip) if _WALK_TAKES_SKIP else _reached_parameters(func)
+    except _HiddenWrapper as refused:
+        if str(refused) == why:
+            return (
+                f"{why}: a decorator on the tool holds a second wrapper of the function, in "
+                "its closure or on the decorator object, which is not reached through "
+                "`__wrapped__`; call the decorated function from a plain function and "
+                "register that one"
+            )
+    except _DispatchedAtCallTime as refused:
+        if str(refused) == why:
+            return (
+                f"{why}: it is a single-dispatch function (`functools.singledispatch` or "
+                "`singledispatchmethod`) with an implementation registered beside its base "
+                "one or in its place; call it from a plain function and register that one"
+            )
+    except Exception:  # noqa: BLE001, refused already, for the reason the kernel gave
+        pass
+    return why
 
 
 def _none_defaults_to_write(func: Any, names: list[str], skip: tuple = ()) -> list[str]:

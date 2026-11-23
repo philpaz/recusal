@@ -14,7 +14,9 @@ and they are decisions about data, not about any framework:
   that holds a second ``functools.wraps`` wrapper of the same function
   (:class:`HiddenWrapper`), and a single-dispatch function that can run anything but its
   base (:class:`DispatchedAtCallTime`). Both checks are exact, run nothing, and state
-  what they do not find;
+  what they do not find. A callable ``inspect.signature`` reads as a
+  ``functools.partialmethod`` shows parameters that are not its own and is refused too
+  (``TypeError``);
 - how to hand a policy a copy it can write to without reaching what executes
   (:func:`detached`).
 
@@ -181,7 +183,10 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     own). The first is turned off; the second raises :class:`DeclaredSignature` wherever it
     is found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
     ``staticmethod``, and ``lru_cache`` over a method) are looked through. A class is not a
-    callable this reads: calling it runs ``__new__`` and ``__init__``.
+    callable this reads: calling it runs ``__new__`` and ``__init__``. Neither is the method
+    ``functools.partialmethod`` builds over a callable that does not bind as one, nor
+    anything else ``inspect.signature`` would read as a ``functools.partialmethod``
+    (:func:`_refuse_partialmethod`): that raises ``TypeError``.
     """
     if _depth > 8:
         raise ValueError("too many wrappers to inspect")
@@ -201,17 +206,64 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
 
 def _refuse_declared_signature(func: Any, depth: int) -> None:
     """Raise :class:`DeclaredSignature` if ``func``, or what ``inspect.signature`` would
-    read in its place, declares ``__signature__``."""
+    read in its place, declares ``__signature__``, and ``TypeError`` if either would be
+    read as a ``functools.partialmethod`` (:func:`_refuse_partialmethod`)."""
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
     if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
         raise DeclaredSignature
+    _refuse_partialmethod(func)
     if isinstance(func, functools.partial):
         _refuse_declared_signature(func.func, depth + 1)
     elif not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
         call = getattr(type(func), "__call__", None)
         if call is not None and not isinstance(call, _C_CALL):
             _refuse_declared_signature(call, depth + 1)
+
+
+#: The attribute under which ``functools.partialmethod`` leaves itself on the function it
+#: builds, and under which ``inspect.signature`` looks for it: ``_partialmethod`` up to
+#: Python 3.12, ``__partialmethod__`` from 3.13. Both are looked for on every Python.
+_PARTIALMETHOD_MARKS = ("_partialmethod", "__partialmethod__")
+
+_PARTIALMETHOD = (
+    "`inspect.signature` reads it as a `functools.partialmethod`, which shows parameters "
+    "that are not the callable's own"
+)
+
+
+def _refuse_partialmethod(func: Any) -> None:
+    """Raise ``TypeError`` if ``inspect.signature`` would read ``func`` as a
+    ``functools.partialmethod``: ``func`` shows, under one of the two names above, an
+    instance of ``functools.partialmethod``.
+
+    ``functools.partialmethod(f, ...)`` hands out one of two things. Where ``f`` binds as a
+    method (a plain function taken from an instance, a ``classmethod``, a
+    ``staticmethod``), a ``functools.partial`` of the bound ``f``: the walk follows that,
+    and it is not refused here. Where ``f`` does not (a callable object, a class-based
+    decorator; a plain function when the method is taken from the class), a method of a
+    function ``functools`` builds, which calls ``f`` from its closure, names nothing as
+    ``__wrapped__`` and carries the mark. ``inspect.signature`` reads the mark in place of
+    that function's own parameters and shows the parameters of ``f`` less what is bound, so
+    the walk would read one level that is no callable's own and nothing of ``f``: not its
+    ``__call__``, not a wrapper under it, not a default any of them fills.
+
+    ``functools.update_wrapper`` copies the mark onto every wrapper of such a method, and
+    ``inspect.signature`` then reads the mark in place of that wrapper's parameters too. So
+    the mark is refused wherever ``inspect.signature`` looks for it: on the callable, on a
+    method's function (a method shows its function's attributes as its own), on a
+    ``functools.partial``'s function and on a callable object's ``__call__``, which are the
+    places :func:`_refuse_declared_signature` visits. The test is the one
+    ``inspect.signature`` makes, an attribute lookup on a callable of the walk and an
+    ``isinstance``; a mark that is anything but a ``functools.partialmethod`` is not read by
+    it and is not refused. Nothing is prepared for it and nothing found is called.
+
+    Not found, by design: a partial application written by hand, and a callable that
+    reaches such a method through a helper that names nothing as ``__wrapped__`` and does
+    not carry the mark."""
+    for mark in _PARTIALMETHOD_MARKS:
+        if isinstance(getattr(func, mark, None), functools.partialmethod):
+            raise TypeError(_PARTIALMETHOD)
 
 
 # The two checks below read what a callable on the walk HOLDS. A held value is not a

@@ -890,6 +890,69 @@ All notable changes to this project are documented here. The format follows
     the dispatcher is known by the code object of the standard library's function as it
     stood then, and a reload compiles new ones. And a Python that builds
     `functools.singledispatch` another way than 3.9 to 3.15 do (a test fails there first).
+- **Kernel: `recusal.invocation` refuses a `functools.partialmethod` that shows
+  parameters not its own.** Found by review round twelve of `recusal-pydantic-ai`, and
+  closed in the kernel so that every gate that uses the walk gets it.
+  `functools.partialmethod(f, ...)` over a callable that does not bind as a method (a
+  callable object, a class-based decorator's instance; a plain function too, when the
+  method is taken from the class) hands out a method of a function `functools` builds.
+  That function calls `f` from its closure, names nothing as `__wrapped__`, and carries
+  a mark (`_partialmethod` up to Python 3.12, `__partialmethod__` from 3.13) that
+  `inspect.signature` reads in place of its own parameters: it shows the parameters of
+  `f` less what is bound. So `reached_parameters` read one level that was no callable's
+  own and nothing of `f`: not its `__call__`, not a wrapper under it, not a default any
+  of them fills. A policy judged `table='orders'` and the object ran with the bound
+  `'customers'`; a wrapper under a class-based decorator ran `table='archive'` from a
+  default no policy saw. The walk now raises `TypeError` for it, which every gate that
+  refuses on a failure of the walk already refuses, and `unsupported_signature` returns
+  "its signature cannot be inspected" for the one such tool it accepted, a
+  `partialmethod` that leaves no parameter to judge (one that leaves a parameter the
+  framework does not inject was refused before, as not annotated, because the function
+  `functools` builds carries no annotations). Nothing that 0.15.0 refused is now
+  accepted.
+  - *What is refused.* A callable that `inspect.signature` would read as a
+    `functools.partialmethod`: one that shows, under either name (both are looked for on
+    every Python), an instance of `functools.partialmethod`. It is looked for wherever
+    `inspect.signature` looks: on the callable, on a method's function, on a
+    `functools.partial`'s function and on a callable object's `__call__`.
+    `functools.update_wrapper` copies the mark onto every wrapper of such a method
+    (`functools.wraps`, `functools.lru_cache`, a class-based decorator), and
+    `inspect.signature` then shows the partialmethod's parameters in place of that
+    wrapper's own, so those are refused too.
+  - *What is not.* A `functools.partialmethod` over a plain function, a `classmethod` or
+    a `staticmethod`, read from an instance: that is a `functools.partial` of the bound
+    function, it carries no mark, and it is walked as before. An attribute of one of the
+    two names that is not a `functools.partialmethod`: `inspect.signature` does not read
+    it, and neither does the walk.
+  - *Nothing is prepared and nothing is run.* The test is the one `inspect.signature`
+    makes, an attribute lookup on a callable of the walk and an `isinstance`. It needs
+    none of what the first walk prepares, and holds where the two checks above are off.
+  - *Not found, by design.* A partial application written by hand, and a callable that
+    reaches such a method through a helper that names nothing as `__wrapped__` and does
+    not carry the mark.
+  - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
+- **Adapters: the refusals the kernel's walk makes by name are reported as what they
+  are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
+  each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor
+  `DispatchedAtCallTime`, and handles a stand-in there that nothing raises.
+  - `recusal-pydantic-ai`: beside a kernel with `DispatchedAtCallTime`, a
+    single-dispatch tool was refused as "the function this tool runs, or a decorator on
+    it, cannot be inspected", because the kernel's walk raised before the gate's own
+    check was asked. It is refused with the gate's own reason for a single-dispatch
+    function again, and a `HiddenWrapper` with a reason that says a decorator holds a
+    second wrapper, names the parameter, and says what to do.
+  - `recusal-langgraph` (and `recusal-langchain`, which gates through it): the two were
+    reported as "cannot be inspected for its parameters (HiddenWrapper)", with a
+    class-based descriptor as the example. Each now has its own reason and remedy.
+  - `recusal-openai`, `recusal-google-adk`: the kernel's reason is passed on with what
+    the kernel found and what to do, added only when the walk raises that very reason.
+  - `recusal-crewai` reads a tool with a walk of its own, which had the `partialmethod`
+    gap (judged `{'amount': 5}`, ran a wrapper's `force=True`): it refuses the same
+    mark. That walk follows `__wrapped__` alone, so it also found neither a decorator
+    that holds a second wrapper nor a single-dispatch function; the gate now asks a
+    kernel that has the two refusals for exactly those, and refuses with the cause.
+    Beside `recusal` 0.15.0 or older, neither is found.
+  - `recusal-openai-agents` and `recusal-openai-agents-mcp` are not changed here.
 
 ## [0.15.0] - 2026-11-21
 
