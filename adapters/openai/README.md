@@ -339,6 +339,15 @@ call id, and the gate always fails closed.
   only by what it returns, after the policy has allowed the call and the wrapper has
   been called.
 
+**Beyond the gate.** This gate judges the tool calls the framework routes through it;
+the paths around it inside the framework are listed above. Like every Recusal gate, it
+does not stop an agent that can reach a resource another way: a credential with wider
+rights, a shell or network path outside the agent, or a file it can write that
+configures the gate. Use it as one layer of several: least-privilege credentials for the
+agent, a sandbox or container, limits on its network egress, and an audit anchor the
+writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
+
 ## Status
 
 **In-depth review complete.** Its fixes are released in 0.2.2. Recusal is a Beta (`0.x`) open-source project in active

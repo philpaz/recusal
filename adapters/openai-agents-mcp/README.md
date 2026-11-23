@@ -444,6 +444,15 @@ log cannot be written the call is refused. Check the log with
   name that is not one of them raises `ModelBehaviorError` and nothing runs, and a call
   to a name that is one passes through that tool's gate.
 
+**Beyond the gate.** This gate judges the tool calls the framework routes through it;
+the paths around it inside the framework are listed above. Like every Recusal gate, it
+does not stop an agent that can reach a resource another way: a credential with wider
+rights, a shell or network path outside the agent, or a file it can write that
+configures the gate. Use it as one layer of several: least-privilege credentials for the
+agent, a sandbox or container, limits on its network egress, and an audit anchor the
+writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
+
 ## Status
 
 **In-depth review under way.** Its fixes so far are released in 0.2.0, and the review continues. Recusal is a Beta (`0.x`) open-source project in active

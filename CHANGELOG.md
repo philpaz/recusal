@@ -28,6 +28,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Every page says what Recusal does not enforce.** Recusal judges the tool calls that
+  reach a gate; it does not stop an agent that can reach a resource another way. The
+  kernel README says so under its status line, and each adapter page, which is its PyPI
+  page, says so just before its Status, with the layers to put around it and a link to
+  the limits in full in SECURITY.md. A test keeps the paragraph on all nine pages. The
+  adapter pages reach PyPI with each package's next release.
+
 - **`recusal-crewai` 0.2.2: it requires a CrewAI that does not install `chromadb`, and
   every function is annotated.** No change to the gate: it is the one 0.2.1 shipped,
   and its tests pass unchanged on `crewai` 1.15.44. The floor rises to

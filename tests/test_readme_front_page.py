@@ -294,3 +294,28 @@ def test_every_adapter_states_the_status_the_project_table_gives_it():
         assert "**Help make it better.**" in own
         assert "https://github.com/philpaz/recusal/security/advisories/new" in own
         assert "https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md" in own
+
+
+LIMITS = "https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing"
+
+
+def test_every_page_says_what_recusal_does_not_enforce():
+    """Recusal judges only the tool calls that reach a gate. The kernel README says so near
+    its top, and every adapter page says so just before its Status, each linking the limits
+    in full; the section it links exists."""
+    assert "\n## Things worth knowing\n" in (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    head = README.split("\n## ", 1)[0]
+    assert "**What it does not enforce:**" in head
+    paragraph = head.split("**What it does not enforce:**", 1)[1].split("\n\n", 1)[0]
+    flat = " ".join(paragraph.split())
+    assert "judges the tool calls that reach a gate you have installed" in flat
+    assert "reach a resource another way" in flat and LIMITS in flat
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert len(directories) == 8
+    for directory in directories:
+        page = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
+        before = page.split("\n## Status\n", 1)[0].rstrip()
+        last = before.rsplit("\n\n", 1)[1]
+        flat = " ".join(last.split())
+        assert flat.startswith("**Beyond the gate.**"), directory
+        assert "reach a resource another way" in flat and LIMITS in flat, directory

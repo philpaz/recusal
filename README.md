@@ -28,6 +28,15 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 product. The adapters are at different stages of security review, and help is welcome:
 [project status](#project-status).
 
+**What it does not enforce:** Recusal judges the tool calls that reach a gate you have
+installed. It does not stop an agent that can reach a resource another way: a credential
+with wider rights, a shell or network path outside the governed session, a file it can
+write that configures the gate, or the Python environment the hook runs in. Use it as
+one layer of several: least-privilege credentials for the agent, a sandbox or container,
+limits on its network egress, Claude Code managed settings for the hook configuration,
+and an audit anchor the writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
+
 [![Website](https://img.shields.io/badge/website-recusal.io-2453c4)](https://recusal.io)
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
