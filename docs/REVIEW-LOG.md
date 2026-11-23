@@ -478,7 +478,12 @@ in 0.2.0, and the 0.2.0 package page states the others; none of the others is fi
 0.2.0. The changes that answer them, and the findings of a sixth round on those changes
 (JSON text nested deeper, or holding a longer integer, than the gate's own Python
 decodes ran as a list on a server under another Python; and the time one call takes
-grew with what the model sent, which a ceiling on the steps of one call now bounds),
+grew with what the model sent, which a ceiling on the steps of one call now bounds)
+and of a seventh round (a check that failed wrote out the whole value, at every level
+of a schema that nests, which no step counted; a subschema that declares a draft, and
+a `$ref` back to a root that declares one, were checked by none of the gate's own
+keywords; and the steps did not bound the size of a call, which a ceiling on the size
+of one call's arguments now does),
 are in the changelog's Unreleased entry for 0.2.1, which is not released.
 
 - **The most serious.** In 0.2.0 a model can still stall the agent's process. Under

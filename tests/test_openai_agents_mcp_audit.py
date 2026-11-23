@@ -493,6 +493,44 @@ class TestOpenAIAgentsMcpAudit:
         assert entry["action"]["input_sha256"] == _sha(arguments)
         assert "MARKER" not in log_path.read_text(encoding="utf-8")
 
+    def test_arguments_over_the_size_ceiling_are_one_recorded_deny_that_reads_none_of_them(
+        self, example, gate, log, log_path
+    ):
+        """The entry is bound to a statement of the size and holds no fingerprint of the
+        arguments: writing one would read all of them, which the ceiling is there to
+        prevent."""
+        seen = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        arguments = {"path": "MARKER" * 200_000, "recursive": False, "dry_run": True}
+        outputs, called = example.run_calls(
+            [("purge", arguments, "c1")], log, policy=policy, server=_purge_server(gate)
+        )
+        assert called == [] and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny"
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert (
+            entry["action"]["reason"]
+            == _text(outputs["c1"])
+            == (
+                "Recusal refused `purge` [FAIL]: the arguments are more than 1,000,000 "
+                "characters as JSON text, the ceiling the gate sets on the size of one "
+                "call's arguments so that the time a call takes does not grow with what is "
+                "sent; the gate has not read them. Send less in one call. Where calls of this "
+                "size are expected, the application can raise the ceiling: `size_ceiling=` on "
+                "`gate_mcp_server`, `gated_agent` or `audited_agent`."
+            )
+        )
+        assert entry["action"]["input_sha256"] == _sha(
+            {"input": "<arguments of more than 1,000,000 characters as JSON text>"}
+        )
+        assert entry["action"]["input_sha256"] != _sha(arguments)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
     def test_two_servers_are_told_apart_on_one_log(self, example, gate, log):
         first, second = gate.InProcessMCPServer(name="db"), gate.InProcessMCPServer(name="crm")
         record = example.recording(log)

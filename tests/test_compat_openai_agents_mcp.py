@@ -615,3 +615,141 @@ def test_jsonschema_evaluates_a_schemas_patterns_where_the_gate_replaces_it():
     (error,) = strict({"anyOf": [{"type": "null"}]}).iter_errors(1)
     assert error.validator == "anyOf" and error.validator_value == [{"type": "null"}]
     assert error.instance == 1
+
+
+def test_the_gates_keywords_assert_what_jsonschemas_assert():
+    """The gate checks every keyword with a function of its own, so that none writes a
+    message from the value (``jsonschema`` writes the value into the message of every
+    error it makes). Each asserts what the function of ``jsonschema`` asserts: the same
+    errors, by keyword and by place, for every schema and value here, in every draft the
+    gate reads. The reference is the validator of ``jsonschema`` with only what the gate
+    makes stricter or does not evaluate on purpose: the comparisons, the patterns, the
+    alternatives, and an integer that is written as a float."""
+    import importlib
+
+    validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    on_purpose = {"enum", "const", "uniqueItems", "pattern", "patternProperties", "format"}
+    on_purpose |= {"additionalProperties", "anyOf", "oneOf"}
+    integer, string, number = {"type": "integer"}, {"type": "string"}, {"type": "number"}
+    schemas = [
+        integer,
+        {"type": ["integer", "string"]},
+        {"type": "number"},
+        {"type": "array"},
+        {"type": "object"},
+        {"type": "null"},
+        {"type": "boolean"},
+        {"minProperties": 2},
+        {"maxProperties": 1},
+        {"required": ["x", "zz"]},
+        {"not": {}},
+        {"not": integer},
+        {"not": False},
+        {"properties": {"x": False}},
+        {"properties": {"x": integer, "a": string}},
+        {"propertyNames": False},
+        {"propertyNames": {"maxLength": 1}},
+        {"if": {}, "then": False},
+        {"if": integer, "then": {"minimum": 3}, "else": string},
+        {"if": False, "else": False},
+        {"additionalProperties": integer},
+        {"properties": {"x": {}}, "additionalProperties": False},
+        {"allOf": [integer, {"minimum": 1}]},
+        {"allOf": [False]},
+        {"anyOf": [False, {"minItems": 2}]},
+        {"oneOf": [integer, number]},
+        {"minItems": 2},
+        {"maxItems": 1},
+        {"contains": integer},
+        {"contains": False},
+        {"contains": integer, "minContains": 2},
+        {"contains": integer, "maxContains": 1},
+        {"contains": integer, "minContains": 0},
+        {"contains": {}, "minContains": 5},
+        {"items": False},
+        {"items": integer},
+        {"items": [integer, string]},
+        {"items": [integer], "additionalItems": False},
+        {"items": [integer], "additionalItems": string},
+        {"items": integer, "additionalItems": False},
+        {"additionalItems": False},
+        {"prefixItems": [integer, string]},
+        {"prefixItems": [integer], "items": False},
+        {"prefixItems": [False]},
+        {"prefixItems": [integer], "items": string},
+        {"unevaluatedItems": False},
+        {"unevaluatedItems": integer},
+        {"prefixItems": [integer], "unevaluatedItems": False},
+        {"items": [integer], "unevaluatedItems": False},
+        {"allOf": [{"prefixItems": [integer]}], "unevaluatedItems": False},
+        {"contains": integer, "unevaluatedItems": False},
+        {"if": {"contains": string}, "then": {"items": True}, "unevaluatedItems": False},
+        {"unevaluatedProperties": False},
+        {"unevaluatedProperties": integer},
+        {"properties": {"x": integer}, "unevaluatedProperties": False},
+        {"allOf": [{"properties": {"x": {}}}], "unevaluatedProperties": False},
+        {"dependentSchemas": {"x": {"properties": {"a": {}}}}, "unevaluatedProperties": False},
+        {
+            "if": {"required": ["x"]},
+            "then": {"properties": {"x": {}}},
+            "unevaluatedProperties": False,
+        },
+        {"minLength": 2},
+        {"maxLength": 1},
+        {"maximum": 1},
+        {"minimum": 1},
+        {"exclusiveMaximum": 1},
+        {"exclusiveMinimum": 1},
+        {"maximum": 1.5},
+        {"minimum": 10**400},
+        {"multipleOf": 7},
+        {"multipleOf": 0.5},
+        {"multipleOf": 1e-300},
+        {"multipleOf": 10**400},
+        {"dependentRequired": {"x": ["a", "zz"], "a": ["x"]}},
+        {"dependentSchemas": {"x": {"required": ["a"]}}},
+        {"dependentSchemas": {"x": False}},
+        {"dependencies": {"x": ["a", "zz"], "a": {"minProperties": 3}}},
+        {"dependencies": {"x": False}},
+        {"$ref": "#/$defs/never", "$defs": {"never": False}},
+        {"$ref": "#/$defs/i", "type": "string", "$defs": {"i": integer}},
+        {"type": "object", "properties": {"x": integer, "kid": {"$ref": "#"}}},
+        {"items": {"anyOf": [integer, {"type": "array", "items": {"maxLength": 0}}]}},
+    ]
+    instances = [
+        *(0, 1, -1, 5, 7, 14, 2**53 + 1, 10**400, 10**400 + 1, 0.0, 1.0, 1.5, 3.5, 7.0, 1e308),
+        *(True, False, None, "", "a", "ab", "5"),
+        *([], [1], ["1"], [1, "a"], [1, 1], [1, 2, 3], [[1]], ["a", "b"], [1, "a", 2], [None]),
+        *([{"x": 1}], [5, [5, ["a", ""]]]),
+        *({}, {"x": 1}, {"x": "1"}, {"a": 1}, {"x": 1, "a": "s"}, {"zz": 1}, {"x": 5.0}),
+        *({"a": 1, "x": 1, "zz": None}, {"x": 1, "kid": {"x": 2, "kid": {"x": "3"}}}),
+    ]
+
+    def errors(validator, instance):
+        try:
+            return sorted(
+                (str(error.validator), tuple(map(str, error.absolute_path)))
+                for error in validator.iter_errors(instance)
+            )
+        except (OverflowError, module._NoFloat):
+            return "a number too large for a float"
+        except Exception as exc:  # noqa: BLE001, what one raises the other must raise
+            return type(exc).__name__
+
+    compared = 0
+    for base, strict in module._DRAFTS.items():
+        own = module._checks(base)
+        reference = validators.extend(
+            base,
+            validators={keyword: own[keyword] for keyword in on_purpose if keyword in own},
+            type_checker=base.TYPE_CHECKER.redefine("integer", module._is_integer),
+        )
+        for schema in schemas:
+            ours, theirs = strict(schema), reference(schema)
+            for instance in instances:
+                found = errors(ours, instance)
+                assert found == errors(theirs, instance), (base.__name__, schema, instance)
+                compared += bool(found)
+    # the comparison is not of nothing: most of these values fail
+    assert compared > 2_500

@@ -1442,9 +1442,19 @@ _TOO_COSTLY = f"the arguments are too costly to check against {_SCHEMA}"
 #: the reason when the ceiling on one call stopped the check, at the default ceiling
 _OVER_THE_CEILING = (
     f"{_TOO_COSTLY}: the check was stopped at 200,000 steps, the ceiling the gate sets on "
-    "one call so that the time a call takes does not grow with what is sent. Send fewer "
-    "values in one call. Where calls of this size are expected, the application can raise "
-    "the ceiling: `step_ceiling=` on `gate_mcp_server`, `gated_agent` or `audited_agent`."
+    "the steps of one call. Send fewer values in one call. Where calls of this size are "
+    "expected, the application can raise the ceiling: `step_ceiling=` on `gate_mcp_server`, "
+    "`gated_agent` or `audited_agent`. Raising it does not help a call that costs more than "
+    "10,000 steps and 1,000 more for every value in its arguments, which the gate refuses "
+    "under any ceiling."
+)
+#: the reason when the arguments are over the ceiling on their size, at the default one
+_TOO_LARGE = (
+    "the arguments are more than 1,000,000 characters as JSON text, the ceiling the gate "
+    "sets on the size of one call's arguments so that the time a call takes does not grow "
+    "with what is sent; the gate has not read them. Send less in one call. Where calls of "
+    "this size are expected, the application can raise the ceiling: `size_ceiling=` on "
+    "`gate_mcp_server`, `gated_agent` or `audited_agent`."
 )
 
 
@@ -1494,10 +1504,10 @@ class TestTheWholeListedSchema:
     example = TestWhatIsSentIsWhatWasJudged.example
     Recording = TestWhatIsSentIsWhatWasJudged.Recording
 
-    def judged(self, arguments, schema):
+    def judged(self, arguments, schema, **ceilings):
         """``(what the policy saw or None, what is sent or None, the reason or None)``."""
         policy = self.Recording()
-        sent, reason = _adapter()._judged_call("purge", arguments, schema, policy)
+        sent, reason = _adapter()._judged_call("purge", arguments, schema, policy, **ceilings)
         return (policy.seen[0][1] if policy.seen else None), sent, reason
 
     # --- defaults at every depth -----------------------------------------------------------------
@@ -4394,14 +4404,20 @@ class TestFourthReview:
     def test_the_refusals_are_made_under_the_keywords_no_default_is_written_through(
         self, example, keyword, wrap
     ):
+        def listing(inner):
+            # a draft is declared by the schema of the arguments, never by a subschema
+            wrapped = wrap(inner)
+            declared = {"$schema": wrapped.pop("$schema")} if "$schema" in wrapped else {}
+            return {**declared, "properties": {"o": {"type": "object", **wrapped}}}
+
         either = {"anyOf": [{"type": "object", "title": "a"}, {"type": "object"}]}
-        schema = {"properties": {"o": {"type": "object", **wrap(either)}}}
+        schema = listing(either)
         assert self.judged({"o": {"t": {}}}, schema)[2] == (
             f"Recusal refused `purge`: argument `o.{'*' if keyword.endswith('Properties') else 't'}` "
             f"{_TWO_OBJECT_FORMS}"
         ), keyword
         texts = {"anyOf": [{"type": "integer"}, {"type": "string", "format": "date"}]}
-        schema = {"properties": {"o": {"type": "object", **wrap(texts)}}}
+        schema = listing(texts)
         assert _NUMBER_TEXT in self.judged({"o": {"t": "5"}}, schema)[2], keyword
         given = {"o": {"t": "2024-01-01"}}
         assert self.judged(given, schema) == (given, given, None)
@@ -5817,17 +5833,26 @@ class TestSixthReview:
     def test_json_text_nested_to_any_depth_is_refused(self, example, listed, depth):
         """The reviewer's case: nested 1,200 deep, the text was judged a string by a gate
         on Python 3.10 and ran as a list on a server on 3.12. Whatever this interpreter's
-        limit is, the text is refused below it (it decodes) and above it (it does not)."""
+        limit is, the text is refused below it (it decodes) and above it (it does not).
+        The deepest of these are longer than the ceiling on the size of one call, which
+        refuses them first, so that ceiling is raised here."""
         for text in (
             "[" * depth + '"rm -rf /"' + "]" * depth,
             '{"a":' * depth + "1" + "}" * depth,
             " \n" + "[" * depth + "]" * depth,
         ):
-            assert self.judged({"payload": text}, {"properties": {"payload": listed}}) == (
+            schema = {"properties": {"payload": listed}}
+            assert self.judged({"payload": text}, schema, size_ceiling=10**9) == (
                 None,
                 None,
                 f"Recusal refused `purge`: argument `payload` {_JSON_TEXT}",
             )
+            if len(text) > 1_000_000:
+                assert self.judged({"payload": text}, schema) == (
+                    None,
+                    None,
+                    f"Recusal refused `purge`: {_TOO_LARGE}",
+                )
 
     @pytest.mark.parametrize("digits", [100, 640, 641, 4300, 4301, 6000, 100_000])
     @pytest.mark.parametrize("limit", [640, 4300, 0])
@@ -6255,11 +6280,816 @@ class TestSixthReview:
             .split()
         )
         for stated in (
-            "**A number a Pydantic server reads as a date, a time or an enum member.**",
-            "**`1` and `0` that run as booleans, and `true` that runs as `1`.**",
+            "**A number a Pydantic server reads as a date, a time, an address, a complex "
+            "number or an enum member.**",
+            "**`1`, `0`, `1.0` and `0.0` that run as booleans, and `true` that runs as `1`.**",
             '`"HTTP://X/a/../admin"` for a parameter typed `AnyUrl` runs as `http://x/admin`',
         ):
             assert stated in readme, stated
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestSeventhReview:
+    """The seventh review (2026-11-23). ``jsonschema`` writes the value that failed into
+    the message of every error it makes, the ones an ``anyOf`` asks for and drops among
+    them, so a schema that nests wrote out everything below each level: 750 KB of
+    arguments held the event loop 2.1 seconds for 497 counted steps. No keyword the gate
+    runs writes a message from a value now. Found beside it: a subschema that declares
+    a draft, and a ``$ref`` back to a root that declares one, were checked by the
+    keywords of ``jsonschema`` and none of the gate's. And the steps do not bound the
+    size of a call, so the arguments of one call have a ceiling on their size too."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    judged = TestTheWholeListedSchema.judged
+    schema_module = staticmethod(TestThirdReview.schema_module)
+    spent = TestThirdReview.spent
+    _storing = TestSixthReview._storing
+    _call = staticmethod(TestSixthReview._call)
+
+    INTEGERS = TestSixthReview.INTEGERS
+    DRAFT_2019 = "https://json-schema.org/draft/2019-09/schema"
+    DRAFT_2020 = "https://json-schema.org/draft/2020-12/schema"
+
+    #: A value of every JSON type that holds a marker a message would carry.
+    MARK = "MARKER-" * 40
+    BIG_OBJECT = {"k": [MARK], "zz": MARK}
+    BIG_LIST = [[MARK], MARK, MARK]
+    BIG_NUMBER = 10**300 + 7
+
+    #: keyword -> (the schema of ``p``, a value that fails it), for every keyword of
+    #: every draft the gate reads; ``None`` for the two it never asserts. A list of
+    #: ``(drafts, schema, value)`` where the drafts differ.
+    FAILING = {
+        "$ref": ({"$ref": "#/$defs/never"}, BIG_OBJECT),
+        "additionalItems": ({"items": [{}], "additionalItems": False}, BIG_LIST),
+        "additionalProperties": ({"additionalProperties": False}, BIG_OBJECT),
+        "allOf": ({"allOf": [{"type": "integer"}]}, BIG_OBJECT),
+        "anyOf": ({"anyOf": [{"type": "integer"}, {"type": "null"}]}, BIG_OBJECT),
+        "const": ({"const": 1}, BIG_OBJECT),
+        "contains": ({"contains": {"type": "integer"}}, BIG_LIST),
+        "dependencies": (
+            {"dependencies": {"k": ["absent"], "zz": {"type": "integer"}}},
+            BIG_OBJECT,
+        ),
+        "dependentRequired": ({"dependentRequired": {"k": ["absent"]}}, BIG_OBJECT),
+        "dependentSchemas": ({"dependentSchemas": {"k": {"type": "integer"}}}, BIG_OBJECT),
+        "enum": ({"enum": [1, "a"]}, BIG_OBJECT),
+        "exclusiveMaximum": ({"exclusiveMaximum": 1}, BIG_NUMBER),
+        "exclusiveMinimum": ({"exclusiveMinimum": 0}, -BIG_NUMBER),
+        "format": None,
+        "if": ({"if": {}, "then": {"type": "integer"}}, BIG_OBJECT),
+        "items": ({"items": {"type": "integer"}}, BIG_LIST),
+        "maxItems": ({"maxItems": 1}, BIG_LIST),
+        "maxLength": ({"maxLength": 1}, MARK),
+        "maxProperties": ({"maxProperties": 1}, BIG_OBJECT),
+        "maximum": ({"maximum": 1}, BIG_NUMBER),
+        "minItems": ({"minItems": 9}, BIG_LIST),
+        "minLength": ({"minLength": 10_000}, MARK),
+        "minProperties": ({"minProperties": 9}, BIG_OBJECT),
+        "minimum": ({"minimum": 1}, -BIG_NUMBER),
+        "multipleOf": ({"multipleOf": 10}, BIG_NUMBER),
+        "not": ({"not": {}}, BIG_OBJECT),
+        "oneOf": ({"oneOf": [{}, {}]}, BIG_OBJECT),
+        "pattern": None,
+        "patternProperties": ({"patternProperties": {"^k": {"type": "integer"}}}, BIG_OBJECT),
+        "prefixItems": ({"prefixItems": [{"type": "integer"}]}, BIG_LIST),
+        "properties": ({"properties": {"k": {"type": "integer"}}}, BIG_OBJECT),
+        "propertyNames": ({"propertyNames": {"maxLength": 1}}, BIG_OBJECT),
+        "required": ({"required": ["absent"]}, BIG_OBJECT),
+        "type": ({"type": "integer"}, BIG_OBJECT),
+        "unevaluatedItems": ({"unevaluatedItems": False}, BIG_LIST),
+        "unevaluatedProperties": ({"unevaluatedProperties": False}, BIG_OBJECT),
+        "uniqueItems": ({"uniqueItems": True}, BIG_LIST),
+    }
+    #: More ways to a message: the ``false`` schema wherever a schema stands, the keywords
+    #: that ask whether a subschema is valid, and the errors one keyword sets on another.
+    MORE = [
+        ({"properties": {"k": False}}, BIG_OBJECT),
+        ({"additionalProperties": {"not": {}}}, BIG_OBJECT),
+        ({"propertyNames": False}, BIG_OBJECT),
+        ({"if": {}, "then": False}, BIG_OBJECT),
+        ({"if": False, "else": False}, BIG_OBJECT),
+        ({"allOf": [False]}, BIG_OBJECT),
+        ({"anyOf": [False, {"type": "integer"}]}, BIG_OBJECT),
+        ({"oneOf": [False]}, BIG_OBJECT),
+        ({"not": {"not": False}}, BIG_OBJECT),
+        ({"dependentSchemas": {"k": False}}, BIG_OBJECT),
+        ({"unevaluatedProperties": {"type": "integer"}}, BIG_OBJECT),
+        ({"properties": {"k": {}}, "unevaluatedProperties": False}, BIG_OBJECT),
+        (
+            {"allOf": [{"properties": {"k": False}}], "unevaluatedProperties": {"not": {}}},
+            BIG_OBJECT,
+        ),
+        ({"contains": False}, BIG_LIST),
+        ({"contains": {}, "minContains": 9}, BIG_LIST),
+        ({"contains": {}, "maxContains": 1}, BIG_LIST),
+        ({"items": False}, BIG_LIST),
+        ({"prefixItems": [False]}, BIG_LIST),
+        ({"prefixItems": [{}], "items": False}, BIG_LIST),
+        ({"prefixItems": [{}], "unevaluatedItems": False}, BIG_LIST),
+        ({"contains": {"type": "string"}, "unevaluatedItems": False}, BIG_LIST),
+        ({"unevaluatedItems": {"type": "integer"}}, BIG_LIST),
+        (
+            {"anyOf": [{"items": False}, {"items": {"type": "string"}}], "unevaluatedItems": False},
+            BIG_LIST,
+        ),
+        ({"items": {"anyOf": [{"type": "integer"}, {"maxLength": 1}, {"maxItems": 0}]}}, BIG_LIST),
+        ({"maximum": 1.5}, BIG_NUMBER),
+        ({"multipleOf": 0.5}, 0.25),
+    ]
+
+    def drafts(self):
+        module = self.schema_module()
+        declared = {"7": DRAFT_07, "2019": self.DRAFT_2019, "2020": self.DRAFT_2020}
+        named = {
+            "7": "Draft7Validator",
+            "2019": "Draft201909Validator",
+            "2020": "Draft202012Validator",
+        }
+        by_name = {base.__name__: (base, strict) for base, strict in module._DRAFTS.items()}
+        assert set(by_name) == set(named.values())
+        return [(declared[key], *by_name[name]) for key, name in named.items()]
+
+    @contextlib.contextmanager
+    def messages(self):
+        """Every message of every validation error made while this is open, the ones
+        that are dropped among them."""
+        from jsonschema.exceptions import ValidationError
+
+        made: list = []
+        original = ValidationError.__init__
+        assert "__init__" not in vars(ValidationError)
+
+        def recording(error, message, *args, **kwargs):
+            made.append(message)
+            original(error, message, *args, **kwargs)
+
+        ValidationError.__init__ = recording
+        try:
+            yield made
+        finally:
+            del ValidationError.__init__
+
+    @staticmethod
+    def listing(declared, inner, shape):
+        """A tool's schema with ``inner`` as the schema of ``p``: directly, as an
+        alternative beside null, or as the items of a list."""
+        inner = json.loads(json.dumps(inner))
+        definitions = {"$defs": {"never": False}} if inner.get("$ref") else {}
+        if shape == "beside null":
+            inner = {"anyOf": [{"type": "null"}, inner]}
+        elif shape == "in a list":
+            inner = {"type": "array", "items": {"anyOf": [inner, {"type": "null"}]}}
+        return {"$schema": declared, "type": "object", "properties": {"p": inner}, **definitions}
+
+    # --- B1: no message is written from a value ------------------------------------------------
+
+    def test_the_premise_jsonschema_writes_the_value_into_the_message(self):
+        from jsonschema import validators
+
+        with self.messages() as made:
+            list(validators.Draft202012Validator({"type": "integer"}).iter_errors(self.MARK))
+            list(validators.Draft202012Validator(False).iter_errors(self.MARK))
+        assert len(made) == 2 and all(self.MARK in message for message in made)
+
+    def test_every_keyword_is_the_gates_own_function_but_ref(self):
+        """A function of ``jsonschema`` among them would write its message again. A
+        ``jsonschema`` that adds a keyword fails here: the keyword has no function of
+        the gate's, which refuses a schema that uses it rather than run one of theirs."""
+        module = self.schema_module()
+        for _, base, strict in self.drafts():
+            checks = module._checks(base)
+            assert set(checks) == set(base.VALIDATORS) == set(strict.VALIDATORS)
+            assert set(checks) <= set(self.FAILING) | {"$dynamicRef", "$recursiveRef"}, base
+            for keyword, check in checks.items():
+                if keyword == "$ref":
+                    assert check is base.VALIDATORS["$ref"]
+                    continue
+                assert check.__module__ == module.__name__, (base, keyword)
+                assert check is not base.VALIDATORS[keyword]
+                unread = check.__name__ == "unread"
+                assert unread == (keyword in ("$dynamicRef", "$recursiveRef")), (base, keyword)
+        # the functions it takes from `jsonschema` for what the other keywords evaluated
+        from jsonschema import _legacy_keywords, _utils
+
+        assert module._EVALUATED_2020 == (
+            _utils.find_evaluated_item_indexes_by_schema,
+            _utils.find_evaluated_property_keys_by_schema,
+        )
+        assert module._EVALUATED_2019 == (
+            _legacy_keywords.find_evaluated_item_indexes_by_schema,
+            _legacy_keywords.find_evaluated_property_keys_by_schema,
+        )
+
+    def test_no_error_made_while_a_call_is_checked_holds_the_value(self):
+        """Every keyword of every draft, failing on a value that holds a marker, alone,
+        beside null and inside a list: every error made, kept or dropped, has the
+        gate's one message."""
+        module = self.schema_module()
+        for declared, base, strict in self.drafts():
+            cases = []
+            for keyword in strict.VALIDATORS:
+                if keyword in ("$dynamicRef", "$recursiveRef") or self.FAILING[keyword] is None:
+                    continue
+                cases.append((keyword, *self.FAILING[keyword]))
+            cases += [(None, schema, value) for schema, value in self.MORE]
+            for keyword, inner, value in cases:
+                known = set(strict.VALIDATORS) | {"then", "else"}
+                if "dependentRequired" in known:  # 2019-09 and 2020-12
+                    known |= {"minContains", "maxContains"}
+                if not set(inner) <= known:
+                    continue  # a keyword this draft does not have
+                for shape in ("alone", "beside null", "in a list"):
+                    schema = self.listing(declared, inner, shape)
+                    given = {"p": [value, value] if shape == "in a list" else value}
+                    listed = module.Listed(schema)
+                    # the listing itself is checked once, against the draft's own
+                    # schema, by `jsonschema`: its messages are of the listing
+                    listed._prepared()
+                    with self.messages() as made:
+                        with pytest.raises(module.Refused) as refused:
+                            listed.complete(given)
+                    where = (base.__name__, keyword, inner, shape)
+                    assert made, where
+                    assert set(made) == {module._UNMET}, where
+                    assert "MARKER" not in refused.value.reason, where
+        for keyword in ("pattern", "format"):
+            schema = {"properties": {"p": {keyword: "^a+$" if keyword == "pattern" else "date"}}}
+            listed = module.Listed(schema)
+            listed._prepared()
+            with self.messages() as made:
+                assert listed.complete({"p": self.MARK})[1] == {"p": self.MARK}
+            assert made == []
+
+    def test_a_refusal_reads_as_it_did(self):
+        """What the gate reads of an error is unchanged: the keyword, its value, the
+        JSON type of the value and the place."""
+        for inner, value, reason in (
+            (
+                {"type": "integer"},
+                "x",
+                "argument `p` is of JSON type string where the server's schema declares integer",
+            ),
+            (
+                {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                [],
+                "argument `p` is of JSON type array where the server's schema declares integer or null",
+            ),
+            (
+                {"required": ["a", "b"]},
+                {"a": 1},
+                "argument `p` leaves out `b`, which the server's schema requires",
+            ),
+            (
+                {"minLength": 3},
+                "x",
+                "argument `p` does not meet `minLength` in the server's schema",
+            ),
+            ({"maximum": 3}, 4, "argument `p` does not meet `maximum` in the server's schema"),
+            (
+                {"contains": {}, "maxContains": 1},
+                [1, 2],
+                "argument `p` does not meet `maxContains` in the server's schema",
+            ),
+            (
+                {"contains": {}, "minContains": 3},
+                [1, 2],
+                "argument `p` does not meet `minContains` in the server's schema",
+            ),
+            ({"items": False}, [1], "argument `p` does not meet `items` in the server's schema"),
+            ({"not": {}}, 1, "argument `p` does not meet `not` in the server's schema"),
+            (
+                {"properties": {"x": False}},
+                {"x": 1},
+                "argument `p` does not meet `None` in the server's schema",
+            ),
+            (
+                {"unevaluatedProperties": False},
+                {"x": 1},
+                "argument `p` does not meet `unevaluatedProperties` in the server's schema",
+            ),
+        ):
+            assert self.judged({"p": value}, {"properties": {"p": inner}})[2] == (
+                f"Recusal refused `purge`: {reason}"
+                + (
+                    "; the server would not run with the value the policy judged. Send the "
+                    "declared JSON type."
+                    if "JSON type" in reason
+                    else f"; {_AS_THEY_STAND}"
+                )
+            ), inner
+
+    #: The recursive model `tools/measure_mcp_cost.py` measures, as Pydantic lists it.
+    NODE = {
+        "type": "object",
+        "properties": {"p": {"$ref": "#/$defs/Node"}},
+        "$defs": {
+            "Node": {
+                "properties": {
+                    "v": {"default": 1, "type": "integer"},
+                    "kids": {"default": [], "items": {"$ref": "#/$defs/Node"}, "type": "array"},
+                    "kid": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}], "default": None},
+                },
+                "type": "object",
+            }
+        },
+    }
+
+    def chain(self, count):
+        """A chain of `kid` 60 deep whose last node is not valid and holds ``count`` kids."""
+        node = {"v": "x", "kids": [{} for _ in range(count)]}
+        for _ in range(60):
+            node = {"kid": node}
+        return {"p": node}
+
+    def test_the_reviewers_chain_costs_the_same_whatever_its_last_node_holds(self):
+        """The reviewer's case: every level of the chain asked its alternative for an
+        error, and each error wrote out everything below it. Counted here without a
+        clock: the errors made and the characters of their messages are the same for
+        100 kids and for 20,000, and so are the steps."""
+        module = self.schema_module()
+        listed = module.Listed(self.NODE)
+        listed._prepared()
+        found = []
+        for count in (100, 20_000):
+            works: list = []
+            original = module._Work.__init__
+
+            def remembering(work, allowed):
+                original(work, allowed)
+                works.append(work)
+
+            module._Work.__init__ = remembering
+            try:
+                with self.messages() as made:
+                    with pytest.raises(module.Refused) as refused:
+                        listed.complete(self.chain(count))
+            finally:
+                module._Work.__init__ = original
+            assert refused.value.reason == (
+                "argument `p.kid` matches none of the alternatives the server's schema "
+                f"lists there; {_AS_THEY_STAND}"
+            )
+            found.append((works[-1].steps, len(made), sum(map(len, made))))
+        assert found[0] == found[1]
+        steps, errors, characters = found[0]
+        assert steps == 497 and characters == errors * len(module._UNMET) and errors < 500
+
+    def test_a_keyword_jsonschema_adds_refuses_the_schema_that_uses_it(self, monkeypatch):
+        """What a later ``jsonschema`` with one more keyword meets: no function of the
+        gate's for it, so a schema that uses it is refused when a call reaches it, and
+        every other schema is checked as before."""
+        from jsonschema import validators
+
+        module = self.schema_module()
+        base = validators.Draft202012Validator
+        monkeypatch.delitem(module._KEYWORDS, "minLength")
+        monkeypatch.setitem(module._DRAFTS, base, module._strict(base))
+        assert module.Listed({"properties": {"p": {"type": "string"}}}).complete({"p": "a"})
+        with pytest.raises(module.Refused) as refused:
+            module.Listed({"properties": {"p": {"minLength": 2}}}).complete({"p": "abc"})
+        assert (
+            refused.value.reason == f"{_SCHEMA} uses `minLength`, which the gate has no check for"
+        )
+
+    # --- a draft declared anywhere but on the schema of the arguments ---------------------------
+
+    def test_the_premise_jsonschema_picks_its_own_validator_for_a_schema_that_declares_a_draft(
+        self,
+    ):
+        from jsonschema import validators
+
+        strict = self.schema_module()._DRAFTS[validators.Draft202012Validator]
+        chosen = validators.validator_for({"$schema": DRAFT_07}, default=strict)
+        assert chosen is validators.Draft7Validator
+
+    @pytest.mark.parametrize("declared", [DRAFT_07, DRAFT_2019, DRAFT_2020])
+    def test_a_ref_back_to_a_root_that_declares_a_draft_is_checked_by_the_gates_keywords(
+        self, declared, monkeypatch
+    ):
+        """A float for an integer, a boolean for an ``enum`` of numbers and a pattern,
+        one level under a ``$ref`` to the schema of the arguments: each was checked by
+        ``jsonschema``'s own keywords, which take ``5.0`` for an integer and run the
+        pattern."""
+        import re
+
+        schema = {
+            "$schema": declared,
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer"},
+                "level": {"enum": [1, 2]},
+                "name": {"type": "string", "pattern": "^(a+)+$"},
+                "kid": {"$ref": "#"},
+            },
+        }
+        searched = []
+        search = re.search
+
+        def counting(pattern, string, *args, **kwargs):
+            searched.append(pattern)
+            return search(pattern, string, *args, **kwargs)
+
+        monkeypatch.setattr(re, "search", counting)
+        for given, reason in (
+            ({"n": 5.0}, "is of JSON type number where the server's schema declares integer"),
+            ({"level": 1.0}, "is not one of the values the server's schema lists"),
+        ):
+            name = next(iter(given))
+            for depth in (0, 1, 3):
+                nested = given
+                for _ in range(depth):
+                    nested = {"kid": nested}
+                place = "kid." * depth + name
+                assert self.judged(nested, schema)[2].startswith(
+                    f"Recusal refused `purge`: argument `{place}` {reason}"
+                ), (declared, nested)
+        ok = {"n": 5, "kid": {"n": 6, "name": "aaaa!", "kid": {"level": 2}}}
+        assert self.judged(ok, schema) == (ok, ok, None)
+        assert searched == []
+
+    def test_a_subschema_that_declares_a_draft_is_refused(self):
+        told = (
+            f"Recusal refused `purge`: {_SCHEMA} embeds a schema that declares a draft of its "
+            "own (`$schema`), which the gate does not read"
+        )
+        for schema in (
+            {"properties": {"p": {"$schema": DRAFT_07, "type": "integer"}}},
+            {"properties": {"p": {"$ref": "#/$defs/n"}}, "$defs": {"n": {"$schema": DRAFT_07}}},
+            {"properties": {"p": {"items": {"anyOf": [{"$schema": self.DRAFT_2020}]}}}},
+        ):
+            assert self.judged({"p": 5.0}, schema) == (None, None, told)
+        # a property of that name is a property
+        named = {"properties": {"$schema": {"type": "string"}}}
+        given = {"$schema": "x"}
+        assert self.judged(given, named) == (given, given, None)
+
+    def test_a_schema_the_scan_does_not_read_that_declares_a_draft_is_refused_at_the_call(self):
+        """A ``$ref`` may name a place under a keyword the gate does not read, which the
+        scan does not look into. Whatever leaves the gate's validator is refused."""
+        schema = {
+            "properties": {"p": {"$ref": "#/x-shared/n"}},
+            "x-shared": {"n": {"$schema": DRAFT_07, "type": "integer"}},
+        }
+        assert self.judged({"p": 5.0}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} declares a JSON Schema draft on a subschema, "
+            "which the gate does not read",
+        )
+
+    # --- a ceiling on the size of one call's arguments -----------------------------------------
+
+    def test_the_size_ceiling_is_the_one_the_readme_states(self, example):
+        module = self.schema_module()
+        package = importlib.import_module("recusal_openai_agents_mcp")
+        assert module.SIZE_CEILING == package.SIZE_CEILING == 1_000_000
+        assert "SIZE_CEILING" in package.__all__
+        readme = (ROOT / "adapters" / "openai-agents-mcp" / "README.md").read_text(encoding="utf-8")
+        assert (
+            f"more than {module.SIZE_CEILING:,} characters as JSON text "
+            "(`recusal_openai_agents_mcp.SIZE_CEILING`)"
+        ) in " ".join(readme.split())
+
+    SIZED = [
+        {},
+        {"a": 1},
+        {"a": [], "b": {}, "c": [[], {}], "d": None, "e": True, "f": False},
+        {"text": 'a "quoted" \\ back\nline\ttab\r\x00\x1f\x7f end', "é": "ü \U0001f600"},
+        {"numbers": [0, -1, 10**30, -(10**30), 1.5, -0.0, 1e300, 5e-324, 1e16, 123456789.125]},
+        {"deep": [[[[[[[[[[{"k": [1, [2, [3]]]}]]]]]]]]]]},
+        {"many": list(range(500)), "names": {f"k{n}": str(n) for n in range(200)}},
+        {"": "", " ": [" "], "\\": ["\\"]},
+    ]
+
+    @pytest.mark.parametrize("value", SIZED, ids=[str(n) for n in range(len(SIZED))])
+    def test_the_size_is_the_length_of_the_most_compact_json_text(self, value):
+        module = self.schema_module()
+        size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+        assert not module.too_large(value, size)
+        assert not module.too_large(value, size + 1)
+        assert module.too_large(value, size - 1)
+        assert module.too_large(value, 1)
+
+    def test_the_size_is_read_no_further_than_the_ceiling(self, monkeypatch):
+        """Without a clock: a string longer than what is left is not scanned, and data
+        that holds itself is given up at the ceiling or at the depth the gate reads."""
+        module = self.schema_module()
+        scanned = []
+
+        class Scan:
+            def findall(self, text):
+                scanned.append(len(text))
+                return []
+
+        monkeypatch.setattr(module, "_ESCAPED", Scan())
+        assert module.too_large({"a": "x" * 50, "b": "y" * 5_000_000, "c": "z" * 50}, 1_000)
+        assert 5_000_000 not in scanned and scanned in ([], [1, 1, 1, 50], [1, 1, 1, 50, 50])
+        endless: list = []
+        endless.append(endless)
+        assert not module.too_large(endless, 1_000)
+        wide: list = []
+        wide.extend([wide] * 3)
+        assert module.too_large(wide, 100_000)
+        # more members than characters are left: they are not looked at
+        assert module.too_large([[0] * 2_000_000], 1_000_000)
+        # what is not JSON data is one character, and the gate refuses it next
+        assert not module.too_large({"a": object(), "b": (1, 2, 3), "c": b"x" * 9}, 20)
+
+    def test_a_call_over_the_size_ceiling_is_refused_before_anything_reads_it(self, example):
+        module = self.schema_module()
+        text = {"type": "object", "properties": {"p": {"type": "string"}}}
+        most = {"p": "a" * (module.SIZE_CEILING - len('{"p":""}'))}
+        assert self.judged(most, text) == (most, most, None)
+        over = {"p": most["p"] + "a"}
+        assert self.judged(over, text) == (None, None, f"Recusal refused `purge`: {_TOO_LARGE}")
+        for name in ("size_ceiling=", "gate_mcp_server", "gated_agent", "audited_agent"):
+            assert name in _TOO_LARGE
+        # before the other refusals: none of these is read to find out what it is
+        long = "a" * module.SIZE_CEILING
+        for arguments in (
+            [long],
+            {"p": long, "q": object()},
+            {"zz": [long]},
+            {"p": long, "q": float("nan")},
+        ):
+            assert self.judged(arguments, text) == (
+                None,
+                None,
+                f"Recusal refused `purge`: {_TOO_LARGE}",
+            )
+        # an argument the schema does not name costs no step, and is counted here
+        unnamed = {"zz": [0] * 600_000}
+        assert self.spent({"zz": [0] * 1000}, text, module.STEP_CEILING)[0] < 10
+        assert self.judged(unnamed, text)[2] == f"Recusal refused `purge`: {_TOO_LARGE}"
+        assert self.judged(unnamed, text, size_ceiling=2_000_000) == (unnamed, unnamed, None)
+
+    def test_the_largest_calls_the_step_ceiling_completes_are_under_the_size_ceiling(self, example):
+        """The page's largest row: 39,997 members of `dict[str, Optional[str]]`, decoded
+        from JSON text as the SDK hands them over. One member more is over the ceiling
+        on the steps."""
+        module = self.schema_module()
+        schema = {
+            "type": "object",
+            "properties": {
+                "p": {
+                    "type": "object",
+                    "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                }
+            },
+        }
+
+        def members(count):
+            made = {"p": {f"x{number}": f"x{number}" for number in range(count)}}
+            return json.loads(json.dumps(made))
+
+        given = members(39_997)
+        assert len(json.dumps(given, separators=(",", ":"))) == 697_733 < module.SIZE_CEILING
+        sent, reason = _adapter()._judged_call("purge", given, schema, lambda *_: [])
+        assert reason is None and sent == given
+        sent, reason = _adapter()._judged_call("purge", members(39_998), schema, lambda *_: [])
+        assert sent is None and reason == f"Recusal refused `purge`: {_OVER_THE_CEILING}"
+
+    def test_an_application_raises_the_size_ceiling_for_a_connection(self, example):
+        over = {"p": [1, 2], "note": "a" * 1_100_000}
+        seen = []
+
+        def policy(name, arguments):
+            seen.append(len(arguments.get("note", "")))
+            return []
+
+        default = example.gate_mcp_server(self._storing(example, self.INTEGERS), policy)
+        assert default.call_tool.recusal_size_ceiling == 1_000_000
+        assert self._call(default, over) == f"Recusal refused `store`: {_TOO_LARGE}"
+        assert default.ran == [] and seen == []
+        raised = example.gate_mcp_server(
+            self._storing(example, self.INTEGERS), policy, size_ceiling=1_300_000
+        )
+        assert raised.call_tool.recusal_size_ceiling == 1_300_000
+        assert self._call(raised, over) == "ran"
+        assert raised.ran == [("store", over)] and seen == [1_100_000]
+        lowered = example.gate_mcp_server(
+            self._storing(example, self.INTEGERS), policy, size_ceiling=20
+        )
+        assert self._call(lowered, {"p": list(range(30))}) == (
+            f"Recusal refused `store`: {_TOO_LARGE.replace('1,000,000', '20')}"
+        )
+        assert self._call(lowered, {"p": [1, 2]}) == "ran"
+        # a call with no arguments is `{}`
+        assert self._call(lowered, None) == "ran"
+
+    def test_gated_agent_and_audited_agent_hand_the_size_ceiling_to_every_server(
+        self, example, tmp_path
+    ):
+        from agents import Agent
+
+        from recusal.audit import AuditLog
+
+        package = importlib.import_module("recusal_openai_agents_mcp")
+        first = self._storing(example, self.INTEGERS)
+        second = self._storing(example, self.INTEGERS)
+        agent = Agent(name="a", mcp_servers=[first, second])
+        gated = package.gated_agent(agent, lambda *_: [], size_ceiling=50)
+        assert package.is_gated(gated)
+        assert [s.call_tool.recusal_size_ceiling for s in gated.mcp_servers] == [50, 50]
+        assert [s.call_tool.recusal_step_ceiling for s in gated.mcp_servers] == [200_000] * 2
+        assert self._call(first, {"p": list(range(30))}).startswith(
+            "Recusal refused `store`: the arguments are more than 50 characters as JSON text"
+        )
+        third = self._storing(example, self.INTEGERS)
+        log = AuditLog(path=str(tmp_path / "decisions.jsonl"))
+        package.audited_agent(
+            Agent(name="b", mcp_servers=[third]), lambda *_: [], log, size_ceiling=7
+        )
+        assert third.call_tool.recusal_size_ceiling == 7
+        plain = self._storing(example, self.INTEGERS)
+        package.audited_agent(Agent(name="c", mcp_servers=[plain]), lambda *_: [], log)
+        assert plain.call_tool.recusal_size_ceiling == package.SIZE_CEILING
+
+    def test_a_connection_carries_one_size_ceiling(self, example):
+        from agents import Agent
+
+        def policy(name, arguments):
+            return []
+
+        server = example.gate_mcp_server(self._storing(example, self.INTEGERS), policy)
+        gated_once = server.call_tool
+        assert example.gate_mcp_server(server, policy, size_ceiling=1_000_000) is server
+        assert server.call_tool is gated_once
+        with pytest.raises(ValueError, match="already gated with a different size_ceiling"):
+            example.gate_mcp_server(server, policy, size_ceiling=2_000_000)
+        with pytest.raises(ValueError, match="already gated with a different size_ceiling"):
+            example.gated_agent(Agent(name="a", mcp_servers=[server]), policy, size_ceiling=1)
+        assert server.call_tool is gated_once
+        assert server.call_tool.recusal_size_ceiling == 1_000_000
+
+    @pytest.mark.parametrize("ceiling", [0, -1, True, 1.5, 1_000_000.0, "1000000", None])
+    def test_a_size_ceiling_that_is_not_a_whole_number_is_refused(self, example, ceiling):
+        from agents import Agent
+
+        server = self._storing(example, self.INTEGERS)
+        told = "size_ceiling is the most characters the arguments of one call may be as JSON text"
+        with pytest.raises(ValueError, match=told):
+            example.gate_mcp_server(server, lambda *_: [], size_ceiling=ceiling)
+        assert not example.is_gated_mcp_server(server)
+        with pytest.raises(ValueError, match=told):
+            example.gated_agent(Agent(name="a"), lambda *_: [], size_ceiling=ceiling)
+
+    # --- a copy handed over is not copied again -------------------------------------------------
+
+    def test_arguments_handed_over_are_written_to_and_others_are_not(self):
+        module = self.schema_module()
+        schema = {"properties": {"o": {"properties": {"flag": {"default": True}}}}}
+        given = {"o": {}}
+        judged, sent = module.Listed(schema).complete(given)
+        assert given == {"o": {}} and sent == {"o": {"flag": True}} and sent is not given
+        judged, sent = module.Listed(schema).complete(given, owned=True)
+        assert sent is given and given == {"o": {"flag": True}} and judged is not given
+
+    def test_a_refusal_after_the_copy_is_bound_to_the_arguments_and_reads_them_once(
+        self, example, monkeypatch
+    ):
+        gate = _adapter()
+        read = []
+        too_deep = gate._too_deep
+        monkeypatch.setattr(gate, "_too_deep", lambda value: read.append(1) or too_deep(value))
+        given = {"p": ["x"]}
+        assert self.judged(given, self.INTEGERS)[2].startswith(
+            "Recusal refused `purge`: argument `p[0]` is of JSON type string"
+        )
+        assert read == [1]
+
+    # --- gated_agent gates every server or none -------------------------------------------------
+
+    @pytest.mark.parametrize("how", ["step_ceiling", "size_ceiling", "policy", "recording", "type"])
+    def test_gated_agent_leaves_no_server_gated_when_it_refuses_one(self, example, how):
+        """The reviewer's case: the second server already carried another ceiling, and
+        the first was left gated in place though ``gated_agent`` raised."""
+        from agents import Agent
+
+        def policy(name, arguments):
+            return []
+
+        def other(name, arguments):
+            return []
+
+        first = self._storing(example, self.INTEGERS)
+        second = self._storing(example, self.INTEGERS)
+        before = (first.call_tool, first.list_tools)
+        asked = {}
+        if how == "policy":
+            example.gate_mcp_server(second, other)
+        elif how == "recording":
+            example.gate_mcp_server(second, policy, lambda seam, context: {})
+        elif how == "type":
+            second = object()
+        else:
+            example.gate_mcp_server(second, policy)
+            asked = {how: 123_456}
+        agent = Agent(name="a", mcp_servers=[first, second])
+        with pytest.raises(TypeError if how == "type" else ValueError):
+            example.gated_agent(agent, policy, **asked)
+        assert not example.is_gated_mcp_server(first)
+        assert (first.call_tool, first.list_tools) == before
+        assert self._call(first, {"p": ["not an integer"]}) == "ran"
+        # with the second server as asked, both are gated
+        fresh = self._storing(example, self.INTEGERS)
+        gated = example.gated_agent(Agent(name="b", mcp_servers=[first, fresh]), policy, **asked)
+        package = importlib.import_module("recusal_openai_agents_mcp")
+        assert package.is_gated(gated) and example.is_gated_mcp_server(first)
+        assert self._call(first, {"p": ["not an integer"]}).startswith("Recusal refused")
+
+    # --- the reasons and the page ---------------------------------------------------------------
+
+    def test_the_ceiling_reason_says_when_raising_it_does_not_help(self, example):
+        """The reviewer's case: a call over both limits was told to raise the ceiling,
+        and with it raised was refused for the steps allowed for its values."""
+        module = self.schema_module()
+        schema = {
+            "properties": {"p": {"type": "array", "items": {"$ref": "#/$defs/a0"}}},
+            "$defs": {"a12": {"type": "integer"}},
+        }
+        for level in range(12):
+            onward = {"$ref": f"#/$defs/a{level + 1}"}
+            schema["$defs"][f"a{level}"] = {"allOf": [onward, dict(onward)]}
+        given = {"p": [[number] for number in range(100)]}
+        assert self.spent(given, schema, module.STEP_CEILING)[2] == _OVER_THE_CEILING
+        assert self.spent(given, schema, 10**12)[2] == _over_each_value()
+        assert (
+            "Raising it does not help a call that costs more than 10,000 steps and 1,000 more "
+            "for every value in its arguments, which the gate refuses under any ceiling."
+        ) in _OVER_THE_CEILING
+
+    def test_a_number_runs_as_what_the_page_now_names(self):
+        """The cases the page's two headings did not name: a float that is `1.0` or
+        `0.0` runs as a boolean, a number as an address or a complex number, and beside
+        a `Decimal` only a whole number of days runs as a date."""
+        import datetime
+        import ipaddress
+        from decimal import Decimal
+        from enum import IntEnum
+        from typing import Literal
+
+        from pydantic import TypeAdapter
+
+        class Level(IntEnum):
+            low = 1
+            high = 2
+
+        def ran(kind, value):
+            result = TypeAdapter(kind).validate_python(value)
+            return type(result), result
+
+        assert ran(Union[bool, Decimal], 1.0) == (bool, True)
+        assert ran(Union[bool, Decimal], 0.0) == (bool, False)
+        assert ran(Union[bool, Decimal], -0.0) == (bool, False)
+        assert ran(Union[bool, Decimal], 2.0)[0] is Decimal
+        assert ran(Union[bool, Level], 1.0) == (bool, True)
+        assert ran(Union[Literal[True], float], 1.0) == (bool, True)
+        assert ran(Union[ipaddress.IPv4Address, Decimal], 5) == (
+            ipaddress.IPv4Address,
+            ipaddress.IPv4Address("0.0.0.5"),
+        )
+        assert ran(Union[ipaddress.IPv4Address, Level], 1)[0] is ipaddress.IPv4Address
+        assert ran(Union[complex, Decimal], 5) == (complex, 5 + 0j)
+        assert ran(Union[complex, Level], 1) == (complex, 1 + 0j)
+        assert ran(Union[Decimal, complex], 5)[0] is Decimal
+        # a date beside a Decimal: only a whole number of days
+        assert ran(Union[datetime.date, Decimal], 0)[0] is datetime.date
+        assert ran(Union[datetime.date, Decimal], 86_400) == (
+            datetime.date,
+            datetime.date(1970, 1, 2),
+        )
+        assert ran(Union[datetime.date, Decimal], 5) == (Decimal, Decimal(5))
+        assert ran(Union[datetime.date, Decimal], 1.5)[0] is Decimal
+        assert ran(Union[datetime.time, Decimal], 1.5)[0] is datetime.time
+        assert ran(Union[datetime.time, Decimal], 86_400)[0] is Decimal
+        # and the gate sends each as it stands
+        for kind, value in ((Union[bool, Decimal], 1.0), (Union[complex, Decimal], 5)):
+            schema = {"properties": {"p": TypeAdapter(kind).json_schema()}}
+            given = {"p": value}
+            assert self.judged(given, schema) == (given, given, None)
+
+    def test_the_page_says_what_bounds_the_time_of_a_call(self):
+        readme = " ".join(
+            (ROOT / "adapters" / "openai-agents-mcp" / "README.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for stated in (
+            "**A number a Pydantic server reads as a date, a time, an address, a complex "
+            "number or an enum member.**",
+            "**`1`, `0`, `1.0` and `0.0` that run as booleans, and `true` that runs as `1`.**",
+            "only a whole number of days runs as a `date`",
+            "Neither ceiling alone bounds the time",
+            "an argument the schema does not name cost no steps",
+        ):
+            assert stated in readme, stated
+        for gone in ("The ceiling does bound it.", "is 12 steps and took 14 ms"):
+            assert gone not in readme, gone
 
 
 class SimpleRequest:

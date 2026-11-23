@@ -43,7 +43,7 @@ from agents import Agent
 from recusal.audit import AuditLog
 
 from ._gate import Policy, Recording, gated_agent
-from ._schema import STEP_CEILING
+from ._schema import SIZE_CEILING, STEP_CEILING
 
 #: The surface label per seam: which gate of the agent adjudicated the call.
 SURFACES = {
@@ -97,12 +97,14 @@ def audited_agent(
     actor: Optional[str] = None,
     control: Optional[dict[str, Any]] = None,
     step_ceiling: int = STEP_CEILING,
+    size_ceiling: int = SIZE_CEILING,
 ) -> Agent:
     """``gated_agent`` with every decision, on function tools, local MCP servers and hosted
-    MCP approvals, on ``log``. ``step_ceiling`` is ``gated_agent``'s."""
+    MCP approvals, on ``log``. ``step_ceiling`` and ``size_ceiling`` are ``gated_agent``'s."""
     return gated_agent(
         agent,
         policy,
         recording(log, actor=actor, control=control),
         step_ceiling=step_ceiling,
+        size_ceiling=size_ceiling,
     )

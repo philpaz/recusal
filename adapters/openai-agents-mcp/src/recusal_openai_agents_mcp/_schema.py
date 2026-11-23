@@ -8,8 +8,11 @@ statement of what the server then does with it. A server converts a value of ano
 own, and fills what a call leaves out from its default, at any depth, after the policy
 judged. So before the policy runs, :meth:`Listed.complete`
 
-1. validates the arguments against the whole schema with ``jsonschema``, in the draft the
-   schema declares (2020-12 when it declares none), formats not asserted. JSON Schema
+1. validates the arguments against the whole schema, in the draft the schema declares
+   (2020-12 when it declares none), formats not asserted. ``jsonschema`` applies the
+   schema and resolves its references; each keyword is checked by a function of this
+   module, which asserts what ``jsonschema`` 4.26 asserts for it and writes no message
+   from the value (:data:`_UNMET`). JSON Schema
    validation does not convert: a string is not a boolean. It is made stricter in three
    places where JSON Schema is looser than what a server then runs: a float is not an
    ``integer`` (``5.0``), an ``enum`` or ``const`` value must be of the same JSON type as
@@ -48,7 +51,8 @@ not know, refuses the schema.
 
 Whatever it cannot check or complete is refused, with a reason that carries no text of the
 model's: a schema that is not a JSON object or not a valid schema, a draft other than
-draft-07, 2019-09 and 2020-12, a ``$ref`` that does not resolve inside the schema, a schema
+draft-07, 2019-09 and 2020-12, a subschema that declares a draft of its own, a ``$ref``
+that does not resolve inside the schema, a schema
 that refers to itself without a value in between, ``unevaluatedProperties`` together with
 ``patternProperties``, a default where the walk does not write one, a left-out property
 whose alternatives list different defaults, a listed default with a member its own schema
@@ -59,17 +63,22 @@ The work is bounded by counting it, never by a timer. A step is one keyword of t
 applied to one value (and one more for each member or item the value holds directly), one
 value visited by the walk, one value read for a comparison (``enum``, ``const``,
 ``uniqueItems``), or one part of the place of a validation error; and for
-``unevaluatedProperties`` and ``unevaluatedItems``, which ``jsonschema`` checks by
+``unevaluatedProperties`` and ``unevaluatedItems``, which are checked by
 comparing every member or item with every other, the square of their number. Nothing is
 validated twice for the same schema and the same value while the arguments stand as they
 are, a value is walked once for a schema, and every step is counted against an allowance
 that grows with the number of values in the arguments up to a ceiling
-(:data:`STEP_CEILING`, which an application can raise for a connection). The ceiling is
-what bounds the time one call can take: an ordinary schema spends between 4 and a few
-hundred steps on each value, so without it the time grows with whatever the model
-sends. What one step costs beyond that
-is bounded by the size of the keyword in the listed schema, which the model does not
-choose, and by the length of the string or the size of the number it reads. The items
+(:data:`STEP_CEILING`, which an application can raise for a connection). What one step
+costs beyond its count is bounded by the size of the keyword in the listed schema, which
+the model does not choose, and by the length of the string or the size of the number it
+reads; never by what the value holds below it, since no keyword writes a value out
+(:data:`_UNMET`). That length is not bounded by the steps, and neither are the values in
+an argument the schema does not name, which cost no step and which the gate still copies
+and counts. So the arguments of one call have a ceiling on their size too
+(:data:`SIZE_CEILING`, which an application can raise as well), checked before anything
+else reads them (:func:`too_large`). The two ceilings together are what bounds the time
+one call can take: an ordinary schema spends between 4 and a few hundred steps on each
+value, so without them the time grows with whatever the model sends. The items
 ``uniqueItems`` compares are gathered into a set by keys that hold no number, only text:
 the hash of a number is the sender's to choose, and the hash of a string is keyed by the
 interpreter (:func:`_key`).
@@ -88,8 +97,12 @@ from __future__ import annotations
 
 import copy
 import json
+import operator
+import re
 from contextvars import ContextVar
-from typing import Any, Iterable, Optional
+from fractions import Fraction
+from itertools import chain
+from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import unquote
 
 from jsonschema import FormatChecker, validators  # type: ignore[import-untyped]
@@ -97,6 +110,28 @@ from jsonschema.exceptions import SchemaError, ValidationError  # type: ignore[i
 from referencing import Registry
 
 from recusal.invocation import detached as _detached
+
+#: The functions ``jsonschema`` gathers with what the other keywords of a schema
+#: evaluated (the positions of a list, the names of an object), for 2019-09 and for
+#: 2020-12: all the gate takes from it for ``unevaluatedItems`` and
+#: ``unevaluatedProperties``. They are not part of its public interface, so where a
+#: ``jsonschema`` has none the two keywords have no check, and a schema that uses one is
+#: refused (:func:`_unread`).
+_EVALUATED_2019: tuple[Any, Any] = (None, None)
+_EVALUATED_2020: tuple[Any, Any] = (None, None)
+try:
+    from jsonschema import _legacy_keywords, _utils
+
+    _EVALUATED_2019 = (
+        _legacy_keywords.find_evaluated_item_indexes_by_schema,
+        _legacy_keywords.find_evaluated_property_keys_by_schema,
+    )
+    _EVALUATED_2020 = (
+        _utils.find_evaluated_item_indexes_by_schema,
+        _utils.find_evaluated_property_keys_by_schema,
+    )
+except (ImportError, AttributeError):  # pragma: no cover, a jsonschema without them
+    pass
 
 #: The JSON type each Python type of decoded JSON data is.
 _JSON_TYPES = {
@@ -195,8 +230,9 @@ _STEPS_PER_VALUE = 1_000
 #: The most steps one call may cost, however many values its arguments hold, unless the
 #: application names another ceiling for a connection (``step_ceiling=`` on
 #: ``gate_mcp_server``, ``gated_agent`` and ``audited_agent``). The steps allowed for
-#: each value do not bound the time a call takes, which grows with what the model sends;
-#: this does.
+#: each value do not bound the work of a call, which grows with what the model sends;
+#: this does, and with the ceiling on the size of the arguments (``SIZE_CEILING``, below)
+#: it bounds the time.
 STEP_CEILING = 200_000
 
 _SCHEMA = "the server's listed schema for this tool"
@@ -215,16 +251,114 @@ def ceiling_of(value: Any) -> int:
     return value
 
 
+#: The most characters the arguments of one call may be, written as JSON text in its most
+#: compact form (:func:`too_large`), unless the application names another ceiling for a
+#: connection (``size_ceiling=`` on ``gate_mcp_server``, ``gated_agent`` and
+#: ``audited_agent``). The steps do not bound the size: a step that reads a string costs
+#: the string's length, and a value in an argument the schema does not name costs no
+#: step at all, while the gate copies and counts every value it is handed. This does,
+#: and it is checked before anything else reads the arguments.
+SIZE_CEILING = 1_000_000
+
+#: The characters JSON text writes as an escape: two characters for these, six for the rest.
+_ESCAPED = re.compile(r'[\x00-\x1f"\\]')
+_SHORT_ESCAPES = frozenset('"\\\b\f\n\r\t')
+
+
+def size_ceiling_of(value: Any) -> int:
+    """``value`` as a ceiling on the size of one call's arguments: a whole number of at
+    least 1."""
+    if type(value) is not int or value < 1:
+        raise ValueError(
+            "Recusal: size_ceiling is the most characters the arguments of one call may "
+            "be as JSON text, a whole number of at least 1 (the default is "
+            f"{SIZE_CEILING:,})"
+        )
+    return value
+
+
+def too_large(value: Any, ceiling: int, deepest: int = 64) -> bool:
+    """Whether ``value`` is more than ``ceiling`` characters as JSON text in its most
+    compact form: no white space, and every character written as it is but for the ones
+    JSON has to escape (what ``json.dumps(value, separators=(",", ":"),
+    ensure_ascii=False)`` writes, counted in characters, of which one outside ASCII is
+    more than one byte).
+
+    Nothing is written and nothing is copied, and the reading stops at the ceiling: a
+    string longer than what is left is not read, and the members of a list or an object
+    that holds more of them than characters are left are not looked at, so this costs
+    in proportion to the ceiling whatever it is handed. Three things the gate refuses
+    next are not counted exactly. Whatever is not JSON data counts as one character.
+    What a list or an object more than ``deepest`` levels down holds is not read (the
+    gate reads no deeper, and data that holds itself has no end). And an integer of
+    more digits than the interpreter writes as text counts by its bits, which is its
+    digits or one more."""
+    left = ceiling
+    levels: list[Iterator[Any]] = [iter((value,))]
+    while levels:
+        for each in levels[-1]:
+            kind = type(each)
+            if kind is str:
+                left -= len(each) + 2
+                if left < 0:
+                    return True
+                for escaped in _ESCAPED.findall(each):
+                    left -= 1 if escaped in _SHORT_ESCAPES else 5
+            elif kind is dict or kind is list:
+                # the brackets, a comma between two members, a colon in each member of
+                # an object; and every member or item is one character at the least
+                count = len(each)
+                left -= 2 + max(count - 1, 0) + (count if kind is dict else 0)
+                if left < count:
+                    return True
+                if count and len(levels) <= deepest + 1:
+                    levels.append(chain(each, each.values()) if kind is dict else iter(each))
+                    break
+            elif kind is int:
+                try:
+                    left -= len(str(each))
+                except ValueError:  # more digits than the interpreter writes
+                    left -= each.bit_length() * 30103 // 100000 + 1 + (each < 0)
+            elif kind is float:
+                left -= len(repr(each))
+            elif each is None or each is True:
+                left -= 4
+            elif each is False:
+                left -= 5
+            else:
+                left -= 1
+            if left < 0:
+                return True
+        else:
+            levels.pop()
+    return False
+
+
+def too_large_reason(ceiling: int) -> str:
+    """The reason for a call whose arguments are over the ceiling on their size."""
+    return (
+        f"the arguments are more than {ceiling:,} characters as JSON text, the ceiling "
+        "the gate sets on the size of one call's arguments so that the time a call takes "
+        "does not grow with what is sent; the gate has not read them. Send less in one "
+        "call. Where calls of this size are expected, the application can raise the "
+        "ceiling: `size_ceiling=` on `gate_mcp_server`, `gated_agent` or `audited_agent`."
+    )
+
+
 def _too_costly(allowed: int, ceiling: int) -> str:
     """The reason for a call whose check was stopped at ``allowed`` steps: which of the
-    two limits stopped it, and what the application can do about that one."""
+    two limits stopped it, and what the application can do about that one. A call the
+    ceiling stopped may be over the steps allowed for its values too, which the gate
+    cannot know without spending them, so that reason says when raising helps."""
     if allowed >= ceiling:
         return (
             f"{_TOO_COSTLY}: the check was stopped at {ceiling:,} steps, the ceiling the "
-            "gate sets on one call so that the time a call takes does not grow with what "
-            "is sent. Send fewer values in one call. Where calls of this size are "
-            "expected, the application can raise the ceiling: `step_ceiling=` on "
-            "`gate_mcp_server`, `gated_agent` or `audited_agent`."
+            "gate sets on the steps of one call. Send fewer values in one call. Where "
+            "calls of this size are expected, the application can raise the ceiling: "
+            "`step_ceiling=` on `gate_mcp_server`, `gated_agent` or `audited_agent`. "
+            f"Raising it does not help a call that costs more than {_STEPS:,} steps and "
+            f"{_STEPS_PER_VALUE:,} more for every value in its arguments, which the "
+            "gate refuses under any ceiling."
         )
     return (
         f"{_TOO_COSTLY}: the check costs more than the {_STEPS:,} steps and "
@@ -372,6 +506,23 @@ def _key(work: Optional[_Work], value: Any, exact: bool) -> Any:
     return key
 
 
+#: The message of every validation error the gate makes. ``jsonschema`` writes the value
+#: that failed into the message of each error (``f"{instance!r} is not of type ..."``)
+#: when the error is made, for the errors nothing reads too: an ``anyOf`` asks each
+#: alternative for its first error and drops it. That text is as long as the value and
+#: everything under it, and under a schema that nests it is written again at every
+#: level, which no step counts. The gate reads no message (:meth:`Listed._why` reads the
+#: keyword, its value, the value's JSON type and the place), so no keyword it runs
+#: writes one: every keyword is a function of this module that makes its error with
+#: this text (:func:`_strict`), and so is the ``false`` schema (:func:`_own`).
+_UNMET = "a keyword of the listed schema is not met"
+
+
+def _unmet(**details: Any) -> Any:
+    """A validation error, with nothing of the value in its message."""
+    return ValidationError(_UNMET, **details)
+
+
 def _enum(validator: Any, choices: Any, instance: Any, schema: Any) -> Iterable[Any]:
     """``enum`` by the JSON type too. The choices are read once for a call, so a long list
     of them costs a call its length once and not once for every value checked."""
@@ -382,13 +533,13 @@ def _enum(validator: Any, choices: Any, instance: Any, schema: Any) -> Iterable[
         if work is not None:
             work.choices[id(choices)] = known
     if _key(work, instance, True) not in known[1]:
-        yield ValidationError("not one of the listed values")
+        yield _unmet()
 
 
 def _const(validator: Any, fixed: Any, instance: Any, schema: Any) -> Iterable[Any]:
     work = _WORK.get()
     if _key(work, instance, True) != _key(work, fixed, True):
-        yield ValidationError("not the fixed value")
+        yield _unmet()
 
 
 def _unique_items(validator: Any, wanted: Any, instance: Any, schema: Any) -> Iterable[Any]:
@@ -400,7 +551,7 @@ def _unique_items(validator: Any, wanted: Any, instance: Any, schema: Any) -> It
         for item in instance:
             key = _key(work, item, False)
             if key in seen:
-                yield ValidationError("holds the same item twice")
+                yield _unmet()
                 return
             seen.add(key)
 
@@ -443,18 +594,270 @@ def _additional_properties(
             return
     elif additional is False:
         if extras:
-            yield ValidationError("holds a member that is not allowed")
+            yield _unmet()
         return
     for name in extras:
         yield from validator.descend(instance[name], additional, path=name)
 
 
+def _valid(validator: Any, instance: Any, schema: Any) -> bool:
+    """Whether ``instance`` is valid against ``schema``, stopping at the first error."""
+    return next(iter(validator.descend(instance, schema)), None) is None
+
+
+# --- the keywords `jsonschema` checks the same way, written without its messages ----------------
+#
+# Each asserts what the function of `jsonschema` 4.26 for that keyword asserts, in the
+# same order, and counts the same steps: only the message differs. A value is of a JSON
+# type as the validator's type checker says (``validator.is_type``).
+
+
+def _type(validator: Any, types: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    names = [types] if isinstance(types, str) else types
+    if not any(validator.is_type(instance, name) for name in names):
+        yield _unmet()
+
+
+def _properties(validator: Any, properties: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    if validator.is_type(instance, "object"):
+        for name, subschema in properties.items():
+            if name in instance:
+                yield from validator.descend(instance[name], subschema, path=name, schema_path=name)
+
+
+def _required(validator: Any, required: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    if validator.is_type(instance, "object"):
+        for name in required:
+            if name not in instance:
+                yield _unmet()
+
+
+def _property_names(validator: Any, names: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    if validator.is_type(instance, "object"):
+        for name in instance:
+            yield from validator.descend(instance=name, schema=names)
+
+
+def _dependent_required(
+    validator: Any, dependents: Any, instance: Any, schema: Any
+) -> Iterable[Any]:
+    if validator.is_type(instance, "object"):
+        for name, needed in dependents.items():
+            if name in instance:
+                for each in needed:
+                    if each not in instance:
+                        yield _unmet()
+
+
+def _dependent_schemas(
+    validator: Any, dependents: Any, instance: Any, schema: Any
+) -> Iterable[Any]:
+    if validator.is_type(instance, "object"):
+        for name, subschema in dependents.items():
+            if name in instance:
+                yield from validator.descend(instance, subschema, schema_path=name)
+
+
+def _dependencies(validator: Any, dependencies: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """The ``dependencies`` of draft-07: a list of names, or a schema."""
+    if not validator.is_type(instance, "object"):
+        return
+    for name, dependency in dependencies.items():
+        if name not in instance:
+            continue
+        if validator.is_type(dependency, "array"):
+            for each in dependency:
+                if each not in instance:
+                    yield _unmet()
+        else:
+            yield from validator.descend(instance, dependency, schema_path=name)
+
+
+def _all_of(validator: Any, members: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    for index, subschema in enumerate(members):
+        yield from validator.descend(instance, subschema, schema_path=index)
+
+
+def _not(validator: Any, refused: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    if _valid(validator, instance, refused):
+        yield _unmet()
+
+
+def _if(validator: Any, condition: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    if _valid(validator, instance, condition):
+        if "then" in schema:
+            yield from validator.descend(instance, schema["then"], schema_path="then")
+    elif "else" in schema:
+        yield from validator.descend(instance, schema["else"], schema_path="else")
+
+
+def _prefix_items(validator: Any, prefix: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    if validator.is_type(instance, "array"):
+        for (index, item), subschema in zip(enumerate(instance), prefix):
+            yield from validator.descend(
+                instance=item, schema=subschema, schema_path=index, path=index
+            )
+
+
+def _items(validator: Any, items: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """The ``items`` of 2020-12: the schema of every item after ``prefixItems``."""
+    if not validator.is_type(instance, "array"):
+        return
+    prefix = len(schema.get("prefixItems", []))
+    total = len(instance)
+    if total <= prefix:
+        return
+    if items is False:
+        yield _unmet()
+        return
+    for index in range(prefix, total):
+        yield from validator.descend(instance=instance[index], schema=items, path=index)
+
+
+def _items_or_list(validator: Any, items: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """The ``items`` of draft-07 and 2019-09: one schema for every item, or a list of
+    schemas for the first ones."""
+    if not validator.is_type(instance, "array"):
+        return
+    if validator.is_type(items, "array"):
+        for (index, item), subschema in zip(enumerate(instance), items):
+            yield from validator.descend(item, subschema, path=index, schema_path=index)
+    else:
+        for index, item in enumerate(instance):
+            yield from validator.descend(item, items, path=index)
+
+
+def _additional_items(validator: Any, additional: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """The ``additionalItems`` of draft-07 and 2019-09: the items after a list of
+    ``items``."""
+    if not validator.is_type(instance, "array") or validator.is_type(
+        schema.get("items", {}), "object"
+    ):
+        return
+    listed = len(schema.get("items", []))
+    if validator.is_type(additional, "object"):
+        for index, item in enumerate(instance[listed:], start=listed):
+            yield from validator.descend(item, additional, path=index)
+    elif not additional and len(instance) > listed:
+        yield _unmet()
+
+
+def _contains(validator: Any, contains: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """The ``contains`` of 2019-09 and 2020-12, with ``minContains`` and ``maxContains``."""
+    if not validator.is_type(instance, "array"):
+        return
+    matches = 0
+    least = schema.get("minContains", 1)
+    most = schema.get("maxContains", len(instance))
+    for each in instance:
+        if _valid(validator, each, contains):
+            matches += 1
+            if matches > most:
+                yield _unmet(validator="maxContains", validator_value=most)
+                return
+    if matches < least:
+        if not matches:
+            yield _unmet()
+        else:
+            yield _unmet(validator="minContains", validator_value=least)
+
+
+def _contains_one(validator: Any, contains: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """The ``contains`` of draft-07: at least one item is valid."""
+    if validator.is_type(instance, "array") and not any(
+        _valid(validator, each, contains) for each in instance
+    ):
+        yield _unmet()
+
+
+def _sized(kind: str, beyond: Any) -> Any:
+    """``minLength``, ``maxItems`` and the like: how many characters, items or members a
+    value of JSON type ``kind`` holds, beside the listed number."""
+
+    def sized(validator: Any, limit: Any, instance: Any, schema: Any) -> Iterable[Any]:
+        if validator.is_type(instance, kind) and beyond(len(instance), limit):
+            yield _unmet()
+
+    return sized
+
+
+def _bounded(beyond: Any) -> Any:
+    """``minimum``, ``maximum`` and their exclusive forms: a number beside the listed one."""
+
+    def bounded(validator: Any, limit: Any, instance: Any, schema: Any) -> Iterable[Any]:
+        if validator.is_type(instance, "number") and beyond(instance, limit):
+            yield _unmet()
+
+    return bounded
+
+
+def _multiple_of(validator: Any, factor: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """``multipleOf``, which divides as floats when the listed number is a float, and as
+    fractions where the quotient is too large to be an integer. An integer of more than
+    about 308 digits has no float, and Python raises ``OverflowError`` there: for an
+    argument that large beside a ``multipleOf`` that is a fraction, or for a
+    ``multipleOf`` that large beside an argument that is a fraction. Which of the two it
+    was is kept for the reason."""
+    if not validator.is_type(instance, "number"):
+        return
+    try:
+        if isinstance(factor, float):
+            quotient = instance / factor
+            try:
+                failed = int(quotient) != quotient
+            except OverflowError:
+                failed = (Fraction(instance) / Fraction(factor)).denominator != 1
+        else:
+            failed = bool(instance % factor)
+    except OverflowError:
+        raise _NoFloat(type(instance) is int and type(factor) is float) from None
+    if failed:
+        yield _unmet()
+
+
+def _unevaluated_items(evaluated: Any) -> Any:
+    """``unevaluatedItems``: no item is left that no other keyword evaluated.
+    ``evaluated`` is the function of ``jsonschema`` that gathers the positions the other
+    keywords evaluated, for the draft; it writes no message."""
+
+    def unevaluated_items(validator: Any, value: Any, instance: Any, schema: Any) -> Iterable[Any]:
+        if not validator.is_type(instance, "array"):
+            return
+        known = evaluated(validator, instance, schema)
+        if any(index not in known for index in range(len(instance))):
+            yield _unmet()
+
+    return unevaluated_items
+
+
+def _unevaluated_properties(evaluated: Any) -> Any:
+    """``unevaluatedProperties``: every member no other keyword evaluated meets the
+    schema. ``evaluated`` is the function of ``jsonschema`` that gathers the names the
+    other keywords evaluated, for the draft; it writes no message."""
+
+    def unevaluated_properties(
+        validator: Any, value: Any, instance: Any, schema: Any
+    ) -> Iterable[Any]:
+        if not validator.is_type(instance, "object"):
+            return
+        known = evaluated(validator, instance, schema)
+        failed = False
+        for name in instance:
+            if name not in known:
+                for _ in validator.descend(instance[name], value, path=name, schema_path=name):
+                    failed = True
+        if failed:
+            yield _unmet()
+
+    return unevaluated_properties
+
+
 def _squared(check: Any, kind: Any) -> Any:
-    """``check``, the ``unevaluatedProperties`` or ``unevaluatedItems`` of ``jsonschema``,
-    counted for what it costs. It gathers what every other keyword evaluated (member
-    names, positions) into a list and looks each member or item of the value up in it:
-    one comparison for every pair of them. So that many steps are counted before it
-    runs, and a value too large for the allowance is refused without the scan."""
+    """``check``, an ``unevaluatedProperties`` or ``unevaluatedItems``, counted for what it
+    costs. What every other keyword evaluated (member names, positions) is gathered into
+    a list, and each member or item of the value is looked up in it: one comparison for
+    every pair of them. So that many steps are counted before it runs, and a value too
+    large for the allowance is refused without the scan."""
 
     def squared(validator: Any, value: Any, instance: Any, schema: Any) -> Iterable[Any]:
         work = _WORK.get()
@@ -465,20 +868,16 @@ def _squared(check: Any, kind: Any) -> Any:
     return squared
 
 
-def _multiple_of(check: Any) -> Any:
-    """``check``, the ``multipleOf`` of ``jsonschema``, which divides as floats when one
-    side is a float. An integer of more than about 308 digits has no float, and Python
-    raises ``OverflowError`` there: for an argument that large beside a ``multipleOf``
-    that is a fraction, or for a ``multipleOf`` that large beside an argument that is a
-    fraction. Which of the two it was is kept for the reason."""
+def _unread(keyword: str) -> Any:
+    """A keyword ``jsonschema`` checks and this module has no function for: a schema
+    that uses it is refused when a call reaches it. None of ``jsonschema`` 4.26 is
+    left to this but the two references the scan refuses first; a later ``jsonschema``
+    that adds a keyword gets this, and never a function that writes a message."""
 
-    def multiple_of(validator: Any, factor: Any, instance: Any, schema: Any) -> Iterable[Any]:
-        try:
-            return list(check(validator, factor, instance, schema) or ())
-        except OverflowError:
-            raise _NoFloat(type(instance) is int and type(factor) is float) from None
+    def unread(validator: Any, value: Any, instance: Any, schema: Any) -> Iterable[Any]:
+        raise Refused(f"{_SCHEMA} uses `{keyword}`, which the gate has no check for")
 
-    return multiple_of
+    return unread
 
 
 def _is_integer(checker: Any, instance: Any) -> bool:
@@ -494,7 +893,7 @@ def _passes(validator: Any, instance: Any, schema: Any) -> bool:
         known = work.answers.get(key)
         if known is not None and known[0] is schema and known[1] is instance:
             return bool(known[2])
-    answer = next(iter(validator.descend(instance, schema)), None) is None
+    answer = _valid(validator, instance, schema)
     if work is not None:
         work.answers[key] = (schema, instance, answer)
     return answer
@@ -505,12 +904,12 @@ def _any_of(validator: Any, alternatives: Any, instance: Any, schema: Any) -> It
     gathers every error of every alternative that fails, and under a schema that refers
     to itself that is the same alternatives against the same values again at every level."""
     if not any(_passes(validator, instance, each) for each in alternatives):
-        yield ValidationError("matches none of the alternatives")
+        yield _unmet()
 
 
 def _one_of(validator: Any, alternatives: Any, instance: Any, schema: Any) -> Iterable[Any]:
     if sum(1 for each in alternatives if _passes(validator, instance, each)) != 1:
-        yield ValidationError("does not match exactly one of the alternatives")
+        yield _unmet()
 
 
 def _measured(keyword: str, check: Any) -> Any:
@@ -538,40 +937,139 @@ def _measured(keyword: str, check: Any) -> Any:
     return measured
 
 
+#: The keywords every draft the gate reads checks the same way.
+_KEYWORDS: dict[str, Any] = {
+    "additionalItems": _additional_items,
+    "additionalProperties": _additional_properties,
+    "allOf": _all_of,
+    "anyOf": _any_of,
+    "const": _const,
+    "dependencies": _dependencies,
+    "dependentRequired": _dependent_required,
+    "dependentSchemas": _dependent_schemas,
+    "enum": _enum,
+    "exclusiveMaximum": _bounded(operator.ge),
+    "exclusiveMinimum": _bounded(operator.le),
+    "format": _not_evaluated,
+    "if": _if,
+    "maxItems": _sized("array", operator.gt),
+    "maxLength": _sized("string", operator.gt),
+    "maxProperties": _sized("object", operator.gt),
+    "maximum": _bounded(operator.gt),
+    "minItems": _sized("array", operator.lt),
+    "minLength": _sized("string", operator.lt),
+    "minProperties": _sized("object", operator.lt),
+    "minimum": _bounded(operator.lt),
+    "multipleOf": _multiple_of,
+    "not": _not,
+    "oneOf": _one_of,
+    "pattern": _not_evaluated,
+    "patternProperties": _pattern_properties,
+    "prefixItems": _prefix_items,
+    "properties": _properties,
+    "propertyNames": _property_names,
+    "required": _required,
+    "type": _type,
+    "uniqueItems": _unique_items,
+}
+
+#: The keywords a draft checks its own way: ``contains`` and ``items``, and the functions
+#: of ``jsonschema`` that gather what the other keywords evaluated, for the two
+#: ``unevaluated`` keywords (None where this ``jsonschema`` has none).
+_BY_DRAFT: dict[Any, dict[str, Any]] = {
+    validators.Draft7Validator: {"contains": _contains_one, "items": _items_or_list},
+    validators.Draft201909Validator: {
+        "contains": _contains,
+        "items": _items_or_list,
+        "unevaluatedItems": _EVALUATED_2019[0],
+        "unevaluatedProperties": _EVALUATED_2019[1],
+    },
+    validators.Draft202012Validator: {
+        "contains": _contains,
+        "items": _items,
+        "unevaluatedItems": _EVALUATED_2020[0],
+        "unevaluatedProperties": _EVALUATED_2020[1],
+    },
+}
+
+
+def _checks(base: Any) -> dict[str, Any]:
+    """The function for every keyword ``base`` checks: this module's own for each, but
+    for ``$ref``, which is the one of ``jsonschema`` (it resolves the reference and
+    makes no error itself). A keyword this module has no function for refuses the
+    schema that uses it (:func:`_unread`)."""
+    own = {**_KEYWORDS, **_BY_DRAFT[base]}
+    evaluated = (own.get("unevaluatedItems"), own.get("unevaluatedProperties"))
+    if evaluated[0] is not None:
+        own["unevaluatedItems"] = _squared(_unevaluated_items(evaluated[0]), list)
+    if evaluated[1] is not None:
+        own["unevaluatedProperties"] = _squared(_unevaluated_properties(evaluated[1]), dict)
+    checks = {}
+    for keyword, check in base.VALIDATORS.items():
+        checks[keyword] = check if keyword == "$ref" else own.get(keyword) or _unread(keyword)
+    return checks
+
+
+def _never(instance: Any) -> Any:
+    """The error of the ``false`` schema, as ``jsonschema`` sets it but for the message."""
+    return _unmet(validator=None, validator_value=None, instance=instance, schema=False)
+
+
+def _own(strict: Any) -> Any:
+    """``strict``, a validator class made here, with three of its methods wrapped.
+
+    ``jsonschema`` answers the ``false`` schema inside ``descend`` and ``iter_errors``,
+    with a message that holds the value: both answer it here first, with the gate's
+    own error. And ``evolve``, which every descent goes through, picks the validator
+    class by the ``$schema`` of the subschema it is handed, which would be the class
+    of ``jsonschema`` with none of the checks above: a subschema that declares a draft
+    is refused when the schema is read, the root's own declaration is not handed to the
+    validator (:meth:`Listed._prepare`), and anything that still left this class is
+    refused here."""
+    descend, iter_errors, evolve = strict.descend, strict.iter_errors, strict.evolve
+
+    def quiet_descend(self: Any, instance: Any, schema: Any, *args: Any, **kwargs: Any) -> Any:
+        if schema is False:
+            return iter((_never(instance),))
+        return descend(self, instance, schema, *args, **kwargs)
+
+    def quiet_iter_errors(self: Any, instance: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.schema is False and not args and not kwargs:
+            return iter((_never(instance),))
+        return iter_errors(self, instance, *args, **kwargs)
+
+    def same_evolve(self: Any, **changes: Any) -> Any:
+        evolved = evolve(self, **changes)
+        if type(evolved) is not strict:
+            raise Refused(
+                f"{_SCHEMA} declares a JSON Schema draft on a subschema, which the gate "
+                "does not read"
+            )
+        return evolved
+
+    strict.descend = quiet_descend
+    strict.iter_errors = quiet_iter_errors
+    strict.evolve = same_evolve
+    return strict
+
+
 def _strict(base: Any) -> Any:
     """``base`` with the checks a server's conversion makes necessary, no regular
-    expression evaluated, the comparisons read once, and every keyword counted."""
-    keywords = {
-        **base.VALIDATORS,
-        "enum": _enum,
-        "const": _const,
-        "uniqueItems": _unique_items,
-        "pattern": _not_evaluated,
-        "patternProperties": _pattern_properties,
-        "additionalProperties": _additional_properties,
-        "anyOf": _any_of,
-        "oneOf": _one_of,
-        "multipleOf": _multiple_of(base.VALIDATORS["multipleOf"]),
-    }
-    for keyword, kind in (("unevaluatedProperties", dict), ("unevaluatedItems", list)):
-        if keyword in keywords:  # draft-07 has neither
-            keywords[keyword] = _squared(keywords[keyword], kind)
-    return validators.extend(
-        base,
-        validators={keyword: _measured(keyword, check) for keyword, check in keywords.items()},
-        type_checker=base.TYPE_CHECKER.redefine("integer", _is_integer),
+    expression evaluated, the comparisons read once, no message written from a value,
+    and every keyword counted."""
+    return _own(
+        validators.extend(
+            base,
+            validators={
+                keyword: _measured(keyword, check) for keyword, check in _checks(base).items()
+            },
+            type_checker=base.TYPE_CHECKER.redefine("integer", _is_integer),
+        )
     )
 
 
 #: The drafts the gate reads, each with the stricter checks.
-_DRAFTS = {
-    base: _strict(base)
-    for base in (
-        validators.Draft7Validator,
-        validators.Draft201909Validator,
-        validators.Draft202012Validator,
-    )
-}
+_DRAFTS = {base: _strict(base) for base in _BY_DRAFT}
 
 #: The ``$schema`` each draft is declared by, without the scheme and the trailing ``#``:
 #: servers write both ``http`` and ``https``, with and without the ``#``.
@@ -680,6 +1178,13 @@ def _scan(node: Any, root: Any, read: _Read, under: Optional[str] = None) -> Non
         raise Refused(
             f"{_SCHEMA} embeds a schema with an `$id` of its own, which the gate does not "
             "resolve references against"
+        )
+    if node is not root and "$schema" in node:
+        # `jsonschema` would check the values under it with its own keywords for that
+        # draft, and none of the gate's (`_own`)
+        raise Refused(
+            f"{_SCHEMA} embeds a schema that declares a draft of its own (`$schema`), "
+            "which the gate does not read"
         )
     if _endless(node, root, read.state):
         raise Refused(f"{_SCHEMA} refers to itself without end")
@@ -881,8 +1386,14 @@ class Listed:
         except RecursionError:
             raise Refused(f"{_SCHEMA} is nested too deeply to read") from None
         self._names = read.names
+        # The validator is handed the schema without its `$schema`: the draft is chosen
+        # above, and `jsonschema` chooses again, by that keyword, for every schema a
+        # `$ref` leads to. The values under a `$ref` back to a root that declares a draft
+        # (`"#"`) would be checked by the keywords of `jsonschema` for that draft, with
+        # none of the gate's.
+        rooted = {keyword: member for keyword, member in schema.items() if keyword != "$schema"}
         # an empty registry: nothing outside the schema is ever fetched
-        return _DRAFTS[base](schema, registry=Registry())
+        return _DRAFTS[base](rooted, registry=Registry())
 
     # --- what the schema alone says -------------------------------------------------------------
 
@@ -1448,13 +1959,13 @@ class Listed:
     # --- the whole of it ------------------------------------------------------------------------
 
     def _complete(
-        self, validator: Any, work: _Work, arguments: dict[str, Any]
+        self, validator: Any, work: _Work, arguments: dict[str, Any], owned: bool
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """``(judged, sent)``: the arguments with every listed default, and with every
         default that can be sent."""
         # a copy in which no list or object stands in two places: the walk knows a place
         # by the object that is there
-        sent = _detached(arguments)
+        sent = arguments if owned else _detached(arguments)
         self._validate(validator, sent)
         held: dict[tuple, tuple] = {}
         for _ in range(_MAX_PASSES):
@@ -1480,12 +1991,16 @@ class Listed:
             del parent[name]
         return judged, sent
 
-    def complete(self, arguments: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def complete(
+        self, arguments: dict[str, Any], owned: bool = False
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """``(judged, sent)`` for a call's ``arguments``, which must be JSON data: what
         the policy judges and what the server is sent. The two differ only by a listed
         default that cannot be sent (one that is not valid against its own property
         schema, or text a server would read as another type), which is judged as listed
-        and not sent.
+        and not sent. The arguments are copied first, unless they are ``owned``: a copy
+        the caller made for this call with ``recusal.invocation.detached`` and hands
+        over, which is written to and returned as what is sent.
         Raises :class:`Refused` for arguments that are not valid against the schema as
         they stand, for an object or a list the schema offers more than one form for,
         for a string a server may read as another type the schema admits, for arguments
@@ -1495,7 +2010,7 @@ class Listed:
         work = _Work(min(_STEPS + _STEPS_PER_VALUE * _count(arguments), self._ceiling))
         token = _WORK.set(work)
         try:
-            return self._complete(validator, work, arguments)
+            return self._complete(validator, work, arguments, owned)
         except Refused:
             raise
         except _TooCostly:

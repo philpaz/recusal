@@ -266,7 +266,7 @@ schema applied to one value (and one more for each member or item that value hol
 directly), one value visited by the walk above, one value read for a comparison (`enum`,
 `const`, `uniqueItems`), or one part of the place of a validation error.
 `unevaluatedProperties` and `unevaluatedItems` are counted as the square of the number
-of members or items they are applied to, because `jsonschema` checks them by comparing
+of members or items they are applied to, because they are checked by comparing
 each with every other. Every step is
 counted against an allowance of 10,000 steps and 1,000 more for every value in the
 arguments (an object, a list, and each member, item and scalar in them), up to a
@@ -277,8 +277,13 @@ are, a list or an object is walked once for a schema, and the choices of an `enu
 read once for a call, so a recursive schema (a model with `child: Optional[Node]`), a
 list of 12,000 ordinary items under `uniqueItems` and 20,000 values against an `enum`
 of 600 each cost in proportion to the arguments. What a single step costs beyond its
-count is bounded by the size of that keyword in the listed schema, and reading a string
-or a number is in proportion to its length. What the schema alone says (the types
+count is bounded by the size of that keyword in the listed schema and by the length of
+the string or the size of the number it reads, and never by what the value holds below
+it. `jsonschema` writes the value that failed into the message of every error it makes,
+the ones an `anyOf` asks an alternative for and drops among them, and the gate reads no
+message; so `jsonschema` applies the schema and resolves its references, and each
+keyword is checked by a function of the gate's own that writes none. What the schema
+alone says (the types
 a subschema admits, the default it lists, the forms of a union) is read once, at the
 first call after each listing. The ordinary calls measured spend from 4 steps for each
 value (a list of integers) to 19 (a list of a model of four fields), 37 (a recursive
@@ -288,40 +293,60 @@ policy runs, with a reason that begins "the arguments are too costly to check ag
 the server's listed schema for this tool" and says which of the two limits stopped the
 check, and is one deny entry on an audit log.
 
-**The ceiling on one call, what it costs, and how to raise it.** The steps allowed for
-each value do not bound the time a call takes: with them alone the time grows with
-whatever the model sends, and the check runs on the event loop (next section). The
-ceiling does bound it. A call whose check would cost more than 200,000 steps is
-refused, whatever it holds, and the reason says that the ceiling stopped it and how the
-application raises it. Its cost is that a large ordinary call is refused. The largest
-calls the default ceiling completes, measured:
+**The two ceilings on one call, what they cost, and how to raise them.** The steps
+allowed for each value do not bound the time a call takes: with them alone the time
+grows with whatever the model sends, and the check runs on the event loop (next
+section). Two ceilings bound it. A call whose check would cost more than 200,000 steps
+is refused, whatever it holds, and the reason says that the ceiling stopped it and how
+the application raises it. And a call whose arguments are more than 1,000,000
+characters as JSON text (`recusal_openai_agents_mcp.SIZE_CEILING`) is refused before
+anything else reads them, with a reason that says so and how the application raises
+that ceiling; it is one deny entry on an audit log. Neither ceiling alone bounds the
+time. The steps do not bound the size: a step that reads a string costs the string's
+length, and values in an argument the schema does not name cost no steps, while the gate
+still copies and counts them. And the size does not bound the steps: 809 items of a
+ten-model discriminated union are 11 KB and cost 200,000. The size is the length of the
+arguments written as JSON text in its most compact form (no white space; a character
+outside ASCII counts as one, and is more than one byte), and measuring it stops at the
+ceiling. The cost of the two is that a large ordinary call is refused. The largest
+calls the default step ceiling completes, measured, each under the ceiling on the size:
 
 | Arguments | Largest call completed | Size as JSON |
 |---|---|---|
 | `list[int]` | 49,997 items | 289 KB |
 | `list[str]`, short strings | 49,997 items | 439 KB |
-| `dict[str, Optional[float]]` | 49,996 members | 639 KB |
+| `dict[str, Optional[float]]` | 39,997 members | 509 KB |
+| `dict[str, Optional[str]]`, short strings | 39,997 members | 698 KB |
+| `list[Union[int, str]]`, short strings | 33,331 items | 289 KB |
+| `list[Union[int, float, bool, str, None]]`, short strings | 24,998 items | 214 KB |
+| a recursive JSON type (`list[Json]` among its members), 60 lists deep around numbers | 12,420 numbers | 50 KB |
 | `list[Item]` (a model of four fields, two defaults written) | 3,571 items | 110 KB |
 | a recursive model (`kids: list[Node]`), its children sent as `{}` | 5,403 children | 16 KB |
 | a list of a discriminated union of ten models, items `{"kind": ...}` | 809 items | 11 KB |
 | a list of a discriminated union of thirty models | 308 items | 4.5 KB |
 
-An application whose ordinary calls are larger than that raises the ceiling for the
+An application whose ordinary calls are larger than that raises the ceilings for the
 connection:
 
 ```python
-agent = gated_agent(Agent(name="assistant", mcp_servers=[server]), policy, step_ceiling=1_000_000)
+agent = gated_agent(
+    Agent(name="assistant", mcp_servers=[server]),
+    policy,
+    step_ceiling=1_000_000,
+    size_ceiling=5_000_000,
+)
 ```
 
-`gate_mcp_server` and `audited_agent` take the same keyword, a whole number of steps. A
-server object carries one ceiling, as it carries one policy: gating it again with
-another raises `ValueError`. The time one call can hold the event loop grows with the
-ceiling in proportion (the time table below gives it for both). Raising the ceiling
-does not help a call that costs more than 1,000 steps for each of its values, which
-none of the ordinary schemas measured reaches and a hand-written one can
-(`unevaluatedProperties`, below); that reason says so. The ceiling counts steps, not
-bytes: a step that reads a string costs the string's length, so one string of 1,000,000
-characters is 12 steps and took 14 ms.
+`gate_mcp_server` and `audited_agent` take the same two keywords, each a whole number. A
+server object carries one of each, as it carries one policy: gating it again with
+another raises `ValueError`, and `gated_agent` then gates none of the agent's servers.
+The time one call can hold the event loop grows with each ceiling in proportion (the
+time tables below). Raising the step ceiling does not help a call that costs more than
+10,000 steps and 1,000 more for each of its values, which none of the ordinary schemas
+measured reaches and a hand-written one can (`unevaluatedProperties`, below). The gate
+cannot tell that of a call the ceiling stopped, so the reason for the ceiling says it,
+and the reason for the steps allowed for each value says that raising the ceiling does
+not change it.
 
 The items `uniqueItems` compares are gathered into a set, and a set costs one step for
 each member only while their hashes differ. The hash of a number is the sender's to
@@ -334,50 +359,102 @@ with a secret of the process, unless hash randomization is switched off
 
 **What the check costs in time.** It is written in Python and runs on the event loop
 inside `call_tool`, so for as long as it takes nothing else on that loop runs. It takes
-longer than the server's own validation, in proportion to the arguments up to the
-ceiling. Measured with
+longer than the server's own validation, in proportion to the arguments up to the two
+ceilings. Measured with
 [`tools/measure_mcp_cost.py`](https://github.com/philpaz/recusal/blob/main/tools/measure_mcp_cost.py)
-on one laptop (Windows 11, Python 3.12.5), the best of three runs. First the largest
-call of each shape that the default ceiling completes (the table above), which is the
+on one laptop (Windows 11, Python 3.12.5), the best of three runs, the arguments
+decoded from JSON text as the SDK hands them to the gate. The first two tables time the
+check itself (`Listed.complete`: the validation, the two refusals and the defaults);
+what the rest of the gate and an audit log add is in the third. First the largest call
+of each shape that the default step ceiling completes (the table above), which is the
 longest the check of one such call takes:
 
 | Arguments, at the default ceiling | The gate | Pydantic's validation of the same value |
 |---|---|---|
-| `list[int]`, 49,997 items | 182 ms | 0.4 ms |
-| `list[str]`, 49,997 items | 482 ms | 0.4 ms |
-| `dict[str, Optional[float]]`, 49,996 members | 124 ms | 2.2 ms |
-| `list[Item]` (a model of four fields, two defaults written), 3,571 items | 243 ms | 1.1 ms |
-| a recursive model, 5,403 children | 306 ms | 4.8 ms |
-| a list of a discriminated union of ten models, 809 items | 317 ms | 0.3 ms |
-| a list of a discriminated union of thirty models, 308 items | 330 ms | 0.1 ms |
+| `list[int]`, 49,997 items | 249 ms | 0.4 ms |
+| `list[str]`, 49,997 items | 573 ms | 0.5 ms |
+| `dict[str, Optional[float]]`, 39,997 members | 398 ms | 1.5 ms |
+| `dict[str, Optional[str]]`, 39,997 members | 609 ms | 1.6 ms |
+| `list[Union[int, str]]`, 33,331 short strings | 718 ms | 1.8 ms |
+| `list[Union[int, float, bool, str, None]]`, 24,998 short strings | 837 ms | 3.6 ms |
+| a recursive JSON type, 60 lists deep around 12,420 numbers | 576 ms | 1.4 ms |
+| `list[Item]` (a model of four fields, two defaults written), 3,571 items | 267 ms | 1.2 ms |
+| a recursive model, 5,403 children | 369 ms | 4.9 ms |
+| a list of a discriminated union of ten models, 809 items | 353 ms | 0.3 ms |
+| a list of a discriminated union of thirty models, 308 items | 350 ms | 0.2 ms |
 
 A call one item larger is refused, and takes as long to refuse. A hand-written schema
-that reaches one subschema 4,096 ways (twelve levels of `allOf`) took 598 ms to be
+that reaches one subschema 4,096 ways (twelve levels of `allOf`) took 726 ms to be
 stopped at the ceiling, on 5,897 bytes of arguments: the ceiling bounds the steps, and
-a step took between 0.6 and 3.0 microseconds across these cases. Then the same
-shapes with the ceiling raised (`step_ceiling=`), which is what raising it costs:
+a step took between 1.2 and 4.2 microseconds across these cases, the least for a
+number and the most for a short string beside other types in a union, which the gate
+reads for what a server could read it as. A check that fails costs what the steps
+count and no more: a recursive model nested 60 deep whose last node is not valid and
+holds 250,000 children (750 KB) is refused after 497 steps
+in 306 ms, all of it copying and counting the values, where every level used to write
+out everything below it (about 1,300 ms for the same call). One string of 1,000,000
+characters is 12 steps for an `Optional[str]` and took between 13 ms (letters) and
+35 ms (byte order marks) to check; where the schema lists ten alternatives and none is
+a string, it is refused in under 1 ms without being read. The time grows in proportion
+to the length: with the ceiling on the size raised that far, 10,000,000 characters took
+122 ms to 358 ms and 50,000,000 letters 626 ms. Then the same shapes with the step
+ceiling raised (`step_ceiling=`), which is what raising it costs:
 
 | Arguments, the ceiling raised | The gate | Pydantic's validation of the same value |
 |---|---|---|
-| `list[int]`, 10,000 items | 32 ms | 0.1 ms |
-| `list[str]`, 10,000 items | 88 ms | 0.1 ms |
-| `dict[str, Optional[float]]`, 10,000 members | 24 ms | 0.3 ms |
-| `list[Item]`, 10,000 items | 680 ms | 3.4 ms |
-| `list[Item]`, 50,000 items | 3,619 ms | 17.7 ms |
-| a recursive model, 10,000 children | 569 ms | 9.1 ms |
-| a list of a discriminated union of ten models, 10,000 items (140 KB) | 4,208 ms | 4.2 ms |
-| a list of a discriminated union of thirty models, 10,000 items (147 KB) | 10,710 ms | 4.3 ms |
+| `list[int]`, 10,000 items | 37 ms | 0.1 ms |
+| `list[str]`, 10,000 items | 116 ms | 0.1 ms |
+| `dict[str, Optional[float]]`, 10,000 members | 77 ms | 0.3 ms |
+| `list[Union[int, float, bool, str, None]]`, 10,000 short strings | 328 ms | 3.1 ms |
+| `list[Item]`, 10,000 items | 772 ms | 3.5 ms |
+| `list[Item]`, 50,000 items (1.6 MB: the ceiling on the size raised too) | 3,799 ms | 18.1 ms |
+| a recursive model, 10,000 children | 607 ms | 8.9 ms |
+| a list of a discriminated union of ten models, 10,000 items (140 KB) | 4,935 ms | 3.9 ms |
+| a list of a discriminated union of thirty models, 10,000 items (147 KB) | 11,725 ms | 4.1 ms |
 
-That is between 55 and 2,741 times Pydantic's own time across the cases the script
+That is between 68 and 2,853 times Pydantic's own time across the cases the script
 times beside it, and the gate's time grew in proportion: five times the items took
-between 5.1 and 5.9 times as long. Under `uniqueItems`, 20,000 ordinary integers took
-71 ms and 20,000 integers of one hash 70 ms at the default ceiling, and with the
-ceiling raised 100,000 took 389 ms and 420 ms. Under `unevaluatedProperties` on a
+between 4.6 and 6.1 times as long. Under `uniqueItems`, 20,000 ordinary integers took
+93 ms and 20,000 integers of one hash 104 ms at the default ceiling, and with the
+ceiling raised 100,000 took 533 ms and 513 ms. Under `unevaluatedProperties` on a
 hand-written schema, 443 members of one object are the most the default ceiling
 completes: 400 took 3 ms and spent 163,216 steps, 500 were refused in 1 ms and 30,000
-in 59 ms. With the ceiling raised, 1,000 members took 7 ms and spent 1,008,016 of the
-1,012,000 steps allowed, and 1,100 were refused in 2 ms for costing more than 1,000
+in 77 ms. With the ceiling raised, 1,000 members took 10 ms and spent 1,008,016 of the
+1,012,000 steps allowed, and 1,100 were refused in 3 ms for costing more than 1,000
 steps for each value.
+
+**What the rest of the gate adds, and the longest a call takes at the ceiling on its
+size.** Before the check the gate measures the arguments and copies them, and after it
+the policy is handed a copy of its own; with an audit log, the fingerprint of the
+arguments is written. All of that is in proportion to the size of the arguments (the
+number of values in them, and the length of their strings), whether or not the schema
+names them: values in an argument the schema does not name cost no steps, and still
+cost that time. The ceiling on the size is what
+bounds it. Through `call_tool` on a gated server object, with both ceilings as they are
+by default:
+
+| Arguments | The check alone | `call_tool` | `call_tool` with an audit log |
+|---|---|---|---|
+| `list[int]`, 49,997 items (the first table) | 178 ms | 187 ms | 224 ms |
+| `list[str]`, 49,997 items | 511 ms | 515 ms | 523 ms |
+| `dict[str, Optional[float]]`, 39,997 members | 346 ms | 385 ms | 425 ms |
+| `list[Union[int, float, bool, str, None]]`, 24,998 short strings | 828 ms | 847 ms | 851 ms |
+| at the ceiling on the size: one string of letters | 13 ms | 13 ms | 16 ms |
+| at the ceiling: one string of byte order marks | 35 ms | 37 ms | 47 ms |
+| at the ceiling: a list of `0`, in an argument the schema does not name | 109 ms | 184 ms | 442 ms |
+| at the ceiling: a list of `{}`, in an argument the schema does not name | 336 ms | 439 ms | 942 ms |
+| at the ceiling: the same list 60 lists deep | 497 ms | 608 ms | 1,111 ms |
+| at the ceiling: a list of `{}` 60 lists deep, for a parameter typed `Any` | 501 ms | 609 ms | 1,105 ms |
+| at the ceiling: a recursive model 60 deep whose last node is not valid, its children `{}` (refused) | 360 ms | 465 ms | 2,399 ms |
+| at the ceiling: a list of `0` for `list[int]` (refused at the step ceiling) | 54 ms | 125 ms | 392 ms |
+
+A call over the ceiling on the size is refused in under 3 ms, whatever it holds: a
+string of 50,000,000 characters and a list of 2,000,000 empty objects each took that
+long, where a 50,000,000-character string took 626 ms to check with the ceiling raised.
+The two bounds add up: one call can spend 200,000 steps on an argument the schema names
+and carry what is left of 1,000,000 characters in one it does not, so the longest one
+call can take is about the longest row of the first table and the longest of this one
+together.
 
 **What the rules above mean for ordinary schemas:**
 
@@ -414,6 +491,12 @@ steps for each value.
   would run it: more than about 50,000 numbers or short strings, 3,571 records of a
   four-field model, 809 items of a ten-model discriminated union (the table above). An
   application that expects such calls raises the ceiling (`step_ceiling=`).
+- A call whose arguments are more than 1,000,000 characters as JSON text is refused,
+  whatever the schema, although the server would run it: a document or a file sent
+  whole as one string, for one. An application that expects such calls raises that
+  ceiling (`size_ceiling=`).
+- A schema that declares a draft on one of its subschemas (a `$schema` anywhere but on
+  the schema of the arguments) is refused, as one that embeds an `$id` is.
 - A `NamedTuple` or tuple parameter with a defaulted last member publishes a
   `prefixItems` entry with a default, so a call that leaves that item out is refused;
   send every item.
@@ -493,7 +576,12 @@ entry too, a deny, bound to the arguments as the SDK handed them.
 Arguments that are not JSON data have no fingerprint of their own, so that entry is
 bound to the text the gate writes them as, under the key `input`: JSON without
 spaces, a non-finite number as `nan`, `inf` or `-inf`, an object that is not data as its
-type's name in angle brackets, and `...` for anything more than 64 levels down. If the
+type's name in angle brackets, and `...` for anything more than 64 levels down. A
+call refused for the size of its arguments (above) is one deny entry too, and the gate
+does not read arguments it refuses for their size, so that entry holds no fingerprint
+of them: it is bound to the text
+`<arguments of more than 1,000,000 characters as JSON text>` (with the ceiling of the
+connection), under the key `input`. If the
 log cannot be written the call is refused. Check the log with
 `recusal audit verify decisions.jsonl`.
 
@@ -530,26 +618,37 @@ log cannot be written the call is refused. Check the log with
     string (a host, a path prefix, an identifier) normalises it the way the server's
     type does before it compares, or refuses any text that is not already in the
     normal form.
-  - **A number a Pydantic server reads as a date, a time or an enum member.** In a
+  - **A number a Pydantic server reads as a date, a time, an address, a complex
+    number or an enum member.** In a
     union read the default way (no `union_mode`), a number that is not exactly the
     type of another member runs as the first member that converts it. For
     `when: Union[datetime, Decimal]` the listing is a string with a format beside a
     number, and the number `5` runs as the `datetime` 1970-01-01T00:00:05, `1.5`
-    likewise; the same holds for a `date` or a `time` beside a `Decimal`, and for a
-    `datetime` beside an `IntEnum`. With the members the other way round
+    likewise. A `time` beside a `Decimal` runs both numbers as a `time` too, and a
+    `datetime` beside an `IntEnum` runs `1` as the `datetime`. For a `date` beside a
+    `Decimal`, only a whole number of days runs as a `date` (`0` as 1970-01-01 and
+    `86400` as the day after); `5` and `1.5` run as the `Decimal`. A number also runs
+    as an `IPv4Address` (`5` as `0.0.0.5`) or as a `complex` (`5` as `5+0j`) where
+    that type stands before a `Decimal` or an `IntEnum`. With the members the other
+    way round
     (`Union[Decimal, datetime]`) the number runs as the `Decimal`, and the listing
     holds the same types. What to do: the policy judges the number it was given, so
     for such a tool it applies the server's conversion, or refuses a number where it
     expects the text of a date.
-  - **`1` and `0` that run as booleans, and `true` that runs as `1`.** In some unions
+  - **`1`, `0`, `1.0` and `0.0` that run as booleans, and `true` that runs as `1`.**
+    In some unions
     with a boolean member a Pydantic server runs `1` as `True` and `0` as `False`:
     `force: Union[bool, Decimal]` does (`2` runs as the `Decimal`), and `1` runs as
     `True` for `Union[bool, IntEnum]`, `Literal[True] | int` and
-    `Literal[True] | float` too. The other way round, `Literal[1, 2] | bool` runs
+    `Literal[True] | float` too. Where the listing admits a float there, the floats
+    do the same: `1.0` runs as `True` for `Union[bool, Decimal]` and
+    `Literal[True] | float`, and `0.0` and `-0.0` as `False` for `Union[bool, Decimal]`.
+    The other way round, `Literal[1, 2] | bool` runs
     `true` as the integer `1`. Each value is valid against
     the listed schema as it stands, so the gate sends it. What to do: for a tool
-    whose schema lists a boolean beside a number, the policy treats `1` and `true`
-    (and `0` and `false`) as one value, or refuses the one it does not expect.
+    whose schema lists a boolean beside a number, the policy treats `1`, `1.0` and
+    `true` (and `0`, `0.0` and `false`) as one value, or refuses the one it does not
+    expect.
   - **A validator or a constraint that changes the value.** A string constraint that
     strips and lowers (`StringConstraints(strip_whitespace=True, to_lower=True)`,
     `z.string().trim().toLowerCase()`) runs `"  /ETC "` as `"/etc"`. This also changes a

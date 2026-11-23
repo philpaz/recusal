@@ -237,7 +237,9 @@ walked or read for a comparison is a step, a recursive schema is checked once fo
 value, and a call that costs more
 steps than the gate allows for the size of its arguments, or more than a ceiling of
 200,000 steps for one call that the application can raise (`step_ceiling=`), is
-refused. The policy
+refused. So is a call whose arguments are more than 1,000,000 characters as JSON text,
+a second ceiling the application can raise (`size_ceiling=`), before anything else
+reads them: the steps do not bound the size of a call. The policy
 judges a copy of the completed arguments and the server is sent the completed arguments,
 so a policy's write to what it judged changes its copy, not the call. The one exception
 is a listed default that cannot be sent: one that is not valid

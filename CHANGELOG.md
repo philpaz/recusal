@@ -138,8 +138,8 @@ All notable changes to this project are documented here. The format follows
     levels ran 6.1 s before they were refused. The allowance is now the smaller of
     10,000 steps and 1,000 for each value, and a ceiling of 200,000 steps for one call
     (`STEP_CEILING`, a new public name). The largest calls of the measured shapes that
-    it completes take between 124 ms and 482 ms on the measuring laptop, and the
-    hand-written schema is stopped in 598 ms. The cost is that a large ordinary call
+    it completes take between 249 ms and 837 ms on the measuring laptop (as measured
+    after the seventh round, below), and the hand-written schema is stopped in 726 ms. The cost is that a large ordinary call
     is refused although the server would run it: more than 49,997 integers or short
     strings, 3,571 records of a four-field model (110 KB), 5,403 children of a
     recursive model, 809 items of a ten-model discriminated union (11 KB) or 308 of a
@@ -170,6 +170,65 @@ All notable changes to this project are documented here. The format follows
     time table has the union rows, and `tools/measure_mcp_cost.py` produces every
     number on the page, the largest call of each shape that the ceiling completes
     among them.
+  - Seventh round: a check that failed wrote out the whole value, and no step counted
+    it. `jsonschema` builds the message of every error when the error is made, with the
+    value in it (`f"{instance!r} is not of type ..."`), and the gate asks each
+    alternative of an `anyOf` or `oneOf` for its first error at every level of a schema
+    that nests. 750 KB of arguments for a recursive model (a chain 60 deep whose last
+    node is not valid and holds 250,000 children) held the event loop 2.1 s for 497
+    counted steps, and a valid 48 KB call for a recursive JSON type took 910 ms. The
+    gate reads no message, so no keyword it runs writes one now: every keyword of the
+    three drafts is checked by a function of the gate's own, which asserts what the
+    function of `jsonschema` 4.26 asserts (a test compares the two, error by error) and
+    makes its error with one fixed text; the `false` schema is answered the same way;
+    and a keyword a later `jsonschema` adds refuses the schema that uses it, where it
+    would have run a function that writes a message. The check of the 750 KB call went
+    from 1.3 s to 0.3 s, which is the copying and counting of its values. Which calls
+    are refused, and each reason, are unchanged but for the next item: compared call by
+    call, with the steps each spent, over 638,408 calls on Python 3.12 and on 3.10
+    (hand-written schemas for every keyword in every draft, and the schemas Pydantic
+    publishes for 42 types and their pairs).
+  - Seventh round, found while closing that: a subschema that declares a draft was
+    checked by none of the gate's own keywords. `jsonschema` picks a validator by the
+    `$schema` of every schema it is handed, a subschema's among them, and the root's
+    again when a `$ref` leads back to it (`"$ref": "#"`); that validator is its own for
+    the draft, which takes `5.0` for an `integer`, compares `1.0` with an `enum` of `1`
+    and runs the server's `pattern` on the model's text. For a listing that declares a
+    draft and refers to its root, every value under the reference was checked that way
+    and `{"n": 5.0}` under it was sent. The validator is no longer handed the root's
+    `$schema`, a subschema that declares one refuses the schema (as one with an `$id`
+    does), and whatever still leaves the gate's validator is refused at the call.
+  - Seventh round: the steps did not bound the size of a call. A step that reads a
+    string costs the string's length, and values in an argument the schema does not
+    name cost no steps while the gate copies and counts them: a string of 50,000,000
+    characters is 12 steps and took 0.6 s to check. The arguments of one call now have a
+    ceiling on their size too: 1,000,000 characters as JSON text (`SIZE_CEILING`, a new
+    public name), checked before anything else reads them by a count that stops at the
+    ceiling. Every largest call of the measured shapes that the step ceiling completes
+    is under it (the largest is 698 KB). At the ceiling, the arguments that took
+    longest (333,000 empty objects, 60 lists deep) took 609 ms through
+    `call_tool` and 1,111 ms with an audit log, and a call that is refused took up to 2,399 ms with one; a call over it is refused in
+    about a millisecond, and is one deny entry on an audit log, bound to a statement of
+    its size and not to the arguments, which the gate does not read. An application
+    raises the ceiling for a connection with the new keyword `size_ceiling=` on
+    `gate_mcp_server`, `gated_agent` and `audited_agent`. The cost: a call of more than
+    1,000,000 characters is refused although the server would run it.
+  - Seventh round, smaller. The reason for a call the step ceiling stopped now says
+    that raising it does not help a call over the steps allowed for its values, which
+    the gate cannot tell of a call it stopped. `gated_agent` gates every server of an
+    agent or none: it left the first gated in place when it refused the second. The
+    gate copies the arguments once where it copied them twice, and a call refused
+    after the copy is not read again to bind the refusal. And the page: its time tables
+    are now of arguments decoded from JSON text, as the SDK hands them over (the
+    `dict[str, Optional[float]]` row was one float object 49,996 times, which the gate
+    checks once: the largest such call is 39,997 members, 509 KB); the flat unions
+    are in the tables, and the longest check under the default step ceiling is 837 ms
+    (24,998 short strings for `list[Union[int, float, bool, str, None]]`), not 482 ms;
+    a step takes between 1.2 and 4.2 microseconds, not 0.6 to 3.0; a third table says
+    what the rest of the gate and an audit log add; for a `date` beside a `Decimal`
+    only a whole number of days runs as a `date`; and the two entries on numbers name
+    the floats `1.0` and `0.0` that run as booleans and the numbers that run as an
+    `IPv4Address` or a `complex`.
 
 - **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
   CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has
