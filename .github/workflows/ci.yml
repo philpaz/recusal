@@ -510,6 +510,22 @@ jobs:
       - name: Type-check the installed package
         run: |
           cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
+      # Reuse the exact wheels built above on the adapter's declared Python floor.
+      # The hash-locked adapter environment includes the type checker and framework.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install the same wheels and pinned framework on Python 3.11
+        run: |
+          python -m venv /tmp/adapter-py311
+          /tmp/adapter-py311/bin/pip install --quiet --require-hashes -r requirements/adapter-google-adk.txt
+          /tmp/adapter-py311/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_google_adk-*.whl
+          /tmp/adapter-py311/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.11
+        run: cd /tmp && /tmp/adapter-py311/bin/python "$GITHUB_WORKSPACE/adapters/google-adk/smoke_test.py"
+      - name: Type-check the installed package on Python 3.11
+        run: |
+          cd /tmp && /tmp/adapter-py311/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
 
   # The same proof for recusal-openai-agents.
   adapter-openai-agents-wheel:

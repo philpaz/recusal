@@ -84,7 +84,7 @@ They are the same for every contribution, large or small:
 | `CrewAI example (Python 3.12)` | the pinned CrewAI adapter works on the current cross-platform smoke Python |
 | `Pydantic AI example (Python 3.11)` | the pinned Pydantic AI adapter works on its minimum supported Python |
 | `Pydantic AI example (Python 3.12)` | the pinned Pydantic AI adapter works on the current cross-platform smoke Python |
-| `recusal-google-adk wheel (build, install, smoke)` | the `recusal-google-adk` package builds with the hash-locked toolchain, and its installed wheel gates and records a Google ADK agent, by callback and by runner plugin, from outside the checkout |
+| `recusal-google-adk wheel (build, install, smoke)` | the `recusal-google-adk` package builds with the hash-locked toolchain on Python 3.12, and that wheel gates and records a Google ADK agent, by callback and by runner plugin, from outside the checkout on Python 3.12 and its declared minimum Python 3.11; both installed environments are type-checked |
 | `recusal-openai-agents wheel (build, install, smoke)` | the `recusal-openai-agents` package builds with the hash-locked toolchain, and its installed wheel gates and records an OpenAI Agents SDK agent from outside the checkout |
 | `recusal-langgraph wheel (build, install, smoke)` | the `recusal-langgraph` package builds with the hash-locked toolchain, and its installed wheel gates and records a LangGraph ToolNode, sync and async, from outside the checkout |
 | `recusal-langchain wheel (build, install, smoke)` | the `recusal-langchain` package builds with the hash-locked toolchain, and its installed wheel (with the `recusal-langgraph` wheel it depends on) gates and records a LangChain `create_agent` agent, sync and async, from outside the checkout |

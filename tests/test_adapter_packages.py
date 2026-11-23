@@ -211,6 +211,33 @@ def test_ci_builds_installs_and_smoke_tests_the_wheel(directory):
     assert (ADAPTERS / directory / "README.md").is_file()
 
 
+def test_google_adk_wheel_ci_smokes_and_type_checks_312_and_its_minimum():
+    project = _project("google-adk")["project"]
+    minimum = project["requires-python"].removeprefix(">=")
+    minimum_environment = f"/tmp/adapter-py{minimum.replace('.', '')}"
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = ci.split("  adapter-google-adk-wheel:\n", 1)[1].split("\n  # ", 1)[0]
+
+    versions = re.findall(r'^\s+python-version: "([\d.]+)"$', job, re.M)
+    assert versions == ["3.12", minimum], versions
+    for environment in ("/tmp/adapter", minimum_environment):
+        assert (
+            f'{environment}/bin/python "$GITHUB_WORKSPACE/adapters/google-adk/smoke_test.py"' in job
+        )
+        assert f"{environment}/bin/python -m mypy " in job
+    adapter_build = "python -m build --no-isolation --outdir dist-adapters adapters/google-adk"
+    assert job.count(adapter_build) == 1
+    assert 'python-version: "3.12"' in job
+    assert "python -m pip install --require-hashes -r release-requirements.txt" in job
+    wheel_install = (
+        "pip install --quiet --no-deps dist-adapters/recusal-*.whl "
+        "dist-adapters/recusal_google_adk-*.whl"
+    )
+    assert job.count(wheel_install) == 2
+    assert (f"{minimum_environment}/bin/{wheel_install}") in job
+    assert f"python -m venv {minimum_environment}" in job
+
+
 @pytest.mark.parametrize("directory", sorted(PACKAGES))
 def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(directory):
     """``py.typed`` is a claim to every user's type checker. It is made only where CI
