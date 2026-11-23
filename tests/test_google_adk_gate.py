@@ -67,7 +67,7 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
     )
     for pin in expected:
         assert pin in roots, pin
-    assert ci.count("requirements/adapter-google-adk.txt") == 3
+    assert ci.count("requirements/adapter-google-adk.txt") == 4
 
 
 def test_the_package_requires_the_kernel_that_walks_every_callable():
