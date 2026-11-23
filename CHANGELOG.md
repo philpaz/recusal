@@ -309,6 +309,142 @@ All notable changes to this project are documented here. The format follows
   - The README lists what the gate does not see: a middleware listed before the gate that
     runs a tool itself, a provider-run tool the gate was not shown, a sub-agent's tools
     and `runtime.tools`.
+- **`recusal-pydantic-ai` 0.2.0: the gate judges what ran outside the tool
+  hook, and refuses a run whose toolsets could rewrite a call.** Found by the adapter
+  review of 2026-11-19 and reproduced on `pydantic-ai-slim` 2.67.0:
+  - An output function (`output_type=fn`) runs the application's function with values the
+    model chose, and ran with no policy asked. `RecusalGate` now judges it in
+    `before_output_process`, under the function's name, before it runs; a refusal asks
+    the model again and the function does not run.
+  - A `Choices` output whose value is callable ran that action when the model picked
+    it, with no policy asked. A final `Choices` pick is now judged, as `choice` with the
+    key and the set's name.
+  - A `WrapperToolset` subclass whose `call_tool` changed the arguments ran after the gate
+    judged them: judged `force=False`, ran `force=True`. A toolset runs after every
+    capability hook, so a run with such a wrapper in its toolsets now has every call
+    refused, on the record; the wrappers Pydantic AI ships route a call and are not. The
+    gate reads the run's toolset at the time of each call, so a wrapper another
+    capability adds, or one a dynamic toolset returns, is refused too. The check is not a
+    list of wrapper classes: an application toolset is refused when it holds other
+    toolsets and has its own `call_tool`, when it replaces the `call_tool` of the Pydantic
+    AI toolset it extends, or when it has a `process_tool_call` function.
+  - A call handed to the application to run (an `ExternalToolset`, `CallDeferred`) left
+    the run with no policy asked. It is now judged in `handle_deferred_tool_calls`: a
+    refused one is answered with the refusal, an allowed one handed on as judged.
+    Pydantic AI offers deferred calls to every other capability before the gate, so
+    `HandleDeferredToolCalls` executed an external call unjudged: a run with another
+    capability that answers deferred calls is now refused, and the handler goes to the
+    gate, `RecusalGate(policy, deferred=handler)`, which judges first and hands it the
+    calls it allowed.
+  - A gated agent that offers the model a tool the provider runs (web search, code
+    execution and the like) is now refused before the request is sent: no hook sees
+    those calls. Provider-side tool search is allowed, and so is a tool the model drops
+    or replaces with its local version.
+  - A gate marked `defer_loading=True`, or placed in a group loaded on demand, judged
+    nothing while `is_gated` said `True`. The first is now refused when the gate is
+    built, and the second does not count for `is_gated`.
+  - Another `innermost` capability listed after the gate ran after it and could rewrite
+    the call (a documented limit until now), and so could any hook listed after a gate
+    placed inside a `WrapperCapability`. The gate now reads the order the run dispatches
+    in and refuses a call when a `before_tool_execute` of the application's comes after
+    it.
+  - A tool given its schema by hand (`Tool.from_schema`) is not validated, so a
+    parameter the model left out ran with the function's Python default, which no
+    policy had seen: judged `{"table": "t"}`, ran `mode="hard"`. All four forms of the
+    gate (the two capabilities and the two hook functions) now add the innermost
+    function's own defaults that the arguments leave out, judge them, and pass them
+    written out; a default that is not plain data is refused, and so is such a tool
+    whose function takes `*args` or `**kwargs` (the tools `pydantic_ai.ext.langchain`
+    builds).
+  - A decorated tool is several functions, and a wrapper's own parameter was read by
+    nothing: a decorator with `skip_review=True` in the middle of a stack ran the
+    transfer with it, and a keyword a wrapper shared with the function let the model
+    send `refresh=False` while the function ran on its own `refresh=True`. The stack
+    from the callable Pydantic AI calls down to the innermost function is now read, and
+    a wrapper must be transparent (take only `*args` and `**kwargs`, restate the
+    function's own parameters, or forward `**kwargs` and name required parameters where
+    name and position cannot differ) or the call is refused before the policy runs, with
+    a reason that says what the wrapper does. A function that declares a signature of
+    its own and a decorator that cannot be inspected (such as `cachetools.cached`) are
+    refused as well.
+  - Pydantic AI passes a function's values by position when the function takes `*args`
+    or a positional-only parameter, so a wrapper that names a parameter can be handed
+    another one's value: `wrapper(dst, *args, **kwargs)` over
+    `copy_file(src, dst, *flags)` was judged with `dst` under `/tmp` and wrote to the
+    path sent as `src`. A wrapper that names a parameter and also forwards is refused
+    over such a function; elsewhere the positional parameters it names must be the
+    function's first ones in order, and it may forward `*args` only while no wrapper
+    above it names more positional parameters. For a tool that takes the run context, a
+    wrapper's first positional parameter is the context, whatever the wrapper calls it,
+    unless it has the name of another parameter of the function; a refusal names the
+    parameter as the wrapper calls it.
+  - A `functools.singledispatch` function picks the implementation that runs at call
+    time, and a registered implementation's own default ran unjudged. A single-dispatch
+    function with an implementation registered beside its base one, or in its place
+    (`register(object)`), is refused. A function that only has attributes called
+    `registry` and `dispatch` is not taken for one.
+  - A `functools.partial` that binds a value by position hides the leading parameter of
+    every wrapper under it, with that parameter's default: `partial(scoped(purge),
+    "acme")` was judged `{"limit": 5}` and ran `table="prod"`; with a wrapper that kept
+    the value and passed the rest on by position, `{"limit": 5, "dry": True}` ran
+    `table=5, limit=True, dry=False`; and `partial(scoped(default_table(purge)), "acme")`
+    ran the lower wrapper's own `table="archive"`. Such a partial is now allowed only
+    over the function itself or over wrappers that take nothing but `*args` and
+    `**kwargs`: any wrapper under it that names a parameter refuses the call, with no
+    reasoning about what the wrapper's body would do. Refused as well: such a partial
+    over a function whose bound parameter is positional-only and which takes `**kwargs`
+    (an argument sent under that name landed in `**kwargs` while the function ran the
+    bound value).
+  - A partial named with `functools.update_wrapper` carries `__wrapped__`, and
+    `inspect.signature`, which Pydantic AI validates against and builds the positional
+    call from, reads past it: `update_wrapper(partial(insert, "acme"), insert)` was
+    judged `tenant="DROP TABLE"` and ran `tenant="acme"` with that text as a row. It is
+    refused, and for every tool built from its signature the parameters Pydantic AI
+    reads must be those of the function the call reaches.
+  - The object of a bound method past a wrapper that names a positional parameter is
+    refused where a wrapper that kept it might not fail the call, which includes the
+    values after it moving up a place into a parameter with a default. That also
+    refuses a method decorator that restates the method's parameters over a method
+    with a defaulted positional parameter, which is conservative.
+  - A `functools.partial` with a keyword shows every later parameter as keyword-only,
+    on a wrapper and on the function alike, so a wrapper that takes a parameter as
+    another kind than the function was refused alone and allowed behind the partial:
+    `wrapper(table, limit=10)` over `delete_rows(table, *ids, limit=10)` behind
+    `partial(delete_rows, table="orders")` was judged `limit=500` and ran `ids=(500,)`,
+    `limit=10`. The wrappers under such a partial are now read without its keywords as
+    well. A keyword that names a positional-only parameter is not bound to it
+    (`partial(fetch, limit=77)` over `fetch(table, limit=10, /, **extra)` ran `limit=10`,
+    which nothing showed) and is refused.
+  - A class used as the tool function was let through as validated also where a hook of
+    the application's supplied the arguments in place of validation: judged
+    `{"table": "t"}`, ran `force=True`. Its arguments are now completed from the
+    signature Pydantic AI validates against, like any other tool's.
+  - Two output functions with the same name (`output_type=[review.submit, prod.submit]`)
+    were both judged as `submit`, and the model picked which ran. Such an output is now
+    refused before the policy, naming the name.
+  - The package allowed `recusal>=0.14.0`, a kernel without the walk the gate imports,
+    so the adapter failed at import beside it. It requires `recusal>=0.15.0`.
+  - Where a hook of the application's skips validation, a value for a function's `*args`
+    that is not a list was judged whole and handed to the function item by item. It is
+    refused.
+  - The order check holds for output functions and `Choices` picks as for tool calls,
+    and counts a `Hooks` subclass that writes a hook as a method. A container the
+    search for held toolsets cannot finish (4,000 values) is refused instead of passed.
+  - A realtime session, which calls none of the hooks the gate judges in, is refused
+    when it starts. Provider-tool settings on the model, and on each candidate of a
+    `FallbackModel`, are read as well as the run's.
+  - Refused rather than run unjudged, and documented: an output function taking a
+    Pydantic model, and a union of output functions under `NativeOutput` or
+    `PromptedOutput` (use tool output).
+  - `agent.override(spec=...)` with a spec naming capabilities replaces the gate, and
+    `is_gated` still said `True` while the tool ran unjudged; it now reads the
+    capabilities in effect.
+  - The audited gate records each of these on its own surface
+    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`), by
+    the plain gate's own decision. The README now says which tool name the policy is
+    given (the prefixed or renamed one) and corrects two sentences on ordering: another
+    `innermost` capability listed after the gate runs after it, and the plain `Hooks`
+    form is safe only where no `innermost` capability is added.
 
 ## [0.15.0] - 2026-11-21
 

@@ -526,6 +526,532 @@ class TestPydanticAiAudit:
         assert ("run_sql", {"sql": DELETE}) in executed
         assert log.entries == []
 
+    # --- the decisions made outside the tool hook are on the record too ---------------------
+
+    @staticmethod
+    def _model_calling(name, args):
+        from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+
+        turns = {"n": 0}
+
+        def fn(messages, info):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                part = ToolCallPart(tool_name=name, args=args, tool_call_id="c1")
+                return ModelResponse(parts=[part])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        return FunctionModel(fn)
+
+    def test_an_output_function_and_an_external_call_are_recorded(self, example, log):
+        """The audited gate makes the plain gate's decisions on every hook, so an output
+        function and a call handed to the application are each one entry, labelled with the
+        hook that decided."""
+        from pydantic_ai import Agent, DeferredToolRequests
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets.external import ExternalToolset
+
+        def publish(table: str) -> str:
+            """Publish."""
+            return "published"
+
+        allow = lambda name, args: []  # noqa: E731
+        Agent(
+            self._model_calling("final_result", {"table": "t"}),
+            output_type=publish,
+            capabilities=[example.RecusalAuditedGate(allow, log=log)],
+        ).run_sync("go")
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        external = ExternalToolset(
+            [ToolDefinition(name="wipe_remote", parameters_json_schema=schema)]
+        )
+        Agent(
+            self._model_calling("wipe_remote", {"table": "t"}),
+            toolsets=[external],
+            output_type=[str, DeferredToolRequests],
+            capabilities=[example.RecusalAuditedGate(allow, log=log)],
+        ).run_sync("go")
+        actions = [(e["action"]["tool"], e["action"]["surface"]) for e in log.entries]
+        assert actions == [
+            ("publish", "pydantic_ai.before_output_process"),
+            ("wipe_remote", "pydantic_ai.handle_deferred_tool_calls"),
+        ]
+
+    def test_a_choice_is_recorded_and_output_entries_carry_the_call_id(self, example, log):
+        """A ``Choices`` pick is one entry, and an entry made in the output hook carries the
+        id of the output tool call it decided."""
+        from pydantic_ai import Agent
+        from pydantic_ai.output import Choices
+
+        allow = lambda name, args: []  # noqa: E731
+        Agent(
+            self._model_calling("final_result", {"response": "a"}),
+            output_type=Choices(["a", "b"]),
+            capabilities=[example.RecusalAuditedGate(allow, log=log)],
+        ).run_sync("go")
+        (entry,) = log.entries
+        assert entry["action"]["tool"] == "choice"
+        assert entry["action"]["surface"] == "pydantic_ai.before_output_process"
+        assert entry["action"]["tool_use_id"] == "c1"
+
+    def test_refusals_made_before_judgment_are_on_the_record(self, example, log):
+        """A call refused because of the run's toolsets, and a deferred call whose arguments
+        are not a JSON object, never reach the policy; each is still one entry, a deny,
+        bound to the call as the model sent it."""
+        import asyncio
+
+        from pydantic_ai import Agent, DeferredToolRequests, FunctionToolset
+        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.toolsets.wrapper import WrapperToolset
+
+        def wipe(table: str) -> str:
+            """Wipe."""
+            return "wiped"
+
+        class Forcing(WrapperToolset):
+            async def call_tool(self, name, tool_args, ctx, tool):
+                return await super().call_tool(name, tool_args, ctx, tool)
+
+        allow = lambda name, args: []  # noqa: E731
+        gate = example.RecusalAuditedGate(allow, log=log)
+        Agent(
+            self._model_calling("wipe", {"table": "t"}),
+            toolsets=[Forcing(FunctionToolset([wipe]))],
+            capabilities=[gate],
+        ).run_sync("go")
+        requests = DeferredToolRequests(calls=[ToolCallPart("wipe", "not json", tool_call_id="c9")])
+        asyncio.run(gate.handle_deferred_tool_calls(None, requests=requests))
+        first, second = log.entries
+        assert first["action"]["decision"] == "deny" and first["action"]["tool_use_id"] == "c1"
+        assert first["action"]["surface"] == "pydantic_ai.before_tool_execute"
+        assert first["action"]["input_sha256"] == _sha({"table": "t"})
+        assert second["action"]["decision"] == "deny" and second["action"]["tool_use_id"] == "c9"
+        assert second["action"]["surface"] == "pydantic_ai.handle_deferred_tool_calls"
+        assert second["action"]["input_sha256"] == _sha({"INVALID_JSON": "not json"})
+
+    def test_the_audited_hook_form_judges_and_records_the_completed_arguments(self, example, log):
+        """The audited hook function completes the arguments as the gate does: for a tool
+        given its schema by hand it judged, and recorded as allowed, arguments without the
+        default the function then ran with."""
+        from pydantic_ai import Agent, Tool
+        from pydantic_ai.capabilities import Hooks
+
+        from recusal import Finding
+
+        ran = []
+
+        def delete_rows(table: str, mode: str = "hard") -> str:
+            ran.append((table, mode))
+            return "deleted"
+
+        def policy(name, args):
+            if args.get("mode") == "hard":
+                return [Finding.fail("no_hard", severity="CRITICAL", message="hard refused")]
+            return []
+
+        schema = {"type": "object", "properties": {"table": {"type": "string"}}}
+        tool = Tool.from_schema(
+            delete_rows, name="delete_rows", description="d", json_schema=schema
+        )
+        hook = example.recusal_audited_before_tool_execute(policy, log)
+        Agent(
+            self._model_calling("delete_rows", {"table": "t"}),
+            tools=[tool],
+            capabilities=[Hooks(before_tool_execute=hook)],
+        ).run_sync("go")
+        (entry,) = log.entries
+        assert ran == [] and entry["action"]["decision"] == "deny"
+        assert entry["action"]["input_sha256"] == _sha({"table": "t", "mode": "hard"})
+
+        # the hook hands back the arguments it judged, so the function runs with them
+        import asyncio
+        from types import SimpleNamespace
+
+        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.tools import ToolDefinition
+
+        def soft(table: str, mode: str = "soft") -> str:
+            return "ok"
+
+        schema_of = SimpleNamespace(
+            function=soft,
+            takes_ctx=False,
+            validator=SimpleNamespace(validate_python=lambda value: value),
+        )
+        record = SimpleNamespace(call_func=SimpleNamespace(__self__=schema_of))
+        ctx = SimpleNamespace(tool_manager=SimpleNamespace(tools={"soft": record}))
+        handed_back = asyncio.run(
+            hook(
+                ctx,
+                call=ToolCallPart("soft", {"table": "t"}, tool_call_id="c7"),
+                tool_def=ToolDefinition(name="soft"),
+                args={"table": "t"},
+            )
+        )
+        assert handed_back == {"table": "t", "mode": "soft"}
+        assert log.entries[-1]["action"]["input_sha256"] == _sha({"table": "t", "mode": "soft"})
+
+        # a function whose defaults cannot be read is refused, and that is on the record
+        def proxy(**kwargs):
+            ran.append(kwargs)
+            return "ok"
+
+        tool = Tool.from_schema(proxy, name="delete_rows", description="d", json_schema=schema)
+        Agent(
+            self._model_calling("delete_rows", {"table": "t"}),
+            tools=[tool],
+            capabilities=[Hooks(before_tool_execute=hook)],
+        ).run_sync("go")
+        refused = log.entries[-1]
+        assert ran == [] and len(log.entries) == 3
+        assert refused["action"]["decision"] == "deny"
+        assert refused["action"]["input_sha256"] == _sha({"table": "t"})
+
+    @ROUTES
+    def test_a_stack_the_gate_cannot_read_is_one_recorded_deny(
+        self, example, log, log_path, via_hooks
+    ):
+        """A wrapper that names a parameter over a function Pydantic AI calls by position, a
+        single-dispatch function with a registered implementation, and a value a partial
+        binds past a naming wrapper are refused before the policy by both audited forms:
+        nothing runs, the policy is not asked, and each refusal is exactly one entry, bound
+        to the call as the model sent it, with a reason that carries none of its text."""
+        import functools
+
+        ran, asked = [], []
+
+        def with_table_lock(function):
+            @functools.wraps(function)
+            def wrapper(table, *args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        @with_table_lock
+        def delete_rows(table: str, *ids: str, dry_run: bool = False) -> str:
+            """Delete rows."""
+            ran.append(("delete_rows", table, ids))
+            return "deleted"
+
+        @functools.singledispatch
+        def lookup(key: int | str, /, deep: bool = False) -> str:
+            """Lookup."""
+            ran.append(("lookup", key))
+            return "base"
+
+        @lookup.register(str)
+        def _lookup_text(key: str, /, deep: bool = False, skip_review: bool = True) -> str:
+            ran.append(("lookup", key, skip_review))
+            return "text"
+
+        def purge_all(table: str = "prod", limit: int = 10) -> str:
+            """Purge."""
+            ran.append(("purge", table, limit))
+            return "purged"
+
+        purge = functools.partial(with_table_lock(purge_all), "MARKER-tenant")
+        purge.__name__ = purge.__qualname__ = "purge"
+        purge.__doc__ = "Purge."
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
+        calls = [
+            ("delete_rows", {"table": "scratch", "ids": ["MARKER-customers", "1"]}, "c1"),
+            ("lookup", {"key": "MARKER-key"}, "c2"),
+            ("purge", {"limit": 5}, "c3"),
+        ]
+        responses, _ = example.run_calls(
+            calls, log, policy=policy, tools=[delete_rows, lookup, purge], via_hooks=via_hooks
+        )
+        assert ran == [] and asked == [] and len(log.entries) == 3
+        entries = self.by_id(log)
+        causes = {
+            "c1": "names `table` and also forwards, over a function that takes `*args`",
+            "c2": "the implementation that runs is chosen at call time",
+            "c3": "binds a value by position past a wrapper that names a parameter (`table`)",
+        }
+        for name, sent, call_id in calls:
+            outcome, reason = responses[call_id]
+            entry = entries[call_id]
+            assert outcome == "failed" and causes[call_id] in reason
+            assert reason.startswith(f"Recusal refused `{name}` [FAIL]")
+            assert entry["action"]["decision"] == "deny" and entry["decision"] == "FAIL"
+            assert entry["action"]["reason"] == reason and "MARKER" not in reason
+            assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+            assert entry["action"]["input_sha256"] == _sha(sent)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    @ROUTES
+    def test_a_partial_or_a_registry_the_gate_cannot_read_is_one_recorded_deny(
+        self, example, log, log_path, via_hooks
+    ):
+        """The refusals of the tenth review round, by both audited forms: a keyword partial
+        over a wrapper that takes a parameter as another kind, a partial keyword that names
+        a positional-only parameter, a bound value a wrapper can keep while the rest move up
+        a place, and ``register(object)`` in the base's place. Nothing runs, the policy is
+        not asked, and each is exactly one entry with none of the model's text."""
+        import functools
+
+        ran, asked = [], []
+
+        def audited(function):
+            @functools.wraps(function)
+            def wrapper(table, limit=10):
+                return function(table, limit)
+
+            return wrapper
+
+        @audited
+        def delete_rows(table: str, *ids: int, limit: int = 10) -> str:
+            """Delete rows."""
+            ran.append(("delete_rows", table, ids, limit))
+            return "deleted"
+
+        def fetch(table: str, limit: int = 10, /, **extra: int) -> str:
+            """Fetch rows."""
+            ran.append(("fetch", table, limit, extra))
+            return "fetched"
+
+        def keeps(function):
+            @functools.wraps(function)
+            def wrapper(tenant, limit, note):
+                return function(limit, note)
+
+            return wrapper
+
+        def purge_rows(table: str, limit: int, note: str = "") -> str:
+            """Purge rows."""
+            ran.append(("purge_rows", table, limit, note))
+            return "purged"
+
+        @functools.singledispatch
+        def lookup(key: int | str, /, deep: bool = False) -> str:
+            """Lookup."""
+            ran.append(("lookup", key))
+            return "base"
+
+        @lookup.register(object)
+        def _replacement(key, /, deep: bool = False, skip_review: bool = True) -> str:
+            ran.append(("lookup", key, skip_review))
+            return "replacement"
+
+        def named(tool, name):
+            tool.__name__ = tool.__qualname__ = name
+            tool.__doc__ = "A tool."
+            return tool
+
+        tools = [
+            named(functools.partial(delete_rows, table="orders"), "delete_orders"),
+            named(functools.partial(fetch, limit=77), "fetch_capped"),
+            named(functools.partial(keeps(purge_rows), "tenant-MARKER"), "purge_tenant"),
+            lookup,
+        ]
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
+        calls = [
+            ("delete_orders", {"limit": 500}, "c1"),
+            ("fetch_capped", {"table": "MARKER-table"}, "c2"),
+            ("purge_tenant", {"limit": 5, "note": "MARKER-note"}, "c3"),
+            ("lookup", {"key": "MARKER-key"}, "c4"),
+        ]
+        responses, _ = example.run_calls(
+            calls, log, policy=policy, tools=tools, via_hooks=via_hooks
+        )
+        assert ran == [] and asked == [] and len(log.entries) == 4
+        entries = self.by_id(log)
+        causes = {
+            "c1": "takes `limit` as a positional or keyword parameter where the function takes",
+            "c2": "a `functools.partial` binds `limit` by keyword, and the function this tool runs",
+            "c3": "binds a value by position past a wrapper that names a parameter (`tenant`)",
+            "c4": "registered beside its base one or in its place",
+        }
+        for name, sent, call_id in calls:
+            outcome, reason = responses[call_id]
+            entry = entries[call_id]
+            assert outcome == "failed" and causes[call_id] in reason
+            assert reason.startswith(f"Recusal refused `{name}` [FAIL]")
+            assert entry["action"]["decision"] == "deny" and entry["decision"] == "FAIL"
+            assert entry["action"]["reason"] == reason and "MARKER" not in reason
+            assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+            assert entry["action"]["input_sha256"] == _sha(sent)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    @ROUTES
+    def test_a_partial_that_binds_by_position_is_one_recorded_deny(
+        self, example, log, log_path, via_hooks
+    ):
+        """The refusals of the eleventh review round, by both audited forms: a value bound by
+        position over a wrapper that names a parameter, a partial named with
+        ``functools.update_wrapper``, and a bound positional-only parameter beside
+        ``**extra``. Nothing runs, the policy is not asked, and each is exactly one entry
+        with none of the model's text."""
+        import functools
+
+        ran, asked = [], []
+
+        def scoped(function):
+            @functools.wraps(function)
+            def wrapper(tenant, *args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def default_table(function):
+            @functools.wraps(function)
+            def wrapper(table="archive", *, limit=100):
+                return function(table, limit=limit)
+
+            return wrapper
+
+        def purge(table, *, limit=100):
+            """Purge rows."""
+            ran.append(("purge", table, limit))
+            return "purged"
+
+        def insert(tenant: str, *rows: str, table: str = "events") -> str:
+            """Insert rows for a tenant."""
+            ran.append(("insert", tenant, rows, table))
+            return "inserted"
+
+        def fetch(tenant: str, /, table: str, **extra: str) -> str:
+            """Fetch."""
+            ran.append(("fetch", tenant, table, extra))
+            return "fetched"
+
+        def named(tool, name):
+            tool.__name__ = tool.__qualname__ = name
+            tool.__doc__ = "A tool."
+            return tool
+
+        tools = [
+            named(functools.partial(scoped(default_table(purge)), "tenant-MARKER"), "purge_acme"),
+            functools.update_wrapper(functools.partial(insert, "tenant-MARKER"), insert),
+            named(functools.partial(fetch, "tenant-MARKER"), "fetch_acme"),
+        ]
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
+        calls = [
+            ("purge_acme", {"limit": 5}, "c1"),
+            ("insert", {"tenant": "MARKER DROP TABLE", "rows": ["MARKER-a"]}, "c2"),
+            ("fetch_acme", {"tenant": "MARKER-evil", "table": "t"}, "c3"),
+        ]
+        responses, _ = example.run_calls(
+            calls, log, policy=policy, tools=tools, via_hooks=via_hooks
+        )
+        assert ran == [] and asked == [] and len(log.entries) == 3
+        entries = self.by_id(log)
+        causes = {
+            "c1": "binds a value by position past a wrapper that names a parameter (`tenant`)",
+            "c2": "was named with `functools.update_wrapper` or `functools.wraps`",
+            "c3": "binds the positional-only parameter `tenant` of a function that also takes",
+        }
+        for name, sent, call_id in calls:
+            outcome, reason = responses[call_id]
+            entry = entries[call_id]
+            assert outcome == "failed" and causes[call_id] in reason
+            assert reason.startswith(f"Recusal refused `{name}` [FAIL]")
+            assert entry["action"]["decision"] == "deny" and entry["decision"] == "FAIL"
+            assert entry["action"]["reason"] == reason and "MARKER" not in reason
+            assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+            assert entry["action"]["input_sha256"] == _sha(sent)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    @ROUTES
+    def test_a_class_tool_a_hook_supplied_is_recorded_as_completed(self, example, log, via_hooks):
+        """Where a hook supplies a class tool's arguments in place of validation, the entry is
+        bound to the arguments with the class's own default written out, which is what the
+        policy judged and what the class is called with."""
+        import dataclasses
+
+        from pydantic_ai import Agent, Tool
+        from pydantic_ai.capabilities import Hooks
+        from pydantic_ai.exceptions import SkipToolValidation
+
+        ran, judged = [], []
+
+        @dataclasses.dataclass
+        class Purge:
+            """Purge a table."""
+
+            table: str
+            force: bool = True
+
+            def __post_init__(self):
+                ran.append((self.table, self.force))
+
+        async def skip_validation(ctx, *, call, tool_def, args):
+            raise SkipToolValidation(dict(args))
+
+        def policy(name, args):
+            judged.append(dict(args))
+            return []
+
+        gate = (
+            Hooks(before_tool_execute=example.recusal_audited_before_tool_execute(policy, log))
+            if via_hooks
+            else example.RecusalAuditedGate(policy, log=log)
+        )
+        Agent(
+            self._model_calling("purge", {"table": "t"}),
+            tools=[Tool(Purge, name="purge", description="d")],
+            capabilities=[Hooks(before_tool_validate=skip_validation), gate],
+        ).run_sync("go")
+        (entry,) = log.entries
+        assert judged == [{"table": "t", "force": True}] and ran == [("t", True)]
+        assert entry["action"]["decision"] != "deny" and entry["decision"] == "PASS"
+        assert entry["action"]["input_sha256"] == _sha({"table": "t", "force": True})
+
+    def test_output_functions_that_share_a_name_are_one_recorded_deny_each_time(self, example, log):
+        """Two output functions of one name: each attempt the model makes is refused before
+        the policy, and each refusal is one entry on the output surface."""
+        from pydantic_ai import Agent
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+        from pydantic_ai.messages import ModelResponse, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+
+        ran, asked, attempts = [], [], []
+
+        class Queue:
+            def __init__(self, name):
+                self.name = name
+
+            def submit(self, text: str) -> str:
+                ran.append((self.name, text))
+                return "submitted"
+
+        def respond(messages, info):
+            attempts.append(1)
+            call = ToolCallPart(
+                info.output_tools[1].name, {"text": "MARKER"}, tool_call_id=f"c{len(attempts)}"
+            )
+            return ModelResponse(parts=[call])
+
+        agent = Agent(
+            FunctionModel(respond),
+            output_type=[Queue("review").submit, Queue("production").submit],
+            capabilities=[example.RecusalAuditedGate(lambda n, a: asked.append(n) or [], log=log)],
+        )
+        with pytest.raises(UnexpectedModelBehavior):
+            agent.run_sync("go")
+        assert ran == [] and asked == [] and attempts
+        assert len(log.entries) == len(attempts)
+        for number, entry in enumerate(log.entries, start=1):
+            action = entry["action"]
+            assert action["decision"] == "deny" and action["tool"] == "submit"
+            assert action["surface"] == "pydantic_ai.before_output_process"
+            assert action["tool_use_id"] == f"c{number}"
+            assert "more than one output function of this run is named `submit`" in action["reason"]
+            assert "MARKER" not in action["reason"]
+
     # --- the script itself --------------------------------------------------------------
 
     def test_main_runs_end_to_end_and_shows_the_verifier_refusing(self, example):

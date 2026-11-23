@@ -210,7 +210,7 @@ The adapters are at different stages of security review. Of the 8 adapters,
 | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review complete | Its fixes are released in 0.2.2. |
 | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
 | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
-| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
 
 What the two reviews are:
 

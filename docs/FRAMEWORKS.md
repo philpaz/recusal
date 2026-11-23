@@ -376,18 +376,26 @@ so a policy's write to its containers changes its observation, not the call) and
 tool result, the tool never runs, and no retry budget is spent; attach it with
 `Agent(..., capabilities=[RecusalGate(policy)])` or per run. It declares itself `innermost`,
 so Pydantic AI sorts it after every ordinary capability (a hook that ran after the gate could
-change the arguments it judged); only another `innermost` capability listed after it still
-runs after it, so list the gate last. `Hooks(before_tool_execute=recusal_before_tool_execute(policy))`
-is the same gate as a plain hook function with no ordering of its own. An agent called from
+change the arguments it judged), and it reads the order the run dispatches in: a call is
+refused when a `before_tool_execute` of the application's comes after the gate, so list the
+gate directly and last. From `recusal-pydantic-ai` 0.2.0 the capability judges more than the
+tool hook: output functions and `Choices` picks before they run, calls handed to the
+application (with the application's handler given to the gate, `deferred=handler`), and
+defaults a function would fill in itself; and it refuses what it cannot hold to the policy
+(a toolset that runs other tools' calls itself, a tool the provider runs, another capability
+that answers deferred calls, a realtime session). The package's
+[README](../adapters/pydantic-ai/README.md) is the full account, with what the gate does
+not see. `Hooks(before_tool_execute=recusal_before_tool_execute(policy))`
+is the tool hook alone as a plain function, with no ordering of its own. An agent called from
 inside a tool function runs under its own capabilities and needs its own gate; the tests show
 the miss and both fixes. Offline (a scripted `FunctionModel`, no key), Python 3.11+, tested
 with exactly `pydantic-ai-slim==2.67.0`. To put every one of those calls on the record,
 [`examples/pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) swaps in
 `RecusalAuditedGate(policy, log=log)` (or `recusal_audited_before_tool_execute(policy, log)`
-for `Hooks`): the same decision, written as a hash-chained `AuditLog` entry labeled
-`pydantic_ai.before_tool_execute` with Pydantic AI's tool call id and a fingerprint of the
-arguments the tool is called with, before the call runs or is refused, and an unwritable
-log refuses the call. A call Pydantic AI rejects at validation never reaches the hook, so
+for `Hooks`): the same decision, written as a hash-chained `AuditLog` entry labeled with
+the hook that decided (`pydantic_ai.before_tool_execute` for a tool call) with Pydantic AI's
+tool call id and a fingerprint of the arguments the tool is called with, before the call
+runs or is refused, and an unwritable log refuses the call. A call Pydantic AI rejects at validation never reaches the hook, so
 it does not run and is not on the log.
 
 Its supported arguments are data-only: JSON scalars, lists and string-keyed dicts.
