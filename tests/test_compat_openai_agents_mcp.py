@@ -565,7 +565,7 @@ def test_jsonschema_evaluates_a_schemas_patterns_where_the_gate_replaces_it():
     import importlib
     import re
 
-    from jsonschema import validators
+    validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
 
     module = importlib.import_module("recusal_openai_agents_mcp._schema")
     schemas = {

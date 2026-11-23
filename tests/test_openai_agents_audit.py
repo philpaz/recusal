@@ -755,6 +755,15 @@ class TestOneDecisionPath:
 
         arguments = '{"payload": ' + "[" * depth + "]" * depth + "}"
         calls = [("note", arguments, "c1")]
+        if sys.version_info < (3, 11) and depth >= 488:
+            # Python 3.10 runs out of stack in the SDK's own normalising of the arguments,
+            # before any tool or hook runs: the run raises, and nothing ran or was judged.
+            with pytest.raises(RecursionError):
+                gate.run_calls(
+                    calls, policy=policy, streamed=streamed, tools=[self.note_tool(gate, ran)]
+                )
+            assert ran == [] and seen == []
+            return
         plain, _ = gate.run_calls(
             calls, policy=policy, streamed=streamed, tools=[self.note_tool(gate, ran)]
         )

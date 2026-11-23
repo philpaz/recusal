@@ -906,7 +906,9 @@ class TestJudgedIsWhatRuns:
         class Color(enum.Enum):
             RED = "red"
 
-        class Location(typing.TypedDict):
+        from typing_extensions import TypedDict  # pydantic wants it before Python 3.12
+
+        class Location(TypedDict):
             lat: float
 
         class Model(BaseModel):
