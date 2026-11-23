@@ -145,6 +145,43 @@ type-checked function from a plain function and register that one. Also refused:
   descriptor, such as `cachetools.cached`, a `functools.lru_cache` or `functools.cache`
   wrapper under a `functools.partial`, or a stack more than 31 decorators deep. Call the
   decorated function from a plain function and register that one.
+- **A decorator that holds a second wrapper of the function**, beside a kernel later
+  than `recusal` 0.15.0 (0.15.0 is the newest release as this is written). A decorator that applies another `functools.wraps` wrapper of
+  the same function inside itself and calls that one, from its closure, by a module global it names or from a
+  class-based decorator's instance, where the inner wrapper takes a parameter of its
+  own: `functools.wraps` points past the inner wrapper, so it is not read like one
+  applied directly. The reason names the parameter. Call the decorated function from a
+  plain function and register that one. Beside 0.15.0 this is not detected, and the
+  inner wrapper's parameter runs with a value the policy was not handed. An inner
+  wrapper held any other way (a plain function or a lambda that names nothing as
+  `__wrapped__`, a callable object, a container) is not found by either kernel.
+- **A `functools.partialmethod` over a callable object**, beside a kernel later than
+  `recusal` 0.15.0: refused, with a reason that says so and what to do. Beside 0.15.0 it is
+  open, see "Status" below. Over a plain function the same `partialmethod` is read in
+  full beside either kernel.
+- **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
+  0.15.0.** Each let a value run that the policy did not judge: a decorator written as
+  `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
+  its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
+  `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
+  read as `f`, and the wrapper it calls by nothing); a class-based decorator written
+  inside the decorator, whose `__call__` calls a second wrapper the decorator built, or
+  one at module level whose `__call__` names that wrapper as a global; and a method
+  that delegates to a free function under `functools.wraps` of it and keeps its object,
+  where the free function's first parameter has a default (that parameter ran at its
+  default and was in no signature), with or without decorators on the free function
+  that only pass their arguments on. The second is the same on a method as on a plain
+  function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
+  object, a second cache). A kernel later than 0.15.0 reads the first three
+  like the same decorator written with a nested function, so a wrapper with a parameter
+  of its own is refused, naming the parameter, and one that only passes its arguments
+  on is accepted; it refuses the fourth, naming both parameters. This gate has rules of its own for the first and the fourth and refuses
+  them beside either kernel; the second and the third it refuses through the
+  kernel. Not found by either
+  kernel: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. A cache whose
+  function cannot be told from what it refers to is refused, not read. For each, call
+  the function from a plain function and register that one.
 - **A single-dispatch function** (`functools.singledispatch`) with an implementation
   registered beside its base one, or in its place (`register(object)`): the
   implementation that runs is chosen at call time, by the type of an argument, so its
@@ -456,14 +493,16 @@ development: it is not a finished or certified security product, and it is provi
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
-**Open from the latest review round**, not yet fixed, stated so you can judge them:
+**Open from the latest review round**, stated so you can judge them:
 
-- A tool built with `functools.partialmethod` over a callable object (a class-based
-  decorator instance, for example) is read one level deep: what is under the object is
-  not read, so a value or a default can run that the policy was not handed. Over a plain
-  function the same `partialmethod` is read in full. It is reachable with unannotated
-  parameters or a tool given its schema by hand. Until it is fixed, do not register a
-  `partialmethod` over a callable object as a tool.
+- Beside `recusal` 0.15.0, a tool built with `functools.partialmethod` over a callable
+  object (a class-based decorator instance, for example) is read one level deep: what
+  is under the object is not read, so a value or a default can run that the policy was
+  not handed. Over a plain function the same `partialmethod` is read in full. It is
+  reachable with unannotated parameters or a tool given its schema by hand. The fix is
+  in the kernel: a kernel later than 0.15.0 refuses such a tool before the policy
+  runs, and 0.15.0 is the newest release as this is written. Beside 0.15.0, do not register a `partialmethod` over a callable object as a
+  tool.
 - A keyword that a `functools.partial` binds and that names no parameter of the function
   lands in its `**kwargs` and is not shown to the policy. It is the application's own
   constant, never the model's.

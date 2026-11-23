@@ -113,6 +113,66 @@ if not hasattr(_invocation, "reached_parameters"):
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the walk that the installed kernel does not have.
+    ``recusal`` 0.15.0, the oldest this package allows, has neither ``HiddenWrapper`` nor
+    ``DispatchedAtCallTime``. Nothing raises this class, so a handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.0).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
+
+
+def _with_remedy(func: Any, why: str) -> str:
+    """``why``, the kernel's reason a tool's signature cannot be judged, with what to do
+    about it where the reason is one of the two the kernel's walk raises by name: a
+    decorator that holds a second wrapper with a parameter of its own (``HiddenWrapper``)
+    and a single-dispatch function that can run more than its base implementation
+    (``DispatchedAtCallTime``). A kernel later than 0.15.0 raises them; beside 0.15.0
+    neither shape is found, no handler here runs and ``why`` is returned as it is. The
+    walk is made a second time only for a call that is refused already, and the remedy is
+    added only when what it raises is, word for word, the reason the kernel gave."""
+    try:
+        _invocation.reached_parameters(func)
+    except _UnreadCache:
+        return why  # the kernel's reason for it says what it is and what to do
+    except _HiddenWrapper as refused:
+        if str(refused) == why:
+            return (
+                f"{why}: a decorator on the tool holds a second wrapper of the function, in "
+                "its closure or on the decorator object, which is not reached through "
+                "`__wrapped__`; call the decorated function from a plain function and "
+                "register that one"
+            )
+    except _DispatchedAtCallTime as refused:
+        if str(refused) == why:
+            return (
+                f"{why}: it is a single-dispatch function (`functools.singledispatch` or "
+                "`singledispatchmethod`) with an implementation registered beside its base "
+                "one or in its place; call it from a plain function and register that one"
+            )
+    except Exception:  # noqa: BLE001, refused already, for the reason the kernel gave
+        pass
+    return why
+
+
 #: The application's tools by the name the model calls them.
 Tools = dict[str, Callable[..., Any]]
 
@@ -654,6 +714,8 @@ def _judge(
         why = _unsupported_signature(func)
     except Exception:  # noqa: BLE001, a signature the kernel cannot read is not judged
         why = "its signature cannot be inspected"
+    if why is not None:
+        why = _with_remedy(func, why)
     if why is not None:
         detail = f"its signature cannot be judged ({why})"
         return _unjudgeable(shown, f"Recusal refused `{shown}`: {detail}", detail, args, record)

@@ -113,6 +113,7 @@ from crewai.utilities.string_utils import sanitize_tool_name
 from pydantic import BaseModel, Field, ValidationError
 from pydantic.fields import FieldInfo
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import json_data as _json_data
 from recusal.invocation import supported_annotation as _supported_annotation
@@ -401,7 +402,9 @@ def _own_parameters(func: Any, depth: int = 0) -> Any:
     ``functools.partial``'s function; a method shows its function's attributes as its
     own). The first is turned off; the second raises ``_DeclaredSignature`` wherever it is
     found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
-    ``staticmethod``, and ``lru_cache`` over a method) are looked through.
+    ``staticmethod``, and ``lru_cache`` over a method) are looked through. A callable that
+    ``inspect.signature`` would read as a ``functools.partialmethod`` raises
+    ``_PartialMethodSignature``, a ``TypeError`` (``_refuse_partialmethod``).
     """
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
@@ -478,11 +481,13 @@ def _reached_parameters(func: Any) -> list:
 
 def _refuse_declared_signature(func: Any, depth: int) -> None:
     """Raise ``_DeclaredSignature`` if ``func``, or what ``inspect.signature`` would read
-    in its place, declares ``__signature__``."""
+    in its place, declares ``__signature__``, and ``_PartialMethodSignature`` if either
+    would be read as a ``functools.partialmethod`` (``_refuse_partialmethod``)."""
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
     if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
         raise _DeclaredSignature
+    _refuse_partialmethod(func)
     if isinstance(func, functools.partial):
         _refuse_declared_signature(func.func, depth + 1)
     elif not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
@@ -491,11 +496,44 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
             _refuse_declared_signature(call, depth + 1)
 
 
+#: The attribute under which ``functools.partialmethod`` leaves itself on the function it
+#: builds, and under which ``inspect.signature`` looks for it: ``_partialmethod`` up to
+#: Python 3.12, ``__partialmethod__`` from 3.13. Both are looked for on every Python.
+_PARTIALMETHOD_MARKS = ("_partialmethod", "__partialmethod__")
+
+
+class _PartialMethodSignature(TypeError):
+    """A callable on the way is one ``inspect.signature`` reads as a
+    ``functools.partialmethod``: the signature it shows is not its own."""
+
+
+def _refuse_partialmethod(func: Any) -> None:
+    """Raise ``_PartialMethodSignature`` if ``inspect.signature`` would read ``func`` as a
+    ``functools.partialmethod``: it shows an instance of one under either name above.
+
+    ``functools.partialmethod(f, ...)`` over a plain function, read from an instance, is a
+    ``functools.partial`` of the bound function, which the walk follows; that is not
+    refused. Over a callable that does not bind as a method (a callable object, a
+    class-based decorator), and for any ``f`` read from the class, it is a method of a
+    function ``functools`` builds, which calls ``f`` from its closure, names nothing as
+    ``__wrapped__`` and carries the mark. ``inspect.signature`` reads the mark in place of
+    that function's own parameters and shows those of ``f`` less what is bound: one level
+    that is no callable's own, and nothing of ``f``, of a wrapper under it or of a default
+    any of them fills. ``functools.update_wrapper`` copies the mark onto a wrapper of such
+    a method, whose own parameters are then hidden the same way. The test is the one
+    ``inspect.signature`` makes, so an attribute of that name that is not a
+    ``functools.partialmethod`` is not refused."""
+    for mark in _PARTIALMETHOD_MARKS:
+        if isinstance(getattr(func, mark, None), functools.partialmethod):
+            raise _PartialMethodSignature
+
+
 def _incomplete_callable(tool: Any) -> Optional[str]:
     """Why the callable declares a parameter the schema does not, or None if it declares
     none. Python would fill such a parameter from the callable's default after judgment, so
     the policy would never see the value that runs; the refusal names the parameter and
-    never its default."""
+    never its default. A callable this walk accepts is then held to the two refusals a
+    later kernel's walk makes by name (``_kernel_refusal``)."""
     try:
         func = _execution_callable(tool)
     except TypeError as exc:
@@ -504,9 +542,23 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
         levels = _reached_parameters(func)
     except _DeclaredSignature:
         return "its callable declares a signature that is not its own"
+    except _PartialMethodSignature:
+        return (
+            "its callable is a `functools.partialmethod` over a callable that does not bind "
+            "as a method (a callable object, a class-based decorator), or a wrapper of one: "
+            "the signature it shows is that of what the partialmethod binds, not its own, "
+            "so what runs under it cannot be read; give the tool a plain function that "
+            "calls it, or put the partialmethod over a plain function"
+        )
     except (TypeError, ValueError):
         return "its callable cannot be inspected for its parameters"
     fields = tool.args_schema.model_fields
+    return _undeclared(levels, fields) or _kernel_refusal(func, fields)
+
+
+def _undeclared(levels: Any, fields: Any) -> Optional[str]:
+    """Why a callable among ``levels`` takes a parameter the schema ``fields`` cannot judge
+    by name, or None."""
     for parameters in levels:
         for name, parameter in parameters.items():
             if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
@@ -515,7 +567,104 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
                 return f"its callable's parameter `{name}` is positional-only"
             if name not in fields:
                 return f"its callable's parameter `{name}` is absent from the argument schema"
+    # a wrapper that passes ``*args`` or ``**kwargs`` on and also names a parameter takes
+    # that argument itself; a callable further in that names it too then runs with its own
+    # default, not the value the policy judged
+    for index, parameters in enumerate(levels):
+        if not any(_variadic(parameter) for parameter in parameters.values()):
+            continue
+        for name, parameter in parameters.items():
+            if _variadic(parameter):
+                continue
+            for position, other in enumerate(levels):
+                if position != index and name in other and not _variadic(other[name]):
+                    return (
+                        f"its callable's parameter `{name}` is taken by a wrapper and by "
+                        "the function it wraps, which can then run with a value no policy "
+                        "judged; drop the name from the wrapper, or pass it on by name"
+                    )
     return None
+
+
+def _variadic(parameter: Any) -> bool:
+    return parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the kernel's walk that the installed kernel does not
+    have. ``recusal`` 0.14.0, the oldest this package allows, has no walk, and 0.15.0 has
+    neither ``HiddenWrapper`` nor ``DispatchedAtCallTime``. Nothing raises this class, so a
+    handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.0).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A bound argument is taken by a wrapper under another name than the parameter with a
+#: default it would fill on the function the wrapper names (the same kernels).
+_BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
+
+
+def _kernel_refusal(func: Any, fields: Any = None) -> Optional[str]:
+    """Why the kernel's walk refuses ``func``, or None.
+
+    Beside a kernel later than 0.15.0 the kernel's walk is asked for everything it finds
+    that the walk above does not: the two refusals named below, a bound argument a wrapper
+    takes under another name (``BoundArgumentKept``), a ``functools.lru_cache`` wrapper
+    that names one function and calls another, what the ``__call__`` of a class-based
+    decorator holds, and the ``__wrapped__`` a ``functools.partial`` carries, whose levels
+    are held to the schema ``fields`` like this package's own. Any other failure of that
+    walk still changes nothing here. What follows was written for the first two.
+
+    The walk above is this package's own, and it follows ``__wrapped__`` alone: it finds
+    neither a decorator that holds a second ``functools.wraps`` wrapper of the same
+    function with a parameter of its own (the policy judges one value, the function runs
+    with its default), nor a single-dispatch function with an implementation registered
+    beside its base one (which runs with defaults no policy saw). A kernel later than
+    0.15.0 finds both (``recusal.invocation.HiddenWrapper``, ``DispatchedAtCallTime``),
+    so it is asked, for those two refusals only: anything else its walk does, a failure
+    included, changes nothing here, where this package's own walk has decided. Beside an
+    older kernel nothing is asked and neither shape is found. The text of a
+    ``HiddenWrapper`` names a parameter and never a value."""
+    walk = getattr(_invocation, "reached_parameters", None)
+    if walk is None or _HiddenWrapper is _NotInThisKernel:
+        return None
+    try:
+        levels = walk(func)
+    except _BoundArgumentKept as refused:
+        return f"its callable cannot be read: {refused}"
+    except _UnreadCache as refused:
+        return f"a cache on its callable cannot be read: {refused}"
+    except _HiddenWrapper as refused:
+        return (
+            "a decorator on its callable holds a second wrapper of it (in its closure or "
+            f"on the decorator object), which is not reached through `__wrapped__`: {refused}; "
+            "call the decorated function from a plain function and give the tool that"
+        )
+    except _DispatchedAtCallTime:
+        return (
+            "its callable is a single-dispatch function (`functools.singledispatch` or "
+            "`singledispatchmethod`) with an implementation registered beside its base one "
+            "or in its place, so the implementation that runs is chosen at call time; call "
+            "it from a plain function and give the tool that"
+        )
+    except Exception:  # noqa: BLE001, this package's own walk has read the callable
+        return None
+    return _undeclared(levels, fields) if fields is not None else None
 
 
 def _prepared(

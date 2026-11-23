@@ -34,9 +34,9 @@ How to check this page:
 
 ## The kernel: `recusal`
 
-**Where it stands.** `recusal` 0.15.0 is released (tag `v0.15.0`, 2026-11-21). Two more
-changes are in review in [#299](https://github.com/philpaz/recusal/pull/299). They are
-not merged and not released.
+**Where it stands.** `recusal` 0.15.0 is released (tag `v0.15.0`, 2026-11-21). The
+changes after it are in review in [#299](https://github.com/philpaz/recusal/pull/299),
+on the commits named below. They are not merged and not released.
 
 The part of the kernel under review is `recusal.invocation`
 ([source](../recusal/invocation.py)), which adapters use to read the parameters of a
@@ -61,20 +61,77 @@ decorated tool. `recusal-crewai` still carries its own copy.
   implementation chosen by the type of an argument, and the walk read only the base one.
   The change refuses both (`HiddenWrapper`, `DispatchedAtCallTime`), reads nothing it
   cannot read with certainty, and lists what it does not find. The commit message says
-  four reviews shaped it.
+  four reviews shaped it. The review after those four held it on two items: importing
+  `recusal.invocation` raised in a few environments where 0.15.0 imports (a replaced
+  `functools.partial`, a `sys.modules["functools"]` that is not a module, an audit hook
+  that raises on `__code__`), and the code that counts receivers was not pinned by
+  tests. Both are fixed in commit `f6162a3`, the change rebuilt on main: nothing is
+  prepared at import, and the checks are settled once at the first walk.
+- **`functools.partialmethod`** (commit `4650c71`). Round twelve of
+  `recusal-pydantic-ai` found that the walk read one level for a `partialmethod` over a
+  callable object and nothing under the object. Closed in the kernel, so that every
+  adapter that uses the walk gets it, and in `recusal-crewai`'s own walk. The adapters
+  report the kernel's named refusals as what they are.
+- **A wrapper held in a module global** (commit `a4aaf5d`). A wrapper that calls a
+  second wrapper, or a single-dispatch function, of the same function by its global
+  name is refused like one that holds it in a closure. The `partialmethod` refusal got
+  a public name (`PartialMethodSignature`), and `unsupported_signature` gives it before
+  any other reason.
+- **Kernel review round six** (commit `c40ee87`). No category 1. Four shapes the walk
+  read wrongly, each accepted by 0.15.0 too: a `__wrapped__` carried by a
+  `functools.partial` was not followed; `functools.wraps` over `functools.lru_cache`
+  over a wrapper was read as the function the cache was named for; the `__call__` of a
+  class-based decorator written inside the decorator was not read for what it holds;
+  and a method that delegates to a free function under `functools.wraps` of it was read
+  as handing its object on. All four are closed. One regression of the change itself
+  was found and fixed: the `partialmethod` check asked `functools.partialmethod` about
+  every callable, so a process with another object under that name refused every tool.
+  Five sentences of the changelog and the docstrings were corrected. After it, a cache
+  that was named again is read as the wrapper it calls, which is picked out of what the
+  cache refers to by its place, in place of refusing every such cache (a caching
+  decorator written as `functools.wraps(f)` over `functools.lru_cache` over a
+  forwarding wrapper was refused though nothing unjudged ran); a cache whose function
+  cannot be told has a refusal of its own (`UnreadCache`); and what a cache calls is
+  told once per cache (commit `e9b3dcb`).
+- **Kernel review round seven** (commit `e9b3dcb`). No category 1; round six's four
+  confirmed closed, and nothing 0.15.0 refused accepted in about 3.2 million generated
+  shapes. Two category 2. The fourth shape of round six came back when the free
+  function wore one decorator that only passes its arguments on (a forwarding wrapper,
+  a class-based decorator, a caching decorator): the method was accepted, and the free
+  function ran its first parameter at a default no signature showed. And over a method,
+  a cache named again that calls something other than a plain function (a
+  `functools.partial`, a callable object, a second cache) was still read by its name.
+  Four regressions of the change itself: `import gc` at the top of the module raised
+  where a process had None under that name in `sys.modules`; an audit hook that stopped
+  the listing of a cache with a `BaseException` stopped every tool with a cache; another
+  function of `gc` under `get_referents` refused every cache; and on Python 3.9 to 3.11
+  `list(d.items())` could raise out of the walk when a collection it set off changed
+  the dictionary. Also: 41 clean shapes refused with a reason that did not help (a
+  callable object that defines `__get__`), four surviving mutants, eight sentences that
+  were untrue or incomplete, and a walk that cost 1.3 milliseconds for five stacked
+  decorators in a module of 5,000 globals.
 
 **Open items.**
 
-- The review after those four held #299 on two items. Importing `recusal.invocation`
-  raised in a few environments where 0.15.0 imports: a replaced `functools.partial`, a
-  `sys.modules["functools"]` that is not a module, and an audit hook that raises on
-  `__code__`. And the newest code, which counts receivers, is not pinned by tests. A fix
-  for both is being written and is not committed.
-- Round twelve of `recusal-pydantic-ai` found that the walk does not read under
-  `functools.partialmethod` over a callable object. See that package's open items. The
-  decision whether the fix goes in the kernel is open.
-- The changelog entry in #299 lists what the walk does not find by design, under "Not
+- After round seven, a change is written and not committed. The name a bound argument
+  was taken under goes with it through every layer that only passes arguments on, so
+  the delegating method is refused under any number of them. A method over a cache
+  named again is read as what the cache calls. The two imports 0.15.0 did not make are
+  guarded and never made at a walk; a listing a hook stops, whatever it raises but an
+  interrupt from the keyboard, and a replaced `gc.get_referents` leave the cache read
+  by its name; a listing a collection interrupts is made again. What is kept between
+  walks is a plain `dict` by `id()` beside a weak reference, in place of a
+  `weakref.WeakKeyDictionary`. The module globals a wrapper names are looked up by
+  name, with the names kept for each code object. The `ValueError` for a callable
+  object that defines `__get__` says the cause and what to do. Each surviving mutant is
+  pinned by a test, and the sentences are corrected.
+- A wrapper that takes the object of a method under the same name as the first
+  parameter of the function it wraps, and does not hand it on, is read as handing it
+  on: the two cannot be told apart from signatures. Stated in the changelog; not fixed.
+- The changelog entries in #299 list what the walk does not find by design, under "Not
   found, by design". Those are stated limits, not fixed.
+- Not reviewed: stacks three decorators deep, async and generator wrappers, and the
+  `methodtools` shapes.
 
 **Where you can help.**
 
@@ -128,7 +185,10 @@ before the fifth are in one commit. All are in the changelog entry for 0.2.1.
 - The package still carries its own copy of the walk (`_reached_parameters` in
   [`_gate.py`](../adapters/crewai/src/recusal_crewai/_gate.py)). The changelog entry for
   0.15.0 says it moves to the kernel's walk in its next release. That release is not
-  made.
+  made. Since commit `4650c71` the gate also asks a kernel later than 0.15.0 for what
+  that copy does not find; beside 0.15.0 or older, the four shapes of kernel review
+  round six, a decorator that holds a second wrapper and a single-dispatch function are
+  not found, and the package page says so.
 - An MCP tool with an `enum` parameter is refused on every call, because CrewAI builds
   the parameter as a `Literal`. The README says so.
 
@@ -293,6 +353,8 @@ not, and the package page states the first two.
   can judge one value while the tool runs another, and a default can run unjudged. Over
   a plain function the same `partialmethod` is read correctly. The gap is in the
   kernel's walk (`own_parameters`, `_next_callables`) and in the adapter's `_steps`.
+  Fixed in the kernel's walk in commit `4650c71`, which is not released; the released
+  kernel, 0.15.0, has the gap.
 - **Wrong advice, fixed in 0.2.0.** The README and two refusal reasons said to set
   `__name__` and `__doc__` on a partial. Pydantic AI needs `__name__` and
   `__qualname__`, which they now say.
