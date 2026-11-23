@@ -6,6 +6,838 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The review tooling for `recusal-openai` is in the repository, and its README says
+  what was tested.** `tools/review/openai/` holds the three scripts the numbers come
+  from: `corpus.py` runs a generated corpus of model output through the plain and the
+  audited loop and compares them, `keyword_matrix.py` calls the three entry points
+  with every combination of the recording keywords, and `mutate.py` switches one
+  check off at a time in a temporary copy of the checkout and runs the package's
+  tests against it. Each prints one line of counts and exits with status 1 on any
+  finding. `docs/REVIEW.md` says what a review round is, the threat model, each
+  method, how to reproduce each number and what none of it shows, and the package's
+  README has a "How it was tested" section. `tests/test_review_tooling_openai.py`
+  holds every number on both pages to what the scripts compute, and both OpenAI lanes
+  run it. No change to the gate, and no release.
+- **A review log, package by package.** `docs/REVIEW-LOG.md` records each review round of
+  the kernel and the eight adapters: what it found, what changed, what is still open, and
+  where help is welcome, each statement with the commit, test or changelog entry that
+  backs it. The commits of the rounds of branches merged as one commit are kept on the
+  `review-history/*` branches.
+
+### Changed
+
+- **Every page says what Recusal does not enforce.** Recusal judges the tool calls that
+  reach a gate; it does not stop an agent that can reach a resource another way. The
+  kernel README says so under its status line, and each adapter page, which is its PyPI
+  page, says so just before its Status, with the layers to put around it and a link to
+  the limits in full in SECURITY.md. A test keeps the paragraph on all nine pages. The
+  adapter pages reach PyPI with each package's next release.
+
+- **`recusal-crewai` 0.2.2: it requires a CrewAI that does not install `chromadb`, and
+  every function is annotated.** No change to the gate: it is the one 0.2.1 shipped,
+  and its tests pass unchanged on `crewai` 1.15.44. The floor rises to
+  `crewai>=1.15.42` (see Security below). The functions that had no annotations have
+  them, and CI checks the installed wheel with `--disallow-untyped-defs
+  --disallow-incomplete-defs`, so the package's inline types are complete. Thanks to
+  @hananbahi527 for the work (#303). The README, which is the PyPI page, carries the
+  website and OpenSSF Scorecard badges and a Status section that says what review the
+  adapter has had.
+
+- **`recusal-google-adk` 0.2.1: every function is annotated, and its page shows where the
+  project stands.** No change to the gate: it is the one 0.2.0 shipped. The three
+  functions that had no annotations have them (the `Finding` contract, the callback's
+  return type and the SDK's own `BeforeToolCallback`), and CI now checks the installed
+  wheel with `--disallow-untyped-defs --disallow-incomplete-defs`, so the package's
+  inline types are complete. Thanks to @hananbahi527 for the work (#301). The README,
+  which is the PyPI page, carries the website and OpenSSF Scorecard badges and a Status
+  section that says what review the adapter has had.
+
+### Security
+
+- **`recusal-openai-agents` 0.2.1: every `functools.singledispatch` function is refused
+  as a tool, registered or not, and so are a `functools.partialmethod` and a
+  `weakref.proxy`.** Found by review rounds five and six; round five's items were stated
+  as open on the 0.2.0 package page. Reproduced on `openai-agents` 0.24.0.
+  - A single-dispatch tool with nothing registered was accepted, and the guardrail
+    looked at its registry again on every call. The SDK checks every call of a model
+    turn before any tool body runs, so an implementation registered during a turn, by
+    another tool call of it or by the tool's own first use, ran for a later call of that
+    turn with a parameter no policy saw (judged `{target, overwrite}`, ran with
+    `recursive=True`). A `functools.singledispatch` function and a
+    `singledispatchmethod` are now refused when the agent is built, whether or not
+    anything is registered, with a `TypeError` that names the cause and what to do:
+    register one plain function as the tool and branch on the type inside its body (a
+    single-dispatch function called from that body is not read). **This refuses tools
+    0.2.0 accepted**: a single-dispatch function with nothing registered.
+  - A dispatcher that is a callable object's `__call__` was not found under a
+    `functools.wraps` wrapper, and its registered implementation ran with its own
+    default. The question is now asked of every callable the gate's walk reaches (the
+    function, a `functools.partial`'s function, a bound method's function, the function
+    under a `staticmethod` or a `classmethod`, what `__wrapped__` names, a callable
+    object's `__call__` and the callable a `functools.partialmethod` holds). A test
+    holds that every step the 0.15.0 kernel's walk takes from one callable to the next
+    (`recusal.invocation._next_callables`) is among them; the gate's walk also steps
+    into a partialmethod and into the `__wrapped__` a `functools.partial` carries,
+    which that kernel's walk does not, so a parameter of a wrapper under such a
+    partial is still not held to the tool's schema (open, stated on the page). A walk
+    that does not finish,
+    and a callable the question cannot be asked of, are refused.
+  - A `functools.partialmethod` hid the callable it holds (round six, and in 0.2.0).
+    Read from a class, or from an object when the callable it holds has no `__get__` (a
+    class-based decorator's instance; a `functools.partial` up to Python 3.13), a
+    partialmethod is a function of `functools`' own, and `inspect` reads the held
+    callable's parameters as that function's. Neither the gate nor the kernel's walk
+    read what is under the held callable: a single-dispatch function there ran its
+    registered implementation, and a wrapper there ran its own parameter, with a value
+    no policy saw (judged `{sql, force}`, ran with `dry_run` at its default). A callable
+    the call reaches that is or carries a partialmethod is now refused when the agent
+    is built, whatever the partialmethod holds, and a single-dispatch function under it
+    is named as that. **This refuses tools 0.2.0 accepted**: a partialmethod over a
+    plain function read from its class, and one over a class-based decorator. A
+    partialmethod over a plain method read from an object is a `functools.partial`,
+    which the SDK refuses itself. Register a plain function that calls it.
+  - A `weakref.proxy` of a single-dispatch function was accepted (round six): the walk
+    read `__wrapped__` through the proxy and stepped past the dispatcher. A weak proxy
+    anywhere among the callables the call reaches is now refused. **This refuses tools
+    0.2.0 accepted**: a weak proxy of a plain function.
+  - A dispatcher was recognised by one code object read when the package was imported.
+    After `importlib.reload(functools)` a new dispatcher was not recognised; with
+    `functools.singledispatch` replaced before the import, an earlier dispatcher could
+    pass, and a replacement with no `__code__` made the import raise. A dispatcher is
+    now recognised in three ways, any one of which is enough: by that code object, as
+    read at import and as `functools` stands at the check; by how `functools` builds
+    the function (its closure holds a `dispatch` function whose closure holds a
+    `registry` dict beside a `dispatch_cache` and a `cache_token`, which every
+    dispatcher has on Python 3.10 to 3.15); and by a `registry` that is exactly a
+    `types.MappingProxyType` beside a callable `dispatch` and a callable `register`.
+    These tests read the object's type, its closure cells and, with
+    `inspect.getattr_static`, its attributes, so they run no property and no
+    `__getattr__` of the object (an `isinstance` test among them reads `__class__`). The
+    walk that finds the callables is another matter: it reads `__wrapped__` the ordinary
+    way, as the kernel's walk and `inspect.signature` do, so a `__wrapped__` property or
+    a `__getattr__` of a callable object does run when a tool is checked. The import
+    reads the code object without raising, whatever stands at
+    `functools.singledispatch`. A `functools.wraps` wrapper over a dispatcher carries a
+    copy of its attributes and is refused with it; a service object with a `dispatch`
+    method and a `registry` that is not a mapping proxy is still gated, and so is an
+    event bus whose function closes over a `dispatch` function and a `registry` dict
+    (round six: the closure test without the two other names refused it as a
+    single-dispatch function).
+  - Should the kernel's walk itself refuse a dispatcher (`DispatchedAtCallTime`, in a
+    kernel later than 0.15.0), the tool is refused with the same reason, not as
+    "cannot be inspected". The same holds for a wrapper that holds a second wrapper
+    (`HiddenWrapper`) and for a callable read through a partialmethod
+    (`PartialMethodSignature`): each is known by its name and gets a reason that says
+    the cause and what to do.
+  - The README said a change to a tool's function after it was gated is refused on
+    every call. The guardrail does ask again on every call, but the SDK runs every
+    guardrail of a model turn before any tool body of that turn, so a change a tool
+    body makes is seen from the next model turn. The README now says so, and lists the
+    same-turn case under what the gate does not see.
+  - The refusal of an agent tool's `parameters` type named a type the data-only set
+    admits: a field with a pattern was reported as "pydantic core type `str`" and a
+    list of nested models as "`list`", and a model with a `model_validator` as a type
+    that "is not a Pydantic model". The refusal now names what puts the field outside:
+    a string pattern, what a list, a mapping or a union holds, a `Literal` of other
+    values, a validator, or the pydantic core type; a validator on the type as a whole
+    is named as that.
+  - Not changed, and listed in the README under what the gate does not see: a
+    dispatcher that a wrapper calls from a closure, a global or an attribute, and not
+    through `__wrapped__`, is not found.
+
+- **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
+  CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has
+  four published advisories (GHSA-36p7-vc44-83pf and GHSA-f4j7-r4q5-qw2c, critical;
+  GHSA-2wm9-hf6c-p5cr and GHSA-xph7-9rjv-w5fr, high) and no fixed release. `crewai`
+  1.15.42 made `chromadb` an optional extra. The pull request lanes now test against
+  exactly `crewai==1.15.44`, and `requirements/adapter-crewai.txt` holds no `chromadb`
+  and none of the twenty packages only it needed; every one of its pins was checked
+  against the OSV database, with no advisory found. `crewai`, `crewai-cli` and
+  `crewai-core` 1.15.44 were published on 2026-11-19, less than the seven days a lock
+  waits, so `tools/lock.py` takes those three early under `COOLING_OFF_EXCEPTIONS`,
+  which names the advisories they close; the lock states it in its header, every other
+  package keeps the seven days, and a test asks for the exception to be removed once the
+  lock's own cutoff reaches it. The floor of `recusal-crewai` rises from
+  `crewai>=1.15.40` to `crewai>=1.15.42`, so an install can no longer resolve to a
+  CrewAI that installs `chromadb`; it reaches users in `recusal-crewai` 0.2.2.
+  The adapter's own tests pass unchanged on 1.15.44, its compatibility probes included.
+
+- **`recusal-openai` 0.2.2: the gate refuses what it cannot tie to what
+  would run, tells the model the truth about what ran, and both loops decide the same
+  way.** Found by the adapter review of 2026-11-21 and reproduced on `openai` 3.49.0.
+  - Arguments were parsed with Python's JSON defaults, which read `NaN`, `Infinity` and
+    `-Infinity` and turn `1e999` into infinity. A policy written as `if amount > 100:
+    refuse` let `{"amount": NaN}` and `{"amount": -Infinity}` run in the plain loop,
+    while the audited loop refused them. Both loops now refuse these before the policy
+    runs: the three tokens as arguments that are not valid JSON, and a number that is
+    not finite by that name. The copy the policy judges is now made by the kernel's
+    `recusal.invocation.detached`.
+  - In the audited loop, a call to a known tool with arguments nested about 600 deep was
+    refused without an audit entry, with a reason that said "policy error" although the
+    policy never ran. At about 5000 levels the parser raised out of the whole turn after
+    an earlier call in it had run, so that call's answer was lost. Arguments nested more
+    than 64 levels below the arguments object (the line the kernel draws for JSON data), or
+    too deeply to parse, are now refused as that one call, with a reason that says so, and
+    are one audit entry. Arguments nested between 65 and a few hundred levels ran
+    before and are refused now.
+  - A Responses function call can carry a `namespace`. The gate read only the bare name,
+    so a call to `delete` in namespace `prod_db` ran the application's `delete` and the
+    policy saw `delete`. A function call that carries a namespace is now refused before
+    the policy runs: namespaced calls are not supported.
+  - The refusal for arguments that do not bind quoted Python's own message, which quotes
+    an unexpected argument's key. That key is the model's text, and it was written into
+    the audit log's reasons. The refusal now names only parameters the tool declares and
+    counts the arguments it does not take.
+  - A call that was not finished ran: a `function_call` item whose `status` was
+    `in_progress` or `incomplete`, a call in a response whose `status` was `incomplete`,
+    and a tool call in a Chat Completions choice whose `finish_reason` was `length`.
+    Empty arguments are a call with no arguments, so a call cut off before its arguments
+    ran on the tool's defaults. A `function_call` item or a response whose `status` is
+    anything but `completed` (no status passes), and a choice whose `finish_reason` is
+    anything but `stop`, `tool_calls` or `function_call`, now refuse their calls before
+    the policy runs.
+  - Arguments that are not a string (`None`, `0`, `False`, a list, a dict, bytes) on an
+    item the SDK did not validate were read as no arguments, or as JSON. Only a string
+    is parsed now; an empty string is still a call with no arguments.
+  - A generator function used as a tool was answered with the generator's `repr`, its
+    body never ran, and the log said allowed. It is now refused before the policy runs,
+    as an `async def` tool is. Both are read through a `functools.partial`, a
+    `staticmethod`, a bound method and `functools.lru_cache`; a wrapper the application
+    wrote (`functools.wraps` included) is not looked through, because it may await or
+    consume what it wraps. An ordinary function that returned a generator or any other
+    iterator (an async generator, `iter(...)`, `map(...)`) was answered with the
+    object's `repr` too. Its own body has run by then, so it is now answered as having
+    run, with its result not available because the gate does not consume it, and never
+    as not run.
+  - A Chat Completions message carrying only the legacy `function_call` field was
+    skipped without a word. It now raises `TypeError` before anything runs, alone or
+    beside `tool_calls`, as every other shape the gate does not handle does.
+  - A mistyped keyword such as `allow_hosted_record=True` was reported as a policy error
+    on every call and accepted silently when the turn had no calls. A keyword the gate
+    does not take now raises `TypeError` naming it, before anything is judged.
+  - With `audit=` and `fail_closed=False`, a policy that raised let the tool run. The
+    loops and `judge_and_run` no longer take `fail_closed`: the gate always fails closed.
+  - A model-chosen tool name was written raw between the backticks of a refusal and onto
+    the audit entry, with no bound: a name could close the backticks and add text that
+    read as a verdict, and a 1 MB name gave a 1 MB answer and a 2 MB entry. A refusal now
+    names a tool the application has by its name. Any other name is used as sent only if
+    it is 1 to 64 printable characters with no backtick, and is otherwise described by
+    its length (`<a tool name of 1000000 characters, not shown>`), in the answer and on
+    the entry.
+  - A tool name that is a list or a dict, on an item the SDK did not validate, raised
+    `TypeError` out of the turn after earlier calls in it had run. A name that is not a
+    string is now an unknown tool: one refusal under the call's own id, and one audit
+    entry.
+  - A `functools.lru_cache` tool handed a list or an object, which the cache cannot
+    hash, raised `TypeError` out of the turn. That call is now refused with a reason
+    before the policy runs, also when the cached function is in the tool table as a
+    `staticmethod` object.
+  - The package allowed `recusal>=0.14.0`. The check of a decorated tool's wrappers is
+    the kernel's and is new in 0.15.0: with a 0.14 kernel a `functools.wraps` wrapper's
+    own parameter ran with a value no policy judged (26 such calls in the review's
+    probe). The package now requires `recusal>=0.15.0`, and raises `ImportError` if it
+    is imported beside an older kernel. Whatever the kernel's signature check says, a
+    reason or an error, refuses the one call before the policy runs and is one audit
+    entry.
+  - With an audit log, a `surface=` or `control=` that `recusal.decide` does not record
+    (an empty surface, one with a leading space, the reserved `claude_code.pretooluse`,
+    a value that is not a string; a control that is not a dict) refused every call as
+    a "policy error" and wrote no entry. Each now raises `ValueError` naming the
+    keyword before any tool call is looked at, as does an empty `tool_use_id=` given to
+    `judge_and_run`. The rule is `decide`'s own: the gate asks it and restates nothing.
+  - A model-chosen call id had no bound: a 1,000,000 character id was written to the
+    audit entry and listed in the message of a duplicate-id refusal. The id goes back
+    in the answer and onto the entry exactly as sent, so it cannot be shortened there;
+    the gate now takes a call id of at most 256 characters, and a longer one raises
+    `ValueError` before anything in the turn runs. A message the gate raises quotes an
+    id only if it is printable with no backtick, names at most four, and otherwise
+    describes each by its length.
+  - In the audited loop, a call refused before decoding whose arguments, on an item
+    the SDK did not validate, were not JSON data (bytes, a number that is not finite,
+    an object with a key that is not a string) was answered "tool_input cannot be
+    fingerprinted" where the plain loop said what was refused. Both loops now give
+    the same reason, and the one deny entry is bound to a fixed stand-in.
+
+  One change accepts what was refused:
+  - Any recording keyword without a log (`audit=None`, `actor=`, `surface=`, `control=`,
+    `allow_on_pass=`) refused every call as a "policy error" although no policy had run,
+    so a loop with an optional log (`audit=maybe_log`) ran nothing. `audit=None`, passed
+    explicitly, is now the plain gate, and `surface=`, `actor=` and `control=` beside it
+    are accepted and not used, so such a loop is one call (`audit=maybe_log,
+    surface=...`). When `audit=` is not passed at all, `surface=`, `actor=` or
+    `control=` with a value raises `TypeError` before anything is judged, whether or
+    not the turn has calls, as do `audit=` with a log and no `surface=` and a caller's
+    own `tool_use_id=` (each call is recorded under its own id). The two audited
+    functions need a log and raise `TypeError` for `None`.
+
+  The README now also says which tools and annotations the gate can judge and what to
+  write instead, that the gate keeps no state between turns, that it has no helper
+  for streaming, and that a function call marked `async` or made by a program is judged
+  and run like any other. It names two shapes the gate does not see: a
+  `functools.wraps` wrapper that restates the function's parameters and does not pass
+  one on in its body, which no check of a signature can read, and, with a kernel that
+  does not detect it, a decorator applied inside another decorator's closure.
+- **`recusal-langgraph` 0.3.0: the policy is shown the call id and the
+  defaults that run, and the gate refuses a function it cannot read to the end and an
+  answer it cannot tie to what it judged.** Found by the two adapter reviews of
+  2026-11-21 and reproduced on `langgraph` 1.2.20 with `langchain-core` 1.7.7. No bypass
+  by the model against an ordinary setup was found; these are values the function ran
+  with that the policy never saw, tools that were always refused, and refusals that did
+  not say why. This is why the release is 0.3.0: calls that ran are now refused, and a
+  policy can be shown an argument it was not shown before. What the gate still does not
+  read is listed in the README under what it does not see: with a kernel that does not
+  detect it, a decorator that applies another decorator inside itself; a function that
+  names its parameters and then calls another function, whose defaults run unseen; a
+  default an MCP server applies to an argument the model left out; a tool that a hook
+  between the gate and the tool ran besides the judged call, when the answer still fits;
+  `runtime.tool_call_id`; and a `run_manager` or `callbacks` parameter LangChain leaves
+  out of the schema and does not fill.
+  - The tool call id is written by the model, and a parameter annotated
+    `InjectedToolCallId` receives it. It counted as the host's and was left out of
+    judgment (judged `{'title': 'x'}`, ran with the id `DELETE-ALL'; --`). The policy is
+    now shown it under the parameter's own name. `runtime.tool_call_id` cannot be shown
+    that way; the README says not to use it as data.
+  - A `functools.wraps` decorator between the tool and its function was read as the
+    function it wraps. Its own keyword default ran unseen (`force=True`), and a parameter
+    it named that the function also names was kept by the decorator while the function ran
+    its own default (judged `timeout=5`, ran `timeout=999999`, and the audit entry bound
+    the judged value). A function with a declared `__signature__` hid a parameter the same
+    way. The gate now walks every callable the call reaches with the kernel's
+    `recusal.invocation.reached_parameters` and refuses all three, naming the parameter and
+    never its default. It therefore requires `recusal>=0.15.0`, and a test pins the floor.
+    Whatever that walk raises is a refusal before the policy runs.
+  - A decorator built without `functools.wraps`, on a tool with an explicit
+    `args_schema`, was read as the whole tool: the gate judged `timeout=5`, the decorator
+    kept it, and the function ran `timeout=999999`; and a default the schema omits ran
+    unseen behind `def wrapper(*args, **kwargs)`. The innermost function the gate reaches
+    must now account for the schema: if it takes `*args` or `**kwargs`, every schema
+    field must be one of its parameters, or the call is refused before the policy runs.
+    This also refuses a function that takes only `**kwargs` under a schema, which the
+    gate cannot tell from a forwarding decorator: `RunnableLambda(...).as_tool(args_schema=...)`
+    and a `BaseTool` with an `args_schema` whose `_run` is `(**kwargs)`. These ran judged
+    before. The README says what to give the node instead. A function that takes
+    `**kwargs` and names every schema field still runs. A function that takes nothing but
+    `*args` and `**kwargs` is refused: under the schema
+    `@tool` infers from `def wrapper(*args, **kwargs)`, whose fields are `args` and
+    `kwargs`, the policy judged `{}` and the function behind the wrapper ran
+    `limit=1000000`. For this rule a parameter never counts as the function's own when
+    LangChain or ToolNode fills it for the tool, when the tool marks it injected, when
+    it is named `run_manager`, `callbacks`, `config` or `runtime` (whatever its
+    annotation or default), or when its annotation is, or is built from,
+    `RunnableConfig`, `ToolRuntime`, an injected-argument marker or a callback manager
+    or run manager type. The annotation is resolved with `typing.get_type_hints`, as the
+    frameworks resolve it, and then opened through the forms the README lists (a class
+    and its bases, `Optional` and other generics, `Annotated`, a `TypeVar`, a `NewType`,
+    a `type` alias, a forward reference); a name that cannot be resolved is matched by
+    its text, and the refusal says so:
+    `def wrapper(*args, config: RunnableConfig, **kwargs)`, a `BaseTool` with no
+    `args_schema` whose `_run` is `(*args, run_manager=None, **kwargs)`, and one whose
+    `_run` is `(*args, config: Optional[RunnableConfig] = None, **kwargs)` ran the same
+    unseen default, and are refused. Such a forwarder runs only under an explicit
+    Pydantic schema that declares no field and does not allow extras: the model can send
+    nothing through it, and the call is judged as `{}`. A forwarder that names a
+    parameter of its own is not told from an ordinary function, and the README lists it
+    under what the gate does not see.
+  - The tools `langchain-mcp-adapters` builds are the one exception to that rule, and
+    still run judged on the async routes: their function hands the judged arguments to
+    the MCP server as they stand. It is recognised by the code object the library holds,
+    so a function of the same shape, or a forwarder in front of it, is not excepted.
+    A tool built with `tool_interceptors=` is now refused: an interceptor can replace
+    the arguments after the policy judged them (judged `depth=3`, the server received
+    `depth=99`). A default the server applies to an argument the model left out is not
+    seen, and the README says so.
+  - A `BaseTool` subclass with no `args_schema` whose `_arun(*args, **kwargs)` hands the
+    call to `_run` ran `_run`'s default unseen on `ainvoke` (judged `{'table': 'users'}`,
+    ran `limit=1000000`, while `invoke` judged the limit and refused). It is refused on
+    the async routes by the rule above.
+  - An injected argument that nothing filled ran the function's default unseen: the
+    default behind `InjectedState("role")` when the state has no `role`, and the default of
+    an `InjectedToolArg` no host supplies. An argument now counts as the host's only when
+    ToolNode put it in the tool's input; the default that runs is judged. ToolNode fills
+    state, store and runtime and nothing else, so a value under any other injected name
+    is judged: a hook after the gate that rewrote such a value had it read as the host's
+    (judged `{'x': 1}`, ran `secret='evil'`).
+  - A call whose name is not the name of the tool that would run is refused before the
+    policy runs, under the tool's own registered name. An earlier hook can attach a tool
+    to a call ToolNode could not resolve (`request.override(tool=...)`); the policy then
+    judged, and the record named, the model's string (`Run_SQL` judged and passed,
+    `run_sql` ran a `DELETE`).
+  - When execution answers without the judging copy's parse step having run, the gate no
+    longer passes the answer on: it returns a refusal saying the call was never judged and
+    that the tool may have run, and an audited gate records it. A ToolNode that ran the
+    registered tool instead of the copy returned the tool's result as a success with the
+    policy never asked. The same holds when that step refused the call and the answer is
+    not that refusal, and when it allowed the call and the answer is a `ToolMessage`
+    under another tool's name: a hook between the gate and the tool that answered a
+    refused `DELETE` by running it on another tool had its success passed on. An audited
+    gate writes one more entry for the withheld answer. An answer under the judged tool's
+    name after an allowed call is passed on; the README says so. A tool that returns its
+    own `ToolMessage` under a `name` other than the tool's now has that answer withheld,
+    after it ran; the README says to leave the name out or use the tool's.
+  - An audited gate given a call with an empty id answered "policy error", never called
+    the policy and wrote nothing, while the plain gate ran the same call. Both now refuse a
+    call whose id is empty or not a string, before the policy, and the audited form writes
+    one entry for it, without a call id.
+  - A private framework name that cannot be read refuses the call. A tool without
+    `_injected_args_keys` was silently treated as having no host arguments.
+  - Tools that were always refused now run judged: a `BaseTool` subclass with no
+    `args_schema` (held to the schema LangChain infers from `_run`, and completed from
+    the defaults of the method the route runs, `_run` or the class's own `_arun`, since
+    LangChain validates nothing for it), and a single-input `Tool(name, func,
+    description)` or `@tool(infer_schema=False)` whose function takes exactly one named
+    parameter (judged under that parameter's name, `config` included: the build-time
+    check for a parameter named `config` leaves the first parameter of a single-input
+    `Tool` alone, since it receives the tool's one value by position).
+  - A Pydantic v1 `args_schema` refuses the call with that reason; its parameters were
+    refused one by one as absent from the schema, and a function taking only `**kwargs`
+    under it was not refused at all. A callable Python cannot inspect is refused with
+    what to do about it: `@tool` over `cachetools.cached` is one, new in this release.
+    The README names the decorators and tool builders it refuses (LangSmith's
+    `@traceable`, `decorator.decorator`, `cachetools.cached`,
+    `RunnableLambda(...).as_tool()`, `Tool(func=str.upper)`) and what to use instead.
+  - A function parameter named `config` on a `@tool` or `StructuredTool` function never
+    receives the model's value, because LangChain writes the run configuration there. It
+    was refused after the policy had run, as "arguments other than the ones the gate
+    judged". It is now refused before the policy with that reason, and `gated_tool_node`
+    and `audited_tool_node` raise `TypeError` for such a tool when the node is built. A
+    call that sets a name the function would not receive the value under is refused
+    the same way, and only such a call: `config` or `run_manager` on a `@tool` or
+    `StructuredTool`, `callbacks` on a function that names it, `run_manager` on a
+    `BaseTool` whose `_run` names it. A `callbacks` the function does receive (through
+    `**kwargs`, or on a `BaseTool` subclass's `_run`) is judged; it was refused with a
+    reason that was not true of it. For a tool `langchain-mcp-adapters` built, the
+    refusal says the MCP server would not receive the argument. A call that sets `self`
+    is refused before the policy where the schema lets the key through; it raised
+    `TypeError` after the policy had allowed it. So is one that sets `func` or
+    `executor_or_config` (or whose own `_run` parameter has one of those names) on the
+    async route of a `BaseTool` subclass with no `_arun` of
+    its own, which raised the same way. Anything else that fails while the invocation
+    is prepared for judgment is a refusal too, not an exception out of the gate.
+    A function under more than 31 decorators is refused with that reason.
+  - The package declares `langgraph-prebuilt` and `pydantic`, which it imports, each with
+    an upper bound. The README lists the argument types the gate can judge and the ones it
+    refuses, every refusal with what to do instead, what the gate does not see, and the
+    ten private LangChain and LangGraph names it depends on (it said two).
+- **`recusal-langchain` 0.2.0: one middleware for both routes, the name the
+  policy judges is the tool that runs, and a provider-run tool refuses the model call.**
+  Found by the adapter review of 2026-11-21 and reproduced on `langchain` 1.4.10. It
+  requires `recusal-langgraph>=0.3.0` and takes every change listed above; a test pins the
+  floor.
+  - `gate_middleware(policy)` and `audited_gate_middleware(policy, log)` each return one
+    middleware object that implements the sync and the async tool-call hook, so one agent
+    is gated under `invoke` and under `ainvoke`. The four middleware shared one name, so
+    an agent could not list a sync and an async one, and each raised on the other route.
+    `agate_middleware` and `audited_agate_middleware` remain and return the same
+    middleware.
+  - A call the model made as `Run_SQL`, repaired by an earlier middleware that attached
+    the registered `run_sql`, was judged and recorded as `Run_SQL` and its `DELETE` ran
+    past a policy keyed on `run_sql`. It is refused before the policy runs and recorded
+    under `run_sql`.
+  - A tool given to `create_agent` as a dict is run by the model provider and reaches no
+    tool-call middleware. The gate now reads the tools of every model call and, if one is
+    a dict, does not call the model: the agent's answer is the refusal. This is why the
+    release is 0.2.0: an agent that carried a provider-run tool is now refused instead of
+    silently ungated for that tool.
+  - A middleware listed after the gate that swaps the tool object or answers in the
+    tool's place (a human-in-the-loop edit that redirects the call to another tool, a tool
+    emulator) still leaves the call unjudged, and a swapped-in tool still runs. The gate
+    now withholds that answer and refuses, and the audited form records the refusal; the
+    call was unrecorded before. It also withholds the answer of a middleware listed after
+    it that answers a refused call by running another tool (a fallback to a replica ran a
+    refused `DELETE` and its success was passed on), and an answer under another tool's
+    name after an allowed call; the audited form records one more entry for it. An answer
+    under the judged tool's name after an allowed call is passed on, and the README says
+    so. `docs/FRAMEWORKS.md` said a human-in-the-loop edit listed after the gate always
+    reaches the judging copy; it does only when the edit keeps the tool.
+  - The README lists what the gate does not see: a middleware listed before the gate that
+    runs a tool itself, a provider-run tool the gate was not shown, a sub-agent's tools
+    and `runtime.tools`.
+- **`recusal-pydantic-ai` 0.2.0: the gate judges what ran outside the tool
+  hook, and refuses a run whose toolsets could rewrite a call.** Found by the adapter
+  review of 2026-11-19 and reproduced on `pydantic-ai-slim` 2.67.0:
+  - An output function (`output_type=fn`) runs the application's function with values the
+    model chose, and ran with no policy asked. `RecusalGate` now judges it in
+    `before_output_process`, under the function's name, before it runs; a refusal asks
+    the model again and the function does not run.
+  - A `Choices` output whose value is callable ran that action when the model picked
+    it, with no policy asked. A final `Choices` pick is now judged, as `choice` with the
+    key and the set's name.
+  - A `WrapperToolset` subclass whose `call_tool` changed the arguments ran after the gate
+    judged them: judged `force=False`, ran `force=True`. A toolset runs after every
+    capability hook, so a run with such a wrapper in its toolsets now has every call
+    refused, on the record; the wrappers Pydantic AI ships route a call and are not. The
+    gate reads the run's toolset at the time of each call, so a wrapper another
+    capability adds, or one a dynamic toolset returns, is refused too. The check is not a
+    list of wrapper classes: an application toolset is refused when it holds other
+    toolsets and has its own `call_tool`, when it replaces the `call_tool` of the Pydantic
+    AI toolset it extends, or when it has a `process_tool_call` function.
+  - A call handed to the application to run (an `ExternalToolset`, `CallDeferred`) left
+    the run with no policy asked. It is now judged in `handle_deferred_tool_calls`: a
+    refused one is answered with the refusal, an allowed one handed on as judged.
+    Pydantic AI offers deferred calls to every other capability before the gate, so
+    `HandleDeferredToolCalls` executed an external call unjudged: a run with another
+    capability that answers deferred calls is now refused, and the handler goes to the
+    gate, `RecusalGate(policy, deferred=handler)`, which judges first and hands it the
+    calls it allowed.
+  - A gated agent that offers the model a tool the provider runs (web search, code
+    execution and the like) is now refused before the request is sent: no hook sees
+    those calls. Provider-side tool search is allowed, and so is a tool the model drops
+    or replaces with its local version.
+  - A gate marked `defer_loading=True`, or placed in a group loaded on demand, judged
+    nothing while `is_gated` said `True`. The first is now refused when the gate is
+    built, and the second does not count for `is_gated`.
+  - Another `innermost` capability listed after the gate ran after it and could rewrite
+    the call (a documented limit until now), and so could any hook listed after a gate
+    placed inside a `WrapperCapability`. The gate now reads the order the run dispatches
+    in and refuses a call when a `before_tool_execute` of the application's comes after
+    it.
+  - A tool given its schema by hand (`Tool.from_schema`) is not validated, so a
+    parameter the model left out ran with the function's Python default, which no
+    policy had seen: judged `{"table": "t"}`, ran `mode="hard"`. All four forms of the
+    gate (the two capabilities and the two hook functions) now add the innermost
+    function's own defaults that the arguments leave out, judge them, and pass them
+    written out; a default that is not plain data is refused, and so is such a tool
+    whose function takes `*args` or `**kwargs` (the tools `pydantic_ai.ext.langchain`
+    builds).
+  - A decorated tool is several functions, and a wrapper's own parameter was read by
+    nothing: a decorator with `skip_review=True` in the middle of a stack ran the
+    transfer with it, and a keyword a wrapper shared with the function let the model
+    send `refresh=False` while the function ran on its own `refresh=True`. The stack
+    from the callable Pydantic AI calls down to the innermost function is now read, and
+    a wrapper must be transparent (take only `*args` and `**kwargs`, restate the
+    function's own parameters, or forward `**kwargs` and name required parameters where
+    name and position cannot differ) or the call is refused before the policy runs, with
+    a reason that says what the wrapper does. A function that declares a signature of
+    its own and a decorator that cannot be inspected (such as `cachetools.cached`) are
+    refused as well.
+  - Pydantic AI passes a function's values by position when the function takes `*args`
+    or a positional-only parameter, so a wrapper that names a parameter can be handed
+    another one's value: `wrapper(dst, *args, **kwargs)` over
+    `copy_file(src, dst, *flags)` was judged with `dst` under `/tmp` and wrote to the
+    path sent as `src`. A wrapper that names a parameter and also forwards is refused
+    over such a function; elsewhere the positional parameters it names must be the
+    function's first ones in order, and it may forward `*args` only while no wrapper
+    above it names more positional parameters. For a tool that takes the run context, a
+    wrapper's first positional parameter is the context, whatever the wrapper calls it,
+    unless it has the name of another parameter of the function; a refusal names the
+    parameter as the wrapper calls it.
+  - A `functools.singledispatch` function picks the implementation that runs at call
+    time, and a registered implementation's own default ran unjudged. A single-dispatch
+    function with an implementation registered beside its base one, or in its place
+    (`register(object)`), is refused. A function that only has attributes called
+    `registry` and `dispatch` is not taken for one.
+  - A `functools.partial` that binds a value by position hides the leading parameter of
+    every wrapper under it, with that parameter's default: `partial(scoped(purge),
+    "acme")` was judged `{"limit": 5}` and ran `table="prod"`; with a wrapper that kept
+    the value and passed the rest on by position, `{"limit": 5, "dry": True}` ran
+    `table=5, limit=True, dry=False`; and `partial(scoped(default_table(purge)), "acme")`
+    ran the lower wrapper's own `table="archive"`. Such a partial is now allowed only
+    over the function itself or over wrappers that take nothing but `*args` and
+    `**kwargs`: any wrapper under it that names a parameter refuses the call, with no
+    reasoning about what the wrapper's body would do. Refused as well: such a partial
+    over a function whose bound parameter is positional-only and which takes `**kwargs`
+    (an argument sent under that name landed in `**kwargs` while the function ran the
+    bound value).
+  - A partial named with `functools.update_wrapper` carries `__wrapped__`, and
+    `inspect.signature`, which Pydantic AI validates against and builds the positional
+    call from, reads past it: `update_wrapper(partial(insert, "acme"), insert)` was
+    judged `tenant="DROP TABLE"` and ran `tenant="acme"` with that text as a row. It is
+    refused, and for every tool built from its signature the parameters Pydantic AI
+    reads must be those of the function the call reaches.
+  - The object of a bound method past a wrapper that names a positional parameter is
+    refused where a wrapper that kept it might not fail the call, which includes the
+    values after it moving up a place into a parameter with a default. That also
+    refuses a method decorator that restates the method's parameters over a method
+    with a defaulted positional parameter, which is conservative.
+  - A `functools.partial` with a keyword shows every later parameter as keyword-only,
+    on a wrapper and on the function alike, so a wrapper that takes a parameter as
+    another kind than the function was refused alone and allowed behind the partial:
+    `wrapper(table, limit=10)` over `delete_rows(table, *ids, limit=10)` behind
+    `partial(delete_rows, table="orders")` was judged `limit=500` and ran `ids=(500,)`,
+    `limit=10`. The wrappers under such a partial are now read without its keywords as
+    well. A keyword that names a positional-only parameter is not bound to it
+    (`partial(fetch, limit=77)` over `fetch(table, limit=10, /, **extra)` ran `limit=10`,
+    which nothing showed) and is refused.
+  - A class used as the tool function was let through as validated also where a hook of
+    the application's supplied the arguments in place of validation: judged
+    `{"table": "t"}`, ran `force=True`. Its arguments are now completed from the
+    signature Pydantic AI validates against, like any other tool's.
+  - Two output functions with the same name (`output_type=[review.submit, prod.submit]`)
+    were both judged as `submit`, and the model picked which ran. Such an output is now
+    refused before the policy, naming the name.
+  - The package allowed `recusal>=0.14.0`, a kernel without the walk the gate imports,
+    so the adapter failed at import beside it. It requires `recusal>=0.15.0`.
+  - Where a hook of the application's skips validation, a value for a function's `*args`
+    that is not a list was judged whole and handed to the function item by item. It is
+    refused.
+  - The order check holds for output functions and `Choices` picks as for tool calls,
+    and counts a `Hooks` subclass that writes a hook as a method. A container the
+    search for held toolsets cannot finish (4,000 values) is refused instead of passed.
+  - A realtime session, which calls none of the hooks the gate judges in, is refused
+    when it starts. Provider-tool settings on the model, and on each candidate of a
+    `FallbackModel`, are read as well as the run's.
+  - Refused rather than run unjudged, and documented: an output function taking a
+    Pydantic model, and a union of output functions under `NativeOutput` or
+    `PromptedOutput` (use tool output).
+  - `agent.override(spec=...)` with a spec naming capabilities replaces the gate, and
+    `is_gated` still said `True` while the tool ran unjudged; it now reads the
+    capabilities in effect.
+  - The audited gate records each of these on its own surface
+    (`pydantic_ai.before_output_process`, `pydantic_ai.handle_deferred_tool_calls`), by
+    the plain gate's own decision. The README now says which tool name the policy is
+    given (the prefixed or renamed one) and corrects two sentences on ordering: another
+    `innermost` capability listed after the gate runs after it, and the plain `Hooks`
+    form is safe only where no `innermost` capability is added.
+- **`recusal-openai-agents` 0.2.0: the policy judges the arguments under the
+  names the function receives them by, and a tool the gate could never judge is refused
+  when the agent is built.** Found by the adapter review of 2026-11-21 and reproduced on
+  `openai-agents` 0.24.0:
+  - The gate worked out for itself which parameter is the context the SDK fills, from the
+    text of the annotation. For a callable-object tool whose context was annotated
+    through an alias in a module with string annotations it found none, so every argument
+    was named one parameter off: the policy saw `{"ctx": "DELETE FROM audit_log"}`, raised
+    no objection, and the tool ran the `DELETE`. The names are now read from the SDK's own
+    schema for the tool (`takes_context` and its signature), and a call whose prepared
+    values are not one for each parameter is refused.
+  - A `functools.wraps` wrapper under `function_tool` ran with values the policy never
+    saw: a wrapper's own keyword default (`dry_run=False`) was in no schema, and a
+    wrapper that took a parameter of the function left the function at its own default
+    (judged `SELECT 1`, ran `DELETE`). The gate now walks the callables the call reaches
+    with the kernel's `reached_parameters` (the function, what its `__wrapped__` chain
+    leads to, a bound method's function and a callable object's `__call__`), at every
+    level of a stack of wrappers, and refuses the tool unless each one takes exactly the
+    parameters the SDK prepared for, or forwards `*args, **kwargs` and names none of its
+    own. This is why the package now requires `recusal>=0.15.0`. A
+    `functools.singledispatch` function with an implementation registered is refused as
+    well: the implementation that runs is chosen by the type of an argument, and a
+    registered one ran with a default (`include_deleted=True`) that was in no schema.
+    One with nothing registered is the function it wraps and is gated, an implementation
+    registered afterwards refuses its next call in a later model turn (in the same turn it
+    runs unjudged, which is open and stated in the README), and a callable object that happens to
+    have a `dispatch` method and a `registry` attribute is not taken for one. The
+    dispatcher is known by the code of `functools.singledispatch`'s own wrapper function
+    and its registry is read from that function's closure, so it is found as a method or
+    a class method (`function_tool(service.handle)`, where a registered implementation
+    ran with its own default) and under `functools.wraps` wrappers, and one with nothing
+    registered is gated there too. A stack of
+    more than 31 wrappers is refused for that reason, not as "cannot be inspected". A
+    wrapper that calls a function it holds in a closure or an attribute is not read; the
+    README lists it under what the gate does not see.
+  - With `agent.as_tool(parameters=Model)` the parent's policy was handed the model's raw
+    JSON while the sub-agent was given the validated input: `{"confirm": "true", "rows":
+    "9"}` was judged as two strings and reached the sub-agent as `true` and `9`, a
+    default left out was judged as absent, and a key the model drops was judged as
+    present. The policy is now handed what the sub-agent is given, worked out with the
+    SDK's own adapter for that tool, and arguments the model does not accept are refused
+    before the policy runs. A `parameters` type that is not a data-only Pydantic model
+    (a validator, a serializer, a computed field, `Field(exclude_if=...)`, a nested
+    model, a dataclass, a field of a type outside the data-only set) is refused when the
+    tool is gated, with a reason that names the field and its pydantic core type; the
+    README lists the types and what to declare in their place. The default `as_tool` is
+    judged by the arguments as proposed, as before.
+  - `gated_agent` returned a copy that shared the original agent's `handoffs` and
+    `mcp_servers` lists, so a handoff appended to the original after gating was the gated
+    copy's too, and the agent it handed off to ran ungated. The copy now has its own
+    lists.
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt`: a prompt stored on
+    OpenAI's servers can configure tools that are not in the agent's `tools` list.
+  - A non-finite number (`NaN`, `Infinity`, a literal too large for a float, the string
+    `"nan"` for a `float` parameter) ran on the plain gate, where a policy that compares
+    it (`amount > 1000`) raises no objection, and was refused only on the audited gate.
+    Both now refuse it before the policy runs, for the same reason, so "the audited forms
+    are the plain ones with a recording passed in" holds. The same was true of deeply
+    nested arguments: at about 488 levels the plain gate ran the call and the audited
+    gate refused it, and deeper the two refused for different stated causes. The gate
+    now refuses arguments that hold a value more than 64 levels down, before anything
+    else reads them, with one reason and one audit entry; the limit is fixed and does not
+    move with the interpreter's recursion limit.
+  - `gate_tools` and `gated_agent` now raise `TypeError`, naming the tool and the
+    parameter, for a function tool they used to accept and then refuse on every call: a
+    parameter the SDK prepares only by running the tool's own code (an `Enum`, a model, a
+    dataclass, a `TypedDict`, `datetime`, `date`, `tuple`, `set`, `Sequence`,
+    `Iterable`, `bytes`, `Field(pattern=...)`, a custom validator), a mapping whose key
+    type is neither `str` nor a `Literal` of strings (`dict[int, str]`) and a variadic
+    parameter. A default that is not JSON data
+    (`tags: list[str] = ()`) and a default factory other than `list` or `dict` are named
+    as what they are. A decorator whose signature cannot be read (a class-based decorator
+    that is also a descriptor, such as `cachetools.cached`) is refused with what to do
+    about it. The README lists the parameter types that are gated. This is why the
+    release is 0.2.0: an agent that carried such a tool was built and is now refused.
+  - `gated_agent` and `is_gated` now refuse an agent whose `model_settings` can put
+    tools into the request themselves: `extra_body` or `extra_args` with a `tools`,
+    `prompt`, `plugins`, `web_search_options` or `mcp_servers` key. In `extra_body` a
+    `tools` key replaces the agent's own tool list in the request and the others are sent
+    beside it; in `extra_args` a `prompt` is sent with a Responses request, and a `tools`
+    key makes the SDK's OpenAI models raise before anything is sent. Settings given to a
+    run (`RunConfig(model_settings=...)`) are not known when the agent is gated and are
+    not read.
+  - Corrected: two tools under one name in different `tool_namespace` groups were refused
+    with a reason that was not true of them (the SDK resolves those by namespace, not
+    last-wins). They are still refused, for the reason that is: the policy and the audit
+    record are given a tool's own name without its namespace. A call that gives
+    arguments to a tool that takes none, and arguments that do not validate, now each say
+    so in place of "its schema runs custom validation".
+  - Corrected in the README and `docs/FRAMEWORKS.md`: "a call a person rejected is not on
+    the log" does not hold under the SDK's `pre_approval_tool_input_guardrails=True`,
+    where the guardrail also runs before the approval. A call then has an entry before a
+    person decides, and a second one if it is approved. Nothing runs without the second
+    judgment. Also in the README now: the calls the SDK itself rejects before the
+    guardrail runs (a tool call id reused for another call, within one response or in a
+    later turn, a blank one, arguments nested about a thousand levels deep, and an
+    unknown tool, which raises unless the run asks for the error to go to the model),
+    that `Field(default_factory=list)` is gated, and that a `dict` parameter needs
+    `strict_mode=False`.
+  - New public names for a gate on another seam of the SDK: `shared_name_reason`,
+    `settings_reason`, `too_deep`, `tools_gated`, and the `agent_gated` argument of
+    `gate_tools`.
+- **`recusal-openai-agents-mcp` 0.2.0: the policy judges the arguments
+  checked against and completed from the server's listed schema; an object or a list the
+  schema offers more than one form for, and a string a server may read as another type
+  the schema lists, are refused; and the server is sent what was judged, less a listed
+  default that cannot be sent, which is judged as listed and not sent.** Found by the
+  same review and reproduced against a real stdio
+  server built with the MCP Python SDK (`mcp` 2.3.0) and one built with the TypeScript
+  SDK and zod:
+  - The gate judged the arguments as sent and never read the tool's listed `inputSchema`,
+    and the server then ran values no policy judged: `{"dry_run": "false"}` (a string,
+    which a policy reading `if not args.get("dry_run")` takes as set) ran as
+    `dry_run=False`, `{"amount": "500"}` ran as `500`, and `{}` ran with every default in
+    the schema (`recursive=True`), under an audit entry that fingerprinted `{}`. The same
+    held one level down and for every shape Pydantic publishes: an `Optional[bool]`
+    (`anyOf`), a nested model (`$ref`, with its own defaults), a `dict[str, bool]`
+    (`additionalProperties`), a tuple (`prefixItems`), and JSON text sent for a model
+    parameter, which the SDK's server parses. Before the policy runs, the arguments must
+    now be valid against the whole listed schema as they stand, validated with
+    `jsonschema` in the draft the schema declares and stricter where a server would
+    still convert (`5.0` is not an integer; an `enum` value must be of the listed JSON
+    type), and every default the schema lists for a property they leave out, at any
+    depth, is written into them: the property's own `default`, or, when its schema lists
+    none itself, the one listed by the schema its `$ref` names, by a member of its
+    `allOf` or by an alternative of its `anyOf` or `oneOf`, which is where zod publishes
+    the default of `z.boolean().default(true).nullable()`. The policy judges the
+    completed arguments, the server is sent the completed arguments, and the entry is
+    bound to them. What the gate cannot check or complete is refused, with a reason that
+    names the place in the arguments and what the schema requires there and carries no
+    argument text: a schema that is not a valid JSON Schema or declares a draft other
+    than draft-07, 2019-09 and 2020-12, a `$ref` that does not resolve inside the schema
+    (a remote one is never fetched), a default under a keyword the walk does not follow
+    or under a keyword the gate does not know, a property left out whose alternatives
+    list different defaults. To read the schema, `gate_mcp_server` now also wraps the server's
+    `list_tools`, in place; each listing replaces the one before, so a call to a tool the
+    server does not list, or no longer lists, is refused. Where the server object keeps
+    its listing as fetched, before any `tool_filter` (`cached_tools`, as the SDK's own
+    servers do), that whole listing is kept, so two agents under a dynamic filter share
+    one server. This is why the release is 0.2.0: a call that relied on the server
+    converting a string is now refused with a reason the model can act on. The package
+    now requires `jsonschema>=4.26.0` and `referencing>=0.37.0`; the MCP SDK requires
+    `jsonschema` itself, and `referencing` comes with `jsonschema`.
+  - JSON text for a parameter that may be null ran as null. The MCP Python SDK's server
+    decodes the text of a string argument as JSON when the parameter is not annotated
+    exactly `str`: `{"scope": "null"}` for `scope: Optional[str]` was judged as the
+    string and ran as `None`. A string that holds JSON text for null, a list or an
+    object, which is what that server decodes, is now refused where the schema of the
+    argument allows another JSON type than string. A property whose schema allows only
+    strings keeps every string. A listed default that is such text
+    (`mode: Optional[str] = "null"`) is judged and not sent: the server runs with the
+    string when the parameter is left out, and would decode it if the gate sent it.
+  - A model could stall the agent's process, in four ways, inside the event loop. Where
+    two alternatives of a recursive `anyOf` both accept a value, the cost of checking
+    more than doubled with every level of the arguments: ten levels took several seconds
+    and twelve more than a minute. A server's `pattern` ran on the model's text with
+    Python's `re`: `^(\w+\s?)+$` took eleven seconds on forty bytes, and a
+    `patternProperties` pattern nine on a member's name. `uniqueItems` compared every
+    item with every other (fifteen seconds for 12,000), and an `enum` every value with
+    every choice. And the types a subschema admits were read again for every way the
+    schema reaches it. Now nothing is validated twice for one schema and one value, a
+    list or an object is walked once for a schema, `uniqueItems`, `enum` and `const`
+    read each value once (except integers chosen to share one hash under `uniqueItems`,
+    which is open), and what the schema alone says is read once, at the first call after
+    each listing. No regular expression of a server's is evaluated at all: `pattern` is not
+    checked (the server checks it), and a member beside `patternProperties` must meet
+    the schema of every pattern listed. The work is bounded by counting it, not by a
+    timer: each keyword applied to a value (and one more for each member or item the
+    value holds), each value walked or read for a comparison, and each part of the place
+    of a validation error is a step, counted against an allowance that grows with the
+    number of values in the arguments; a call over it is refused before the policy runs,
+    as one deny entry. The 12,000 items now take about a tenth of a second.
+  - Which of several object forms a server runs is not in its schema, and the gate had
+    worked it out by JSON Schema's rule. A server built on Pydantic takes the member of a
+    `Union` of models with more of the fields that are set, converting strings to fit
+    it; one built on zod takes the first member of a `z.union` that parses and drops the
+    members that one does not know, although it lists `additionalProperties: false`. So
+    `{"target": {"path": "/data", "pattern": "*.tmp", "dry_run": true}}` was judged as
+    written and ran as `{"path": "/data", "recursive": true}`. An object is now refused
+    wherever the schema offers more than one object form for it (two or more
+    alternatives of an `anyOf` or `oneOf` that admit an object), whatever it holds and
+    at any depth, unless every form fixes one same-named property to a `const` of its
+    own and the object carries the value of exactly one, which is then the only form
+    used. A list is refused where the schema offers more than one list form. One form
+    beside alternatives that are not one (`Optional[Model]`, `Model | str`) is as
+    before. A `Union` of models needs a `Literal` tag on each, sent with the call, or
+    one tool for each form.
+  - The text of a number ran as the number. Pydantic converts a string wherever the
+    value is not taken as a string first: `{"since": "1700000000"}` for
+    `since: Union[int, datetime]` ran as the integer, and `"true"` for
+    `Union[bool, Path]` as `True`. A string that reads as a number, or as one of the
+    words Pydantic reads as a boolean, is now refused where the schema names that type
+    beside string, at any depth. This is one rule with the JSON text above: a string is
+    refused where the schema also admits the type a server reads its text as. It costs
+    the same strings for `Union[int, str]`, which a server would have kept as strings
+    and whose schema is no different.
+  - A listed default with a member its own schema does not allow is refused when it
+    would apply: a Pydantic model with aliased fields and `extra="forbid"`, used as a
+    parameter's default, lists the default under the field names and the schema under
+    the aliases, and was judged under names the schema does not have.
+  - Refused without cause, now accepted: a legal chain of a recursive model
+    (`child: Optional[Node]`) deeper than 42 levels, refused as a schema that "refers to
+    itself without end" (only a schema that leads back to itself with no value in
+    between is one, and it is refused when the tool is called); a `pattern` Python
+    cannot compile (`\p{L}`), which made every call "not a valid JSON Schema" (no
+    pattern is compiled now); and a draft declared under its `https` address.
+  - A listed default that cannot be sent is judged as listed and not sent: one that is
+    not valid against its own property schema (Pydantic publishes `{"default": null,
+    "type": "string"}` for `q: str = None`, and its server would reject the `null` if it
+    were sent), and text a call would be refused for sending. The gate judges the
+    default as the schema lists it. A server that derives its real default another way
+    runs that: zod's `z.number().default(Infinity)` lists `default: null` and runs
+    `Infinity`, `.default(1).optional()` on a schema the `1` fails runs with the
+    parameter absent, a `Set` default is listed as `{}`, and an object default that
+    fails its own schema is parsed again through it. The README says so. A default that
+    holds an object or a list where the schema offers more than one form refuses the
+    call that leaves its property out.
+  - The README says what is not seen: a parameter left out with no listed default (a
+    `default_factory` default among them), a server whose code does more than its schema
+    says (the MCP Python SDK's server parses a string for a parameter without an
+    annotation, which it lists as `type: string`; a numeric string runs as a date; a
+    validator that strips or lowers a string changes it, a default the gate wrote
+    included; zod's `.catch` is in no schema; `str | SkipJsonSchema[None]` lists a
+    string and runs `"null"` as `None`; a `Json[...]` parameter runs what its string
+    decodes to), an integer above 2^53 for a float parameter, a member an object's
+    schema does not name, a schema that changes after it was listed, and the server's
+    handling of a hosted MCP call. It also says what the rules mean for ordinary schemas:
+    a `Union` of two models, a list of two forms, `Union[int, str]`, a tuple with a
+    defaulted member, zod's `additionalProperties: false`, and OpenAPI's `nullable`.
+  - A non-finite number in a local server call (`1e400`) left an audit entry with no
+    fingerprint and the kernel's "cannot be fingerprinted" in place of the gate's reason.
+    Arguments that are not JSON data are now refused with the gate's own reason, in one
+    entry bound to the text the gate writes them as. Arguments that hold a value more
+    than 64 levels down are refused the same way.
+  - Arguments nested about 900 deep were refused with no audit entry, because the copy
+    for the policy was made, and failed, before `decide` ran. Every refusal before the
+    policy runs is now one entry.
+  - `gated_agent` refused a parent whose sub-agent behind `as_tool` was itself gated by
+    this package and held an MCP server or a hosted tool, with advice to do what had been
+    done. The sub-agent is now judged by this package's own `is_gated`.
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt` and an agent whose
+    `model_settings` put tools into the request, and the gated copy has its own
+    `handoffs` list, as in `recusal-openai-agents`. Requires
+    `recusal-openai-agents>=0.2.0`.
+  - Now in the README's list of what the gate does not see: request metadata from a
+    `tool_meta_resolver`, a hosted approval the SDK answers again from its own memory
+    when the provider repeats a request, and a call the SDK rejects before `call_tool`.
+
 ## [0.15.0] - 2026-11-21
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation` gains public

@@ -90,7 +90,7 @@ A framework gate starts as a tested example and can become its own distribution 
 <!-- adapter-packages:start -->
 | Package | Directory | Import | Framework dependency | Python |
 |---|---|---|---|---|
-| `recusal-crewai` | `adapters/crewai` | `recusal_crewai` | `crewai>=1.15.40,<2` | 3.11+ |
+| `recusal-crewai` | `adapters/crewai` | `recusal_crewai` | `crewai>=1.15.42,<2` | 3.11+ |
 | `recusal-google-adk` | `adapters/google-adk` | `recusal_google_adk` | `google-adk>=2.14.0,<3` | 3.11+ |
 | `recusal-langchain` | `adapters/langchain` | `recusal_langchain` | `langchain>=1.4.10,<2` | 3.10+ |
 | `recusal-langgraph` | `adapters/langgraph` | `recusal_langgraph` | `langgraph>=1.2.20,<2` | 3.10+ |

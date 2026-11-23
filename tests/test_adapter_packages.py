@@ -261,6 +261,16 @@ def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(director
             "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
             "--warn-unused-ignores --warn-redundant-casts"
         )
+    elif directory == "crewai":
+        ci_flags = (
+            "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
+            "--warn-unused-ignores --warn-redundant-casts"
+        )
+    elif directory == "google-adk":
+        ci_flags = (
+            "--python-version 3.12 --check-untyped-defs --disallow-untyped-defs "
+            "--disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts"
+        )
     # the checker is a root of the hash-locked file the job installs, at the kernel's pin
     lock = (ROOT / "requirements" / f"adapter-{directory}.txt").read_text(encoding="utf-8")
     assert pin in lock.splitlines()[0].split()

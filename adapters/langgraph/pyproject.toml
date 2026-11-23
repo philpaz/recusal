@@ -33,12 +33,20 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
-    "recusal>=0.14.0,<1",
+    # 0.15.0 is the first release whose `recusal.invocation` walks every callable a call
+    # reaches (`reached_parameters`); with an older kernel the wrapper check is absent.
+    "recusal>=0.15.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "langgraph>=1.2.20,<2",
     "langchain-core>=1.7.7,<2",
+    # Imported directly: `langgraph.prebuilt` (ToolNode and the private helper that names
+    # the arguments it injects) is the `langgraph-prebuilt` distribution, and the gate
+    # reads Pydantic v2 models field by field. Both come with `langgraph`; they are
+    # declared so the bound on what the gate imports is this package's own. The lower
+    # bounds are the versions the pinned CI lane tests.
+    "langgraph-prebuilt>=1.1.1,<2",
+    "pydantic>=2.14.3,<3",
 ]
 
 [project.urls]

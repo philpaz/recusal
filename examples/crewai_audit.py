@@ -32,12 +32,12 @@ the first hook that blocks, so the gate never sees it and the tool does not run)
 whatever a hook registered AFTER the gate changed. Install the gate after your other hooks,
 as with the plain one, so the record is of the call exactly as it runs.
 
-Requires Python 3.11+ (the `recusal-crewai` package's minimum) and is tested with exactly crewai==1.15.40.
+Requires Python 3.11+ (the `recusal-crewai` package's minimum) and is tested with exactly crewai==1.15.44.
 Recusal itself remains Python 3.9+ and has no CrewAI dependency. No model, API key or
 network is used, and run_sql only records SQL text.
 
 Run after installing:
-    pip install crewai==1.15.40
+    pip install crewai==1.15.44
     python examples/crewai_audit.py
 """
 
@@ -50,7 +50,7 @@ import sys
 import tempfile
 from typing import Any, Optional
 
-CREWAI_VERSION = "1.15.40"
+CREWAI_VERSION = "1.15.44"
 
 if sys.version_info < (3, 11):
     print(

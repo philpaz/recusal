@@ -46,9 +46,10 @@ Install it from PyPI:
 pip install recusal-openai
 ```
 
-Requires Python 3.10+ (the SDK's minimum), `recusal>=0.14.0` and `openai>=3.49.0`. It is
+Requires Python 3.10+ (the SDK's minimum), `recusal>=0.15.0` and `openai>=3.49.0`. It is
 tested on every pull request against exactly `openai==3.49.0`, and weekly against the
-newest release.
+newest release. The kernel floor is what checks a decorated tool: beside an older
+kernel the package raises `ImportError` instead of gating without that check.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 
@@ -82,11 +83,24 @@ messages, so pass `choice=<list position>`; without it the gate refuses the comp
 before anything runs.
 
 Each proposed call gets exactly one answer under its own id: the tool's result, or
-Recusal's reason. A policy that raises refuses the call (fail closed).
+Recusal's reason. A policy that raises refuses the call (fail closed). The gate always
+fails closed: `fail_closed` is not a keyword it takes.
 
 The gate calls your tools synchronously, so each tool is an ordinary function. An
-`async def` tool is refused with a reason before the policy runs, so the policy is not
-consulted for it. An ordinary function that returns a coroutine is answered as not run.
+`async def` tool and a generator function (one whose body has a `yield`) are refused with
+a reason before the policy runs, so the policy is not consulted for them. The gate reads
+how a tool is declared through a `functools.partial`, a `staticmethod`, a bound method
+and `functools.lru_cache`. It does not look through a wrapper of your own,
+`functools.wraps` included, because such a wrapper may await or consume what it wraps:
+that tool is judged and called like any other.
+
+What a tool returns is answered as its `str`, with two exceptions. If it returns a
+coroutine, the answer says so and that the gate did not run the coroutine. If it returns
+a generator or any other iterator (an async generator, `iter(...)`, `map(...)`, an open
+file), the answer is `` Tool `name` ran and returned a generator, which this gate does
+not consume: its result is not available `` (`an iterator` or `an async generator` for
+the other kinds). The function's own body ran, with whatever side effects it has, so the
+answer never says the tool did not run. Return a list or a string instead.
 
 A tool that raises: by default the exception reaches your loop, as it always has. Calls
 earlier in the turn have already run and their answers are lost with it; calls later in
@@ -115,22 +129,193 @@ answers = audited_function_calls(response, tools, policy, log)
 `audited_tool_calls` is the Chat Completions form. Each call the model proposes, run or
 refused, is one hash-chained entry labeled `openai.responses.function_call` or
 `openai.chat_completions.tool_call` with the API's own call id and a SHA-256 fingerprint
-of the arguments (never the arguments). If the log cannot be written the call is refused.
+of the arguments (never the arguments). The call id is on the entry exactly as the API
+sent it, and is at most 256 characters (see call ids below). A refusal's reason on the
+log never quotes an
+argument's key or value: a call that does not bind names the parameters the tool declares
+and counts the arguments it does not take. A tool you have is on the entry under the
+name you gave it. A name you have no tool for is the model's text: it is on the entry,
+and in the reason, as sent only if it is 1 to 64 printable characters with no backtick,
+and otherwise as a description of its length, such as
+`<a tool name of 1000000 characters, not shown>`. If the log cannot be written the call
+is refused.
 Check the log with `recusal audit verify decisions.jsonl`.
 
-The audited functions call the plain ones, so there is one decision path.
+The audited functions call the plain ones, so there is one decision path:
+`audited_function_calls(response, tools, policy, log)` is
+`gate_function_calls(response, tools, policy, audit=log, surface="openai.responses.function_call")`,
+and both forms take `actor=` and `control=` for the entry. Called directly, the plain
+functions also take `allow_on_pass=True`, which records a passing call as `allow`
+instead of `defer` and changes nothing about what runs.
+
+A loop whose log is optional is one call to the plain function:
+
+```python
+from recusal_openai import SURFACE_RESPONSES, gate_function_calls
+
+maybe_log = AuditLog(path="decisions.jsonl") if recording else None
+answers = gate_function_calls(response, tools, policy, audit=maybe_log, surface=SURFACE_RESPONSES)
+```
+
+`audit=None`, passed explicitly, is the plain gate: nothing is recorded, and `surface=`,
+`actor=` and `control=` are accepted and not used. When `audit=` is not passed at
+all, `surface=`, `actor=` or `control=` with a value raises `TypeError` before anything
+is judged, so a loop that believes it is recording is never silently not recording.
+`audit=` with a log and no `surface=` raises the same way. The two audited functions
+need a log: `audited_function_calls(response, tools, policy, None)` raises `TypeError`
+and runs nothing, because a function named "audited" that recorded nothing would
+mislead.
+
+A `surface=` or `control=` the kernel would not record raises `ValueError` naming the
+keyword, before any tool call is looked at, with a log and with `audit=None`: a surface
+that is empty, starts or ends with a space, is not a string or is the reserved
+`claude_code.pretooluse`, and a control that is not a dict. The rule is
+`recusal.decide`'s own: the gate asks it and restates nothing. `tool_use_id=` and
+`fail_closed=` are not taken and raise `TypeError`: each call is recorded under its own
+call id, and the gate always fails closed.
 
 ## What the gate refuses, and what it does not see
 
-- **Refused with a reason, never run:** arguments that are not valid JSON or not a JSON
-  object, a tool the application does not have, arguments that do not bind to the tool,
-  a tool whose signature cannot be judged by name (variadic or positional-only
-  parameters, an unsupported annotation, a default that is not JSON data), and an
-  `async def` tool.
+- **Refused with a reason, never run.** Each of these is answered under the call's own
+  id before the policy runs, and is one entry on the audit log in the audited loop:
+  - *The arguments.* Arguments that are not a string (an empty string is a call with no
+    arguments), not valid JSON, or not a JSON object. `NaN`, `Infinity` and `-Infinity`
+    are not JSON and are refused. So are a number Python reads as infinity (`1e999`) and
+    arguments nested more than 64 levels below the arguments object.
+  - *A call that is not finished.* A Responses `function_call` item whose `status` is
+    anything but `completed` (`in_progress`, `incomplete`); an item with no `status`
+    passes. Every function call of a response whose own `status` is anything but
+    `completed` (`incomplete`, `failed`, `cancelled`, `in_progress`, `queued`, a value
+    a later SDK adds), the finished items in it included; a response with no `status`
+    passes. Every tool call of a Chat Completions choice whose `finish_reason` is
+    anything but `stop`,
+    `tool_calls` or `function_call`: that is `length` (the message was cut off at the
+    token limit), `content_filter` and a missing `finish_reason`. Request the turn again
+    with a higher token limit instead of running a call that may have been cut off.
+  - *A namespaced function call.* A Responses `function_call` item that carries a
+    non-empty `namespace` is refused: namespaced calls are not supported. The tools you
+    pass and the name the policy sees are bare names, so the gate could not tell two
+    functions of the same name in different namespaces apart. Declare such functions
+    without a namespace, under names that are unique.
+  - *The tool.* A tool the application does not have (a name that is not a string is
+    one), arguments that do not bind to the tool, an `async def` tool, a generator
+    function, a `functools.lru_cache` tool handed a list or an object, and a tool whose
+    signature cannot be judged by name: see the next point.
+- **Which tools the gate can judge.** A tool is a plain function, a bound method or a
+  `functools.lru_cache` of one, whose every parameter can be passed by name
+  and is annotated with a supported data type: `str`, `int`, `float`, `bool`, `Optional`
+  of a supported type (also written `T | None`), `list[T]`, and `dict[str, T]`, where
+  `T` is a supported type in turn (`list[dict[str, int]]` is supported). Every default
+  must be JSON data. A tool cached with `functools.lru_cache` (or `functools.cache`)
+  needs arguments the cache can hash: a call that hands it a list or an object, for a
+  `list[T]` or `dict[str, T]` parameter or in place of a `str`, is refused with a reason
+  before the policy runs. Give a cached tool `str`, `int`, `float` and `bool` parameters
+  only. A cache behind a wrapper of your own is not seen: there such a call raises
+  `TypeError` as any tool that raises does (see `answer_tool_errors` above). Everything
+  else is refused with a reason, among them:
+  - a parameter with no annotation, `Any`, `Literal[...]`, a union of two types such as
+    `int | float`, a bare `list` or `dict`, an `Enum`, `Annotated[...]`, a dataclass or a
+    model;
+  - variadic (`*args`, `**kwargs`) and positional-only parameters;
+  - a `functools.partial`, and a callable object (an instance with `__call__`) unless
+    its class annotates the names `__call__` takes (a dataclass whose fields are those
+    names, for example), because the kernel reads annotations from the class;
+  - a `functools.wraps` wrapper that adds a parameter of its own to the function it
+    wraps, and one that takes `*args, **kwargs` and also names a parameter the function
+    has: either would run with a value the policy never judged.
+
+  Whether a tool's signature can be judged is the kernel's answer. Whatever reason it
+  gives, and any error it raises while reading the tool, refuses that one call before
+  the policy runs.
+
+  What to do instead: write a plain function with supported annotations and resolve
+  richer types inside its body. Take a `str` and check it against the allowed values in
+  place of `Literal` or an `Enum`, pick `float` in place of `int | float`, write
+  `dict[str, str]` in place of `dict`, and replace a `functools.partial` or a callable
+  object with a function that closes over what it needs. The annotations decide only
+  whether the gate can judge the tool: the gate binds arguments by name and does not
+  check or convert a value's type.
+- **The tool's name in a refusal.** A refusal names a tool you have by the name you
+  gave it. A name you have no tool for is quoted only if it is 1 to 64 printable
+  characters with no backtick. Any other (longer, empty, or holding a backtick, a
+  newline, a control or formatting character or a lone surrogate) is described by its
+  length, in the answer and on the audit log, as
+  `<a tool name of 70 characters, not shown>`, and a name that is not a string as
+  `<a tool name that is not a string>`. So a tool name cannot close the backticks a
+  refusal sets it in, start a new line, or put more than 64 characters of the model's
+  text into an answer or an entry.
+- **Call ids.** A call id is the model's text too, and it has to go back exactly as
+  sent: in the answer, which is how the API matches it to the call, and on the audit
+  entry, which is how the entry is tied to the call. So the gate does not shorten or
+  describe it there. It takes a call id of at most 256 characters instead: a longer
+  one raises `ValueError` before anything in the turn runs, and writes no entry. That
+  bounds what one id can add to an answer or an entry at 256 characters. An id may
+  hold any character; on the log it is JSON-escaped, so it cannot start a line. A
+  message the gate raises (a duplicate id) quotes an id only if it is printable with
+  no backtick, names at most four, and otherwise describes each by its length, as
+  `<a call id of 17 characters, not shown>`.
 - **Refused by raising, before anything in the turn runs:** an output item or tool call
   of a type the gate does not handle (`custom_tool_call`, the provider's record of a
-  hosted tool call, a type a later SDK adds), a call without an id, and a duplicate id. A
+  hosted tool call, a type a later SDK adds), a Chat Completions message that carries
+  the legacy `function_call` field (alone or beside `tool_calls`; the gate reads
+  `tool_calls` only, so declare functions with `tools`, not `functions`), a call without
+  an id, a call id of more than 256 characters, a duplicate id, and a keyword argument
+  the gate does not take (`TypeError` naming it, whether or not the turn has calls): a
+  mistyped one, `fail_closed`, `tool_use_id`, `surface`, `actor` or `control` with a
+  value when `audit` is not passed at all, and `audit` with a log and no `surface`. A
+  `surface` or `control` the kernel would not record raises `ValueError` naming it. A
   turn refused this way writes no audit entry.
+- **Not seen: what a wrapper does in its own body.** The gate reads signatures, not
+  code. A `functools.wraps` wrapper that restates the function's parameters is judged
+  by them, and if its body then does not pass one on, the function runs on its own
+  default while the policy judged the model's value:
+
+  ```python
+  def logged(fn):
+      @functools.wraps(fn)
+      def wrapper(path: str, dry_run: bool = False):
+          return fn(path)  # dry_run is not passed on
+
+      return wrapper
+
+
+  @logged
+  def delete_tree(path: str, dry_run: bool = False) -> str: ...
+  ```
+
+  A call with `dry_run=true` is judged with `dry_run` true and `delete_tree` runs with
+  `dry_run` false. No check of a signature can see this. Give the gate the function
+  itself, or a wrapper that passes on every parameter it names.
+- **Not seen by a kernel that does not detect it: a decorator applied inside another
+  decorator.** The kernel follows a wrapper to what it wraps through `__wrapped__`. A
+  decorator that builds a second wrapper in its closure and calls that one hides it
+  from the walk:
+
+  ```python
+  def robust(fn):
+      inner = with_timeout(fn)  # takes timeout= itself, does not pass it on
+
+      @functools.wraps(fn)
+      def wrapper(*args, **kwargs):
+          return inner(*args, **kwargs)
+
+      return wrapper
+  ```
+
+  With a kernel that does not detect the hidden wrapper, a tool decorated this way is
+  judged and called, and a parameter the hidden wrapper keeps for itself reaches the
+  function at the function's default, not at the value the policy judged. A kernel
+  that detects it says so through its signature check, and the gate then refuses the
+  call before the policy runs. Until then, apply each decorator at the top level,
+  where the walk sees it, or give the gate the undecorated function.
+- **No state between turns.** Within one turn a duplicate or empty call id raises. The
+  gate remembers nothing from one turn to the next, so a call id used again in a later
+  turn is not detected: each turn is judged, answered and recorded on its own.
+- **No helper for streaming.** The gate takes a complete `Response` or `ChatCompletion`.
+  An application that streams must assemble the complete response first (the SDK's
+  stream helpers return it once the stream ends: `get_final_response()` for Responses,
+  `get_final_completion()` for Chat Completions), then hand it to the gate, and must not
+  run a function call from a stream event.
 - **Never judged: hosted tools.** Web search, file search, code interpreter, image
   generation and remote MCP run on the provider's side. What arrives in your loop is the
   provider's record of the call (`web_search_call`, `mcp_call` and the others in
@@ -143,15 +328,29 @@ The audited functions call the plain ones, so there is one decision path.
   sends an `mcp_approval_request` for your loop to answer. This gate does not judge it:
   it raises, with or without `allow_hosted_records`, so the call is never approved
   through this gate.
+- **Not read: `async` and `caller`.** A Responses `function_call` item can be marked
+  `async` and can carry a `caller` of type `program`. The gate reads neither field: such
+  a call is judged by your policy and run like any other.
 - **After the decision.** An audit entry records the gate's decision, not what the tool
-  then did. A call the gate allowed whose tool raised, or returned a coroutine that
-  nothing ran, is on the log as allowed. The async check reads how a tool is declared; a
-  wrapper that hides an `async def` behind an ordinary function is caught only by what
-  it returns, after the policy has allowed the call.
+  then did. A call the gate allowed whose tool raised, returned a coroutine that nothing
+  ran, or returned an iterator the gate did not consume, is on the log as allowed. The
+  async and generator checks read how a tool is declared; a wrapper of your own that
+  hides an `async def` or a generator function behind an ordinary function is caught
+  only by what it returns, after the policy has allowed the call and the wrapper has
+  been called.
+
+**Beyond the gate.** This gate judges the tool calls the framework routes through it;
+the paths around it inside the framework are listed above. Like every Recusal gate, it
+does not stop an agent that can reach a resource another way: a credential with wider
+rights, a shell or network path outside the agent, or a file it can write that
+configures the gate. Use it as one layer of several: least-privilege credentials for the
+agent, a sandbox or container, limits on its network egress, and an audit anchor the
+writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
 
 ## Status
 
-**In-depth review under way.** Its fixes are in [#296](https://github.com/philpaz/recusal/pull/296) and are not released yet. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review complete.** Its fixes are released in 0.2.2. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
@@ -161,6 +360,63 @@ us what you find. Reviews, bug reports and pull requests are all welcome:
 [how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues).
 Please report a security gap [privately](https://github.com/philpaz/recusal/security/advisories/new), not in a public
 issue.
+
+## How it was tested
+
+The in-depth review was four review rounds against `openai==3.49.0`, and it is the
+project's own work. The threat model: the model is untrusted, and it chooses every tool
+name, argument, call id, item type and status the gate reads. The application's own
+code (its tools, its policy, the keywords it passes) is trusted but ordinary, so the
+review also asked what an ordinary mistake in it does to the gate.
+
+Each number below is printed by the command after it, from a clone with
+`requirements/adapter-openai.txt` installed, with no API key and no network:
+
+- **A generated corpus, through both loops.** 44,148 turns a model could send (258
+  single forms, and a grid of 43,890 crossing tool names, forms of the arguments, and
+  status, namespace and `finish_reason` values), each run through the plain and the
+  audited loop from the same input. Counted: turns where the two loops disagree on what
+  ran, where a tool ran under a name the application does not have, or where the audit
+  entries are not one per call. None. `python tools/review/openai/corpus.py --summary`
+- **A keyword matrix.** 35,280 combinations of the recording keywords through
+  `gate_function_calls`, `gate_tool_calls` and `judge_and_run`. Counted: combinations
+  that raised after a tool had run, recorded a call they refused, or answered without
+  running a tool the policy allowed. None.
+  `python tools/review/openai/keyword_matrix.py --summary`
+- **Mutation testing.** 148 hand-written mutations, each switching off one check in a
+  copy of the package. A mutation is caught when at least one of the package's tests
+  then fails. All 148 are caught. `python tools/review/openai/mutate.py --summary`
+- **Probes written against the pinned SDK**, among them tools decorated the ways
+  applications decorate them. What a probe found is kept as a test.
+
+What each round found. The findings of rounds one to three are fixed in 0.2.2, are in
+the [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md), and are each
+pinned by the test named, in
+[`tests/test_openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/tests/test_openai_responses_gate.py):
+
+- Round one: the plain loop ran a call the audited loop refused, `{"amount": NaN}` past
+  a policy written as `amount > 100`
+  (`test_a_number_that_is_not_json_or_not_finite_is_refused_before_the_policy`).
+- Round two: a recording keyword without an audit log refused every call as a policy
+  error, though no policy had run (`test_no_audit_log_is_the_plain_gate`).
+- Round three: the package still allowed a kernel without the check of a decorated
+  tool's wrappers (`test_the_package_requires_the_kernel_that_walks_every_callable`),
+  and a `surface=` the kernel does not record refused every call with no audit entry
+  (`test_a_recording_value_decide_would_refuse_raises_naming_the_keyword`).
+- Round four: no changelog item. Its tests pin `judge_and_run` called directly and the
+  error raised when the stack runs out during the keyword check
+  (`test_judge_and_run_called_directly_answers_a_tool_error_only_when_asked`,
+  `test_a_stack_that_runs_out_while_a_recording_value_is_checked_is_not_the_values_fault`).
+
+What this does not show: a large number of generated cases is not a proof. The corpus is
+the inputs the review thought of, the mutations are a hand-written list, and the numbers
+are for one SDK version. Recusal is a Beta project, not a finished or certified security
+product. The results are for the code as it stands: a test reruns a part of each where
+the SDK is installed, and the full runs are the commands above.
+[What the gate refuses, and what it does not see](https://github.com/philpaz/recusal/blob/main/adapters/openai/README.md#what-the-gate-refuses-and-what-it-does-not-see)
+lists what stays outside the gate whatever the tests say, and
+[What a review consisted of](https://github.com/philpaz/recusal/blob/main/docs/REVIEW.md#recusal-openai)
+has the method in full, the other findings of each round and what each script checks.
 
 ## Compatibility
 

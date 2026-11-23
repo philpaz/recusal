@@ -6,7 +6,7 @@ The gate is the ``recusal-crewai`` package (``adapters/crewai`` in this reposito
 are imported from it. This file is the offline demonstration around it: a scripted
 model, tools that only record, and the SQL scope policy.
 
-Requires Python 3.11+ (the `recusal-crewai` package's minimum) and is tested with exactly crewai==1.15.40.
+Requires Python 3.11+ (the `recusal-crewai` package's minimum) and is tested with exactly crewai==1.15.44.
 Recusal itself remains Python 3.9+ and has no CrewAI dependency.
 
 The hook is CrewAI's own. CrewAI runs its ``before_tool_call`` hooks immediately before a
@@ -74,7 +74,7 @@ No model, API key or network is used: ``ScriptedLLM`` is a ``BaseLLM`` that prop
 calls from a script, and run_sql only records SQL text.
 
 Run after installing:
-    pip install crewai==1.15.40
+    pip install crewai==1.15.44
     python examples/crewai_gate.py
 """
 
@@ -86,7 +86,7 @@ import sys
 from types import SimpleNamespace
 from typing import Any, Optional
 
-CREWAI_VERSION = "1.15.40"
+CREWAI_VERSION = "1.15.44"
 
 if sys.version_info < (3, 11):
     print(

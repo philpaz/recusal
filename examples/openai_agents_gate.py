@@ -25,11 +25,18 @@ What the guardrail cannot see, so gated_agent refuses it rather than skipping it
   refused, so a tool type added in a later SDK release is refused too;
 - MCP servers attached with mcp_servers= (examples/openai_agents_mcp_gate.py gates those,
   and hosted MCP through its approval callback), and handoffs to other agents;
+- an agent with a prompt: a prompt stored on OpenAI's servers can configure tools of its
+  own, which are not in the agent's tools list;
 - a sub-agent behind agent.as_tool(...) whose own tools are not gated: the guardrail sees
   only the input handed to the sub-agent, never the calls it then makes. Gate the sub-agent
   first, gated_agent(sub, policy).as_tool(...), and the parent accepts it;
 - the experimental Codex tool, which runs its own commands;
 - Agent subclasses such as SandboxAgent, which add tools of their own at run time.
+
+A function tool no call to which could be judged is refused then too: a parameter the SDK
+prepares only by running the tool's own code (an Enum, a model, a custom validator such as
+transforming_sql_tool's below), a variadic parameter, or a wrapper around the function
+that takes a parameter of its own.
 
 gated_agent checks the agent when you call it. Build the agent completely, then gate it;
 a tool appended to the gated agent's list afterwards is not gated.

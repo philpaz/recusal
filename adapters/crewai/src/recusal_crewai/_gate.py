@@ -94,7 +94,7 @@ import re
 import sys
 import threading
 from types import FrameType, MethodType, MethodWrapperType, WrapperDescriptorType
-from typing import Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 from crewai.agents.agent_executor import AgentExecutor
 from crewai.hooks import (
@@ -116,6 +116,9 @@ from pydantic.fields import FieldInfo
 from recusal import Finding, decide
 from recusal.invocation import json_data as _json_data
 from recusal.invocation import supported_annotation as _supported_annotation
+
+if TYPE_CHECKING:
+    from crewai.hooks.types import AfterToolCallHookCallable, BeforeToolCallHookCallable
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -851,7 +854,7 @@ def _unjudgeable(tool_name: str, detail: str, proposal: Any, record: dict) -> st
         return f"Recusal refused `{tool_name}`: {detail}"
     bound = proposal if isinstance(proposal, dict) else {"input": proposal}
 
-    def unjudgeable(_name, _input):
+    def unjudgeable(_name: str, _input: dict[str, Any]) -> list[Finding]:
         return [Finding.fail("recusal_unjudgeable_input", severity="CRITICAL", message=detail)]
 
     try:
@@ -902,7 +905,7 @@ class _Denials:
     after hook never ran, and must not be attached to the next call that reuses the dict.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._local = threading.local()
 
     def _entries(self) -> list:
@@ -933,7 +936,7 @@ def recusal_before_tool_call(
     policy: Policy,
     denials: Optional[_Denials] = None,
     recording: Optional[Recording] = None,
-):
+) -> BeforeToolCallHookCallable:
     """Return a ``before_tool_call`` hook: ``False`` (block) on a refusal, ``None`` to run.
 
     ``denials`` is shared with the matching after hook (``install_recusal_hooks`` builds the
@@ -977,7 +980,9 @@ def recusal_before_tool_call(
     return gate
 
 
-def recusal_after_tool_call(policy: Policy, denials: Optional[_Denials] = None):
+def recusal_after_tool_call(
+    policy: Policy, denials: Optional[_Denials] = None
+) -> AfterToolCallHookCallable:
     """Return an ``after_tool_call`` hook that puts the before hook's reason in a blocked
     call's answer.
 

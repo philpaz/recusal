@@ -62,6 +62,38 @@ def test_every_lock_was_resolved_from_the_roots_its_sources_name_today():
 
 
 @needs_tomllib
+def test_a_cooling_off_exception_is_narrow_stated_and_removed_once_it_is_not_needed():
+    """A lock may take named releases before their seven days are up only to close a
+    published advisory. Each exception names advisories and packages that lock pins, the
+    lock says so in its header, no other lock carries such a line, and once the lock's own
+    cutoff has reached the exception's date the exception closes nothing and must go."""
+    tool = _tool()
+    locks = tool.definitions()
+    for path in _locks():
+        text = path.read_text(encoding="utf-8")
+        head = "".join(text.splitlines(keepends=True)[:4])
+        if path.stem not in tool.COOLING_OFF_EXCEPTIONS:
+            assert "# Except " not in head, path.name
+            continue
+        packages, until, advisories = tool.COOLING_OFF_EXCEPTIONS[path.stem]
+        assert path.stem in locks
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", until)
+        assert re.fullmatch(
+            r"GHSA(-[23456789cfghjmpqrvwx]{4}){3}( GHSA(-[23456789cfghjmpqrvwx]{4}){3})*",
+            advisories,
+        )
+        pinned = {name.lower() for name, _ in tool.pins(text)}
+        assert set(packages) <= pinned, f"{path.name} pins none of {sorted(set(packages) - pinned)}"
+        line = f"# Except {', '.join(packages)}: releases to {until}, to close {advisories}.\n"
+        assert line in head, path.name
+        cutoff = re.search(r"Releases newer than (\d{4}-\d{2}-\d{2})T", head).group(1)
+        assert cutoff < until, (
+            f"{path.name}: its cutoff {cutoff} has reached {until}; remove the exception from "
+            "COOLING_OFF_EXCEPTIONS and run: python tools/lock.py " + path.stem
+        )
+
+
+@needs_tomllib
 def test_the_staleness_check_notices_a_changed_root(monkeypatch):
     """Negative control for the test above."""
     tool = _tool()

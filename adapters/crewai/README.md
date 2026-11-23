@@ -45,9 +45,11 @@ Install it from PyPI:
 pip install recusal-crewai
 ```
 
-Requires Python 3.11+, `recusal>=0.14.0` and `crewai>=1.15.40`. It is
-tested on every pull request against exactly `crewai==1.15.40`, and weekly against the
-newest release.
+Requires Python 3.11+, `recusal>=0.14.0` and `crewai>=1.15.42`. It is
+tested on every pull request against exactly `crewai==1.15.44`, and weekly against the
+newest release. The floor is the first CrewAI release in which `chromadb` is optional:
+earlier releases install `chromadb` 1.5.9, which has published advisories and no fixed
+release.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 
@@ -187,6 +189,15 @@ order of a turn's entries on the chain is not always the order the model propose
   running the tool.
 - **Not on the audit log:** a call a hook registered before the gate blocked, and whatever
   a hook registered after the gate changed.
+
+**Beyond the gate.** This gate judges the tool calls the framework routes through it;
+the paths around it inside the framework are listed above. Like every Recusal gate, it
+does not stop an agent that can reach a resource another way: a credential with wider
+rights, a shell or network path outside the agent, or a file it can write that
+configures the gate. Use it as one layer of several: least-privilege credentials for the
+agent, a sandbox or container, limits on its network egress, and an audit anchor the
+writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
 
 ## Status
 
