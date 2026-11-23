@@ -56,6 +56,55 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **`recusal-openai-agents` 0.2.1: every `functools.singledispatch` function is refused
+  as a tool, registered or not.** Found by review round five and stated as open on the
+  0.2.0 package page; reproduced on `openai-agents` 0.24.0.
+  - A single-dispatch tool with nothing registered was accepted, and the guardrail
+    looked at its registry again on every call. The SDK checks every call of a model
+    turn before any tool body runs, so an implementation registered during a turn, by
+    another tool call of it or by the tool's own first use, ran for a later call of that
+    turn with a parameter no policy saw (judged `{target, overwrite}`, ran with
+    `recursive=True`). A `functools.singledispatch` function and a
+    `singledispatchmethod` are now refused when the agent is built, whether or not
+    anything is registered, with a `TypeError` that names the cause and what to do:
+    register one plain function as the tool and dispatch inside its body. **This
+    refuses tools 0.2.0 accepted**: a single-dispatch function with nothing registered.
+  - A dispatcher that is a callable object's `__call__` was not found under a
+    `functools.wraps` wrapper, and its registered implementation ran with its own
+    default. The question is now asked of every callable the gate's walk reaches (the
+    function, a `functools.partial`'s function, a bound method's function, the function
+    under a `staticmethod` or a `classmethod`, what `__wrapped__` names and a callable
+    object's `__call__`), which takes every step the kernel's `reached_parameters` walk
+    takes. A walk that does not finish, and a callable the question cannot be asked of,
+    are refused.
+  - A dispatcher was recognised by one code object read when the package was imported.
+    After `importlib.reload(functools)` a new dispatcher was not recognised; with
+    `functools.singledispatch` replaced before the import, an earlier dispatcher could
+    pass, and a replacement with no `__code__` made the import raise. A dispatcher is
+    now recognised in three ways, any one of which is enough: by that code object, as
+    read at import and as `functools` stands at the check; by how `functools` builds
+    the function (its closure holds a `dispatch` function whose closure holds the
+    registry dict); and by a `registry` that is exactly a `types.MappingProxyType`
+    beside a callable `dispatch` and a callable `register`. All are read from closure
+    cells and with `inspect.getattr_static`, so no code of the object runs. The import
+    reads the code object without raising, whatever stands at
+    `functools.singledispatch`. A `functools.wraps` wrapper over a dispatcher carries a
+    copy of its attributes and is refused with it; a service object with a `dispatch`
+    method and a `registry` that is not a mapping proxy is still gated.
+  - Should the kernel's walk itself refuse a dispatcher (`DispatchedAtCallTime`, in a
+    kernel later than 0.15.0), the tool is refused with the same reason, not as
+    "cannot be inspected".
+  - The refusal of an agent tool's `parameters` type named a type the data-only set
+    admits: a field with a pattern was reported as "pydantic core type `str`" and a
+    list of nested models as "`list`", and a model with a `model_validator` as a type
+    that "is not a Pydantic model". The refusal now names what puts the field outside:
+    a string pattern, what a list, a mapping or a union holds, a `Literal` of other
+    values, a validator, or the pydantic core type; a validator on the type as a whole
+    is named as that.
+  - Not changed, and listed in the README under what the gate does not see: a
+    dispatcher that a wrapper calls from a closure, a global or an attribute, and not
+    through `__wrapped__`, is not found.
+
 - **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
   CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has
   four published advisories (GHSA-36p7-vc44-83pf and GHSA-f4j7-r4q5-qw2c, critical;

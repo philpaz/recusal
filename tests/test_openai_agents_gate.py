@@ -1309,7 +1309,7 @@ class TestSecondReview:
                 return inner(*args, **kwargs)
 
         tool = example.function_tool(func, name_override="lookup", strict_mode=False)
-        expected = "cannot gate 'lookup': it is a `functools.singledispatch` function"
+        expected = "cannot gate 'lookup': it runs a `functools.singledispatch` function"
         with pytest.raises(TypeError, match=expected):
             example.gate_tools([tool], example.sql_scope_policy)
         with pytest.raises(TypeError, match=expected):
@@ -1325,7 +1325,7 @@ class TestSecondReview:
                 return "recorded"
 
         tool = example.function_tool(Service().lookup, name_override="lookup", strict_mode=False)
-        with pytest.raises(TypeError, match="it is a `functools.singledispatch` function"):
+        with pytest.raises(TypeError, match="it runs a `functools.singledispatch` function"):
             example.gate_tools([tool], example.sql_scope_policy)
 
     def test_negative_control_ungated_the_registered_implementation_runs_its_own_default(
@@ -1880,8 +1880,8 @@ class TestThirdReview:
         [
             (
                 "a-validator",
-                "model has a field outside the data-only set: `task` (pydantic core type "
-                "`function-after`). The gate works out",
+                "model has a field outside the data-only set: `task` (a validator, pydantic "
+                "core type `function-after`). The gate works out",
             ),
             ("a-serializer", "model writes `task` out through code of its own"),
             ("a-computed-field", "model writes `shout` out through code of its own"),
@@ -1936,7 +1936,7 @@ class TestThirdReview:
         reason = _adapter()._function_tool_refusal("ask_sub", '{"task": "x"}', policy, tool)
         assert reason.startswith(
             "Recusal refused `ask_sub`: its `parameters` model has a field outside the "
-            "data-only set: `task` (pydantic core type `function-after`)"
+            "data-only set: `task` (a validator, pydantic core type `function-after`)"
         )
         assert policy.seen == []
 
@@ -2066,36 +2066,20 @@ class TestThirdReview:
         assert example.gate_tools([tool], example.sql_scope_policy)
         assert touched == []
 
-    def test_a_singledispatch_function_with_nothing_registered_is_gated(self, example):
+    def test_a_singledispatch_function_with_nothing_registered_is_refused(self, example):
+        """It was gated until the fifth review: an implementation can be registered
+        after a call was judged and before it runs (``TestFifthReview``)."""
         import functools
-
-        ran: list = []
 
         @functools.singledispatch
         def lookup(key: str, force: bool = False) -> str:
             """Record a lookup; contacts nothing."""
-            ran.append({"key": key, "force": force})
             return "recorded"
 
+        assert len(lookup.registry) == 1
         tool = example.function_tool(lookup, strict_mode=False)
-        policy = self.Recording(lambda name, args: [])
-        (gated,) = example.gate_tools([tool], policy)
-        outputs, _ = example.run_calls([("lookup", {"key": "k"}, "c1")], gated=False, tools=[gated])
-        assert outputs == {"c1": "recorded"}
-        assert policy.seen == [("lookup", {"key": "k", "force": False})]
-        assert ran == [{"key": "k", "force": False}]
-
-        # an implementation registered after the tool was gated is refused on the next call
-        @lookup.register
-        def _(key: str, force: bool = False, include_deleted: bool = True) -> str:
-            ran.append({"key": key, "include_deleted": include_deleted})
-            return "recorded"
-
-        outputs, _ = example.run_calls([("lookup", {"key": "k"}, "c2")], gated=False, tools=[gated])
-        assert outputs["c2"].startswith(
-            "Recusal refused `lookup`: it is a `functools.singledispatch` function"
-        )
-        assert len(ran) == 1 and len(policy.seen) == 1
+        with pytest.raises(TypeError, match="it runs a `functools.singledispatch` function"):
+            example.gate_tools([tool], example.sql_scope_policy)
 
     def test_a_registry_whose_base_is_another_function_is_refused(self, example):
         """``registry[object]`` that is not the function ``__wrapped__`` names counts as
@@ -2113,7 +2097,7 @@ class TestThirdReview:
 
         assert len(lookup.registry) == 1
         tool = example.function_tool(lookup, strict_mode=False)
-        with pytest.raises(TypeError, match="it is a `functools.singledispatch` function"):
+        with pytest.raises(TypeError, match="it runs a `functools.singledispatch` function"):
             example.gate_tools([tool], example.sql_scope_policy)
 
     # --- a mapping keyed by a Literal of strings -------------------------------------------------
@@ -2257,7 +2241,7 @@ class TestFourthReview:
             "wrapped-twice": lambda: self.forwarding(self.forwarding(service.handle)),
         }[how]()
         tool = example.function_tool(func, name_override="handle", strict_mode=False)
-        expected = "cannot gate 'handle': it is a `functools.singledispatch` function"
+        expected = "cannot gate 'handle': it runs a `functools.singledispatch` function"
         with pytest.raises(TypeError, match=expected):
             example.gate_tools([tool], example.sql_scope_policy)
         with pytest.raises(TypeError, match=expected):
@@ -2272,97 +2256,21 @@ class TestFourthReview:
         example.run_calls([("handle", {"sql": "x"}, "c1")], gated=False, tools=[tool])
         assert ran == [("registered", "x", False, False)]
 
-    @pytest.mark.parametrize("how", ["bound", "classmethod", "wrapped", "wrapped-twice", "cached"])
-    def test_a_singledispatch_function_with_nothing_registered_is_gated_wherever_it_stands(
-        self, example, how
-    ):
-        """A ``functools.wraps`` wrapper over a dispatcher carries a copy of its
-        ``registry`` and ``dispatch`` attributes and names the dispatcher, not the
-        function it wraps, as ``__wrapped__``: it was taken for a dispatcher with an
-        implementation registered."""
-        import functools
-
-        ran: list = []
-        service = self.service(ran, register=False)
-
-        @functools.singledispatch
-        def plain(sql: str = "", force: bool = False) -> str:
-            """Record SQL text without connecting to a database."""
-            ran.append(("base", sql, force))
-            return "recorded"
-
-        func = {
-            "bound": lambda: service.handle,
-            "classmethod": lambda: service.on_class,
-            "wrapped": lambda: self.forwarding(plain),
-            "wrapped-twice": lambda: self.forwarding(self.forwarding(plain)),
-            "cached": lambda: functools.lru_cache(maxsize=None)(plain),
-        }[how]()
-        tool = example.function_tool(func, name_override="handle", strict_mode=False)
-        policy = self.Recording(lambda name, args: [])
-        outputs, _ = example.run_calls(
-            [("handle", {"sql": "x"}, "c1")], policy=policy, tools=[tool]
-        )
-        assert outputs == {"c1": "recorded"}
-        assert policy.seen == [("handle", {"sql": "x", "force": False})]
-        assert ran == [("base", "x", False)]
-
-    def test_the_dispatcher_is_known_by_its_code_and_its_registry_by_its_closure(self, example):
-        """What the exact identification rests on in ``functools``, so that a Python
-        which builds its dispatcher another way fails here and not silently."""
-        import functools
-        import types
-
+    def test_where_the_dispatchers_code_is_not_known_it_is_still_found(self, example, monkeypatch):
+        """With the code object not found, at import or now, the dispatcher is known by
+        its closure and by its attributes, and what the third review pinned holds."""
         adapter = _adapter()
-
-        @functools.singledispatch
-        def lookup(key: str) -> str:
-            return key
-
-        assert type(adapter._SINGLEDISPATCH_WRAPPER) is types.CodeType
-        assert type(lookup) is types.FunctionType
-        assert lookup.__code__ is adapter._SINGLEDISPATCH_WRAPPER
-        dispatch = adapter._closure_value(lookup, "dispatch")
-        assert dispatch is lookup.dispatch
-        registry = adapter._closure_value(dispatch, "registry")
-        assert type(registry) is dict and registry == dict(lookup.registry)
-        assert adapter._registered(lookup) is False
-        lookup.register(int)(lambda key: "int")
-        assert adapter._registered(lookup) is True
-        assert adapter._registered(self.forwarding(lookup)) is None
-        assert adapter._registered(print) is None and adapter._registered(Router([])) is None
-        # a wrapper's copy of the attributes says nothing: the closure is what dispatches
-        copy_of = self.forwarding(lookup)
-        assert copy_of.registry is lookup.registry
-        # a dispatcher whose registry cannot be read is taken as one that dispatches
-        real = adapter._closure_value
-        adapter._closure_value = lambda func, name: None
-        try:
-            assert adapter._registered(copy_of.__wrapped__) is True
-        finally:
-            adapter._closure_value = real
-        assert adapter._closure_value(lookup, "no_such_name") is None
-        # another function under ``object`` is an implementation registered
-        other = functools.singledispatch(lambda key: key)
-        other.register(object)(lambda key: "replaced")
-        assert len(other.registry) == 1 and adapter._registered(other) is True
-
-    def test_where_the_dispatchers_code_is_not_known_it_is_found_by_its_attributes(
-        self, example, monkeypatch
-    ):
-        """The path for a Python on which the code object is not found: the round-three
-        check, by a ``registry`` that is exactly a mapping proxy beside ``dispatch``."""
-        monkeypatch.setattr(_adapter(), "_SINGLEDISPATCH_WRAPPER", None)
+        monkeypatch.setattr(adapter, "_SINGLEDISPATCH_WRAPPER", None)
+        monkeypatch.setattr(adapter, "_singledispatch_wrapper_code", lambda: None)
         refused = example.function_tool(
             TestSecondReview.dispatching([]), name_override="lookup", strict_mode=False
         )
-        with pytest.raises(TypeError, match="it is a `functools.singledispatch` function"):
+        with pytest.raises(TypeError, match="it runs a `functools.singledispatch` function"):
             example.gate_tools([refused], example.sql_scope_policy)
-        # and everything the third review pinned for that check holds on this path
         third = TestThirdReview()
         third.test_a_service_object_with_a_dispatch_method_and_a_registry_is_gated(example)
         third.test_reading_for_a_singledispatch_function_runs_no_code_of_the_object(example)
-        third.test_a_singledispatch_function_with_nothing_registered_is_gated(example)
+        third.test_a_singledispatch_function_with_nothing_registered_is_refused(example)
         third.test_a_registry_whose_base_is_another_function_is_refused(example)
         # a service object whose ``registry`` is a plain dict is not one
         router = example.function_tool(Router([]), name_override="run_sql")
@@ -2385,7 +2293,7 @@ class TestFourthReview:
             "decimal": (decimal.Decimal, "decimal"),
             "uuid": (uuid.UUID, "uuid"),
             "path": (pathlib.Path, "lax-or-strict"),
-            "url": (AnyUrl, "function-wrap"),
+            "url": (AnyUrl, "function-wrap"),  # a validator of pydantic's own
             "frozenset": (typing.FrozenSet[str], "frozenset"),
             "sequence": (typing.Sequence[str], "json-or-python"),
             "tuple": (typing.Tuple[int, int], "tuple"),
@@ -2420,9 +2328,12 @@ class TestFourthReview:
         tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=parameters)
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
+        cause = f"pydantic core type `{kind}`"
+        if kind.startswith("function-"):
+            cause = f"a validator, {cause}"
         assert str(refusal.value) == (
             "Recusal cannot gate agent tool 'ask_sub': its `parameters` model has a field "
-            f"outside the data-only set: `value` (pydantic core type `{kind}`). The gate works "
+            f"outside the data-only set: `value` ({cause}). The gate works "
             "out what the sub-agent is given only for a Pydantic model the SDK's own rule for "
             "data-only validation admits (`can_prepare_without_user_code`) and that is written "
             "out with no code of its own. Declare fields that are str, int, float, bool, None, "
@@ -2556,3 +2467,858 @@ class TestFourthReview:
             is None
         )
         assert policy.seen == [("ask_sub", {"task": "list", "ratio": 0.5})]
+
+
+_REPLACED_AND_RELOADED = '''
+import functools
+import importlib
+
+pristine = functools.singledispatch
+
+
+class Traced:
+    """A class-based instrumentation wrapper: it has no ``__code__``."""
+
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+
+    def __call__(self, *args, **kwargs):
+        return self.wrapped(*args, **kwargs)
+
+
+functools.singledispatch = Traced(pristine)
+
+
+@pristine
+def early(value: str, force: bool = False) -> str:
+    """Made by the function as it was, before the package is imported."""
+    return "base"
+
+
+import recusal_openai_agents  # noqa: E402
+from agents import function_tool  # noqa: E402
+from recusal_openai_agents import _gate, gate_tools  # noqa: E402
+
+print("IMPORTED", _gate._SINGLEDISPATCH_WRAPPER)
+
+
+def attempt(label, func):
+    try:
+        gate_tools([function_tool(func)], lambda name, args: [])
+    except TypeError as exc:
+        print(label, "REFUSED" if "it runs a `functools.singledispatch` function" in str(exc) else exc)
+    else:
+        print(label, "GATED")
+
+
+attempt("early", early)
+importlib.reload(functools)
+assert functools.singledispatch is not pristine
+
+
+@functools.singledispatch
+def late(value: str, force: bool = False) -> str:
+    """Made after the reload, by a function with another code object."""
+    return "base"
+
+
+attempt("late", late)
+late.register(str)(lambda value, force=False, recursive=True: "registered")
+attempt("late-registered", late)
+'''
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestFifthReview:
+    """The fifth review of 2026-11-22, closed on 2026-11-23. A ``functools.singledispatch``
+    tool with nothing registered was gated, and the SDK judges every call of a model turn
+    before any tool body runs, so an implementation registered during a turn (by another
+    call of it, or by the tool's own first use) ran with a parameter no policy saw. A
+    dispatcher that is a callable object's ``__call__`` was not found under a forwarding
+    wrapper. The dispatcher was known by one code object read at import. And the refusal
+    of an agent tool's ``parameters`` type named a type the data-only set admits."""
+
+    example = TestJudgedIsWhatRuns.example
+    Recording = TestEffectiveArguments.Recording
+    REFUSED = "it runs a `functools.singledispatch` function"
+
+    # --- registered in the same turn: every dispatcher is refused when the agent is built ----
+
+    @staticmethod
+    def plugin_tools(example, events):
+        """The reviewer's shape: ``export`` has nothing registered, and ``load_plugin``
+        registers an implementation with a parameter of its own."""
+        import functools
+
+        @functools.singledispatch
+        def export(target: str, overwrite: bool = False) -> str:
+            """Record an export; contacts nothing."""
+            events.append(("base", target, overwrite))
+            return "exported"
+
+        def load_plugin(name: str) -> str:
+            """Record a plugin load; contacts nothing."""
+
+            @export.register(str)
+            def _(target, overwrite=False, recursive=True):
+                events.append(("registered", target, overwrite, recursive))
+                return "exported by the plugin"
+
+            return "loaded"
+
+        return [
+            example.function_tool(export, strict_mode=False),
+            example.function_tool(load_plugin),
+        ]
+
+    @staticmethod
+    def lazy_tool(example, events):
+        """One tool whose own first use registers an implementation."""
+        import functools
+
+        @functools.singledispatch
+        def render(doc: str, strict: bool = True) -> str:
+            """Record a rendering; contacts nothing."""
+            events.append(("base", doc, strict))
+            if len(render.registry) == 1:
+
+                @render.register(str)
+                def _(doc, strict=True, unsafe_html=True):
+                    events.append(("registered", doc, strict, unsafe_html))
+                    return "text"
+
+            return "base"
+
+        return example.function_tool(render, strict_mode=False)
+
+    @pytest.mark.parametrize("order", ["load-then-export", "export-then-load"])
+    def test_a_dispatcher_another_call_of_the_turn_would_register_on_is_refused(
+        self, example, order
+    ):
+        events: list = []
+        tools = self.plugin_tools(example, events)
+        if order == "export-then-load":
+            tools.reverse()
+        policy = self.Recording(lambda name, args: [])
+        with pytest.raises(TypeError, match=f"cannot gate 'export': {self.REFUSED}"):
+            example.gated_agent(example.Agent(name="a", tools=tools), policy)
+        with pytest.raises(TypeError, match=f"cannot gate 'export': {self.REFUSED}"):
+            example.gate_tools(tools, policy)
+        assert events == [] and policy.seen == []
+
+    def test_negative_control_ungated_an_implementation_registered_in_the_turn_runs(self, example):
+        """Why registered or not makes no difference: the call to ``export`` is checked
+        while nothing is registered, and runs the implementation the earlier call of the
+        same turn registered, with ``recursive`` at its own default."""
+        events: list = []
+        tools = self.plugin_tools(example, events)
+        assert "recursive" not in tools[0].params_json_schema["properties"]
+        outputs, _ = example.run_calls(
+            [("load_plugin", {"name": "s3"}, "c1"), ("export", {"target": "bucket"}, "c2")],
+            gated=False,
+            tools=tools,
+        )
+        assert outputs == {"c1": "loaded", "c2": "exported by the plugin"}
+        assert events == [("registered", "bucket", False, True)]
+
+    def test_a_dispatcher_that_registers_on_its_own_first_use_is_refused(self, example):
+        events: list = []
+        tool = self.lazy_tool(example, events)
+        with pytest.raises(TypeError, match=f"cannot gate 'render': {self.REFUSED}"):
+            example.gated_agent(example.Agent(name="a", tools=[tool]), lambda name, args: [])
+        assert events == []
+
+    def test_negative_control_ungated_the_second_call_of_the_turn_runs_the_new_one(self, example):
+        events: list = []
+        tool = self.lazy_tool(example, events)
+        example.run_calls(
+            [("render", {"doc": "a"}, "c1"), ("render", {"doc": "b"}, "c2")],
+            gated=False,
+            tools=[tool],
+        )
+        assert events == [("base", "a", True), ("registered", "b", True, True)]
+
+    @staticmethod
+    def shapes(register):
+        """A dispatcher in every place a call reaches one, by name."""
+        import functools
+
+        forwarding = TestFourthReview.forwarding
+        service = TestFourthReview.service([], register=register)
+
+        def plain():
+            @functools.singledispatch
+            def handle(sql: str = "", force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                return "recorded"
+
+            if register:
+                handle.register(str)(lambda sql="", force=False, dry_run=False: "recorded")
+            return handle
+
+        class Callable:
+            __call__ = functools.singledispatch(lambda self, sql="", force=False: "recorded")
+
+        class Static:
+            handle = staticmethod(plain())
+
+        class Method:
+            @functools.singledispatchmethod
+            def handle(self, sql: str = "", force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                return "recorded"
+
+        if register:
+            Callable.__call__.register(Callable)(
+                lambda self, sql="", force=False, dry_run=False: "recorded"
+            )
+            Method.handle.register(str)(lambda self, sql="", force=False, dry_run=False: "recorded")
+        return {
+            "the-tool": plain,
+            "wrapped": lambda: forwarding(plain()),
+            "wrapped-twice": lambda: forwarding(forwarding(plain())),
+            "cached": lambda: functools.lru_cache(maxsize=None)(plain()),
+            "wrapped-over-cached": lambda: forwarding(functools.lru_cache(maxsize=None)(plain())),
+            "bound": lambda: service.handle,
+            "bound-wrapped": lambda: forwarding(service.handle),
+            "classmethod": lambda: service.on_class,
+            "staticmethod": lambda: Static().handle,
+            "the-staticmethod-object": lambda: Static.__dict__["handle"],
+            "singledispatchmethod": lambda: Method().handle,
+            "singledispatchmethod-wrapped": lambda: forwarding(Method().handle),
+            "bound-call": lambda: Callable().__call__,
+            "wrapped-over-a-callable-object": lambda: forwarding(Callable()),
+            "wrapped-twice-over-a-callable-object": lambda: forwarding(forwarding(Callable())),
+        }
+
+    SHAPES = [
+        "the-tool",
+        "wrapped",
+        "wrapped-twice",
+        "cached",
+        "wrapped-over-cached",
+        "bound",
+        "bound-wrapped",
+        "classmethod",
+        "staticmethod",
+        "the-staticmethod-object",
+        "singledispatchmethod",
+        "singledispatchmethod-wrapped",
+        "bound-call",
+        "wrapped-over-a-callable-object",
+        "wrapped-twice-over-a-callable-object",
+    ]
+
+    @pytest.mark.parametrize("register", [False, True], ids=["nothing-registered", "registered"])
+    @pytest.mark.parametrize("how", SHAPES)
+    def test_a_dispatcher_is_refused_wherever_it_stands_registered_or_not(
+        self, example, how, register
+    ):
+        shapes = self.shapes(register)
+        assert sorted(shapes) == sorted(self.SHAPES)
+        tool = example.function_tool(shapes[how](), name_override="handle", strict_mode=False)
+        with pytest.raises(TypeError, match=f"cannot gate 'handle': {self.REFUSED}"):
+            example.gate_tools([tool], example.sql_scope_policy)
+        with pytest.raises(TypeError, match=f"cannot gate 'handle': {self.REFUSED}"):
+            example.gated_agent(example.Agent(name="a", tools=[tool]), example.sql_scope_policy)
+
+    def test_negative_control_ungated_a_wrapped_callable_objects_dispatcher_runs_its_own(
+        self, example
+    ):
+        """The reviewer's second shape: the dispatcher is a callable object's ``__call__``
+        under a forwarding wrapper, and the registered implementation adds ``dry_run``."""
+        import functools
+
+        ran: list = []
+
+        class Runner:
+            __call__ = functools.singledispatch(
+                lambda self, sql="", force=False: ran.append(("base", sql, force)) or "recorded"
+            )
+
+        @Runner.__call__.register(Runner)
+        def _(self, sql: str = "", force: bool = False, dry_run: bool = False):
+            ran.append(("registered", sql, force, dry_run))
+            return "recorded"
+
+        tool = example.function_tool(
+            TestFourthReview.forwarding(Runner()), name_override="handle", strict_mode=False
+        )
+        assert "dry_run" not in tool.params_json_schema["properties"]
+        example.run_calls([("handle", {"sql": "x"}, "c1")], gated=False, tools=[tool])
+        assert ran == [("registered", "x", False, False)]
+
+    def test_the_refusal_says_the_cause_and_what_to_do(self, example):
+        tool = example.function_tool(
+            self.shapes(False)["the-tool"](), name_override="handle", strict_mode=False
+        )
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value) == (
+            "Recusal cannot gate 'handle': it runs a `functools.singledispatch` function: the "
+            "implementation that runs is chosen at call time by the type of an argument, one "
+            "can be registered at any moment, and each has its own parameters and defaults, "
+            "so the gate cannot tie a call to the function that will run. Register one plain "
+            "function as the tool and dispatch inside its body."
+        )
+
+    def test_the_guardrail_asks_again_on_every_call(self, example):
+        """A tool that was gated and whose function is then changed so that it reaches a
+        dispatcher is refused on its next call, before the policy and the body."""
+        import functools
+
+        ran: list = []
+
+        def run_sql(sql: str) -> str:
+            """Record SQL text without connecting to a database."""
+            ran.append(sql)
+            return "recorded"
+
+        policy = self.Recording(lambda name, args: [])
+        (gated,) = example.gate_tools([example.function_tool(run_sql)], policy)
+        outputs, _ = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c1")], gated=False, tools=[gated]
+        )
+        assert outputs == {"c1": "recorded"} and ran == [SELECT]
+        run_sql.__wrapped__ = functools.singledispatch(lambda sql: "other")  # type: ignore[attr-defined]
+        outputs, _ = example.run_calls(
+            [("run_sql", {"sql": SELECT}, "c2")], gated=False, tools=[gated]
+        )
+        assert outputs["c2"].startswith(f"Recusal refused `run_sql`: {self.REFUSED}")
+        assert ran == [SELECT] and len(policy.seen) == 1
+
+    # --- every callable the kernel's walk visits is asked ---------------------------------------
+
+    def test_the_gates_walk_takes_every_step_the_kernels_walk_takes(self, example):
+        """The dispatcher question is asked of the callables ``_reached_callables`` finds.
+        For each shape, whatever the kernel's own step leads to from a callable the gate
+        reached is reached by the gate too, as the function under it."""
+        import functools
+        import inspect
+
+        from recusal import invocation
+
+        adapter = _adapter()
+
+        def under(link):
+            while inspect.ismethod(link) or isinstance(link, functools.partial):
+                link = link.__func__ if inspect.ismethod(link) else link.func
+            return link
+
+        def plain(sql: str = "", force: bool = False) -> str:
+            return "recorded"
+
+        class Callable:
+            def __call__(self, sql: str = "", force: bool = False) -> str:
+                return "recorded"
+
+        class Decorator:
+            def __init__(self, wrapped):
+                functools.update_wrapper(self, wrapped)
+
+            def __call__(self, *args, **kwargs):
+                return self.__wrapped__(*args, **kwargs)
+
+        forwarding = TestFourthReview.forwarding
+        shapes = [
+            plain,
+            forwarding(forwarding(plain)),
+            functools.lru_cache(maxsize=None)(forwarding(plain)),
+            functools.partial(forwarding(plain), force=True),
+            Callable(),
+            Callable().__call__,
+            forwarding(Callable()),
+            Decorator(plain),
+            forwarding(Decorator(forwarding(plain))),
+            staticmethod(plain),
+            *(make() for make in self.shapes(True).values()),
+        ]
+        step = getattr(invocation, "_next_callables", None)
+        one_argument = step is not None and len(inspect.signature(step).parameters) == 1
+        for func in shapes:
+            reached, complete = adapter._reached_callables(func)
+            assert complete and reached[0] is func
+            assert all(sum(link is other for other in reached) == 1 for link in reached)
+            if not one_argument:
+                continue  # a kernel whose step takes more: it refuses a dispatcher itself
+            for link in reached:
+                try:
+                    following = step(link)
+                except TypeError:
+                    continue  # a ``__call__`` the kernel refuses to read
+                for nxt in following:
+                    assert any(under(nxt) is other for other in reached), (func, link, nxt)
+
+    def test_a_walk_that_does_not_finish_is_refused(self, example, monkeypatch):
+        tool = example.function_tool(TestFourthReview.forwarding(self.plain_function()))
+        assert example.gate_tools([tool], example.sql_scope_policy)
+        monkeypatch.setattr(_adapter(), "_MAX_REACHED", 1)
+        with pytest.raises(TypeError, match="under more wrappers than the gate reads"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    @staticmethod
+    def plain_function():
+        def run_sql(sql: str) -> str:
+            """Record SQL text without connecting to a database."""
+            return "recorded"
+
+        return run_sql
+
+    def test_a_callable_the_question_cannot_be_asked_of_is_refused(self, example, monkeypatch):
+        tool = example.function_tool(self.plain_function())
+
+        def broken(link):
+            raise RuntimeError("no answer")
+
+        monkeypatch.setattr(_adapter(), "_is_dispatcher", broken)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value) == (
+            "Recusal cannot gate 'run_sql': the gate could not tell whether a callable it "
+            "reaches is a `functools.singledispatch` function (RuntimeError), and one is "
+            "refused. Register one plain function as the tool."
+        )
+
+    def test_a_kernel_that_refuses_a_dispatcher_itself_gets_the_same_reason(
+        self, example, monkeypatch
+    ):
+        """A later kernel's walk raises ``DispatchedAtCallTime`` for a dispatcher it finds.
+        The released kernel has no such class, so it is known by its name."""
+        adapter = _adapter()
+        tool = example.function_tool(self.plain_function())
+
+        class DispatchedAtCallTime(ValueError):
+            pass
+
+        def walk(func):
+            raise DispatchedAtCallTime("chosen at call time")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", walk)
+        with pytest.raises(TypeError, match=f"cannot gate 'run_sql': {self.REFUSED}"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+        def other(func):
+            raise ValueError("something else")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", other)
+        with pytest.raises(TypeError, match=r"cannot be inspected \(ValueError\)"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    # --- how a dispatcher is known ---------------------------------------------------------------
+
+    @staticmethod
+    def dispatcher():
+        import functools
+
+        @functools.singledispatch
+        def lookup(key: str) -> str:
+            return key
+
+        return lookup
+
+    def test_each_of_the_three_ways_knows_a_dispatcher_on_its_own(self, example, monkeypatch):
+        import types
+
+        adapter = _adapter()
+        lookup = self.dispatcher()
+        assert type(lookup) is types.FunctionType
+        assert type(adapter._SINGLEDISPATCH_WRAPPER) is types.CodeType
+        assert lookup.__code__ is adapter._SINGLEDISPATCH_WRAPPER
+        assert lookup.__code__ is adapter._singledispatch_wrapper_code()
+        dispatch = adapter._closure_value(lookup, "dispatch")
+        assert dispatch is lookup.dispatch
+        assert type(adapter._closure_value(dispatch, "registry")) is dict
+        assert adapter._closure_value(lookup, "no_such_name") is None
+        for plain in (print, len, Router([]), None, self.plain_function(), "text"):
+            assert adapter._dispatch_function(plain) is False
+            assert adapter._is_dispatcher(plain) is False
+
+        # the attributes alone: no code known, a closure that cannot be read
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_SINGLEDISPATCH_WRAPPER", None)
+            patch.setattr(adapter, "_singledispatch_wrapper_code", lambda: None)
+            patch.setattr(adapter, "_closure_value", lambda func, name: None)
+            assert adapter._dispatch_function(lookup) is True
+            # a wrapper that carries a copy of them is taken for one
+            assert adapter._dispatch_function(TestFourthReview.forwarding(lookup)) is True
+
+        bare = self.dispatcher()
+        for name in ("registry", "dispatch", "register"):
+            delattr(bare, name)
+        assert adapter._dispatch_function(bare) is True
+        # the closure alone
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_SINGLEDISPATCH_WRAPPER", None)
+            patch.setattr(adapter, "_singledispatch_wrapper_code", lambda: None)
+            assert adapter._dispatch_function(bare) is True
+            patch.setattr(adapter, "_closure_value", lambda func, name: None)
+            assert adapter._dispatch_function(bare) is False
+        # the code as it was at import alone, and as functools has it now alone
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_closure_value", lambda func, name: None)
+            assert adapter._dispatch_function(bare) is True
+            patch.setattr(adapter, "_singledispatch_wrapper_code", lambda: None)
+            assert adapter._dispatch_function(bare) is True
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_closure_value", lambda func, name: None)
+            patch.setattr(adapter, "_SINGLEDISPATCH_WRAPPER", None)
+            assert adapter._dispatch_function(bare) is True
+
+    @pytest.mark.parametrize("missing", ["registry", "dispatch", "register", "nothing"])
+    def test_the_attributes_are_a_mapping_proxy_beside_two_callables(self, example, missing):
+        """An object that is no function is known by all three attributes together; a
+        ``registry`` of another type, or one of the two callables missing, is not one."""
+        import types
+
+        class Service:
+            def __call__(self, sql: str) -> str:
+                """Record SQL text without connecting to a database."""
+                return "recorded"
+
+        attributes = {
+            "registry": types.MappingProxyType({object: None}),
+            "dispatch": lambda self, cls: None,
+            "register": lambda self, cls: None,
+        }
+        if missing == "registry":
+            attributes["registry"] = {object: None}  # a plain dict
+        elif missing != "nothing":
+            del attributes[missing]
+        for name, value in attributes.items():
+            setattr(Service, name, value)
+        tool = example.function_tool(Service(), name_override="run_sql")
+        if missing == "nothing":
+            assert _adapter()._dispatch_function(Service()) is True
+            with pytest.raises(TypeError, match=self.REFUSED):
+                example.gate_tools([tool], example.sql_scope_policy)
+        else:
+            assert _adapter()._dispatch_function(Service()) is False
+            assert example.gate_tools([tool], example.sql_scope_policy)
+
+    def test_asking_runs_no_code_of_the_object(self, example):
+        touched: list = []
+
+        class Lazy:
+            def __getattr__(self, name):
+                touched.append(name)
+                raise AttributeError(name)
+
+            @property
+            def register(self):
+                touched.append("register")
+                return lambda cls: None
+
+            @property
+            def _unbound(self):
+                touched.append("_unbound")
+                return None
+
+            @property
+            def dispatcher(self):
+                touched.append("dispatcher")
+                return None
+
+        assert _adapter()._is_dispatcher(Lazy()) is False
+        assert touched == []
+
+    def test_a_dispatcher_built_by_another_copy_of_functools_is_refused(self, example):
+        """What ``importlib.reload(functools)`` leaves behind: a ``singledispatch`` with
+        another code object and a ``singledispatchmethod`` of another class. Built here
+        from a second copy of the module, so the interpreter's own is left alone."""
+        import functools
+        import importlib.util
+
+        adapter = _adapter()
+        spec = importlib.util.find_spec("functools")
+        assert spec is not None and spec.loader is not None
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+        assert other.singledispatch is not functools.singledispatch
+        assert other.singledispatchmethod is not functools.singledispatchmethod
+
+        @other.singledispatch
+        def lookup(key: str, force: bool = False) -> str:
+            """Record a lookup; contacts nothing."""
+            return "recorded"
+
+        assert lookup.__code__ is not adapter._SINGLEDISPATCH_WRAPPER
+        assert lookup.__code__ is not adapter._singledispatch_wrapper_code()
+
+        class Service:
+            @other.singledispatchmethod
+            def lookup(self, key: str, force: bool = False) -> str:
+                """Record a lookup; contacts nothing."""
+                return "recorded"
+
+        assert not isinstance(Service.__dict__["lookup"], functools.singledispatchmethod)
+        for func in (lookup, TestFourthReview.forwarding(lookup), Service().lookup):
+            tool = example.function_tool(func, name_override="lookup", strict_mode=False)
+            with pytest.raises(TypeError, match=f"cannot gate 'lookup': {self.REFUSED}"):
+                example.gate_tools([tool], example.sql_scope_policy)
+
+    def test_the_code_is_read_without_raising_whatever_stands_at_singledispatch(
+        self, example, monkeypatch
+    ):
+        import functools
+        import types
+
+        adapter = _adapter()
+        pristine = functools.singledispatch
+        assert adapter._singledispatch_wrapper_code() is self.dispatcher().__code__
+
+        class NoCode:
+            def __call__(self, func):
+                return pristine(func)
+
+        class Raises:
+            @property
+            def __code__(self):
+                raise RuntimeError("instrumented")
+
+        class NotCode:
+            __code__ = "text"
+
+        def two_of_them(func):
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            first = wrapper
+
+            def wrapper(*args, **kwargs):  # noqa: F811
+                return first(*args, **kwargs)
+
+            return wrapper
+
+        def one_of_them(func):
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            return wrapper
+
+        def none_of_them(func):
+            return func
+
+        class LooksLikeCode:
+            # not a code object, though it holds one nested function named ``wrapper``
+            __code__ = types.SimpleNamespace(co_consts=one_of_them.__code__.co_consts)
+
+        assert [c.co_name for c in LooksLikeCode.__code__.co_consts if hasattr(c, "co_name")] == [
+            "wrapper"
+        ]
+        replacements = (
+            NoCode(),
+            Raises(),
+            NotCode(),
+            LooksLikeCode(),
+            two_of_them,
+            none_of_them,
+            None,
+        )
+        for replacement in replacements:
+            monkeypatch.setattr(functools, "singledispatch", replacement)
+            assert adapter._singledispatch_wrapper_code() is None, replacement
+        monkeypatch.setattr(functools, "singledispatch", one_of_them)
+        found = adapter._singledispatch_wrapper_code()
+        assert type(found) is types.CodeType and found is one_of_them(len).__code__
+        monkeypatch.setattr(functools, "singledispatch", pristine)
+
+    def test_how_a_singledispatchmethod_is_known(self, example):
+        """By its class (a subclass too), or by the class's name together with a
+        ``dispatcher`` that is a dispatch function; what it hands out, by the bound
+        ``register`` it carries or by the descriptor it holds as ``_unbound`` (the shape
+        Python 3.14 gives it, built by hand here so every Python runs it)."""
+        import functools
+
+        adapter = _adapter()
+
+        class Renamed(functools.singledispatchmethod):
+            pass
+
+        class Service:
+            @Renamed
+            def lookup(self, key: str, force: bool = False) -> str:
+                """Record a lookup; contacts nothing."""
+                return "recorded"
+
+            @functools.singledispatchmethod
+            def plain(self, key: str = "") -> str:
+                return key
+
+        descriptor = Service.__dict__["lookup"]
+        assert type(descriptor).__name__ == "Renamed"
+        assert adapter._dispatch_method_descriptor(descriptor) is True
+        assert adapter._dispatch_method(Service().lookup) is True
+        tool = example.function_tool(Service().lookup, strict_mode=False)
+        with pytest.raises(TypeError, match=f"cannot gate 'lookup': {self.REFUSED}"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+        # the name of the class says nothing without a dispatcher under it
+        class singledispatchmethod:  # noqa: N801, the name is the point
+            dispatcher = None
+
+        assert adapter._dispatch_method_descriptor(singledispatchmethod()) is False
+        singledispatchmethod.dispatcher = self.dispatcher()
+        assert adapter._dispatch_method_descriptor(singledispatchmethod()) is True
+
+        class HandedOut:
+            def __init__(self, unbound):
+                self._unbound = unbound
+
+        assert adapter._dispatch_method(HandedOut(Service.__dict__["plain"])) is True
+        assert adapter._dispatch_method(HandedOut(None)) is False
+        assert adapter._dispatch_method(HandedOut(self.plain_function())) is False
+
+    def test_importing_the_package_under_a_replaced_singledispatch_and_a_reload(self, example):
+        """In a process of its own: ``functools.singledispatch`` replaced by an object
+        with no ``__code__`` before the import, which made the import raise, then
+        ``functools`` reloaded, after which a new dispatcher was gated."""
+        import os
+
+        src = ROOT / "adapters" / "openai-agents" / "src"
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT), str(src)]))
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-c", _REPLACED_AND_RELOADED],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=300,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [
+            "IMPORTED None",
+            "early REFUSED",
+            "late REFUSED",
+            "late-registered REFUSED",
+        ]
+
+    # --- an agent tool's parameters type: what puts a field outside ----------------------------
+
+    @staticmethod
+    def outside():
+        import datetime
+
+        from pydantic import BaseModel, Field, field_validator, model_validator
+
+        class Inner(BaseModel):
+            name: str
+
+        class Pattern(BaseModel):
+            task: str
+            value: str = Field(pattern=r"^[a-z]+$")
+
+        class OptionalPattern(BaseModel):
+            task: str
+            value: typing.Optional[str] = Field(None, pattern=r"^[a-z]+$")
+
+        class NestedModels(BaseModel):
+            task: str
+            value: typing.List[Inner]
+
+        class ListOfDates(BaseModel):
+            task: str
+            value: typing.List[typing.List[datetime.date]] = []
+
+        class InAUnion(BaseModel):
+            task: str
+            value: typing.Union[int, datetime.date] = 0
+
+        class OptionalDate(BaseModel):
+            task: str
+            value: typing.Optional[datetime.date] = None
+
+        class FloatLiteral(BaseModel):
+            task: str
+            value: typing.Literal[0.5, 1.5] = 0.5
+
+        class FieldValidator(BaseModel):
+            task: str
+            value: str = ""
+
+            @field_validator("value")
+            @classmethod
+            def check(cls, value):
+                return value
+
+        class ModelValidator(BaseModel):
+            task: str
+
+            @model_validator(mode="after")
+            def check(self):
+                return self
+
+        field = "model has a field outside the data-only set: `value` "
+        return {
+            "a-pattern": (Pattern, field + "(a string pattern). "),
+            "an-optional-pattern": (OptionalPattern, field + "(a string pattern). "),
+            "a-list-of-models": (NestedModels, field + "(a list of pydantic core type `model`). "),
+            "a-list-of-lists-of-dates": (
+                ListOfDates,
+                field + "(a list of a list of pydantic core type `date`). ",
+            ),
+            "a-date-in-a-union": (InAUnion, field + "(a union with pydantic core type `date`). "),
+            "an-optional-date": (OptionalDate, field + "(pydantic core type `date`). "),
+            "a-literal-of-floats": (
+                FloatLiteral,
+                field + "(a `Literal` of values other than None, a bool, an int or a str). ",
+            ),
+            "a-field-validator": (
+                FieldValidator,
+                field + "(a validator, pydantic core type `function-after`). ",
+            ),
+            "a-model-validator": (
+                ModelValidator,
+                "type has a validator of its own on the type as a whole (a `model_validator`, "
+                "for one; its pydantic core type is `function-after`). ",
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "a-pattern",
+            "an-optional-pattern",
+            "a-list-of-models",
+            "a-list-of-lists-of-dates",
+            "a-date-in-a-union",
+            "an-optional-date",
+            "a-literal-of-floats",
+            "a-field-validator",
+            "a-model-validator",
+        ],
+    )
+    def test_a_refused_parameters_type_names_what_puts_it_outside(self, example, case):
+        """``str`` and ``list`` are in the data-only set: a pattern field was reported as
+        "pydantic core type `str`", a list of models as "`list`", and a model with a
+        validator as a type that "is not a Pydantic model"."""
+        parameters, named = self.outside()[case]
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=parameters)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value) == (
+            f"Recusal cannot gate agent tool 'ask_sub': its `parameters` {named}"
+            "The gate works out what the sub-agent is given only for a Pydantic model the "
+            "SDK's own rule for data-only validation admits (`can_prepare_without_user_code`) "
+            "and that is written out with no code of its own. Declare fields that are str, "
+            "int, float, bool, None, Literal and lists of them, with JSON defaults, and build "
+            "other types inside the sub-agent's own tools."
+        )
+
+    def test_the_cause_of_a_schema_the_gate_cannot_read_is_still_a_sentence(self, example):
+        cause = _adapter()._outside_cause
+        assert cause(None) == "pydantic core type unknown"
+        assert cause({}) == "pydantic core type unknown"
+        assert cause({"type": "dict", "values_schema": {"type": "date"}}) == (
+            "a mapping with values of pydantic core type `date`"
+        )
+        assert cause({"type": "dict", "keys_schema": {"type": "date"}}) == (
+            "a mapping with keys of pydantic core type `date`"
+        )
+        nested = {"type": "default", "schema": {"type": "nullable", "schema": {"type": "set"}}}
+        assert cause(nested) == "pydantic core type `set`"

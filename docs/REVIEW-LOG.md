@@ -386,11 +386,12 @@ setup was found.
 
 **Where it stands.** `recusal-openai-agents` 0.2.0 is released (tag
 `recusal-openai-agents-v0.2.0`, 2026-11-22), with the fixes of the rounds below, merged in
-[#297](https://github.com/philpaz/recusal/pull/297). The review continues: its package
-page states the open items below. [Package](../adapters/openai-agents/README.md).
+[#297](https://github.com/philpaz/recusal/pull/297). The review continues: the findings
+of round five are closed in the source after 0.2.0 and are not in a release yet.
+[Package](../adapters/openai-agents/README.md).
 
 **The rounds.** `review-history/openai-agents` holds a first commit and the commits of
-rounds two to four. A fifth round found the open items below.
+rounds two to four. A fifth round found what the last entry below closes.
 
 - **The first commit** (`bfc41e5`). For one kind of tool the gate named every argument
   one parameter off, so the policy saw the SQL under the wrong name and it ran. The gate
@@ -407,34 +408,38 @@ rounds two to four. A fifth round found the open items below.
   method is recognised, and the refusal of an agent tool's `parameters` type names its
   reason.
 
-**Open items**, from round five. All are about `functools.singledispatch`. None is fixed
-in the code; 0.2.0 corrects the sentence the first item names and states the items on the
-package page.
+- **Round five** found four things, all in 0.2.0, and the changelog entry for 0.2.1
+  closes them. They are pinned by `TestFifthReview` in
+  [`tests/test_openai_agents_gate.py`](../tests/test_openai_agents_gate.py).
+  - The most serious. A single-dispatch tool with nothing registered was accepted. The
+    SDK checks every call of a model turn before any tool body runs. So an
+    implementation registered during the same turn, by another tool call or by the
+    tool's own first use, ran without having been judged. Every single-dispatch function
+    is now refused when the tool is gated, whether or not anything is registered.
+  - A single-dispatch function that is a callable object's `__call__`, under a
+    `functools.wraps` wrapper, was not found. The question is now asked of every
+    callable `_reached_callables` finds, which follows `__call__`.
+  - A single-dispatch function was recognised by one code object read at import. If
+    `functools` was reloaded, or `functools.singledispatch` was replaced before the
+    import, one was not recognised, and one kind of replacement made the package's
+    import raise. It is now recognised in three ways, any one of which is enough, and
+    whatever stands at `functools.singledispatch`, the import goes on.
+  - `_agent_tool_parameters_reason` named the wrong cause for some fields: a pattern
+    field, a list of nested models, a model with a validator. Two sentences of the
+    README overstated what is found.
 
-- **The most serious.** A single-dispatch tool with nothing registered is accepted. The
-  SDK checks every call of a model turn before any tool body runs. So an implementation
-  registered during the same turn, by another tool call or by the tool's own first use,
-  runs without having been judged. The README and the changelog had said an
-  implementation "registered afterwards refuses its next call", which is not true in that
-  case; they now say so, and say not to register implementations while an agent runs.
-  The decision is taken and not yet built: refuse every single-dispatch function when
-  the tool is gated, whether or not anything is registered.
-- A single-dispatch function that is a callable object's `__call__`, under a
-  `functools.wraps` wrapper, is not found. `_wrapped_chain` does not follow `__call__`,
-  and the kernel's walk does.
-- A single-dispatch function is recognised by one code object read at import. If
-  `functools` is reloaded, or `functools.singledispatch` was replaced before the import,
-  one is not recognised, and one kind of replacement makes the package's import raise.
-- **Messages and documentation.** `_agent_tool_parameters_reason` names the wrong cause
-  for some fields: a pattern field, a list of nested models, a model with a validator.
-  Two sentences of the README overstate what is found.
-- **Tests.** Some checks are not pinned by a test, and the items above need tests.
+**Open items.**
+
+- No review round has been run on the changes that close round five.
+- A single-dispatch function that a wrapper calls from a closure, a global or an
+  attribute, and not through `__wrapped__`, is not found. The README lists it under what
+  the gate does not see.
 
 **Where you can help.**
 
-- Read `_wrapped_chain`, `_registered` and `_agent_tool_parameters_reason` in
+- Read `_reached_callables`, `_dispatch_function`, `_dispatch_method` and
+  `_agent_tool_parameters_reason` in
   [`_gate.py`](../adapters/openai-agents/src/recusal_openai_agents/_gate.py).
-- Write the test for the same-turn item: two calls in one turn, in both orders.
 - Run the adapter's tests against an `openai-agents` release newer than the one in
   [`adapters/openai-agents/tested-with.txt`](../adapters/openai-agents/tested-with.txt).
 - The scripts of this review are not in the repository.

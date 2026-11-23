@@ -217,29 +217,41 @@ guardrail cannot judge:
   hides the functions under it from inspection. Call the decorated function from a plain
   function and register that. `functools.lru_cache` and `functools.cache` are read
   through and gated.
-- **A `functools.singledispatch` function with an implementation registered, or a
-  `singledispatchmethod`.** The implementation that runs is chosen by the type of an
-  argument, and each one has its own parameters and defaults. Register one plain
-  function and dispatch inside its body. The dispatcher is found wherever it stands
-  among the callables the call reaches: as the tool itself, as a method or a class
-  method (`function_tool(service.handle)`), and under `functools.wraps` wrappers or
-  `functools.lru_cache`. A `singledispatch` function with nothing registered is the
-  function it wraps, and is gated in each of those places; an implementation registered
-  after the tool was gated refuses its next call in a later model turn, but not in the
-  same turn: the SDK checks every call of a turn before any tool body runs, so an
-  implementation one call of a turn registers runs, unjudged, for a later call of that
-  turn. This is open; until it is closed, do not register implementations of a
-  dispatcher that is a tool while an agent runs. A wrapper that only carries a copy of
-  a dispatcher's attributes, and a callable object that happens to have a `dispatch`
-  method and a `registry` attribute, are not taken for one.
+- **A `functools.singledispatch` function or a `singledispatchmethod`, with or without
+  an implementation registered.** The implementation that runs is chosen at call time by
+  the type of an argument, each one has its own parameters and defaults, and one can be
+  registered at any moment. The SDK checks every call of a model turn before any tool
+  body runs, so an implementation that one call of a turn registers (or that the tool
+  registers on its own first use) would run, unjudged, for a later call of that turn. So
+  every single-dispatch function is refused when the agent is built, whether or not
+  anything is registered. Register one plain function as the tool and dispatch inside
+  its body. The dispatcher is refused wherever it stands among the callables the gate
+  reads: as the tool itself, as a method, a class method or a static method
+  (`function_tool(service.handle)`), as a callable object's `__call__`, and under
+  `functools.wraps` wrappers or `functools.lru_cache`. It is recognised in three ways,
+  any one of which is enough: by the code of the function `functools.singledispatch`
+  returns (as read when this package was imported, and as `functools` stands when the
+  tool is checked, so after `importlib.reload(functools)` too); by how that function is
+  built (its closure holds a `dispatch` function whose closure holds the registry); and
+  by its attributes (a `registry` that is a `types.MappingProxyType` beside a callable
+  `dispatch` and a callable `register`, on any object, so a service object of your own
+  that has all three is refused too). A `functools.wraps` wrapper over a dispatcher
+  carries a copy of those attributes and is refused with it. A callable object that
+  happens to have a `dispatch` method and a `registry` attribute that is not a mapping
+  proxy is not taken for one. A dispatcher that a wrapper calls from a closure, a global
+  or an attribute, and not through `__wrapped__`, is not found: see "What the gate does
+  not see" below.
 - **A sub-agent behind `agent.as_tool(...)` whose own tools are not gated.** Gate the
   sub-agent first, `gated_agent(sub, policy).as_tool(...)`, and the parent accepts it.
 - **An agent tool whose `parameters` type is not a data-only Pydantic model.** The gate
   works out what the sub-agent is given with the SDK's adapter for that type, and the
   SDK then validates the arguments again itself, so the two agree only for a model the
   SDK's own rule for data-only validation admits (`can_prepare_without_user_code`) and
-  that is written out with no code of its own. The refusal names the field and its
-  pydantic core type. Refused, with what to declare in its place:
+  that is written out with no code of its own. For a cause that lies in one field the
+  refusal names the field and what puts it outside: its pydantic core type, a string
+  pattern, what a list, a mapping or a union holds, a validator, or its default. For a
+  cause on the type as a whole (a `model_validator`, a dataclass, a private attribute)
+  it names that and no field. Refused, with what to declare in its place:
   - a `date`, `datetime`, `time` or `timedelta` field, a `UUID`, a `Path`, an `AnyUrl`,
     a `Decimal`, `bytes`: a `str` (or a `float` for the `Decimal`), read inside the
     sub-agent's own tools;
@@ -261,6 +273,8 @@ Refused call by call, before the policy runs, with a reason the model reads:
   `float` parameter reads as one). It is not JSON data: a policy cannot compare it and a
   record cannot fingerprint it;
 - arguments given to a tool that takes none;
+- a call to a tool whose function was changed after the tool was gated into one the
+  list above refuses (the guardrail asks the same questions again on every call);
 - arguments that hold a value more than 64 levels below the arguments object. The limit
   is the gate's own and fixed: it is the same with and without an audit log, and does not
   move with the interpreter's recursion limit.
@@ -276,6 +290,9 @@ What the gate does not see:
   and calls that one (the inner wrapper sits in a closure, and `functools.wraps` points
   past it), or a callable object that copies another function's `__wrapped__`, runs a
   wrapper the gate never read. A parameter that wrapper takes or adds is not judged.
+  The same holds for a single-dispatch function: a wrapper that names a plain function
+  as `__wrapped__` and calls a dispatcher it holds in a closure or a global is gated,
+  and an implementation registered on that dispatcher runs with its own defaults.
 - **Model settings given to a run.** Only the agent's own `model_settings` are read when
   it is gated. `RunConfig(model_settings=...)` is merged in when a run starts, and an
   `extra_body` there is not seen.
@@ -319,15 +336,14 @@ development: it is not a finished or certified security product, and it is provi
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
-**Open from the latest review round**, not yet fixed, stated so you can judge them:
-
-- A `functools.singledispatch` tool with nothing registered is accepted, and an
-  implementation registered during a model turn runs unjudged for a later call of the
-  same turn (see the bullet on single dispatch above). The fix decided is to refuse every
-  single-dispatch function as a tool.
-- A dispatcher that is a callable object's `__call__`, under a `functools.wraps` wrapper,
-  is not found; and a dispatcher is recognised by one code object read at import, so
-  after `importlib.reload(functools)` a new one is not recognised.
+**From the latest review round.** Round five found three gaps, all about
+`functools.singledispatch`, and the 0.2.0 release has them: a single-dispatch tool with
+nothing registered was accepted, so an implementation registered during a model turn ran
+unjudged for a later call of that turn; a dispatcher that is a callable object's
+`__call__` was not found under a `functools.wraps` wrapper; and a dispatcher was
+recognised by one code object read at import. The three are closed after 0.2.0: every
+single-dispatch function is refused as a tool (see the bullet on single dispatch above).
+What is still not found is listed under "What the gate does not see".
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
