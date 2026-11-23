@@ -973,8 +973,10 @@ Thank you to the people who have made Recusal better:
 - [@ZYZ666-RGB](https://github.com/ZYZ666-RGB) (yuzhou): Hypothesis property tests for
   the MCP name helpers, in [#183](https://github.com/philpaz/recusal/pull/183).
 - [@hananbahi527](https://github.com/hananbahi527): complete type annotations and strict
-  mypy checks for the `recusal-pydantic-ai` adapter, in
-  [#270](https://github.com/philpaz/recusal/pull/270).
+  mypy checks for three adapters, `recusal-pydantic-ai`, `recusal-google-adk` and
+  `recusal-crewai`, in [#270](https://github.com/philpaz/recusal/pull/270),
+  [#301](https://github.com/philpaz/recusal/pull/301) and
+  [#303](https://github.com/philpaz/recusal/pull/303).
 - [@noqt](https://github.com/noqt): the weekly lane that smoke-tests each installed adapter
   wheel against the newest framework release, in
   [#268](https://github.com/philpaz/recusal/pull/268).
