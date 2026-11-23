@@ -49,6 +49,71 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **`recusal-openai-agents-mcp` 0.2.1: no number the model chooses makes the check of
+  its arguments cost more than the allowance counts, the reason for a refused string
+  says what is true, and text JavaScript reads as a number is refused beside a number
+  type.** The open findings of the fifth review round, which the 0.2.0 page stated.
+  - Under `uniqueItems` (`set[int]`), integers chosen to share one hash (the multiples
+    of 2^61 - 1) turned the set the items are gathered into into a scan, which the step
+    allowance did not count: on the review machine checking 10,000 of them (245 KB)
+    took 1.0 s and 20,000 took 4.6 s, with 60,017 of 10,012,000 steps counted, and a
+    gated `call_tool` with the 10,000 held the event loop for 2.0 s. The same held for lists of two small integers chosen so that their
+    tuples share one hash, which Python computes without a secret: 10,000 such pairs
+    took 2.4 s. A number is now compared by its text (`0x1` for `1`, `1.0` and `true`;
+    `float.hex` for a float that is not a whole number), whose hash Python keys for the
+    process, and a comparison key that is gathered into a set holds no number at any
+    depth. 100,000 integers of one hash take what 100,000 ordinary ones do (412 ms and
+    389 ms), and which items are equal is unchanged: two equal numbers are one item
+    whatever their JSON type and size.
+  - `unevaluatedProperties` and `unevaluatedItems`, which `jsonschema` checks by looking
+    every member or item up in a list of the ones other keywords evaluated, were
+    counted as a few steps for each: 30,000 members of one object took 1.9 s with
+    240,016 of 30,012,000 steps counted. They are now counted as the square of the
+    members or items they are applied to, before they run, so a call that would take
+    that long is refused as too costly: 1,000 members are checked in 8 ms, and 1,100
+    and 30,000 are refused in 3 ms and 58 ms. No SDK publishes these keywords;
+    hand-written schemas do.
+  - The reason for a string a server may read as another type ended "Send the value as
+    JSON, not as text", which is wrong where the text is not that value: `"007"`, the
+    postal code `"01234"`, `"no"` for `str | bool`. The rule is unchanged. The reason
+    now says how to send the other type where that was meant (a JSON number, `true` or
+    `false`, the list or the object itself), and, where the text was meant, that the
+    call cannot be made while the schema allows both and that the server's author can
+    declare the parameter a string only (`str`).
+  - A zod `z.union([z.coerce.number(), z.string()])` lists `number` and `string`, as a
+    plain union does, and reads the text with JavaScript's `Number()`: the policy
+    judged `"0x1F"` and the server ran 31, judged `""` and it ran 0. Beside a number
+    type the gate now also refuses what `Number()` reads as a number and Pydantic does
+    not: an empty string, white space, the digits after `0x`, `0o` or `0b`, and a
+    number after a byte order mark, with a reason that says whose reading it is. None
+    of 341,425 generated strings that Node's `Number()` read as a number was missed.
+    The cost, on the review's two sets of ordinary calls: 2 more of 129 calls to tools
+    built with the MCP Python SDK are refused although that server would run them
+    (`""` for `Union[str, int, float, bool]` and `"0x1f"` for `Union[int, str]`), and
+    none more of 94 calls to zod tools. A listed default of that kind (`port: int | str
+    = ""`) is judged as listed and not sent, like any default that is text a call
+    would be refused for.
+  - Stated on the package page under "What the gate does not see", each with what to
+    do about it, because the listing does not show them and the gate cannot close
+    them: a zod `z.coerce.boolean()` beside another type (every string runs as a
+    boolean) and `z.coerce` on the keys of a record; the keys of a `dict[int, ...]` or
+    `dict[bool, ...]` parameter, which Pydantic converts (`{"1": 5, "01": 1000000}`
+    runs as `{1: 1000000}`); an integer above 2^53 on a TypeScript server's `integer`
+    parameter; a member a Pydantic server ignores (`field(init=False)`) or reads from
+    another place (`AliasPath`); and a union a Pydantic server reads left to right.
+    The Pydantic cases are held by a test against a real stdio server.
+  - The page states what the rules and the check cost: the text rule refuses on zod
+    servers too, which never decode JSON text; a hand-written `anyOf` or `oneOf` of
+    `required` lists is two object forms, so every object there is refused (a test
+    now holds this, and that the same requirement written with `if` and `then` is
+    judged); and the time the check takes beside Pydantic's own validation, measured
+    by the new `tools/measure_mcp_cost.py`, which the page's numbers
+    come from (10,000 items of a four-field model: 673 ms against 3.3 ms). The check
+    runs on the event loop and grows in proportion to the arguments.
+  - Tests added for what the round found unpinned: a default with a member that
+    `unevaluatedProperties: false` forbids refuses the call, and the allowance is the
+    10,000 steps and 1,000 for each value the page states, no larger.
+
 - **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
   CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has
   four published advisories (GHSA-36p7-vc44-83pf and GHSA-f4j7-r4q5-qw2c, critical;

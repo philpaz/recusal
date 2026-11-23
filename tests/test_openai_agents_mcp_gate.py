@@ -2168,6 +2168,7 @@ def _in_order(calls):
 #: A server built with the MCP Python SDK's own server class, run over stdio. It writes
 #: what each tool function received, after the SDK's own validation, to a file.
 STDIO_SERVER = """
+import dataclasses
 import datetime
 import json
 import os
@@ -2176,7 +2177,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Optional, Union
 
 from mcp.server.mcpserver import MCPServer
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import AliasPath, BaseModel, Field, StringConstraints
 
 app = MCPServer("files")
 LOG = os.environ["RECUSAL_TEST_SERVER_LOG"]
@@ -2362,6 +2363,49 @@ def aliased(opts: Aliased = Aliased()) -> str:
 @app.tool()
 def keyed(limits: dict[Annotated[str, Field(pattern="^[a-z]+$")], int]) -> str:
     return record("keyed", limits=limits)
+
+
+@app.tool()
+def set_quotas(quotas: dict[int, int]) -> str:
+    return record("set_quotas", quotas=quotas)
+
+
+@app.tool()
+def set_marks(marks: dict[bool, str]) -> str:
+    return record("set_marks", marks=marks)
+
+
+@dataclasses.dataclass
+class Job:
+    path: str = "/tmp/scratch"
+    dry_run: bool = dataclasses.field(default=False, init=False)
+
+
+@app.tool()
+def clean(job: Job) -> str:
+    return record("clean", path=job.path, dry_run=job.dry_run)
+
+
+class Target(BaseModel):
+    dry_run: bool = Field(True, validation_alias=AliasPath("options", "dry_run"))
+    path: str = "/tmp/scratch"
+
+
+@app.tool()
+def remove_at(target: Target) -> str:
+    return record("remove_at", target=target)
+
+
+@app.tool()
+def expire(
+    when: Annotated[Union[datetime.date, float], Field(union_mode="left_to_right")],
+) -> str:
+    return record("expire", when=str(when))
+
+
+@app.tool()
+def find(ident: Union[int, str], name: str = "") -> str:
+    return record("find", ident=ident, name=name)
 
 
 def swap_v1(path: str, recursive: bool = False) -> str:
@@ -2803,23 +2847,44 @@ _TWO_LIST_FORMS = (
 )
 
 
-def _reads_as(held, allows, read):
-    """The one reason for a string a server may read as another type."""
+def _reads_as(held, allows, read, meant):
+    """The one reason for a string a server may read as another type: what to send where
+    the other type was meant, and what the server's author can do where the text was."""
     return (
         f"is a string that holds {held} where the server's schema allows {allows}; a server "
         f"may read the text as {read} and run with that value, not with the string the policy "
-        "judged. Send the value as JSON, not as text."
+        f"judged. If {meant}, not text. If the text itself is meant (an identifier, a code, a "
+        "word), the gate cannot send it while the schema allows both: the server's author can "
+        "declare this parameter a string only (`str`), and the gate then takes every string "
+        "there as the string it is."
     )
 
 
-_NUMBER_TEXT = _reads_as("the text of a number", "a number as well as a string", "a number")
-_BOOLEAN_TEXT = _reads_as("a word for a boolean", "a boolean as well as a string", "a boolean")
-
-_JSON_TEXT = (
-    "is a string that holds JSON text (null, a list or an object) where the "
-    "server's schema allows another JSON type than string; a server may read the text as "
-    "JSON and run with that value, not with the string the policy judged. Send the value as "
-    "JSON, not as text."
+_NUMBER_TEXT = _reads_as(
+    "the text of a number",
+    "a number as well as a string",
+    "a number",
+    "a number is meant, send a JSON number",
+)
+_JAVASCRIPT_NUMBER_TEXT = _reads_as(
+    "text a server written in JavaScript reads as a number (an empty string or white space "
+    "as 0, the digits after `0x`, `0o` or `0b` as an integer, a number after a byte order "
+    "mark)",
+    "a number as well as a string",
+    "a number",
+    "a number is meant, send a JSON number",
+)
+_BOOLEAN_TEXT = _reads_as(
+    "a word for a boolean",
+    "a boolean as well as a string",
+    "a boolean",
+    "a boolean is meant, send JSON `true` or `false`",
+)
+_JSON_TEXT = _reads_as(
+    "JSON text (null, a list or an object)",
+    "another JSON type than string",
+    "JSON",
+    "null, a list or an object is meant, send that JSON value",
 )
 
 
@@ -4572,11 +4637,10 @@ class TestFourthReview:
     @pytest.mark.parametrize(
         "text",
         [
-            "",
-            " ",
             "five",
             "2024-01-01",
-            "0x10",
+            "0x",
+            "x10",
             "1,000",
             "5 5",
             "5-5",
@@ -5234,6 +5298,386 @@ class TestFourthReview:
         result = asyncio.run(server.call_tool("purge", {}))
         assert not result.model_dump(by_alias=True).get("isError")
         assert policy.seen == [("purge", {"path": "/", "recursive": True, "dry_run": False})]
+
+
+def _leaves(key):
+    """Everything a comparison key holds that is not a tuple or a frozenset."""
+    if type(key) in (tuple, frozenset):
+        for part in key:
+            yield from _leaves(part)
+    else:
+        yield key
+
+
+class TestFifthReview:
+    """The fifth review, of the 0.2.0 release. Integers chosen to share one hash turned the set
+    ``uniqueItems`` is checked with into a scan the allowance did not count, and so did
+    lists of small integers; ``unevaluatedProperties`` and ``unevaluatedItems`` compared
+    every member with every other, counted as one step each; the reason for a string a
+    server may read as another type told the model to send JSON where the text was not
+    that value; and a zod ``z.coerce.number()`` beside a string reads text by
+    JavaScript's rules, which the text rule did not know."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    stdio = TestARealServerRunsWhatWasJudged.stdio
+    judged = TestTheWholeListedSchema.judged
+    schema_module = staticmethod(TestThirdReview.schema_module)
+    spent = TestThirdReview.spent
+
+    #: Every multiple of this has the hash 0: Python reduces an integer by it.
+    ONE_HASH = 2**61 - 1
+    UNIQUE = {"properties": {"ids": {"type": "array", "uniqueItems": True}}}
+    NOT_UNIQUE = (
+        "Recusal refused `purge`: argument `ids` does not meet `uniqueItems` in the server's "
+        f"schema; {_AS_THEY_STAND}"
+    )
+    TOO_COSTLY = f"the arguments are too costly to check against {_SCHEMA}"
+    UNEVALUATED = {
+        "properties": {
+            "o": {
+                "type": "object",
+                "allOf": [{"additionalProperties": True}],
+                "unevaluatedProperties": False,
+            },
+            "l": {
+                "type": "array",
+                "allOf": [{"items": {"type": "number"}}],
+                "unevaluatedItems": False,
+            },
+        }
+    }
+
+    # --- uniqueItems: no value the sender chooses makes the set a scan --------------------------
+
+    def test_integers_of_one_hash_are_compared_by_keys_of_different_hashes(self, example):
+        """The reviewer's case: 10,000 integers of one hash held the event loop for
+        seconds. What they are compared by now hashes apart, alone and inside a list."""
+        module = self.schema_module()
+        integers = [number * self.ONE_HASH for number in range(1, 2001)]
+        assert len({hash(number) for number in integers}) == 1
+        assert len({hash(module._key(None, number, False)) for number in integers}) == 2000
+        assert len({hash(module._key(None, [number, 1], False)) for number in integers}) == 2000
+        given = {"ids": integers}
+        assert self.judged(given, self.UNIQUE) == (given, given, None)
+        steps, _, _ = self.spent(given, self.UNIQUE)
+        ordinary, _, _ = self.spent({"ids": list(range(2000))}, self.UNIQUE)
+        assert steps == ordinary
+
+    def test_a_key_that_is_gathered_into_a_set_holds_no_number(self, example):
+        """A small integer hashes to itself and the hash of a tuple has no secret in it,
+        so lists of small integers can be chosen to share one hash too. Every number is
+        held as text, whose hash the interpreter keys."""
+        module = self.schema_module()
+        value = [0, -1, 1.5, True, 2**70, -0.0, 1e300, {"a": [3, 4.0], "b": {"c": 7}}, "5", None]
+        leaves = list(_leaves(module._key(None, value, False)))
+        assert [leaf for leaf in leaves if type(leaf) in (int, float, bool)] == []
+        assert module._key(None, [1, 1.0, True, 0.5], False) == (
+            list,
+            ((float, "0x1"), (float, "0x1"), (float, "0x1"), (float, "0x1.0000000000000p-1")),
+        )
+        # an exact key is never gathered: it keeps the number, and its JSON type
+        assert module._key(None, [1, 1.0, True], True) == (
+            list,
+            ((int, 1), (float, 1.0), (bool, True)),
+        )
+
+    @pytest.mark.parametrize(
+        "items",
+        [
+            [2**70, float(2**70)],
+            [0, -0.0],
+            [False, -0.0],
+            [0.5, 0.5],
+            [1e300, int(1e300)],
+            [-(2**64), -float(2**64)],
+            [[2**70, 1], [float(2**70), True]],
+            [{"a": 2**61 - 1}, {"a": 2**61 - 1}],
+        ],
+    )
+    def test_equal_numbers_of_any_size_are_still_one_item(self, example, items):
+        assert self.judged({"ids": items}, self.UNIQUE)[2] == self.NOT_UNIQUE
+
+    @pytest.mark.parametrize(
+        "items",
+        [
+            [2**70, 2**70 + 1],
+            [float(2**70), 2**70 + 1],
+            [2**61 - 1, 2 * (2**61 - 1), 0],
+            [-1, -2],
+            [0.5, 1.5, -0.5],
+            [0.1, 0.1 + 2**-55],
+            [2**53, 2**53 + 1],
+            [1, "0x1", "1"],
+            [0.5, "0x1.0000000000000p-1"],
+            [[1, 2], [2, 1], [1], [1, 2, 0]],
+        ],
+    )
+    def test_numbers_that_differ_are_still_different_items(self, example, items):
+        given = {"ids": items}
+        assert self.judged(given, self.UNIQUE) == (given, given, None)
+
+    def test_a_list_is_read_once_for_a_comparison_while_the_arguments_stand(self, example):
+        """A list inside an item is read for the item's key, and again where the item's
+        own ``uniqueItems`` compares it: the second reading is one step, not its length."""
+        once = {"properties": {"l": {"type": "array", "uniqueItems": True}}}
+        inner = {"type": "array", "uniqueItems": True}
+        twice = {"properties": {"l": {"type": "array", "uniqueItems": True, "items": inner}}}
+
+        def grows(schema):
+            """The steps one hundred more numbers in the innermost list cost."""
+            longer, _, _ = self.spent({"l": [[list(range(200))]]}, schema)
+            shorter, _, _ = self.spent({"l": [[list(range(100))]]}, schema)
+            return longer - shorter
+
+        assert grows(twice) == grows(once) == 100
+
+    # --- unevaluatedProperties and unevaluatedItems cost the square of what they read -----------
+
+    @pytest.mark.parametrize(
+        "draft",
+        [
+            "https://json-schema.org/draft/2020-12/schema",
+            "https://json-schema.org/draft/2019-09/schema",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda count: {"o": {f"k{number}": 1 for number in range(count)}},
+            lambda count: {"l": [1] * count},
+        ],
+        ids=["unevaluatedProperties", "unevaluatedItems"],
+    )
+    def test_an_unevaluated_keyword_is_counted_by_the_pairs_it_compares(self, example, draft, make):
+        """The reviewer's case: 30,000 members took seconds and were counted as a few
+        steps each. ``jsonschema`` looks every member up in a list of the members other
+        keywords evaluated, so the square of their number is counted before it runs."""
+        schema = {"$schema": draft, **self.UNEVALUATED}
+        for count in (100, 400):
+            steps, allowed, result = self.spent(make(count), schema)
+            assert type(result) is tuple, result
+            assert count**2 < steps < count**2 + 30 * count
+        steps, allowed, result = self.spent(make(2000), schema)
+        assert result == self.TOO_COSTLY and steps > allowed
+
+    def test_an_unevaluated_keyword_costs_nothing_more_for_a_value_it_does_not_read(self, example):
+        members = {f"k{number}": 1 for number in range(2000)}
+        for listed, value in (
+            ({"unevaluatedProperties": False}, list(range(2000))),
+            ({"unevaluatedItems": False}, members),
+            ({"unevaluatedProperties": False, "unevaluatedItems": False}, "x" * 2000),
+        ):
+            steps, _, result = self.spent({"v": value}, {"properties": {"v": listed}})
+            assert type(result) is tuple and steps < 30 * 2000
+        # draft-07 has neither keyword: it is not applied, and not counted
+        old = {"$schema": DRAFT_07, **self.UNEVALUATED}
+        steps, _, result = self.spent({"o": {f"k{number}": 1 for number in range(2000)}}, old)
+        assert type(result) is tuple and steps < 30 * 2000
+
+    def test_the_allowance_is_the_one_the_readme_states_and_no_larger(self, example):
+        """1,000 steps for every value: 1,500 members under ``unevaluatedProperties`` cost
+        their square, which is more, and the call is refused before the policy runs."""
+        module = self.schema_module()
+        assert (module._STEPS, module._STEPS_PER_VALUE) == (10_000, 1_000)
+        readme = (ROOT / "adapters" / "openai-agents-mcp" / "README.md").read_text(encoding="utf-8")
+        assert (
+            f"an allowance of {module._STEPS:,} steps and {module._STEPS_PER_VALUE:,} more for "
+            "every value"
+        ) in " ".join(readme.split())
+        given = {"o": {f"k{number}": 1 for number in range(1500)}}
+        steps, allowed, result = self.spent(given, self.UNEVALUATED)
+        assert allowed == 10_000 + 1_000 * 1502
+        assert steps > allowed and result == self.TOO_COSTLY
+        assert self.judged(given, self.UNEVALUATED) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {self.TOO_COSTLY}",
+        )
+
+    # --- the reason for text a server may read as another type ----------------------------------
+
+    @pytest.mark.parametrize(
+        "listed, text, reason",
+        [
+            ({"type": ["integer", "string"]}, "007", _NUMBER_TEXT),
+            ({"anyOf": [{"type": "integer"}, {"type": "string"}]}, "01234", _NUMBER_TEXT),
+            ({"anyOf": [{"type": "string"}, {"type": "boolean"}]}, "no", _BOOLEAN_TEXT),
+            ({"anyOf": [{"type": "string"}, {"type": "null"}]}, "null", _JSON_TEXT),
+        ],
+        ids=["an-identifier", "a-postal-code", "a-word", "json-text"],
+    )
+    def test_the_reason_for_text_names_both_ways_out(self, example, listed, text, reason):
+        """The text is not always the other type written wrongly: ``"007"`` is not 7. The
+        reason says how to send the other type, and what lets the text itself through:
+        the parameter declared a string only, which this test then does."""
+        assert self.judged({"p": text}, {"properties": {"p": listed}}) == (
+            None,
+            None,
+            f"Recusal refused `purge`: argument `p` {reason}",
+        )
+        assert "Send the value as JSON" not in reason
+        assert "the server's author can declare this parameter a string only (`str`)" in reason
+        given = {"p": text}
+        assert self.judged(given, {"properties": {"p": {"type": "string"}}}) == (given, given, None)
+
+    def test_on_a_real_server_the_text_runs_once_the_parameter_is_a_string_only(self, stdio):
+        """``ident: Union[int, str]`` cannot be sent ``"01234"``; ``name: str`` can."""
+        found = stdio(
+            [[("find", {"ident": "01234"}), ("find", {"ident": 5, "name": "01234"})]],
+            schemas=("find",),
+        )
+        assert found.schemas["find"]["ident"]["anyOf"] == [{"type": "integer"}, {"type": "string"}]
+        assert found.schemas["find"]["name"]["type"] == "string"
+        assert found.outputs["c1"] == f"Recusal refused `find`: argument `ident` {_NUMBER_TEXT}"
+        sent = [("find", {"ident": 5, "name": "01234"})]
+        assert found.judged == found.wire == found.ran == sent
+
+    # --- text JavaScript reads as a number ------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            " ",
+            "\t\n",
+            chr(0xFEFF),
+            "0x10",
+            "0X1f",
+            " 0b101 ",
+            "0o17",
+            "0O17",
+            "-0x1F",
+            "0x1_0",
+            chr(0xFEFF) + "5",
+            "5" + chr(0xFEFF) + " ",
+        ],
+    )
+    def test_text_javascript_reads_as_a_number_is_refused_beside_a_number(self, example, text):
+        """A zod ``z.union([z.coerce.number(), z.string()])`` lists ``number`` and
+        ``string`` and runs ``Number()`` on the text: ``"0x1F"`` ran as 31 and ``""`` as 0."""
+        for listed in (
+            {"type": ["number", "string"]},
+            {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+            TestFourthReview.INT_OR_DATE,
+        ):
+            assert self.judged({"p": text}, {"properties": {"p": listed}}) == (
+                None,
+                None,
+                f"Recusal refused `purge`: argument `p` {_JAVASCRIPT_NUMBER_TEXT}",
+            )
+        for kept in ({"type": "string"}, {}, {"type": ["boolean", "string"]}):
+            given = {"p": text}
+            assert self.judged(given, {"properties": {"p": kept}}) == (given, given, None)
+
+    def test_the_white_space_dropped_is_pythons_and_the_byte_order_mark(self, example):
+        module = self.schema_module()
+        python = {chr(code) for code in range(sys.maxunicode + 1) if chr(code).isspace()}
+        assert set(module._SPACE) == python | {chr(0xFEFF)}
+        assert len(module._SPACE) == len(python) + 1
+
+    def test_a_listed_default_javascript_reads_as_a_number_is_judged_and_not_sent(self, example):
+        schema = {"properties": {"port": {"type": ["integer", "string"], "default": ""}}}
+        assert self.judged({}, schema) == ({"port": ""}, {}, None)
+
+    # --- what the findings asked to be pinned ---------------------------------------------------
+
+    def test_a_default_with_a_member_unevaluated_properties_forbids_refuses_the_call(self, example):
+        """As for ``additionalProperties: false``: the default is listed under other names
+        than its schema, so what the server would run with cannot be told."""
+        model = {
+            "type": "object",
+            "properties": {"forceIt": {"type": "boolean"}},
+            "unevaluatedProperties": False,
+        }
+        for listed in (
+            {**model, "default": {"force": True}},
+            {"anyOf": [model, {"type": "null"}], "default": {"force": True}},
+        ):
+            assert self.judged({}, {"properties": {"opts": listed}}) == (
+                None,
+                None,
+                "Recusal refused `purge`: argument `opts` is left out, and the default the "
+                "server's schema lists for it has a member its own schema does not allow "
+                "there (a Pydantic model whose fields have aliases lists its default under "
+                "other names than its schema), so the gate cannot tell what the server would "
+                "run with",
+            )
+            given = {"opts": {"forceIt": False}}
+            assert self.judged(given, {"properties": {"opts": listed}}) == (given, given, None)
+
+    @pytest.mark.parametrize("keyword", ["anyOf", "oneOf"])
+    def test_a_hand_written_choice_of_required_lists_is_two_object_forms(self, example, keyword):
+        """That one of ``a`` and ``b`` is required, written as alternatives that each
+        name one, is two alternatives that admit an object: the object is refused
+        whatever it holds. Written as a condition it is one form, and the call is judged."""
+        members = {"a": {"type": "string"}, "b": {"type": "string"}}
+        either = {
+            "type": "object",
+            "properties": members,
+            keyword: [{"required": ["a"]}, {"required": ["b"]}],
+        }
+        for arguments in ({"a": "x"}, {"b": "x"}):
+            assert self.judged(arguments, either) == (
+                None,
+                None,
+                "Recusal refused `purge`: the arguments are" + _TWO_OBJECT_FORMS[2:],
+            )
+            assert self.judged({"t": arguments}, {"properties": {"t": either}}) == (
+                None,
+                None,
+                f"Recusal refused `purge`: argument `t` {_TWO_OBJECT_FORMS}",
+            )
+        condition = {
+            "type": "object",
+            "properties": members,
+            "if": {"not": {"required": ["a"]}},
+            "then": {"required": ["b"]},
+        }
+        for arguments in ({"a": "x"}, {"b": "x"}, {"a": "x", "b": "y"}):
+            assert self.judged(arguments, condition) == (arguments, arguments, None)
+        assert self.judged({}, condition) == (
+            None,
+            None,
+            "Recusal refused `purge`: the arguments leave out `b`, which the server's schema "
+            f"requires; {_AS_THEY_STAND}",
+        )
+
+    # --- what the README lists as not seen, on a real server ------------------------------------
+
+    def test_what_a_pydantic_server_makes_of_keys_ignored_members_and_ordered_unions(self, stdio):
+        """The README's entries for the fifth review, kept true by a test: the policy
+        judged and the gate sent exactly these arguments, and the server ran others."""
+        calls = [
+            ("set_quotas", {"quotas": {"1": 5, "01": 1000000}}),
+            ("set_marks", {"marks": {"true": "a", "yes": "b", "0": "c"}}),
+            ("clean", {"job": {"path": "/data", "dry_run": True}}),
+            (
+                "remove_at",
+                {"target": {"dry_run": True, "path": "/data", "options": {"dry_run": False}}},
+            ),
+            ("expire", {"when": 0}),
+        ]
+        found = stdio([calls], schemas=("set_quotas", "clean", "remove_at", "expire"))
+        assert found.schemas["set_quotas"]["quotas"] == {
+            "additionalProperties": {"type": "integer"},
+            "title": "Quotas",
+            "type": "object",
+        }, "the key type is not listed"
+        assert found.schemas["expire"]["when"]["anyOf"] == [
+            {"format": "date", "type": "string"},
+            {"type": "number"},
+        ]
+        assert _in_order(found.judged) == _in_order(found.wire) == _in_order(calls)
+        assert _in_order(found.ran) == _in_order(
+            [
+                ("set_quotas", {"quotas": {"1": 1000000}}),
+                ("set_marks", {"marks": {"true": "b", "false": "c"}}),
+                ("clean", {"path": "/data", "dry_run": False}),
+                ("remove_at", {"target": {"dry_run": False, "path": "/data"}}),
+                ("expire", {"when": "1970-01-01"}),
+            ]
+        )
 
 
 class SimpleRequest:

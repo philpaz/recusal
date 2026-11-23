@@ -28,9 +28,10 @@ judged. So before the policy runs, :meth:`Listed.complete`
      does not state;
    * a string whose text a server reads as another type the schema also admits there: the
      text of a number or a word for a boolean where the schema names that type beside
-     string, and, for an argument itself, JSON text for null, a list or an object where
-     the schema admits another JSON type than string (the MCP Python SDK's server decodes
-     such text);
+     string (a number as Pydantic reads one, and as JavaScript's ``Number()`` does, which
+     is what a zod ``z.coerce.number()`` runs), and, for an argument itself, JSON text
+     for null, a list or an object where the schema admits another JSON type than string
+     (the MCP Python SDK's server decodes such text);
 3. writes every default the schema lists for a property the arguments leave out, at every
    depth, repeated (with step 2) until nothing changes;
 4. validates the completed arguments again.
@@ -57,11 +58,17 @@ their size.
 The work is bounded by counting it, never by a timer. A step is one keyword of the schema
 applied to one value (and one more for each member or item the value holds directly), one
 value visited by the walk, one value read for a comparison (``enum``, ``const``,
-``uniqueItems``), or one part of the place of a validation error. Nothing is validated
-twice for the same schema and the same value while the arguments stand as they are, a
-value is walked once for a schema, and every step is counted against an allowance that
-grows with the number of values in the arguments. What one step costs beyond that is
-bounded by the size of the keyword in the listed schema, which the model does not choose.
+``uniqueItems``), or one part of the place of a validation error; and for
+``unevaluatedProperties`` and ``unevaluatedItems``, which ``jsonschema`` checks by
+comparing every member or item with every other, the square of their number. Nothing is
+validated twice for the same schema and the same value while the arguments stand as they
+are, a value is walked once for a schema, and every step is counted against an allowance
+that grows with the number of values in the arguments. What one step costs beyond that
+is bounded by the size of the keyword in the listed schema, which the model does not
+choose, and by the length of the string or the size of the number it reads. The items
+``uniqueItems`` compares are gathered into a set by keys that hold no number, only text:
+the hash of a number is the sender's to choose, and the hash of a string is keyed by the
+interpreter (:func:`_key`).
 What is read from the schema alone (the JSON types a schema admits, the default it lists,
 the forms of a union) is worked out once, at the first call after each listing.
 
@@ -144,6 +151,29 @@ _SAME_VALUE = ("allOf", "anyOf", "oneOf", "not", "if", "then", "else", "dependen
 #: The words Pydantic reads as a boolean in a string, whatever their case.
 _BOOLEAN_WORDS = frozenset(
     ("true", "false", "1", "0", "yes", "no", "on", "off", "t", "f", "y", "n")
+)
+
+#: The white space JavaScript drops from the ends of a string before it reads a number,
+#: and more: what Python's ``str.strip`` drops (which JavaScript drops too, but for
+#: U+001C to U+001F and U+0085) and the byte order mark, which only JavaScript drops.
+_SPACE = "".join(
+    map(
+        chr,
+        (
+            *range(0x09, 0x0E),
+            *range(0x1C, 0x21),
+            0x85,
+            0xA0,
+            0x1680,
+            *range(0x2000, 0x200B),
+            0x2028,
+            0x2029,
+            0x202F,
+            0x205F,
+            0x3000,
+            0xFEFF,
+        ),
+    )
 )
 
 #: How many times the defaults are written before the gate gives up on a fixed point.
@@ -240,19 +270,42 @@ def _same(a: Any, b: Any) -> bool:
     return bool(a == b)
 
 
+def _number(value: Any) -> str:
+    """The text two numbers share exactly when they are equal, whatever their JSON type
+    (``1``, ``1.0`` and ``true`` are ``0x1``): an integer, and a float or a boolean that
+    equals one, in hexadecimal, and any other float as ``float.hex`` writes it. Both are
+    written in proportion to the number's size."""
+    if type(value) is float:
+        if not value.is_integer():
+            return value.hex()
+        value = int(value)
+    return hex(value)
+
+
 def _key(work: Optional[_Work], value: Any, exact: bool) -> Any:
     """What a value is compared by: two values have the same key when they are the same
     JSON data. ``exact`` keeps the JSON types apart, as :func:`_same` does; otherwise two
     numbers that are equal are the same whatever their type, a boolean among them. One
     step for every value read, and a list or an object is read once while the arguments
-    stand as they are."""
+    stand as they are.
+
+    The keys that are not ``exact`` are the ones gathered into a set (``uniqueItems``),
+    and a set costs one step for each member only while their hashes differ. The hash
+    of a number is the sender's to choose: an integer below 2**61 - 1 hashes to itself
+    and a larger one to its remainder, and the hash of a tuple is worked out from the
+    hashes of its members with no secret in it. So integers, and lists of small
+    integers, can be chosen to share one hash, and the set becomes a scan. Such a key
+    therefore holds no number: a number is held as its text (:func:`_number`), and the
+    hash of a string is keyed by the interpreter, as the hash of every member name is.
+    An ``exact`` key is never gathered: it is looked up once among the values of the
+    schema's own ``enum``, or compared with its ``const``."""
     if work is not None:
         work.step()
     kind = type(value)
     if kind is not list and kind is not dict:
         if exact or kind is str or value is None:
             return (kind, value)
-        return (float, value)
+        return (float, _number(value))
     if work is not None:
         known = work.keys.get((id(value), exact))
         if known is not None and known[0] is value:
@@ -344,6 +397,22 @@ def _additional_properties(
         yield from validator.descend(instance[name], additional, path=name)
 
 
+def _squared(check: Any, kind: Any) -> Any:
+    """``check``, the ``unevaluatedProperties`` or ``unevaluatedItems`` of ``jsonschema``,
+    counted for what it costs. It gathers what every other keyword evaluated (member
+    names, positions) into a list and looks each member or item of the value up in it:
+    one comparison for every pair of them. So that many steps are counted before it
+    runs, and a value too large for the allowance is refused without the scan."""
+
+    def squared(validator: Any, value: Any, instance: Any, schema: Any) -> Iterable[Any]:
+        work = _WORK.get()
+        if work is not None and type(instance) is kind:
+            work.step(len(instance) ** 2)
+        return check(validator, value, instance, schema) or ()
+
+    return squared
+
+
 def _is_integer(checker: Any, instance: Any) -> bool:
     return type(instance) is int
 
@@ -415,6 +484,9 @@ def _strict(base: Any) -> Any:
         "anyOf": _any_of,
         "oneOf": _one_of,
     }
+    for keyword, kind in (("unevaluatedProperties", dict), ("unevaluatedItems", list)):
+        if keyword in keywords:  # draft-07 has neither
+            keywords[keyword] = _squared(keywords[keyword], kind)
     return validators.extend(
         base,
         validators={keyword: _measured(keyword, check) for keyword, check in keywords.items()},
@@ -591,8 +663,8 @@ def _json_text(text: str) -> bool:
 
 
 def _number_text(text: str) -> bool:
-    """Whether Pydantic may read a string as a number. Wider than its own rule, never
-    narrower: the text Python reads as a float once the white space around it is gone,
+    """Whether Pydantic may read a string as a number, the white space around it already
+    gone. Wider than its own rule, never narrower: the text Python reads as a float,
     with or without its underscores (Pydantic drops single underscores between any two
     characters, Python only between digits), and with or without a sign and the zeros
     that lead it (for an integer Pydantic drops leading zeros and then reads a sign:
@@ -607,11 +679,31 @@ def _number_text(text: str) -> bool:
     return False
 
 
+def _javascript_number_text(text: str) -> bool:
+    """Whether JavaScript's ``Number()`` reads a string as a number, the white space
+    around it already gone: what a zod ``z.coerce.number()`` runs on a string. Wider
+    than its rule, never narrower: nothing at all (which it reads as 0), the digits of
+    another base after ``0x``, ``0o`` or ``0b`` (as Python reads them, so with a sign
+    and with underscores too), and a decimal number, which is text Python reads as a
+    float."""
+    if not text:
+        return True
+    if text.lstrip("+-")[:2].lower() in ("0x", "0o", "0b"):
+        try:
+            int(text, 0)
+        except ValueError:
+            pass
+        else:
+            return True
+    return _number_text(text)
+
+
 def _reads(work: _Work, text: str) -> frozenset[str]:
-    """What a server may read a string's text as, other than the string: ``number``,
-    ``boolean`` (Pydantic's lax conversion, at any depth) and ``json`` (null, a list or
-    an object, which the MCP Python SDK's server decodes for an argument). Worked out
-    once for a string."""
+    """What a server may read a string's text as, other than the string: ``number``
+    (Pydantic's lax conversion, at any depth), ``javascript`` (a number by the rules of
+    JavaScript's ``Number()`` and not by Pydantic's), ``boolean`` (Pydantic's conversion
+    again) and ``json`` (null, a list or an object, which the MCP Python SDK's server
+    decodes for an argument). Worked out once for a string."""
     known = work.reads.get(id(text))
     if known is not None and known[0] is text:
         return known[1]
@@ -621,6 +713,8 @@ def _reads(work: _Work, text: str) -> frozenset[str]:
         found.add("boolean")
     if _number_text(bare):
         found.add("number")
+    elif _javascript_number_text(text.strip(_SPACE)):
+        found.add("javascript")
     if _json_text(text):
         found.add("json")
     reads = frozenset(found)
@@ -966,35 +1060,57 @@ class Listed:
         as the number and a word for a boolean as the boolean, at any depth, wherever the
         value is not taken as a string first: for a schema that names ``integer``,
         ``number`` or ``boolean`` beside string (``Union[int, date]`` lists an integer and
-        a string with a format), the gate cannot tell. And the MCP Python SDK's server
-        decodes an argument whose text is JSON for null, a list or an object when the
-        parameter is not annotated exactly ``str``, which is a schema that admits another
-        JSON type than string. A schema that admits only strings keeps every string, and
-        one that names no type keeps the text of a number and of a boolean."""
+        a string with a format), the gate cannot tell. A zod ``z.coerce.number()`` beside
+        a string lists the same two types and reads the text by JavaScript's ``Number()``,
+        so what that reads as a number is refused there too. And the MCP Python SDK's
+        server decodes an argument whose text is JSON for null, a list or an object when
+        the parameter is not annotated exactly ``str``, which is a schema that admits
+        another JSON type than string. A schema that admits only strings keeps every
+        string, and one that names no type keeps the text of a number and of a boolean.
+
+        The reason says both ways out, since the gate cannot tell which was meant: the
+        JSON value where the other type was meant, and, where the text itself was (a
+        postal code, ``"no"`` as a word), that the server's author can declare the
+        parameter a string only."""
         admitted, named = self._types(schema)
         reads = _reads(work, text)
         stated = admitted & named
         if "number" in reads and stated & _NUMBERS:
             held, allows, read = "the text of a number", "a number as well as a string", "a number"
+            meant = "a number is meant, send a JSON number"
+        elif "javascript" in reads and stated & _NUMBERS:
+            held, allows, read = (
+                "text a server written in JavaScript reads as a number (an empty string or "
+                "white space as 0, the digits after `0x`, `0o` or `0b` as an integer, a "
+                "number after a byte order mark)",
+                "a number as well as a string",
+                "a number",
+            )
+            meant = "a number is meant, send a JSON number"
         elif "boolean" in reads and "boolean" in stated:
             held, allows, read = (
                 "a word for a boolean",
                 "a boolean as well as a string",
                 "a boolean",
             )
+            meant = "a boolean is meant, send JSON `true` or `false`"
         elif "json" in reads and link[0] is None and not admitted <= {"string"}:
             held, allows, read = (
                 "JSON text (null, a list or an object)",
                 "another JSON type than string",
                 "JSON",
             )
+            meant = "null, a list or an object is meant, send that JSON value"
         else:
             return
         raise Refused(
             f"argument `{self._path(link)}` is a string that holds {held} where the "
             f"server's schema allows {allows}; a server may read the text as {read} and "
-            "run with that value, not with the string the policy judged. Send the value "
-            "as JSON, not as text."
+            f"run with that value, not with the string the policy judged. If {meant}, not "
+            "text. If the text itself is meant (an identifier, a code, a word), the gate "
+            "cannot send it while the schema allows both: the server's author can declare "
+            "this parameter a string only (`str`), and the gate then takes every string "
+            "there as the string it is."
         )
 
     def _chosen(self, value: Any, alternatives: list, link: Any) -> list:

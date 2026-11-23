@@ -132,7 +132,7 @@ before the policy runs the gate:
   list, a list is refused. One object form, or one list form, beside alternatives that
   are not one (`Optional[Model]`, `Model | str`, `list[Model] | None`) is unaffected.
 - **refuses a string where the schema also admits the type a server reads its text as.**
-  One rule for two readings. Pydantic's conversion reads the text of a number as the
+  One rule for three readings. Pydantic's conversion reads the text of a number as the
   number and a word for a boolean (`true`, `false`, `1`, `0`, `yes`, `no`, `on`, `off`,
   `t`, `f`, `y`, `n`, in any case) as the boolean, at any depth, unless the value is
   taken as a string first: `"1700000000"` for `when: Union[int, date]` runs as the
@@ -140,15 +140,30 @@ before the policy runs the gate:
   string (a string with a `format` counts), which is what the gate can see, so there a
   string that reads as a number (anything Python's `float` accepts once the white space
   around it and its underscores are gone, `inf` and `nan` included) or as a boolean is
-  refused. And the MCP Python SDK's server decodes an argument whose text is JSON for
-  null, a list or an object when the parameter is not annotated exactly `str`:
-  `{"scope": "null"}` for `scope: Optional[str]` runs as `None`. So for an argument
-  whose schema admits another JSON type than string (an `anyOf` or a `type` list with
-  `null` in it, a schema with no `type`), such text is refused. In both cases: send the
-  value as JSON, not as text. A schema that admits only strings keeps every string, one
-  that names no type keeps the text of a number and of a boolean (a server does not
-  convert for a parameter typed `Any`), and JSON text further in than an argument is
-  the string it is, which no SDK decodes.
+  refused. A zod `z.coerce.number()` beside a string
+  (`z.union([z.coerce.number(), z.string()])`) lists the same two types and reads the
+  text with JavaScript's `Number()`, so beside a number type the gate also refuses what
+  that reads as a number and Pydantic does not: an empty string and white space (which
+  run as 0), the digits of another base after `0x`, `0o` or `0b` (`"0x1F"` runs as 31),
+  and a number after a byte order mark. And the MCP Python SDK's server decodes an
+  argument whose text is JSON for null, a list or an object when the parameter is not
+  annotated exactly `str`: `{"scope": "null"}` for `scope: Optional[str]` runs as
+  `None`. So for an argument whose schema admits another JSON type than string (an
+  `anyOf` or a `type` list with `null` in it, a schema with no `type`), such text is
+  refused. A schema that admits only strings keeps every string, one that names no type
+  keeps the text of a number and of a boolean (a server does not convert for a
+  parameter typed `Any`), and JSON text further in than an argument is the string it
+  is, which no SDK decodes.
+
+  The gate cannot tell whether the other type or the text itself was meant, so the
+  reason gives both ways out. Where the other type was meant, send it as JSON: a JSON
+  number, `true` or `false`, the list or the object itself. Where the text was meant
+  (the identifier `"007"`, the postal code `"01234"`, the word `"no"`), the call cannot
+  be made as the schema stands: the server's author can declare the parameter a string
+  only (`str`, `z.string()`), and every string is then judged and sent as the string it
+  is. The rule is applied whatever the server is built with, because the listing does
+  not say: a zod server never decodes JSON text and keeps a string for
+  `z.union([z.number(), z.string()])`, and the gate refuses there all the same.
 - **writes every default the schema lists for a property the arguments leave out, at
   every depth.** The gate walks the arguments with the schema, through `$ref`,
   `properties`, `items`, `prefixItems` (in the older drafts a list of `items`, and
@@ -240,23 +255,56 @@ arguments themselves (the gate always sends an object), of the items of a list a
 **The work is bounded by counting it, not by a timer.** A step is one keyword of the
 schema applied to one value (and one more for each member or item that value holds
 directly), one value visited by the walk above, one value read for a comparison (`enum`,
-`const`, `uniqueItems`), or one part of the place of a validation error. Every step is
+`const`, `uniqueItems`), or one part of the place of a validation error.
+`unevaluatedProperties` and `unevaluatedItems` are counted as the square of the number
+of members or items they are applied to, because `jsonschema` checks them by comparing
+each with every other. Every step is
 counted against an allowance of 10,000 steps and 1,000 more for every value in the
 arguments (an object, a list, and each member, item and scalar in them). Nothing is
 validated twice for the same schema and the same value while the arguments stand as they
 are, a list or an object is walked once for a schema, and the choices of an `enum` are
 read once for a call, so a recursive schema (a model with `child: Optional[Node]`), a
 list of 12,000 ordinary items under `uniqueItems` and 20,000 values against an `enum`
-of 600 each cost in proportion to the arguments. One exception is open: integers chosen
-to share one hash make the `uniqueItems` check slow, uncounted by the allowance (10,000
-such integers held the event loop for seconds). What a single step costs beyond its
-count is otherwise bounded by the size of that keyword in the listed schema, and
-reading a string is in proportion to its length. What the schema alone says (the types
+of 600 each cost in proportion to the arguments. What a single step costs beyond its
+count is bounded by the size of that keyword in the listed schema, and reading a string
+or a number is in proportion to its length. What the schema alone says (the types
 a subschema admits, the default it lists, the forms of a union) is read once, at the
 first call after each listing. The largest ordinary
 calls measured spend under a twentieth of the allowance; a call over it is refused before
 the policy runs, with "the arguments are too costly to check against the server's listed
 schema for this tool", and is one deny entry on an audit log.
+
+The items `uniqueItems` compares are gathered into a set, and a set costs one step for
+each member only while their hashes differ. The hash of a number is the sender's to
+choose: every multiple of 2^61 - 1 has the same one, and lists of small integers can be
+chosen to share one too. So the gate compares a number by its text (equal numbers have
+the same text whatever their JSON type), and the hash of a string is keyed by Python
+with a secret of the process, unless hash randomization is switched off
+(`PYTHONHASHSEED`). 100,000 integers of one hash now cost what 100,000 ordinary ones
+do.
+
+**What the check costs in time.** It is written in Python and runs on the event loop
+inside `call_tool`, so for as long as it takes nothing else on that loop runs. It takes
+longer than the server's own validation, in proportion to the arguments. Measured with
+[`tools/measure_mcp_cost.py`](https://github.com/philpaz/recusal/blob/main/tools/measure_mcp_cost.py)
+on one laptop (Windows 11, Python 3.12.5), the best of three runs:
+
+| Arguments | The gate | Pydantic's validation of the same value |
+|---|---|---|
+| `list[int]`, 10,000 items | 32 ms | 0.1 ms |
+| `list[str]`, 10,000 items | 87 ms | 0.1 ms |
+| `dict[str, Optional[float]]`, 10,000 members | 24 ms | 0.3 ms |
+| `list[Item]` (a model of four fields, two defaults written), 10,000 items | 673 ms | 3.3 ms |
+| `list[Item]`, 50,000 items | 3,498 ms | 18.4 ms |
+
+That is between 49 and 1,265 times Pydantic's own time across the cases the script
+runs, and the gate's time grew in proportion: five times the items took between 5.0 and
+5.8 times as long. Under `uniqueItems`, 100,000 ordinary integers took 389 ms and
+100,000 integers of one hash 412 ms. Under `unevaluatedProperties` on a hand-written
+schema, 1,000 members of one object took 8 ms and spent 1,008,016 of the 1,012,000
+steps allowed, 1,100 members were refused in 3 ms and 30,000 in 58 ms. The allowance
+bounds the steps for each value, not the size of the arguments: an application that
+must bound the time bounds what the model can send (its output limit).
 
 **What the rules above mean for ordinary schemas:**
 
@@ -273,7 +321,22 @@ schema for this tool", and is one deny entry on an audit log.
   `z.union([z.number(), z.string()])`) cannot be sent a string that reads as a number or
   as a boolean, although such a server would keep it a string: its schema is the same as
   that of `Union[int, date]`, for which the server converts. A `Decimal` parameter lists
-  a number beside a string too: send the number.
+  a number beside a string too: send the number. Such a parameter cannot be sent an
+  identifier that is all digits (`"007"`, a postal code), a word Pydantic reads as a
+  boolean (`"no"`, `"on"`, `"t"`), an empty string or a `0x` literal: if text is what
+  the parameter takes, type it `str` (`z.string()`).
+- A string parameter that also admits null (`Optional[str]`, `z.string().nullable()`),
+  or any other JSON type, cannot be sent the text `"null"`, `"[]"` or `'{"a": 1}'`. That
+  holds on a zod server too, which would keep the text.
+- A hand-written `anyOf` or `oneOf` of `required` lists (one of `a` and `b` is
+  required: `"anyOf": [{"required": ["a"]}, {"required": ["b"]}]`) is two alternatives
+  that admit an object, so the object is refused whatever it holds; at the top of a
+  tool's schema that is every call. Written as a condition
+  (`"if": {"not": {"required": ["a"]}}, "then": {"required": ["b"]}`) it is one form.
+- An object under `unevaluatedProperties`, or a list under `unevaluatedItems`, costs the
+  square of its members or items, so about 1,000 of them is the most a call can hold
+  there when it holds little else. No SDK publishes these keywords; hand-written
+  schemas do.
 - A `NamedTuple` or tuple parameter with a defaulted last member publishes a
   `prefixItems` entry with a default, so a call that leaves that item out is refused;
   send every item.
@@ -364,7 +427,7 @@ log cannot be written the call is refused. Check the log with
   schemas are like this, and so is every Pydantic `default_factory` default, which is not
   published. A policy that depends on such a parameter should refuse a call that leaves
   it out.
-- **A server whose code does more than its schema says.** The gate guarantees what is
+- **A server whose code does more than its schema says.** The gate settles what is
   sent, and that it is valid against the listed schema. What a server's own code then
   makes of a value is not in the schema. Cases seen on servers built with the official
   SDKs (`mcp` 2.3.0, and the TypeScript SDK with zod):
@@ -396,9 +459,43 @@ log cannot be written the call is refused. Check the log with
     default under `.optional()` (which runs with the parameter absent), a `Set` or `Map`
     default and an object default parsed again run as something else. So does a default
     a Pydantic model validates (`validate_default=True`).
-- **An integer too large for a float parameter.** A JSON integer above 2^53 sent for a
-  `number` parameter is judged as the exact integer; a server that reads the parameter as
-  a float runs the nearest float.
+  - **A zod `z.coerce` beside another type.** `z.union([z.coerce.boolean(), z.string()])`
+    lists `boolean` and `string` and runs every string as a boolean: `"abc"` as `true`,
+    `""` as `false`. The gate refuses only the words Pydantic reads as a boolean there,
+    and `"abc"` is judged as the string. `z.coerce.boolean().or(z.number())` lists
+    `boolean` and `number` and runs the number `5` as `true`. And
+    `z.record(z.coerce.number(), ...)` lists an object with no key type and reads its
+    keys as numbers, so `{"1": 1, "01": 2}` runs as one member. (What
+    `z.coerce.number()` beside a string reads as a number is refused, above.) What to
+    do: keep `z.coerce` out of a union and out of the keys of a record on a server
+    behind the gate, or have the policy refuse a string, and a key that is not written
+    the one way a number is, for that tool.
+  - **The keys of an object, which a Pydantic server converts.** `quotas: dict[int, int]`
+    lists `additionalProperties: {"type": "integer"}` and no key type. Pydantic reads
+    the keys `"1"` and `"01"` as the one integer 1, so `{"1": 5, "01": 1000000}` is
+    judged with two members and runs as `{1: 1000000}`; `dict[bool, str]` reads `"true"`
+    and `"yes"` as one key. What to do: type the keys `str` on the server, or have the
+    policy refuse a key that is not written the one way (for an integer key,
+    `str(int(key)) == key`).
+  - **A member a Pydantic server ignores, or reads from another place.** A dataclass
+    field declared `field(init=False)` is listed and never read:
+    `{"job": {"path": "/data", "dry_run": true}}` runs with `dry_run` false. A field with
+    `validation_alias=AliasPath("options", "dry_run")` is listed under its own name and
+    read from `options.dry_run`, a member the schema does not name: the listed member
+    is ignored and the unlisted one decides. What to do: a policy for such a tool has
+    to be written from the server's code, since the listing does not say which member
+    is read.
+  - **A union a Pydantic server reads left to right.** With
+    `Field(union_mode="left_to_right")` on `Union[date, float]` the listing is a string
+    with a format beside a number, and the number `0` runs as the date 1970-01-01. What
+    to do: the policy judges the number it was given, so for such a tool it has to
+    apply the server's own conversion, or refuse the type it does not expect.
+- **An integer too large for a float.** A JSON integer above 2^53 sent for a `number`
+  parameter is judged as the exact integer; a server that reads the parameter as a float
+  runs the nearest float. A server written in TypeScript holds every number as a float,
+  so there the same is true of an `integer` parameter (`z.number().int()`):
+  `9007199254740993` runs as `9007199254740992`. What to do: a policy that depends on
+  the exact value refuses an integer above 2^53 (`9007199254740992`).
 - **Whether the server reads a member its schema does not name there.** An argument, or
   a member of an object at any depth, that the schema neither names nor forbids at that
   place is judged and sent as it is, a string that holds JSON text or the text of a
@@ -450,20 +547,6 @@ log cannot be written the call is refused. Check the log with
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
-
-**Open from the latest review round**, not yet fixed, stated so you can judge them:
-
-- Integers chosen to share one hash, under `uniqueItems` (`set[int]`), make the check
-  slow: about 10,000 of them held the event loop for seconds, uncounted by the allowance.
-- Not seen: a zod server's `z.coerce` beside another type in a union reads text by
-  JavaScript's rules (`"0x1F"` runs as 31); a Pydantic server converts the keys of a
-  `dict[int, ...]` parameter, which the listing does not show; an integer above 2^53 on
-  a TypeScript server's `integer` parameter runs rounded; a member a Pydantic server
-  ignores (`field(init=False)`) or reads from elsewhere (`AliasPath`); a union a Pydantic
-  server reads left to right (`union_mode='left_to_right'`).
-- The refusal "Send the value as JSON, not as text" is wrong advice where the text is not
-  that number (a zip code `"01234"`): the server's author should type that parameter
-  `str`.
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:

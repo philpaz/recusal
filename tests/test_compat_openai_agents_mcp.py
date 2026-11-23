@@ -553,8 +553,13 @@ def test_the_gates_reading_of_text_is_never_narrower_than_pydantics():
     for text in (" true ", "1__0", "_1", "--5", "\u0663"):
         assert _adapter_module._reads(work, text), text
         assert not pydantic_reads("number", text) and not pydantic_reads("boolean", text)
-    for text in ("", "five", "tru", "0x10", "1,000", "5-5"):
+    for text in ("five", "tru", "0x", "x10", "1,000", "5-5"):
         assert _adapter_module._reads(work, text) == frozenset(), text
+    # what Pydantic keeps a string and JavaScript's `Number()` reads as a number has a
+    # reading of its own, so the reason can say whose rule it is
+    for text in ("", " \t", "0x10", "0B11", "0o7", chr(0xFEFF) + "5"):
+        assert _adapter_module._reads(work, text) == frozenset({"javascript"}), text
+        assert not pydantic_reads("number", text) and not pydantic_reads("boolean", text)
 
 
 def test_jsonschema_evaluates_a_schemas_patterns_where_the_gate_replaces_it():
