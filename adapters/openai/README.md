@@ -352,6 +352,63 @@ us what you find. Reviews, bug reports and pull requests are all welcome:
 Please report a security gap [privately](https://github.com/philpaz/recusal/security/advisories/new), not in a public
 issue.
 
+## How it was tested
+
+The in-depth review was four review rounds against `openai==3.49.0`, and it is the
+project's own work. The threat model: the model is untrusted, and it chooses every tool
+name, argument, call id, item type and status the gate reads. The application's own
+code (its tools, its policy, the keywords it passes) is trusted but ordinary, so the
+review also asked what an ordinary mistake in it does to the gate.
+
+Each number below is printed by the command after it, from a clone with
+`requirements/adapter-openai.txt` installed, with no API key and no network:
+
+- **A generated corpus, through both loops.** 44,148 turns a model could send (258
+  single forms, and a grid of 43,890 crossing tool names, forms of the arguments, and
+  status, namespace and `finish_reason` values), each run through the plain and the
+  audited loop from the same input. Counted: turns where the two loops disagree on what
+  ran, where a tool ran under a name the application does not have, or where the audit
+  entries are not one per call. None. `python tools/review/openai/corpus.py --summary`
+- **A keyword matrix.** 35,280 combinations of the recording keywords through
+  `gate_function_calls`, `gate_tool_calls` and `judge_and_run`. Counted: combinations
+  that raised after a tool had run, recorded a call they refused, or answered without
+  running a tool the policy allowed. None.
+  `python tools/review/openai/keyword_matrix.py --summary`
+- **Mutation testing.** 148 hand-written mutations, each switching off one check in a
+  copy of the package. A mutation is caught when at least one of the package's tests
+  then fails. All 148 are caught. `python tools/review/openai/mutate.py --summary`
+- **Probes written against the pinned SDK**, among them tools decorated the ways
+  applications decorate them. What a probe found is kept as a test.
+
+What each round found. The findings of rounds one to three are fixed in 0.2.2, are in
+the [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md), and are each
+pinned by the test named, in
+[`tests/test_openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/tests/test_openai_responses_gate.py):
+
+- Round one: the plain loop ran a call the audited loop refused, `{"amount": NaN}` past
+  a policy written as `amount > 100`
+  (`test_a_number_that_is_not_json_or_not_finite_is_refused_before_the_policy`).
+- Round two: a recording keyword without an audit log refused every call as a policy
+  error, though no policy had run (`test_no_audit_log_is_the_plain_gate`).
+- Round three: the package still allowed a kernel without the check of a decorated
+  tool's wrappers (`test_the_package_requires_the_kernel_that_walks_every_callable`),
+  and a `surface=` the kernel does not record refused every call with no audit entry
+  (`test_a_recording_value_decide_would_refuse_raises_naming_the_keyword`).
+- Round four: no changelog item. Its tests pin `judge_and_run` called directly and the
+  error raised when the stack runs out during the keyword check
+  (`test_judge_and_run_called_directly_answers_a_tool_error_only_when_asked`,
+  `test_a_stack_that_runs_out_while_a_recording_value_is_checked_is_not_the_values_fault`).
+
+What this does not show: a large number of generated cases is not a proof. The corpus is
+the inputs the review thought of, the mutations are a hand-written list, and the numbers
+are for one SDK version. Recusal is a Beta project, not a finished or certified security
+product. The results are for the code as it stands: a test reruns a part of each where
+the SDK is installed, and the full runs are the commands above.
+[What the gate refuses, and what it does not see](https://github.com/philpaz/recusal/blob/main/adapters/openai/README.md#what-the-gate-refuses-and-what-it-does-not-see)
+lists what stays outside the gate whatever the tests say, and
+[What a review consisted of](https://github.com/philpaz/recusal/blob/main/docs/REVIEW.md#recusal-openai)
+has the method in full, the other findings of each round and what each script checks.
+
 ## Compatibility
 
 This package is outside the kernel's frozen perimeter (`STABILITY.md`, Integrations). Its

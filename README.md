@@ -226,6 +226,12 @@ Both are the project's own reviews, not a third-party audit, and a review finds 
 looks for: a reviewed adapter can still have gaps. Each adapter's README says what its
 gate refuses and what it does not see.
 
+[What a review consisted of](https://github.com/philpaz/recusal/blob/main/docs/REVIEW.md)
+describes the in-depth review method by method (the threat model, the generated corpus,
+the keyword matrix, mutation testing) and gives the command that reproduces each number
+it states. A package has a section there once the scripts that produce its numbers are
+in this repository. Today that is `recusal-openai`.
+
 **Help make it better.** Read the code, test an adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
 [how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues). Please report a
@@ -882,6 +888,8 @@ Everything is indexed in [`docs/`](https://github.com/philpaz/recusal/blob/main/
 |  | [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md) | A reference architecture for an isolated enterprise deployment. A position; nothing in it is built. |
 | **Check it yourself** | [`docs/PROVEN.md`](https://github.com/philpaz/recusal/blob/main/docs/PROVEN.md) | Recusal governing its own repository: a real hook refusing real destructive calls, verbatim. |
 |  | [`docs/VERIFY.md`](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md) | Verify a release's provenance, signatures and PyPI bytes, with the negative controls. |
+|  | [`docs/REVIEW.md`](https://github.com/philpaz/recusal/blob/main/docs/REVIEW.md) | What an in-depth review of a package consisted of, and the command that reproduces each number it states. |
+|  | [`docs/REVIEW-LOG.md`](https://github.com/philpaz/recusal/blob/main/docs/REVIEW-LOG.md) | The review of each package, round by round: what was found, what is fixed, what is open, and where to help. |
 |  | [`SECURITY.md`](https://github.com/philpaz/recusal/blob/main/SECURITY.md) | The threat model, what the gate does not defend against, and how to report a vulnerability. |
 |  | [`docs/REFERENCES.md`](https://github.com/philpaz/recusal/blob/main/docs/REFERENCES.md) | Primary sources for every empirical claim, with what each does and does not support. |
 | **Depend on it** | [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) | What is frozen, what each version number promises, and what 1.0 has to earn. |

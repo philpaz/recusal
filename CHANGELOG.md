@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The review tooling for `recusal-openai` is in the repository, and its README says
+  what was tested.** `tools/review/openai/` holds the three scripts the numbers come
+  from: `corpus.py` runs a generated corpus of model output through the plain and the
+  audited loop and compares them, `keyword_matrix.py` calls the three entry points
+  with every combination of the recording keywords, and `mutate.py` switches one
+  check off at a time in a temporary copy of the checkout and runs the package's
+  tests against it. Each prints one line of counts and exits with status 1 on any
+  finding. `docs/REVIEW.md` says what a review round is, the threat model, each
+  method, how to reproduce each number and what none of it shows, and the package's
+  README has a "How it was tested" section. `tests/test_review_tooling_openai.py`
+  holds every number on both pages to what the scripts compute, and both OpenAI lanes
+  run it. No change to the gate, and no release.
+- **A review log, package by package.** `docs/REVIEW-LOG.md` records each review round of
+  the kernel and the eight adapters: what it found, what changed, what is still open, and
+  where help is welcome, each statement with the commit, test or changelog entry that
+  backs it. The commits of the rounds of branches merged as one commit are kept on the
+  `review-history/*` branches.
+
 ### Changed
 
 - **`recusal-google-adk` 0.2.1: every function is annotated, and its page shows where the

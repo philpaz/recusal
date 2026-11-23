@@ -286,7 +286,7 @@ jobs:
           python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
           python -m pip install --no-deps -e .
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_review_tooling_openai.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
   openai-agents-example-py312:
     name: OpenAI Agents example (Python 3.12)
@@ -303,7 +303,7 @@ jobs:
           python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
           python -m pip install --no-deps -e .
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_review_tooling_openai.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
   google-adk-example-py311:
     name: Google ADK example (Python 3.11)
