@@ -295,15 +295,61 @@ _OPAQUE_DECORATOR = (
 
 def _wrapped_chain(func: Any) -> list[Any]:
     """``func`` and the callables its ``__wrapped__`` attributes lead to, outermost first;
-    a ``functools.partial`` is followed to its function."""
+    a ``functools.partial`` is followed to its function and a bound method to the
+    function it binds (a method shows its function's ``__wrapped__`` as its own, which
+    would step past that function)."""
     chain: list[Any] = []
     while func is not None and len(chain) < 64 and not any(func is link for link in chain):
         chain.append(func)
         if isinstance(func, functools.partial):
             func = func.func
+        elif inspect.ismethod(func):
+            func = func.__func__
         else:
             func = getattr(func, "__wrapped__", None)
     return chain
+
+
+def _singledispatch_wrapper_code() -> Any:
+    """The code object of the function ``functools.singledispatch`` returns: the
+    ``wrapper`` nested in it. Every dispatcher is a plain function with exactly this code,
+    whatever attributes a ``functools.wraps`` wrapper over one has copied from it. None
+    on a Python where it is not found by that name."""
+    found = [
+        const
+        for const in functools.singledispatch.__code__.co_consts
+        if isinstance(const, types.CodeType) and const.co_name == "wrapper"
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+_SINGLEDISPATCH_WRAPPER = _singledispatch_wrapper_code()
+
+
+def _closure_value(func: Any, name: str) -> Any:
+    """What a plain function's closure holds under ``name``, or None."""
+    try:
+        return func.__closure__[func.__code__.co_freevars.index(name)].cell_contents
+    except ValueError:  # a name the closure does not hold, or an empty cell
+        return None
+
+
+def _registered(link: Any) -> Optional[bool]:
+    """For the function ``functools.singledispatch`` returns: whether an implementation
+    other than the function it wraps is registered. None for anything else.
+
+    The dispatcher is known by its code, and its registry is read from the closure of
+    its own ``dispatch`` function, which is the mapping it dispatches by; the
+    ``registry`` attribute is a view any wrapper may carry a copy of."""
+    if type(link) is not types.FunctionType or link.__code__ is not _SINGLEDISPATCH_WRAPPER:
+        return None
+    dispatch = _closure_value(link, "dispatch")
+    registry = (
+        _closure_value(dispatch, "registry") if type(dispatch) is types.FunctionType else None
+    )
+    if type(registry) is not dict:
+        return True  # a dispatcher the gate cannot read is taken as one that dispatches
+    return len(registry) != 1 or registry.get(object) is not link.__dict__.get("__wrapped__")
 
 
 def _dispatches_by_type(link: Any) -> bool:
@@ -311,19 +357,28 @@ def _dispatches_by_type(link: Any) -> bool:
     ``singledispatchmethod`` read from an object: what it runs depends on the type of an
     argument.
 
-    ``functools.singledispatch`` gives its function a ``registry`` that is exactly a
-    ``types.MappingProxyType`` and a ``dispatch`` callable; both are read without running
-    any code of the object's (``inspect.getattr_static``), so a service object that
-    happens to have a ``dispatch`` method and a ``registry`` attribute is not taken for
-    one. With nothing registered the function is the one it wraps (``registry[object]``),
+    The dispatcher is identified exactly (:func:`_registered`): the plain function whose
+    code is ``functools.singledispatch``'s own ``wrapper``. A service object that happens
+    to have a ``dispatch`` method and a ``registry`` attribute is not one, and neither is
+    a ``functools.wraps`` wrapper over a dispatcher, which carries a copy of its
+    attributes: the chain leads on to the dispatcher itself, through a bound method too.
+    With nothing registered the function is the one it wraps (``registry[object]``),
     which the walk reads like any other; anything else in the registry, or another
-    function under ``object``, is an implementation the walk does not read."""
-    registry = inspect.getattr_static(link, "registry", None)
-    if type(registry) is types.MappingProxyType and callable(
-        inspect.getattr_static(link, "dispatch", None)
-    ):
-        base = inspect.getattr_static(link, "__wrapped__", None)
-        return len(registry) != 1 or registry.get(object) is not base
+    function under ``object``, is an implementation the walk does not read. Where the
+    dispatcher's code is not found (another Python), the function is known by a
+    ``registry`` that is exactly a ``types.MappingProxyType`` beside a ``dispatch``
+    callable, both read without running any code of the object's."""
+    if _SINGLEDISPATCH_WRAPPER is not None:
+        registered = _registered(link)
+        if registered is not None:
+            return registered
+    else:  # a Python whose dispatcher the gate does not know by its code
+        registry = inspect.getattr_static(link, "registry", None)
+        if type(registry) is types.MappingProxyType and callable(
+            inspect.getattr_static(link, "dispatch", None)
+        ):
+            base = inspect.getattr_static(link, "__wrapped__", None)
+            return len(registry) != 1 or registry.get(object) is not base
     register = getattr(link, "register", None)
     return isinstance(getattr(register, "__self__", None), functools.singledispatchmethod)
 
@@ -413,14 +468,68 @@ _AGENT_TOOL_NOT_READ = (
     "`agent.as_tool(...)`."
 )
 
-_AGENT_TOOL_PARAMETERS = (
-    "its `parameters` type is one the gate cannot work out the sub-agent's input for "
-    "without running code of the type's own: a dataclass, or a Pydantic model with a "
-    "validator, a serializer, a computed field, a default factory other than `list` or "
-    "`dict`, or a field that is an Enum, a model, a date, a tuple, a set, bytes or a "
-    "pattern. Declare a Pydantic model with data-only fields (str, int, float, bool, None, "
-    "Literal, and lists of them)."
+_AGENT_TOOL_DATA_ONLY = (
+    "The gate works out what the sub-agent is given only for a Pydantic model the SDK's "
+    "own rule for data-only validation admits (`can_prepare_without_user_code`) and that "
+    "is written out with no code of its own. Declare fields that are str, int, float, "
+    "bool, None, Literal and lists of them, with JSON defaults, and build other types "
+    "inside the sub-agent's own tools."
 )
+
+
+def _core_kind(schema: Any) -> str:
+    """The pydantic core type of a field, under its default and its ``Optional``."""
+    while type(schema) is dict and schema.get("type") in ("default", "nullable"):
+        schema = schema.get("schema")
+    return str(schema.get("type")) if type(schema) is dict else "unknown"
+
+
+def _agent_tool_parameters_reason(core: Any) -> str:
+    """Why a ``parameters`` type is not one the gate works out the sub-agent's input for,
+    naming the field and the pydantic core type that puts it outside the data-only set."""
+    if type(core) is not dict or core.get("type") != "model":
+        kind = core.get("type") if type(core) is dict else "unknown"
+        return (
+            f"its `parameters` type is not a Pydantic model the gate reads: its pydantic "
+            f"core type is `{kind}` (a dataclass is `dataclass`, a model that refers to "
+            f"itself is `definitions`). {_AGENT_TOOL_DATA_ONLY}"
+        )
+    named: list[str] = []
+    writes: list[str] = []
+    try:
+        inner = core["schema"]
+        for name, field in inner["fields"].items():
+            own = field["schema"]
+            if not _is_data_only_schema(own):
+                if own.get("type") == "default" and _is_data_only_schema(own["schema"]):
+                    named.append(
+                        f"`{name}` (a default that is not JSON data, or a default factory "
+                        "other than `list` or `dict`)"
+                    )
+                else:
+                    named.append(f"`{name}` (pydantic core type `{_core_kind(own)}`)")
+            elif _runs_code_to_serialize(field):
+                writes.append(f"`{name}`")
+        computed = [f"`{each.get('property_name')}`" for each in inner.get("computed_fields") or ()]
+    except Exception:  # noqa: BLE001, the refusal stands without the field's name
+        named, writes, computed = [], [], []
+    if named:
+        return (
+            f"its `parameters` model has a field outside the data-only set: "
+            f"{', '.join(named)}. {_AGENT_TOOL_DATA_ONLY}"
+        )
+    if writes or computed:
+        return (
+            f"its `parameters` model writes {', '.join(writes + computed)} out through code "
+            "of its own (a serializer, a computed field or `exclude_if`), which the SDK "
+            f"runs again after the gate. {_AGENT_TOOL_DATA_ONLY}"
+        )
+    return (
+        "its `parameters` model is not one the SDK's rule for data-only validation admits "
+        "(a validator or a serializer on the model, a custom `__init__`, "
+        "`model_post_init`, a private attribute, `defer_build`, a model that refers to "
+        f"itself, a pydantic plugin). {_AGENT_TOOL_DATA_ONLY}"
+    )
 
 
 def _agent_tool_adapter(tool: FunctionTool) -> Any:
@@ -446,9 +555,14 @@ def _agent_tool_adapter(tool: FunctionTool) -> Any:
 
 def _runs_code_to_serialize(node: Any) -> bool:
     """Whether a core schema writes a value out through code of the model's own: a
-    serializer on a field or on the model, or a computed field."""
+    serializer on a field or on the model, a computed field, or a field left out by a
+    callable (``Field(exclude_if=...)``)."""
     if type(node) is dict:
-        if "serialization" in node or node.get("computed_fields"):
+        if (
+            "serialization" in node
+            or node.get("computed_fields")
+            or "serialization_exclude_if" in node
+        ):
             return True
         return any(_runs_code_to_serialize(item) for item in node.values())
     if type(node) is list:
@@ -483,7 +597,7 @@ def _agent_tool_refusal(tool: FunctionTool) -> Optional[str]:
         )
     except Exception:  # noqa: BLE001, a parameters type the gate cannot read is refused
         data_only = False
-    return None if data_only else _AGENT_TOOL_PARAMETERS
+    return None if data_only else _agent_tool_parameters_reason(core)
 
 
 def _agent_tool_input(tool: FunctionTool, proposed: dict[str, Any]) -> dict[str, Any]:
@@ -502,7 +616,10 @@ def _agent_tool_input(tool: FunctionTool, proposed: dict[str, Any]) -> dict[str,
         validated = adapter.validate_python(proposed)
     except Exception as exc:  # noqa: BLE001, pydantic's ValidationError, which is a ValueError
         raise ValueError("the arguments do not validate against its parameters") from exc
-    given = _detached(adapter.dump_python(validated, mode="json"))
+    try:
+        given = _detached(adapter.dump_python(validated, mode="json"))
+    except TypeError as exc:  # a non-finite number: text such as "nan" for a float field
+        raise ValueError(f"the validated arguments are not JSON data: {exc}") from exc
     if type(given) is not dict:
         raise TypeError("the validated arguments are not a JSON object")
     return dict(given)

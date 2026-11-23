@@ -521,3 +521,48 @@ def test_what_the_sdk_does_with_an_unknown_tool_and_a_repeated_call_id(oa):
     gated, seen = two_turns(SELECT)
     _run_route(oa, gated, "run")
     assert len(seen.calls) == 1 and len(oa.EXECUTED) == 1, "the repeated call is not run again"
+
+
+def test_functools_builds_a_singledispatch_function_the_way_the_gate_knows_it():
+    """The gate knows a ``functools.singledispatch`` function by the code of the
+    ``wrapper`` function nested in ``functools.singledispatch``, and reads its registry
+    from the closure of that function's ``dispatch``. A Python that builds its dispatcher
+    another way fails here, and the gate falls back to reading the attributes."""
+    import functools
+    import types
+
+    wrappers = [
+        const
+        for const in functools.singledispatch.__code__.co_consts
+        if isinstance(const, types.CodeType) and const.co_name == "wrapper"
+    ]
+    assert len(wrappers) == 1
+
+    @functools.singledispatch
+    def lookup(key: str) -> str:
+        return key
+
+    assert type(lookup) is types.FunctionType and lookup.__code__ is wrappers[0]
+    assert lookup.__wrapped__.__name__ == "lookup"
+    closure = dict(zip(lookup.__code__.co_freevars, lookup.__closure__))
+    dispatch = closure["dispatch"].cell_contents
+    assert dispatch is lookup.dispatch
+    registry = dict(zip(dispatch.__code__.co_freevars, dispatch.__closure__))["registry"]
+    assert type(registry.cell_contents) is dict
+    assert registry.cell_contents == {object: lookup.__wrapped__}
+    lookup.register(int)(lambda key: "int")
+    assert set(registry.cell_contents) == {object, int}
+
+    # a `functools.wraps` wrapper carries a copy of the attributes and is not the dispatcher
+    @functools.wraps(lookup)
+    def forwarding(*args, **kwargs):
+        return lookup(*args, **kwargs)
+
+    assert forwarding.registry is lookup.registry and forwarding.__wrapped__ is lookup
+    assert forwarding.__code__ is not wrappers[0]
+
+    # as a method, the bound method's function is the dispatcher
+    class Service:
+        handle = functools.singledispatch(lambda self, key="": key)
+
+    assert Service().handle.__func__.__code__ is wrappers[0]

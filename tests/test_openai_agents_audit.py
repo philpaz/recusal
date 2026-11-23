@@ -475,6 +475,48 @@ class TestOpenAIAgentsAudit:
         assert entry["action"]["input_sha256"] == _sha(proposed)
         assert "MARKER" not in log_path.read_text(encoding="utf-8")
 
+    def test_an_agent_tool_refused_for_its_parameters_type_on_a_call_is_one_recorded_deny(
+        self, example, gate, log, log_path
+    ):
+        """An agent tool whose ``parameters`` type the gate does not read is refused when
+        it is gated; should its guardrail be attached another way, the refusal on the
+        call is on the log like every other."""
+        from agents.testing import ScriptedModel, assistant_message
+        from pydantic import BaseModel, field_validator
+
+        class Ask(BaseModel):
+            task: str
+
+            @field_validator("task")
+            @classmethod
+            def upper(cls, value):
+                return value.upper()
+
+        sub_model = ScriptedModel([[assistant_message("sub done")]])
+        sub = gate.gated_agent(
+            gate.Agent(name="sub", model=sub_model, tools=[gate.run_sql]), lambda *_: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Ask)
+        holder = [tool]
+        seen: list = []
+        guardrail = _adapter()._guardrail_for(
+            lambda name, args: seen.append(name) or [], holder, example.recording(log)
+        )
+        tool.tool_input_guardrails = [guardrail]
+        parent_model = gate.scripted_model([("ask_sub", {"task": "MARKER"}, "p1")])
+        asyncio.run(gate.run_agent(gate.Agent(name="p", model=parent_model, tools=[tool])))
+        reason = gate.tool_outputs(parent_model)["p1"]
+        assert reason.startswith(
+            "Recusal refused `ask_sub` [FAIL]: its `parameters` model has a field outside the "
+            "data-only set: `task` (pydantic core type `function-after`)"
+        )
+        assert sub_model.first_call is None and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["reason"] == reason
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha({"task": "MARKER"})
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
     # --- approvals, and what the guardrail never sees, as the example says ------------------
 
     @pytest.mark.parametrize("approve", [True, False], ids=["approved", "rejected"])

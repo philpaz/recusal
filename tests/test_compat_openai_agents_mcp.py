@@ -475,3 +475,138 @@ def test_jsonschema_has_the_surface_the_gate_counts_and_reads_patterns_with():
     referred = {"$defs": {"Flag": inner}, "properties": {"a": {"$ref": "#/$defs/Flag"}}}
     list(counting(referred).iter_errors({"a": 1}))
     assert called[-1][2] is inner, "a `$ref` resolves to the object in the schema, not a copy"
+
+
+def test_the_gates_reading_of_text_is_never_narrower_than_pydantics():
+    """The gate refuses a string where the schema names a number or a boolean beside
+    string and Pydantic's lax conversion would read the string as one. Its own reading
+    must hold every string Pydantic's does: checked against the installed Pydantic over
+    the forms a number and a boolean are written in."""
+    import importlib
+    import itertools
+
+    pydantic = pytest.importorskip("pydantic")
+    _adapter_module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    work = _adapter_module._Work(10**9)
+    adapters = {
+        "number": [pydantic.TypeAdapter(int), pydantic.TypeAdapter(float)],
+        "boolean": [pydantic.TypeAdapter(bool)],
+    }
+
+    def pydantic_reads(kind, text):
+        for adapter in adapters[kind]:
+            try:
+                adapter.validate_python(text)
+            except pydantic.ValidationError:
+                continue
+            return True
+        return False
+
+    pieces = [
+        "",
+        " ",
+        "\t",
+        "\n",
+        "\u00a0",
+        "\x0b",
+        "\x1c",
+        "+",
+        "-",
+        "0",
+        "1",
+        "5",
+        "07",
+        "9" * 30,
+    ]
+    pieces += [
+        ".",
+        "_",
+        "__",
+        "e",
+        "E",
+        "e3",
+        "E-3",
+        "inf",
+        "Infinity",
+        "nan",
+        "NaN",
+        "x",
+        ",",
+        "0x",
+    ]
+    pieces += ["true", "True", "FALSE", "yes", "No", "on", "OFF", "t", "F", "y", "N", "null", "2"]
+    texts = {
+        "".join(parts) for size in (1, 2, 3) for parts in itertools.product(pieces, repeat=size)
+    }
+    texts |= {"9" * 400, "9" * 5000, "1" + "0" * 400 + ".0", "1_0e1_0", "1._5", "1_.5", "1e_3"}
+    assert len(texts) > 60_000
+    read = {"number": 0, "boolean": 0}
+    for text in texts:
+        mine = _adapter_module._reads(work, text)
+        for kind in ("number", "boolean"):
+            if pydantic_reads(kind, text):
+                read[kind] += 1
+                assert kind in mine, (kind, text)
+    assert read["number"] > 1000 and read["boolean"] > 10, "the comparison saw both readings"
+    # and what it is wider by is small enough to say: white space around a boolean word,
+    # underscores Pydantic rejects, digits that are not ASCII
+    for text in (" true ", "1__0", "_1", "--5", "\u0663"):
+        assert _adapter_module._reads(work, text), text
+        assert not pydantic_reads("number", text) and not pydantic_reads("boolean", text)
+    for text in ("", "five", "tru", "0x10", "1,000", "5-5"):
+        assert _adapter_module._reads(work, text) == frozenset(), text
+
+
+def test_jsonschema_evaluates_a_schemas_patterns_where_the_gate_replaces_it():
+    """Why the gate replaces these keywords: ``jsonschema`` runs ``re.search`` with the
+    schema's pattern on the instance for ``pattern``, ``patternProperties``,
+    ``additionalProperties`` and ``unevaluatedProperties``. The gate's validators run it
+    for none of them, and each keyword it replaces is one every draft it reads has."""
+    import importlib
+    import re
+
+    from jsonschema import validators
+
+    module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    schemas = {
+        "pattern": ({"pattern": "^a"}, "abc"),
+        "patternProperties": ({"patternProperties": {"^a": {}}}, {"abc": 1}),
+        "additionalProperties": (
+            {"patternProperties": {"^a": {}}, "additionalProperties": False},
+            {"abc": 1},
+        ),
+        "unevaluatedProperties": (
+            {"patternProperties": {"^a": {}}, "unevaluatedProperties": False},
+            {"abc": 1},
+        ),
+    }
+    searched = []
+    original = re.search
+
+    def counting(pattern, string, *args, **kwargs):
+        searched.append(pattern)
+        return original(pattern, string, *args, **kwargs)
+
+    re.search = counting
+    try:
+        for keyword, (schema, instance) in schemas.items():
+            searched.clear()
+            assert validators.Draft202012Validator(schema).is_valid(instance)
+            assert "^a" in searched, keyword
+            if keyword == "unevaluatedProperties":
+                continue  # refused as a schema by the gate, beside `patternProperties`
+            searched.clear()
+            assert module._DRAFTS[validators.Draft202012Validator](schema).is_valid(instance)
+            assert searched == [], keyword
+    finally:
+        re.search = original
+    replaced = {"enum", "const", "uniqueItems", "pattern", "patternProperties"}
+    replaced |= {"additionalProperties", "anyOf", "oneOf"}
+    for base, strict in module._DRAFTS.items():
+        assert replaced <= set(base.VALIDATORS), base
+        assert set(strict.VALIDATORS) == set(base.VALIDATORS)
+    # an error raised under `anyOf` carries what the gate reads it by
+    strict = module._DRAFTS[validators.Draft202012Validator]
+    (error,) = strict({"anyOf": [{"type": "null"}]}).iter_errors(1)
+    assert error.validator == "anyOf" and error.validator_value == [{"type": "null"}]
+    assert error.instance == 1

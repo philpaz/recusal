@@ -33,7 +33,12 @@ All notable changes to this project are documented here. The format follows
     registered one ran with a default (`include_deleted=True`) that was in no schema.
     One with nothing registered is the function it wraps and is gated, an implementation
     registered afterwards refuses its next call, and a callable object that happens to
-    have a `dispatch` method and a `registry` attribute is not taken for one. A stack of
+    have a `dispatch` method and a `registry` attribute is not taken for one. The
+    dispatcher is known by the code of `functools.singledispatch`'s own wrapper function
+    and its registry is read from that function's closure, so it is found as a method or
+    a class method (`function_tool(service.handle)`, where a registered implementation
+    ran with its own default) and under `functools.wraps` wrappers, and one with nothing
+    registered is gated there too. A stack of
     more than 31 wrappers is refused for that reason, not as "cannot be inspected". A
     wrapper that calls a function it holds in a closure or an attribute is not read; the
     README lists it under what the gate does not see.
@@ -43,10 +48,12 @@ All notable changes to this project are documented here. The format follows
     default left out was judged as absent, and a key the model drops was judged as
     present. The policy is now handed what the sub-agent is given, worked out with the
     SDK's own adapter for that tool, and arguments the model does not accept are refused
-    before the policy runs. A `parameters` type whose validation or serialization runs
-    code of its own (a validator, a serializer, a computed field, a nested model, a
-    dataclass) is refused when the tool is gated. The default `as_tool` is judged by the
-    arguments as proposed, as before.
+    before the policy runs. A `parameters` type that is not a data-only Pydantic model
+    (a validator, a serializer, a computed field, `Field(exclude_if=...)`, a nested
+    model, a dataclass, a field of a type outside the data-only set) is refused when the
+    tool is gated, with a reason that names the field and its pydantic core type; the
+    README lists the types and what to declare in their place. The default `as_tool` is
+    judged by the arguments as proposed, as before.
   - `gated_agent` returned a copy that shared the original agent's `handoffs` and
     `mcp_servers` lists, so a handoff appended to the original after gating was the gated
     copy's too, and the agent it handed off to ran ungated. The copy now has its own
@@ -103,10 +110,11 @@ All notable changes to this project are documented here. The format follows
     `settings_reason`, `too_deep`, `tools_gated`, and the `agent_gated` argument of
     `gate_tools`.
 - **`recusal-openai-agents-mcp` 0.2.0 (unreleased): the policy judges the arguments
-  checked against and completed from the server's listed schema, and the server is sent
-  what was judged, less a listed default it would not run with if it were sent (one that
-  is not valid against its own property schema, or text the server would decode), which
-  is judged and not sent.** Found by the same review and reproduced against a real stdio
+  checked against and completed from the server's listed schema; an object or a list the
+  schema offers more than one form for, and a string a server may read as another type
+  the schema lists, are refused; and the server is sent what was judged, less a listed
+  default that cannot be sent, which is judged as listed and not sent.** Found by the
+  same review and reproduced against a real stdio
   server built with the MCP Python SDK (`mcp` 2.3.0) and one built with the TypeScript
   SDK and zod:
   - The gate judged the arguments as sent and never read the tool's listed `inputSchema`,
@@ -133,8 +141,7 @@ All notable changes to this project are documented here. The format follows
     than draft-07, 2019-09 and 2020-12, a `$ref` that does not resolve inside the schema
     (a remote one is never fetched), a default under a keyword the walk does not follow
     or under a keyword the gate does not know, a property left out whose alternatives
-    list different defaults, alternatives of an `anyOf` that would write different
-    defaults. To read the schema, `gate_mcp_server` now also wraps the server's
+    list different defaults. To read the schema, `gate_mcp_server` now also wraps the server's
     `list_tools`, in place; each listing replaces the one before, so a call to a tool the
     server does not list, or no longer lists, is refused. Where the server object keeps
     its listing as fetched, before any `tool_filter` (`cached_tools`, as the SDK's own
@@ -148,41 +155,86 @@ All notable changes to this project are documented here. The format follows
     exactly `str`: `{"scope": "null"}` for `scope: Optional[str]` was judged as the
     string and ran as `None`. A string that holds JSON text for null, a list or an
     object, which is what that server decodes, is now refused where the schema of the
-    property (one the schema names, at the top of the arguments) allows another JSON type
-    than string. Text for a boolean or a number the server keeps a string, and it is
-    judged and sent as one. A property whose schema allows only strings keeps every
-    string. A listed default that is such text
+    argument allows another JSON type than string. A property whose schema allows only
+    strings keeps every string. A listed default that is such text
     (`mode: Optional[str] = "null"`) is judged and not sent: the server runs with the
     string when the parameter is left out, and would decode it if the gate sent it.
-  - A model could stall the agent's process: where two alternatives of a recursive
-    `anyOf` both accept a value (`where: Union[And, Or, Leaf]`), the cost of checking
+  - A model could stall the agent's process, in four ways, inside the event loop. Where
+    two alternatives of a recursive `anyOf` both accept a value, the cost of checking
     more than doubled with every level of the arguments: ten levels took several seconds
-    and twelve more than a minute, inside the event loop. Nothing is now validated twice
-    for one schema and one value, the defaults for one schema and one place are worked
-    out once in a pass, and every step is counted against an allowance that grows with
-    the number of values in the arguments; a call over it is refused before the policy
-    runs, as one deny entry. Thirty-one levels, the deepest the 64-level limit allows
-    for that shape, now take under a tenth of a second.
+    and twelve more than a minute. A server's `pattern` ran on the model's text with
+    Python's `re`: `^(\w+\s?)+$` took eleven seconds on forty bytes, and a
+    `patternProperties` pattern nine on a member's name. `uniqueItems` compared every
+    item with every other (fifteen seconds for 12,000), and an `enum` every value with
+    every choice. And the types a subschema admits were read again for every way the
+    schema reaches it. Now nothing is validated twice for one schema and one value, a
+    list or an object is walked once for a schema, `uniqueItems`, `enum` and `const`
+    read each value once, and what the schema alone says is read once when the listing
+    is read. No regular expression of a server's is evaluated at all: `pattern` is not
+    checked (the server checks it), and a member beside `patternProperties` must meet
+    the schema of every pattern listed. The work is bounded by counting it, not by a
+    timer: each keyword applied to a value (and one more for each member or item the
+    value holds), each value walked or read for a comparison, and each part of the place
+    of a validation error is a step, counted against an allowance that grows with the
+    number of values in the arguments; a call over it is refused before the policy runs,
+    as one deny entry. The 12,000 items now take about a tenth of a second.
+  - Which of several object forms a server runs is not in its schema, and the gate had
+    worked it out by JSON Schema's rule. A server built on Pydantic takes the member of a
+    `Union` of models with more of the fields that are set, converting strings to fit
+    it; one built on zod takes the first member of a `z.union` that parses and drops the
+    members that one does not know, although it lists `additionalProperties: false`. So
+    `{"target": {"path": "/data", "pattern": "*.tmp", "dry_run": true}}` was judged as
+    written and ran as `{"path": "/data", "recursive": true}`. An object is now refused
+    wherever the schema offers more than one object form for it (two or more
+    alternatives of an `anyOf` or `oneOf` that admit an object), whatever it holds and
+    at any depth, unless every form fixes one same-named property to a `const` of its
+    own and the object carries the value of exactly one, which is then the only form
+    used. A list is refused where the schema offers more than one list form. One form
+    beside alternatives that are not one (`Optional[Model]`, `Model | str`) is as
+    before. A `Union` of models needs a `Literal` tag on each, sent with the call, or
+    one tool for each form.
+  - The text of a number ran as the number. Pydantic converts a string wherever the
+    value is not taken as a string first: `{"since": "1700000000"}` for
+    `since: Union[int, datetime]` ran as the integer, and `"true"` for
+    `Union[bool, Path]` as `True`. A string that reads as a number, or as one of the
+    words Pydantic reads as a boolean, is now refused where the schema names that type
+    beside string, at any depth. This is one rule with the JSON text above: a string is
+    refused where the schema also admits the type a server reads its text as. It costs
+    the same strings for `Union[int, str]`, which a server would have kept as strings
+    and whose schema is no different.
+  - A listed default with a member its own schema does not allow is refused when it
+    would apply: a Pydantic model with aliased fields and `extra="forbid"`, used as a
+    parameter's default, lists the default under the field names and the schema under
+    the aliases, and was judged under names the schema does not have.
   - Refused without cause, now accepted: a legal chain of a recursive model
     (`child: Optional[Node]`) deeper than 42 levels, refused as a schema that "refers to
     itself without end" (only a schema that leads back to itself with no value in
     between is one, and it is refused when the tool is called); a `pattern` Python
-    cannot compile (`\p{L}`), which made every call "not a valid JSON Schema" and is now
-    not asserted, as a `format` is not; and a draft declared under its `https` address.
-  - One listed default is judged and not sent: one that is not valid against its own
-    property schema. Pydantic publishes `{"default": null, "type": "string"}` for
-    `q: str = None`; the server runs with `None` when the parameter is left out and would
-    reject it if it were sent.
+    cannot compile (`\p{L}`), which made every call "not a valid JSON Schema" (no
+    pattern is compiled now); and a draft declared under its `https` address.
+  - A listed default that cannot be sent is judged as listed and not sent: one that is
+    not valid against its own property schema (Pydantic publishes `{"default": null,
+    "type": "string"}` for `q: str = None`, and its server would reject the `null` if it
+    were sent), and text a call would be refused for sending. The gate judges the
+    default as the schema lists it. A server that derives its real default another way
+    runs that: zod's `z.number().default(Infinity)` lists `default: null` and runs
+    `Infinity`, `.default(1).optional()` on a schema the `1` fails runs with the
+    parameter absent, a `Set` default is listed as `{}`, and an object default that
+    fails its own schema is parsed again through it. The README says so. A default that
+    holds an object or a list where the schema offers more than one form refuses the
+    call that leaves its property out.
   - The README says what is not seen: a parameter left out with no listed default (a
     `default_factory` default among them), a server whose code does more than its schema
     says (the MCP Python SDK's server parses a string for a parameter without an
     annotation, which it lists as `type: string`; a numeric string runs as a date; a
     validator that strips or lowers a string changes it, a default the gate wrote
-    included; zod's `.catch` is in no schema), an integer above 2^53 for a float
-    parameter, a schema that changes after it was listed, and the server's handling of a
-    hosted MCP call. It also says what the rules mean for ordinary schemas: a `Union` of
-    two models that both accept any object, a tuple with a defaulted member, zod's
-    `additionalProperties: false`, and OpenAPI's `nullable`.
+    included; zod's `.catch` is in no schema; `str | SkipJsonSchema[None]` lists a
+    string and runs `"null"` as `None`; a `Json[...]` parameter runs what its string
+    decodes to), an integer above 2^53 for a float parameter, a member an object's
+    schema does not name, a schema that changes after it was listed, and the server's
+    handling of a hosted MCP call. It also says what the rules mean for ordinary schemas:
+    a `Union` of two models, a list of two forms, `Union[int, str]`, a tuple with a
+    defaulted member, zod's `additionalProperties: false`, and OpenAPI's `nullable`.
   - A non-finite number in a local server call (`1e400`) left an audit entry with no
     fingerprint and the kernel's "cannot be fingerprinted" in place of the gate's reason.
     Arguments that are not JSON data are now refused with the gate's own reason, in one

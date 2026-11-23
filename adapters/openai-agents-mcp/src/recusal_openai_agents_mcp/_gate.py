@@ -23,12 +23,14 @@ in place, to keep each tool's listed schema, and before the policy runs the argu
 must be valid against the whole of that schema as they stand, and every default the
 schema lists for a property they leave out, at any depth, is written into them
 (``_schema.Listed.complete``). Arguments the gate cannot check or complete are refused,
-and so is a string that holds JSON text where the schema allows another type than
-string, which the MCP Python SDK's server would decode and run as that value.
+and so is what a schema cannot say the outcome of: an object or a list where the schema
+offers more than one form, and a string whose text a server would read as another type
+the schema also admits (the text of a number beside a number; JSON text for an argument,
+which the MCP Python SDK's server would decode and run as that value).
 The policy judges the completed arguments and the server is sent the completed arguments,
-with one exception: a listed default the server would not run with if it were sent (one
-that is not valid against its own property schema, or text the server would decode) is
-judged and not sent. A parameter left out that has no listed default, and whatever a
+with one exception: a listed default that cannot be sent (one that is not valid against
+its own property schema, or text the server would read as another type) is judged as
+listed and not sent. A parameter left out that has no listed default, and whatever a
 server does beyond what its schema says, is not seen.
 
 Hosted MCP (``HostedMCPTool``). Those calls run on OpenAI's servers, and the one local point
@@ -140,14 +142,15 @@ def _judged_call(
     copied as JSON data, validated against the whole schema and completed with every
     default it lists (``_schema.Listed.complete``); the policy judges a copy of the
     completed arguments and the server is sent the completed arguments, so a policy that
-    writes to what it was handed changes its copy and not the call. A listed default the
-    server would not run with if it were sent (one that is not valid against its own
-    property schema, or text the server would decode) is judged and not sent. Refused before the
-    policy runs: a non-mapping, arguments that are not JSON data or are nested too deeply,
-    a tool the server does not list, arguments that are not valid against the schema as
-    they stand, a string a server may read as JSON for another value, arguments that
-    cost more to check than the gate allows, and a schema the gate cannot check or
-    complete them against.
+    writes to what it was handed changes its copy and not the call. A listed default
+    that cannot be sent (one that is not valid against its own property schema, or text
+    the server would read as another type) is judged as listed and not sent. Refused
+    before the policy runs: a non-mapping, arguments that are not JSON data or are nested
+    too deeply, a tool the server does not list, arguments that are not valid against the
+    schema as they stand, an object or a list the schema offers more than one form for, a
+    string a server may read as another type the schema admits, arguments that cost more
+    to check than the gate allows, and a schema the gate cannot check or complete them
+    against.
 
     ``record`` goes straight to ``decide``, which then writes the decision to an audit
     log; the entry of a judged call carries the fingerprint of the arguments as judged,

@@ -218,19 +218,34 @@ guardrail cannot judge:
 - **A `functools.singledispatch` function with an implementation registered, or a
   `singledispatchmethod`.** The implementation that runs is chosen by the type of an
   argument, and each one has its own parameters and defaults. Register one plain
-  function and dispatch inside its body. A `singledispatch` function with nothing
-  registered is the function it wraps, and is gated; an implementation registered after
-  the tool was gated refuses its next call. A callable object that happens to have a
-  `dispatch` method and a `registry` attribute is not taken for one.
+  function and dispatch inside its body. The dispatcher is found wherever it stands
+  among the callables the call reaches: as the tool itself, as a method or a class
+  method (`function_tool(service.handle)`), and under `functools.wraps` wrappers or
+  `functools.lru_cache`. A `singledispatch` function with nothing registered is the
+  function it wraps, and is gated in each of those places; an implementation registered
+  after the tool was gated refuses its next call. A wrapper that only carries a copy of
+  a dispatcher's attributes, and a callable object that happens to have a `dispatch`
+  method and a `registry` attribute, are not taken for one.
 - **A sub-agent behind `agent.as_tool(...)` whose own tools are not gated.** Gate the
   sub-agent first, `gated_agent(sub, policy).as_tool(...)`, and the parent accepts it.
-- **An agent tool whose `parameters` type runs code of its own.** The gate works out what
-  the sub-agent is given with the SDK's adapter for that type, and the SDK then
-  validates the arguments again itself, so the two agree only when validating and
-  writing the value out run none of the type's code. Refused: a dataclass, and a
-  Pydantic model with a validator, a serializer, a computed field, a default factory
-  other than `list` or `dict`, or a field that is an `Enum`, a nested model, a date, a
-  `tuple`, a `set`, `bytes` or a pattern. Declare a Pydantic model with data-only fields.
+- **An agent tool whose `parameters` type is not a data-only Pydantic model.** The gate
+  works out what the sub-agent is given with the SDK's adapter for that type, and the
+  SDK then validates the arguments again itself, so the two agree only for a model the
+  SDK's own rule for data-only validation admits (`can_prepare_without_user_code`) and
+  that is written out with no code of its own. The refusal names the field and its
+  pydantic core type. Refused, with what to declare in its place:
+  - a `date`, `datetime`, `time` or `timedelta` field, a `UUID`, a `Path`, an `AnyUrl`,
+    a `Decimal`, `bytes`: a `str` (or a `float` for the `Decimal`), read inside the
+    sub-agent's own tools;
+  - a `tuple`, a `set`, a `frozenset`, a `Sequence[str]`: a `list`;
+  - an `Enum`: a `Literal` of its values;
+  - a nested model, a model that refers to itself, a dataclass: flat fields;
+  - a field with a pattern, a validator, a serializer, a computed field, or
+    `Field(exclude_if=...)` (the SDK runs that callable again when it writes the input
+    out): plain fields, checked inside the sub-agent's own tools;
+  - a default that is not JSON data (`tags: list[str] = ()`) and a default factory other
+    than `list` or `dict`: a JSON default, or `Field(default_factory=list)`;
+  - a model with a `PrivateAttr`, and one built with `defer_build=True`: neither.
 
 Refused call by call, before the policy runs, with a reason the model reads:
 

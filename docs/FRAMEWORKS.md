@@ -112,12 +112,14 @@ data, a default factory other than `list` or `dict`), a mapping whose key type i
 `functools.wraps` wrapper at any level of a stack that
 takes other parameters than the function (one of its own, some of the function's, or the
 function's in another order), which would run with a value no
-policy judged, a `functools.singledispatch` function with an implementation registered,
+policy judged, a `functools.singledispatch` function with an implementation registered
+(as the tool itself, as a method, or under a forwarding wrapper),
 a decorator whose signature cannot be read (a class-based decorator that is also a
 descriptor, such as `cachetools.cached`), a function under more wrappers than the walk
-reads (more than 31), and an agent tool whose `parameters` type runs code of its own (a
-dataclass, or a model with a validator, a serializer, a computed field or a field that
-is not data-only); keep parameters data-only and validate inside the tool body. The
+reads (more than 31), and an agent tool whose `parameters` type is not a data-only
+Pydantic model (a dataclass, or a model with a validator, a serializer, a computed
+field, `exclude_if` or a field that is not data-only; the refusal names the field and
+its type); keep parameters data-only and validate inside the tool body. The
 walk reads the function, its `__wrapped__` chain, a bound method's function and a callable
 object's `__call__`; a wrapper that calls a function it holds in a closure is not read. A refusal
 becomes the call's
@@ -157,8 +159,10 @@ sanitized, hashed on collision or shortened, so a gate keyed on the public name 
 presentation of the capability. `gate_mcp_server(server, policy)` instead wraps the
 server's own `call_tool`, in place, the one point where the SDK hands over the server's
 tool name and the arguments that are sent to it, after any approval. A server fills a
-parameter the call leaves out from its default and converts a value of another type, and
-its listed `inputSchema` is the only statement of both, so the gate also wraps
+parameter the call leaves out from its default, converts a value of another type, and
+where its schema offers several object forms picks one by a rule of its own. Its listed
+`inputSchema` is the only statement of what it accepts and states none of those rules,
+so the gate also wraps
 `list_tools`, in place, to keep each tool's schema from the most recent listing (the
 whole listing, before any `tool_filter`, where the server object keeps it as the SDK's
 own servers do), and
@@ -166,30 +170,44 @@ before the policy runs the arguments must be valid against the whole of that sch
 they stand (validated with `jsonschema` in the draft the schema declares, through
 `anyOf`, `$ref`, `additionalProperties`, `prefixItems` and the rest, and stricter where a
 server would still convert: a string is not a boolean or a number, `5.0` is not an
-integer), and every default the schema lists for a property they leave out, at any depth,
+integer; a server's `pattern` is never evaluated and is not checked), and every default
+the schema lists for a property they leave out, at any depth,
 is written into them: the property's own, or, when its schema lists none itself, the one
 its `$ref`, a member of its `allOf` or an alternative of its `anyOf` or `oneOf` lists
-(what zod publishes for `z.boolean().default(true).nullable()`). A string that holds
-JSON text for null, a list or an object is refused where the property's schema allows
-another type than string, because the MCP Python SDK's server decodes such text and runs
-with the value (`"null"` for an `Optional[str]` runs as `None`); text for a boolean or a
-number it keeps a string, and so does the gate.
+(what zod publishes for `z.boolean().default(true).nullable()`). Two things a schema
+cannot say are refused by rule. An object where the schema offers more than one object
+form (two or more alternatives of an `anyOf` or `oneOf` that admit an object, which a
+`Union` of two models and a zod union publish) is refused whatever it holds, because
+Pydantic and zod each pick the form by a rule that is not JSON Schema's, unless every
+form fixes one same-named property to a `const` of its own and the object carries the
+value of exactly one; a list where it offers more than one list form is refused. And a
+string is refused where the schema also admits the type a server reads its text as: the
+text of a number or a word for a boolean where the schema names that type beside string
+(`"1700000000"` for `Union[int, date]` runs as the integer), at any depth, and, for an
+argument, JSON text for null, a list or an object where the schema admits another type
+than string, because the MCP Python SDK's server decodes such text and runs
+with the value (`"null"` for an `Optional[str]` runs as `None`).
 Arguments the
 gate cannot check or complete are refused with a
 reason that names the place and what the schema requires there, and carries no argument
 text: a `$ref` that does not resolve inside the schema, a draft other than draft-07,
-2019-09 and 2020-12, a default under a keyword the walk does not follow or the gate does
-not know, a left-out property whose alternatives list different defaults, alternatives
-that would write different defaults, a tool the server no longer lists. The work is
-bounded: a recursive schema is checked once for each value, and a call that costs more
+2019-09 and 2020-12, a default under a keyword the walk does not write through or the
+gate does not know, a left-out property whose alternatives list different defaults or
+whose default has a member its own schema does not allow, a tool the server no longer
+lists. The work is bounded by counting it: each keyword applied to a value, each value
+walked or read for a comparison is a step, a recursive schema is checked once for each
+value, and a call that costs more
 steps than the gate allows for the size of its arguments is refused. The policy
 judges a copy of the completed arguments and the server is sent the completed arguments,
 so a policy's write to what it judged changes its copy, not the call. The one exception
-is a listed default the server would not run with if it were sent: one that is not valid
+is a listed default that cannot be sent: one that is not valid
 against its own property schema (`q: str = None` publishes one), which the server would
-reject, and one that is JSON text the server would decode (`mode: Optional[str] =
-"null"`). The server runs with it when the parameter is left out, so it is judged and
-not sent. A parameter left
+reject, and text a call would be refused for sending (`mode: Optional[str] =
+"null"`, which the server would decode). It is judged as listed and
+not sent. That holds where the listing is what the server runs with, as on the MCP
+Python SDK; a zod server derives some of these defaults another way
+(`z.number().default(Infinity)` lists `null` and runs `Infinity`), and the README lists
+the cases. A parameter left
 out that has no listed default is the server's to fill and is not seen, nor is a server
 whose code does more than its schema says, and for hosted
 MCP the server's schema is not read at all. A refusal is returned

@@ -1874,27 +1874,45 @@ class TestThirdReview:
         }
 
     @pytest.mark.parametrize(
-        "case",
+        "case, named",
         [
-            "a-validator",
-            "a-serializer",
-            "a-computed-field",
-            "a-nested-model",
-            "a-date",
-            "a-default-factory",
-            "a-dataclass",
+            (
+                "a-validator",
+                "model has a field outside the data-only set: `task` (pydantic core type "
+                "`function-after`). The gate works out",
+            ),
+            ("a-serializer", "model writes `task` out through code of its own"),
+            ("a-computed-field", "model writes `shout` out through code of its own"),
+            (
+                "a-nested-model",
+                "model has a field outside the data-only set: `inner` (pydantic core type "
+                "`model`). ",
+            ),
+            (
+                "a-date",
+                "model has a field outside the data-only set: `when` (pydantic core type `date`). ",
+            ),
+            (
+                "a-default-factory",
+                "model has a field outside the data-only set: `tags` (a default that is not "
+                "JSON data, or a default factory other than `list` or `dict`). ",
+            ),
+            (
+                "a-dataclass",
+                "type is not a Pydantic model the gate reads: its pydantic core type is "
+                "`dataclass` ",
+            ),
         ],
     )
-    def test_a_parameters_type_that_runs_its_own_code_is_refused_at_setup(self, example, case):
+    def test_a_parameters_type_that_runs_its_own_code_is_refused_at_setup(
+        self, example, case, named
+    ):
         parameters = self.unreadable_parameters()[case]
         sub = example.gated_agent(
             example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
         )
         tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=parameters)
-        expected = (
-            "Recusal cannot gate agent tool 'ask_sub': its `parameters` type is one the gate "
-            "cannot work out the sub-agent's input for without running code of the type's own"
-        )
+        expected = f"Recusal cannot gate agent tool 'ask_sub': its `parameters` {named}"
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
         assert str(refusal.value).startswith(expected)
@@ -1914,7 +1932,10 @@ class TestThirdReview:
         )
         policy = self.Recording(lambda name, args: [])
         reason = _adapter()._function_tool_refusal("ask_sub", '{"task": "x"}', policy, tool)
-        assert reason.startswith("Recusal refused `ask_sub`: its `parameters` type is one")
+        assert reason.startswith(
+            "Recusal refused `ask_sub`: its `parameters` model has a field outside the "
+            "data-only set: `task` (pydantic core type `function-after`)"
+        )
         assert policy.seen == []
 
     def test_negative_control_a_validator_gives_the_sub_agent_what_no_policy_saw(self, example):
@@ -2159,3 +2180,377 @@ class TestThirdReview:
         with pytest.raises(Exception, match="maximum recursion depth exceeded"):
             example.run_calls([("run_sql", {"sql": SELECT}, "c1")], policy=policy)
         assert example.EXECUTED == [] and policy.seen == []
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestFourthReview:
+    """The fourth review of 2026-11-22. A ``functools.singledispatch`` function used as a
+    method was no longer recognised (the round-three check did not see through a bound
+    method), so a registered implementation ran with a default no policy saw; one with
+    nothing registered was refused under a forwarding wrapper, which carries a copy of the
+    dispatcher's attributes; and the refusal of an agent tool's ``parameters`` type named
+    no field and gave a cause that was not true of most of the types it refused."""
+
+    example = TestJudgedIsWhatRuns.example
+    Recording = TestEffectiveArguments.Recording
+
+    # --- the dispatcher is found exactly, wherever it stands on the chain ----------------------
+
+    @staticmethod
+    def service(ran, register):
+        """The reviewer's shape: ``singledispatch`` on a method, an implementation
+        registered for the class itself, which adds ``dry_run``."""
+        import functools
+
+        class Service:
+            @functools.singledispatch
+            def handle(self, sql: str = "", force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                ran.append(("base", sql, force))
+                return "recorded"
+
+            on_class = classmethod(
+                functools.singledispatch(
+                    lambda cls, sql="", force=False: ran.append(("base", sql, force)) or "recorded"
+                )
+            )
+
+        if register:
+
+            @Service.handle.register(Service)
+            def _(self, sql: str = "", force: bool = False, dry_run: bool = False):
+                ran.append(("registered", sql, force, dry_run))
+                return "recorded"
+
+            @Service.__dict__["on_class"].__func__.register(type)
+            def _(cls, sql: str = "", force: bool = False, dry_run: bool = False):
+                ran.append(("registered", sql, force, dry_run))
+                return "recorded"
+
+        return Service()
+
+    @staticmethod
+    def forwarding(inner):
+        import functools
+
+        @functools.wraps(inner)
+        def wrapper(*args, **kwargs):
+            return inner(*args, **kwargs)
+
+        return wrapper
+
+    @pytest.mark.parametrize(
+        "how", ["bound", "classmethod", "wrapped", "wrapped-twice"], ids=lambda how: how
+    )
+    def test_a_singledispatch_method_with_an_implementation_registered_is_refused(
+        self, example, how
+    ):
+        service = self.service([], register=True)
+        func = {
+            "bound": lambda: service.handle,
+            "classmethod": lambda: service.on_class,
+            "wrapped": lambda: self.forwarding(service.handle),
+            "wrapped-twice": lambda: self.forwarding(self.forwarding(service.handle)),
+        }[how]()
+        tool = example.function_tool(func, name_override="handle", strict_mode=False)
+        expected = "cannot gate 'handle': it is a `functools.singledispatch` function"
+        with pytest.raises(TypeError, match=expected):
+            example.gate_tools([tool], example.sql_scope_policy)
+        with pytest.raises(TypeError, match=expected):
+            example.gated_agent(example.Agent(name="a", tools=[tool]), example.sql_scope_policy)
+
+    def test_negative_control_ungated_the_registered_method_runs_its_own_default(self, example):
+        ran: list = []
+        tool = example.function_tool(
+            self.service(ran, register=True).handle, name_override="handle", strict_mode=False
+        )
+        assert "dry_run" not in tool.params_json_schema["properties"]
+        example.run_calls([("handle", {"sql": "x"}, "c1")], gated=False, tools=[tool])
+        assert ran == [("registered", "x", False, False)]
+
+    @pytest.mark.parametrize("how", ["bound", "classmethod", "wrapped", "wrapped-twice", "cached"])
+    def test_a_singledispatch_function_with_nothing_registered_is_gated_wherever_it_stands(
+        self, example, how
+    ):
+        """A ``functools.wraps`` wrapper over a dispatcher carries a copy of its
+        ``registry`` and ``dispatch`` attributes and names the dispatcher, not the
+        function it wraps, as ``__wrapped__``: it was taken for a dispatcher with an
+        implementation registered."""
+        import functools
+
+        ran: list = []
+        service = self.service(ran, register=False)
+
+        @functools.singledispatch
+        def plain(sql: str = "", force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            ran.append(("base", sql, force))
+            return "recorded"
+
+        func = {
+            "bound": lambda: service.handle,
+            "classmethod": lambda: service.on_class,
+            "wrapped": lambda: self.forwarding(plain),
+            "wrapped-twice": lambda: self.forwarding(self.forwarding(plain)),
+            "cached": lambda: functools.lru_cache(maxsize=None)(plain),
+        }[how]()
+        tool = example.function_tool(func, name_override="handle", strict_mode=False)
+        policy = self.Recording(lambda name, args: [])
+        outputs, _ = example.run_calls(
+            [("handle", {"sql": "x"}, "c1")], policy=policy, tools=[tool]
+        )
+        assert outputs == {"c1": "recorded"}
+        assert policy.seen == [("handle", {"sql": "x", "force": False})]
+        assert ran == [("base", "x", False)]
+
+    def test_the_dispatcher_is_known_by_its_code_and_its_registry_by_its_closure(self, example):
+        """What the exact identification rests on in ``functools``, so that a Python
+        which builds its dispatcher another way fails here and not silently."""
+        import functools
+        import types
+
+        adapter = _adapter()
+
+        @functools.singledispatch
+        def lookup(key: str) -> str:
+            return key
+
+        assert type(adapter._SINGLEDISPATCH_WRAPPER) is types.CodeType
+        assert type(lookup) is types.FunctionType
+        assert lookup.__code__ is adapter._SINGLEDISPATCH_WRAPPER
+        dispatch = adapter._closure_value(lookup, "dispatch")
+        assert dispatch is lookup.dispatch
+        registry = adapter._closure_value(dispatch, "registry")
+        assert type(registry) is dict and registry == dict(lookup.registry)
+        assert adapter._registered(lookup) is False
+        lookup.register(int)(lambda key: "int")
+        assert adapter._registered(lookup) is True
+        assert adapter._registered(self.forwarding(lookup)) is None
+        assert adapter._registered(print) is None and adapter._registered(Router([])) is None
+        # a wrapper's copy of the attributes says nothing: the closure is what dispatches
+        copy_of = self.forwarding(lookup)
+        assert copy_of.registry is lookup.registry
+        # a dispatcher whose registry cannot be read is taken as one that dispatches
+        real = adapter._closure_value
+        adapter._closure_value = lambda func, name: None
+        try:
+            assert adapter._registered(copy_of.__wrapped__) is True
+        finally:
+            adapter._closure_value = real
+        assert adapter._closure_value(lookup, "no_such_name") is None
+        # another function under ``object`` is an implementation registered
+        other = functools.singledispatch(lambda key: key)
+        other.register(object)(lambda key: "replaced")
+        assert len(other.registry) == 1 and adapter._registered(other) is True
+
+    def test_where_the_dispatchers_code_is_not_known_it_is_found_by_its_attributes(
+        self, example, monkeypatch
+    ):
+        """The path for a Python on which the code object is not found: the round-three
+        check, by a ``registry`` that is exactly a mapping proxy beside ``dispatch``."""
+        monkeypatch.setattr(_adapter(), "_SINGLEDISPATCH_WRAPPER", None)
+        refused = example.function_tool(
+            TestSecondReview.dispatching([]), name_override="lookup", strict_mode=False
+        )
+        with pytest.raises(TypeError, match="it is a `functools.singledispatch` function"):
+            example.gate_tools([refused], example.sql_scope_policy)
+        # and everything the third review pinned for that check holds on this path
+        third = TestThirdReview()
+        third.test_a_service_object_with_a_dispatch_method_and_a_registry_is_gated(example)
+        third.test_reading_for_a_singledispatch_function_runs_no_code_of_the_object(example)
+        third.test_a_singledispatch_function_with_nothing_registered_is_gated(example)
+        third.test_a_registry_whose_base_is_another_function_is_refused(example)
+        # a service object whose ``registry`` is a plain dict is not one
+        router = example.function_tool(Router([]), name_override="run_sql")
+        assert example.gate_tools([router], example.sql_scope_policy)
+
+    # --- an agent tool's parameters type: the field, its type and the true reason --------------
+
+    @staticmethod
+    def refused_fields():
+        import datetime
+        import decimal
+        import pathlib
+        import uuid
+
+        from pydantic import AnyUrl
+
+        return {
+            "time": (datetime.time, "time"),
+            "timedelta": (datetime.timedelta, "timedelta"),
+            "decimal": (decimal.Decimal, "decimal"),
+            "uuid": (uuid.UUID, "uuid"),
+            "path": (pathlib.Path, "lax-or-strict"),
+            "url": (AnyUrl, "function-wrap"),
+            "frozenset": (typing.FrozenSet[str], "frozenset"),
+            "sequence": (typing.Sequence[str], "json-or-python"),
+            "tuple": (typing.Tuple[int, int], "tuple"),
+            "set": (typing.Set[str], "set"),
+            "bytes": (bytes, "bytes"),
+        }
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "time",
+            "timedelta",
+            "decimal",
+            "uuid",
+            "path",
+            "url",
+            "frozenset",
+            "sequence",
+            "tuple",
+            "set",
+            "bytes",
+        ],
+    )
+    def test_a_refused_parameters_field_is_named_with_its_type(self, example, case):
+        from pydantic import create_model
+
+        annotation, kind = self.refused_fields()[case]
+        parameters = create_model("Ask", task=(str, ...), value=(annotation, ...))
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=parameters)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value) == (
+            "Recusal cannot gate agent tool 'ask_sub': its `parameters` model has a field "
+            f"outside the data-only set: `value` (pydantic core type `{kind}`). The gate works "
+            "out what the sub-agent is given only for a Pydantic model the SDK's own rule for "
+            "data-only validation admits (`can_prepare_without_user_code`) and that is written "
+            "out with no code of its own. Declare fields that are str, int, float, bool, None, "
+            "Literal and lists of them, with JSON defaults, and build other types inside the "
+            "sub-agent's own tools."
+        )
+
+    @staticmethod
+    def refused_models():
+        from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, PrivateAttr
+
+        class Private(BaseModel):
+            task: str
+            _seen: int = PrivateAttr(default=0)
+
+        class Deferred(BaseModel):
+            model_config = ConfigDict(defer_build=True)
+            task: str
+
+        class Recursive(BaseModel):
+            task: str
+            next: typing.Optional["Recursive"] = None
+
+        Recursive.model_rebuild(_types_namespace={"Recursive": Recursive})
+
+        class NotJson(BaseModel):
+            task: str
+            tags: typing.List[str] = ()  # type: ignore[assignment]
+
+        class Excluded(BaseModel):
+            task: str
+            note: str = Field("", exclude_if=lambda value: value == "")
+
+        class InAUnion(BaseModel):
+            task: str
+            rows: typing.Union[
+                typing.Annotated[int, PlainSerializer(lambda value: value + 100)], str
+            ] = 0
+
+        model = "model is not one the SDK's rule for data-only validation admits"
+        return {
+            "a-private-attribute": (Private, model),
+            "defer-build": (Deferred, model),
+            "a-model-that-refers-to-itself": (
+                Recursive,
+                "type is not a Pydantic model the gate reads: its pydantic core type is "
+                "`definitions` ",
+            ),
+            "a-default-that-is-not-json": (
+                NotJson,
+                "model has a field outside the data-only set: `tags` (a default that is not "
+                "JSON data",
+            ),
+            "exclude-if": (Excluded, "model writes `note` out through code of its own"),
+            "a-serializer-in-a-union-member": (
+                InAUnion,
+                "model writes `rows` out through code of its own",
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "a-private-attribute",
+            "defer-build",
+            "a-model-that-refers-to-itself",
+            "a-default-that-is-not-json",
+            "exclude-if",
+            "a-serializer-in-a-union-member",
+        ],
+    )
+    def test_a_refused_parameters_model_says_what_puts_it_outside(self, example, case):
+        parameters, named = self.refused_models()[case]
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=parameters)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value).startswith(
+            f"Recusal cannot gate agent tool 'ask_sub': its `parameters` {named}"
+        )
+
+    def test_negative_control_ungated_exclude_if_runs_the_models_own_code(self, example):
+        from agents.testing import ScriptedModel, assistant_message
+        from pydantic import BaseModel, Field
+
+        ran: list = []
+
+        class Excluded(BaseModel):
+            task: str
+            note: str = Field("", exclude_if=lambda value: ran.append(value) or value == "")
+
+        sub_model = ScriptedModel([[assistant_message("sub done")]])
+        sub = example.Agent(name="sub", model=sub_model, tools=[example.run_sql])
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Excluded)
+        parent_model = example.scripted_model([("ask_sub", {"task": "list"}, "p1")])
+        asyncio.run(example.run_agent(example.Agent(name="p", model=parent_model, tools=[tool])))
+        assert ran, "the callable ran when the SDK wrote the input out"
+
+    def test_text_a_float_field_reads_as_a_non_finite_number_is_refused(self, example):
+        """``"nan"`` validates as a float and is not JSON data: refused before the policy,
+        for that reason."""
+        from pydantic import BaseModel
+
+        class Ask(BaseModel):
+            task: str
+            ratio: float = 0.0
+
+        sub = example.gated_agent(
+            example.Agent(name="sub", tools=[example.run_sql]), lambda name, args: []
+        )
+        (tool,) = example.gate_tools(
+            [sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Ask)],
+            lambda name, args: [],
+        )
+        policy = self.Recording(lambda name, args: [])
+        for text in ("nan", "inf", "-inf", "1e999"):
+            arguments = '{"task": "list", "ratio": "%s"}' % text
+            reason = _adapter()._function_tool_refusal("ask_sub", arguments, policy, tool)
+            assert reason == (
+                "Recusal refused `ask_sub`: the input the sub-agent would be given cannot be "
+                "judged (the validated arguments are not JSON data: non-finite numbers are "
+                "not JSON data)"
+            )
+        assert policy.seen == []
+        assert (
+            _adapter()._function_tool_refusal(
+                "ask_sub", '{"task": "list", "ratio": "0.5"}', policy, tool
+            )
+            is None
+        )
+        assert policy.seen == [("ask_sub", {"task": "list", "ratio": 0.5})]
