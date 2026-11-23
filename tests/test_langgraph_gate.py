@@ -4869,7 +4869,10 @@ class TestAReservedNameIsNeverAParameterOfItsOwn:
         from langchain_core.tools import InjectedToolArg, InjectedToolCallId
         from langgraph.prebuilt import InjectedState, InjectedStore, ToolRuntime
 
-        its_own = _adapter()._its_own
+        namespace = {**globals(), **locals()}
+
+        def its_own(name, parameter, filled):
+            return _adapter()._not_its_own(name, parameter, filled, {}, namespace) is None
 
         def parameter(name, annotation=inspect.Parameter.empty, default=inspect.Parameter.empty):
             kind = inspect.Parameter.KEYWORD_ONLY
@@ -5269,3 +5272,610 @@ class TestAReservedNameIsNeverAParameterOfItsOwn:
         assert by_id["nova"].status == by_id["answer"].status == "success"
         assert sorted(ran) == ["answer", "nova"]
         assert sorted(seen) == [("directly_answer", {}), ("nova_system", {})]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="LangGraph requires Python 3.10+")
+class TestTheFrameworksAnswerIsNeverSetAside:
+    """Review round 6 of the package (2026-11). Round five's rule read a parameter's raw
+    annotation and stopped asking the frameworks what they fill, so a parameter LangChain
+    or ToolNode really fills was read as the tool's own when its annotation was an alias
+    or a forward reference. The frameworks' answers are back, the rule reads annotations
+    as the frameworks do and opens a stated list of forms, and text is matched only where
+    an annotation could not be resolved."""
+
+    @pytest.fixture
+    def example(self):
+        pytest.importorskip("langgraph")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("recusal_langgraph_round6_example", EXAMPLE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    call = staticmethod(TestWhatRunsIsWhatWasJudged.call)
+    no_delete = staticmethod(TestWhatRunsIsWhatWasJudged.no_delete)
+    run = TestWhatRunsIsWhatWasJudged.run
+    ROUTES = TestWhatRunsIsWhatWasJudged.ROUTES
+    limit_under = staticmethod(TestWhatTheGateCannotReadIsRefused.limit_under)
+
+    ONLY_VARIADICS = "the tool's innermost callable takes only `*args` or `**kwargs`"
+
+    #: forwarders whose one named parameter the framework fills, written so that only
+    #: ``typing.get_type_hints`` finds the type: (parameter, source, what fills it)
+    HINTED = {
+        "alias_pep563": (
+            "cfg",
+            "from __future__ import annotations\n"
+            "def fn({self}*args, cfg: RC = None, **kwargs):\n    return export_rows(*args, **kwargs)\n",
+        ),
+        "quoted_alias": (
+            "cfg",
+            "def fn({self}*args, cfg: 'RC' = None, **kwargs):\n    return export_rows(*args, **kwargs)\n",
+        ),
+        "partly_quoted_runtime": (
+            "rt",
+            "def fn({self}*args, rt: Optional['ToolRuntime'] = None, **kwargs):\n"
+            "    return export_rows(*args, **kwargs)\n",
+        ),
+        "alias_of_runtime_pep563": (
+            "rt",
+            "from __future__ import annotations\n"
+            "def fn({self}*args, rt: TR = None, **kwargs):\n    return export_rows(*args, **kwargs)\n",
+        ),
+        "alias_of_marker_pep563": (
+            "tenant",
+            "from __future__ import annotations\n"
+            "def fn({self}tenant: Annotated[str, Marker] = 't', **kwargs):\n"
+            "    return export_rows(**kwargs)\n",
+        ),
+    }
+
+    @classmethod
+    def hinted(cls, ran, shape, kind):
+        from typing import Annotated, Optional
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool, InjectedToolArg, StructuredTool
+        from langgraph.prebuilt import ToolRuntime
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        namespace = {
+            "RC": RunnableConfig,
+            "TR": ToolRuntime,
+            "Marker": InjectedToolArg,
+            "ToolRuntime": ToolRuntime,
+            "Optional": Optional,
+            "Annotated": Annotated,
+            "export_rows": export_rows,
+        }
+        named, source = cls.HINTED[shape]
+        exec(source.format(self="self, " if kind == "base" else ""), namespace)  # noqa: S102
+        function = namespace["fn"]
+        function.__doc__ = "Export rows of a table."
+        if kind == "base":
+
+            class Export(BaseTool):
+                name: str = "export"
+                description: str = "Export rows of a table."
+                _run = function
+
+            return named, Export()
+        return named, StructuredTool.from_function(func=function, name="export", description="d")
+
+    @pytest.mark.parametrize("kind", ["base", "function"])
+    @pytest.mark.parametrize("shape", sorted(HINTED))
+    @ROUTES
+    def test_a_forwarder_whose_filled_parameter_only_type_hints_reveal_is_refused(
+        self, example, route, shape, kind
+    ):
+        """The regression: ``cfg: RC`` under ``from __future__ import annotations``, a quoted
+        alias and ``Optional['ToolRuntime']`` are a ``RunnableConfig`` and a ``ToolRuntime``
+        to LangChain and ToolNode, which fill them. The rule read the raw annotation, took
+        the parameter for the tool's own, and the policy judged ``{}`` while the function
+        behind ran ``limit=1000000``."""
+        ran, seen = [], []
+        named, tool = self.hinted(ran, shape, kind)
+        calls = [self.call("export", {})]
+        messages = self.run(example, route, [tool], calls, self.limit_under(1000, seen))
+        assert ran == [] and seen == [], "refused before the policy, and not run"
+        assert self.ONLY_VARIADICS in messages[0].content
+        assert f"(and `{named}`, which LangChain or the host reserves)" in messages[0].content
+        self.run(example, route, [tool], calls, None, gated=False)
+        assert ran == [("users", 1000000)], "ungated, the default nobody judged runs"
+
+    @pytest.mark.parametrize("filled_by", ["langchain", "toolnode", "toolnode_base", "the_tool"])
+    def test_what_the_frameworks_say_they_fill_refuses_a_forwarder_without_the_rule(
+        self, example, monkeypatch, filled_by
+    ):
+        """The frameworks' own answers are an authority the rule adds to and never
+        replaces. With the rule's own reading switched off (no reserved names, no
+        annotation read), a forwarder is still refused for a parameter LangChain fills
+        (``_framework_keys``), one ToolNode fills (``_node_fills``, also on a ``BaseTool``
+        subclass) and one the tool marks injected (``_host_keys``)."""
+        from typing import Annotated
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool, InjectedToolArg, StructuredTool
+
+        adapter = _adapter()
+        monkeypatch.setattr(adapter, "_RESERVED_NAMES", frozenset())
+        monkeypatch.setattr(adapter, "_filled_type", lambda *args, **kwargs: None)
+        ran, seen = [], []
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        if filled_by == "langchain":
+
+            def forward(cfg: RunnableConfig, **kwargs: Any) -> str:
+                return export_rows(**kwargs)
+
+            named = "cfg"
+        elif filled_by == "the_tool":
+
+            def forward(tenant: Annotated[str, InjectedToolArg] = "t", **kwargs: Any) -> str:
+                return export_rows(**kwargs)
+
+            named = "tenant"
+        else:
+
+            def forward(runtime=None, **kwargs: Any) -> str:
+                return export_rows(**kwargs)
+
+            named = "runtime"
+        if filled_by == "toolnode_base":
+
+            def _run(self, runtime=None, **kwargs: Any) -> str:
+                return export_rows(**kwargs)
+
+            body = _run
+
+            class Export(BaseTool):
+                name: str = "export"
+                description: str = "d"
+                _run = body
+
+            tool: Any = Export()
+        else:
+            tool = StructuredTool.from_function(func=forward, name="export", description="d")
+        messages = self.run(
+            example, "sync", [tool], [self.call("export", {})], self.limit_under(1000, seen)
+        )
+        assert ran == [] and seen == []
+        assert f"(and `{named}`, which LangChain or the host reserves)" in messages[0].content
+
+    # --- what an annotation is opened for, form by form ----------------------------------------
+
+    def test_the_forms_an_annotation_is_opened_for(self, example):
+        import typing
+        from typing import Annotated, Dict, List, Literal, NewType, Optional, TypeVar, Union
+
+        from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForToolRun
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import InjectedToolArg
+        from langgraph.prebuilt import ToolRuntime
+        from pydantic import BaseModel
+
+        filled_type = _adapter()._filled_type
+        bound = TypeVar("bound", bound=RunnableConfig)
+        constrained = TypeVar("constrained", str, ToolRuntime)
+        free = TypeVar("free")
+        new = NewType("new", RunnableConfig)
+        plain_new = NewType("plain_new", str)
+        Cfg = RunnableConfig
+
+        class MyCfg(RunnableConfig, total=False):
+            tenant: str
+
+        class MyRuntime(ToolRuntime):
+            pass
+
+        class MyManager(CallbackManagerForToolRun):
+            pass
+
+        class MyMarker(InjectedToolArg):
+            pass
+
+        class RunManagerOptions(BaseModel):
+            retries: int = 1
+
+        class InjectedPrompt(str):
+            pass
+
+        namespace = {**globals(), **locals()}
+        resolved = [
+            Optional["RunnableConfig"],
+            Optional["CallbackManagerForToolRun"],
+            Optional["Cfg"],
+            "Optional[RunnableConfig]",
+            "Cfg",
+            bound,
+            constrained,
+            new,
+            MyCfg,
+            MyRuntime,
+            MyManager,
+            Annotated[str, MyMarker],
+            Annotated[str, MyMarker()],
+            List[RunnableConfig],
+            Dict[str, RunnableConfig],
+            Union[RunnableConfig, str],
+            Annotated[Annotated[RunnableConfig, "a"], "b"],
+            ToolRuntime[Any, Any],
+            typing.ForwardRef("ToolRuntime"),
+            list["RunnableConfig"],
+            dict[str, "Optional[Cfg]"],
+            "'RunnableConfig'",
+        ]
+        for annotation in resolved:
+            assert filled_type(annotation, namespace) == "resolved", annotation
+        if sys.version_info >= (3, 12):
+            scope = dict(namespace)
+            exec("type TA = Optional[RunnableConfig]\ntype TB = Optional[str]", scope)  # noqa: S102
+            assert filled_type(scope["TA"], namespace) == "resolved"
+            assert filled_type(scope["TB"], namespace) is None
+        # text is matched only where the name could not be resolved, and says so
+        assert filled_type("AsyncParentRunManager", {}) == "by name"
+        assert filled_type(Optional["ToolRuntime"], {}) == "by name"
+        assert filled_type("RC", {}) is None, "an unresolved alias that does not hold the name"
+        beside = Union[typing.ForwardRef("UnknownRunManager"), RunnableConfig]
+        assert filled_type(beside, {}) == "resolved", "a resolved type beside an unresolved name"
+        # not a filled type: a user type whose name holds one, a string that is metadata
+        # or a Literal value, a handler (not a manager), an unbound variable
+        own = [
+            RunManagerOptions,
+            InjectedPrompt,
+            "RunManagerOptions",
+            Annotated[str, "the RunnableConfig key to read"],
+            Annotated[str, "Injected into the prompt"],
+            Literal["RunManager", "ToolRuntime"],
+            List[BaseCallbackHandler],
+            free,
+            plain_new,
+            Optional[str],
+            dict,
+            "str",
+        ]
+        for annotation in own:
+            assert filled_type(annotation, namespace) is None, annotation
+
+    def test_a_type_that_could_not_be_resolved_is_matched_by_name_and_the_reason_says_so(
+        self, example
+    ):
+        """Pins Q08 end to end: the annotation names a run manager the module never
+        imported. It is text nobody can resolve; it is matched by the name it holds, and
+        the refusal says that is how. The tool declares its schema, since LangChain cannot
+        infer one from annotations it cannot resolve."""
+        from langchain_core.tools import BaseTool
+        from pydantic import BaseModel, ConfigDict
+
+        ran, seen = [], []
+        namespace: dict = {"ran": ran}
+        exec(  # noqa: S102
+            "def _run(self, *args, mgr: 'AsyncParentRunManager' = None, **kwargs):\n"
+            "    ran.append(kwargs)\n    return 'ok'\n",
+            namespace,
+        )
+        body = namespace["_run"]
+
+        class Open(BaseModel):
+            model_config = ConfigDict(extra="allow")
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "d"
+            args_schema: type = Open
+            _run = body
+
+        messages = self.run(
+            example, "sync", [Export()], [self.call("export", {})], self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert "(and `mgr`, whose type could not be resolved and was matched by name" in (
+            messages[0].content
+        )
+        assert "(and `mgr`, which LangChain or the host reserves)" not in messages[0].content
+
+    def test_text_that_only_mentions_a_filled_type_does_not_make_a_parameter_reserved(
+        self, example
+    ):
+        """A description inside ``Annotated``, a ``Literal`` value and a user type whose
+        name holds "Injected" were matched as text and the tool refused as a forwarder,
+        with a reason that was false. The parameter is the function's own: the call is
+        judged with it and runs."""
+        from typing import Annotated, Literal
+
+        from langchain_core.tools import tool
+
+        ran, seen = [], []
+
+        class InjectedPrompt(str):
+            pass
+
+        @tool
+        def described(
+            q: Annotated[str, "the RunnableConfig key to read"] = "dq", **kwargs: Any
+        ) -> str:
+            """Described."""
+            ran.append(("described", q))
+            return "ok"
+
+        @tool
+        def chosen(q: Literal["RunManager", "x"] = "x", **kwargs: Any) -> str:
+            """Chosen."""
+            ran.append(("chosen", q))
+            return "ok"
+
+        @tool
+        def typed(q: InjectedPrompt = InjectedPrompt("dq"), **kwargs: Any) -> str:
+            """Typed."""
+            ran.append(("typed", str(q)))
+            return "ok"
+
+        calls = [
+            self.call("described", {}, "a"),
+            self.call("chosen", {}, "b"),
+            self.call("typed", {}, "c"),
+        ]
+        messages = self.run(
+            example, "sync", [described, chosen, typed], calls, self.no_delete(seen)
+        )
+        assert [m.status for m in messages] == ["success"] * 3, [m.content for m in messages]
+        assert sorted(ran) == [("chosen", "x"), ("described", "dq"), ("typed", "dq")]
+        assert sorted(name for name, _ in seen) == ["chosen", "described", "typed"]
+
+    def test_an_annotation_is_resolved_the_way_typing_resolves_it(self, example):
+        """The annotations are read with ``typing.get_type_hints`` first. A forward
+        reference that carries its own module is resolved there, though the function's
+        globals do not hold the name: the type is known, and the reason says the name is
+        reserved, not that it was matched by its text."""
+        import typing
+        from typing import Optional
+
+        from langchain_core.tools import BaseTool
+        from pydantic import BaseModel, ConfigDict
+
+        ran, seen = [], []
+        ref = typing.ForwardRef("CallbackManagerForToolRun", module="langchain_core.callbacks")
+        namespace: dict = {"ran": ran, "Optional": Optional, "ref": ref}
+        exec(  # noqa: S102
+            "def _run(self, *args, mgr: Optional[ref] = None, **kwargs):\n"
+            "    ran.append(kwargs)\n    return 'ok'\n",
+            namespace,
+        )
+        body = namespace["_run"]
+
+        class Open(BaseModel):
+            model_config = ConfigDict(extra="allow")
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "d"
+            args_schema: type = Open
+            _run = body
+
+        messages = self.run(
+            example, "sync", [Export()], [self.call("export", {})], self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert "(and `mgr`, which LangChain or the host reserves)" in messages[0].content
+        assert "could not be resolved" not in messages[0].content
+
+    def test_one_name_that_cannot_be_resolved_does_not_stop_the_others_being_read(self, example):
+        """When ``typing.get_type_hints`` fails for the function, each annotation is read
+        on its own against the globals of the function's module: the alias is resolved to
+        the manager type it names, and the unknown name is matched by its text."""
+        from langchain_core.callbacks import CallbackManagerForToolRun
+        from langchain_core.tools import BaseTool
+        from pydantic import BaseModel, ConfigDict
+
+        ran, seen = [], []
+        namespace: dict = {"ran": ran, "M": CallbackManagerForToolRun}
+        exec(  # noqa: S102
+            "def _run(self, *args, mgr: 'M' = None, other: 'UnknownRunManager' = None, **kwargs):\n"
+            "    ran.append(kwargs)\n    return 'ok'\n",
+            namespace,
+        )
+        body = namespace["_run"]
+
+        class Open(BaseModel):
+            model_config = ConfigDict(extra="allow")
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "d"
+            args_schema: type = Open
+            _run = body
+
+        messages = self.run(
+            example, "sync", [Export()], [self.call("export", {})], self.no_delete(seen)
+        )
+        assert ran == [] and seen == []
+        assert "(and `mgr`, which LangChain or the host reserves)" in messages[0].content
+        assert "(and `other`, whose type could not be resolved and was matched by name" in (
+            messages[0].content
+        )
+
+    def test_annotations_are_read_on_the_innermost_function(self, example):
+        """The forwarder rule reads the innermost function's parameters, so that is the
+        function whose annotations and globals are read: through ``__wrapped__`` and
+        through a ``functools.partial``."""
+        import functools
+        from typing import Annotated
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import InjectedToolArg
+
+        adapter = _adapter()
+        namespace: dict = {"RC": RunnableConfig}
+        exec("def inner(*args, cfg: 'RC' = None, **kwargs):\n    return 'ok'\n", namespace)  # noqa: S102
+        inner = namespace["inner"]
+
+        def wrapper(*args, **kwargs):
+            return inner(*args, **kwargs)
+
+        wrapper.__wrapped__ = inner  # type: ignore[attr-defined]
+        for func in (inner, wrapper, functools.partial(wrapper), functools.partial(inner)):
+            assert adapter._hints(func) == {"cfg": RunnableConfig}
+            assert adapter._namespace(func) is inner.__globals__
+        assert adapter._hints(len) == {} and adapter._namespace(len) == {}
+
+        def marked(tenant: Annotated[str, InjectedToolArg] = "t", **kwargs):
+            return tenant
+
+        assert adapter._hints(marked) == {"tenant": Annotated[str, InjectedToolArg]}, (
+            "the metadata is kept: a marker is read from it"
+        )
+
+    # --- the single-input Tool -----------------------------------------------------------------
+
+    def test_a_single_input_tool_whose_one_parameter_is_called_config_is_judged(self, example):
+        """``gated_tool_node`` raised when the node was built, saying the function would
+        never receive the model's value, while ``recusal_gates`` judged ``{'config': 'x'}``
+        and the function received ``'x'``: a single-input ``Tool`` hands its one value to
+        the first parameter by position. The node helper now builds, and both judge."""
+        from langchain_core.tools import StructuredTool, Tool
+
+        ran, seen = [], []
+
+        def lookup(config):
+            ran.append(config)
+            return "found"
+
+        tool = Tool(name="lookup", func=lookup, description="Look up.")
+        node = example.gated_tool_node([tool], self.no_delete(seen))
+        assert example.is_gated(node)
+        messages = example.run_in_graph(node, [self.call("lookup", {"__arg1": "x"})])
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("lookup", {"config": "x"})] and ran == ["x"]
+
+        def second(q, config="safe"):
+            return q
+
+        with pytest.raises(TypeError, match="its function's parameter `config`"):
+            example.gated_tool_node(
+                [Tool(name="lookup", func=second, description="d")], self.no_delete(seen)
+            )
+        structured = StructuredTool.from_function(func=lookup, name="lookup", description="d")
+        with pytest.raises(TypeError, match="its function's parameter `config`"):
+            example.gated_tool_node([structured], self.no_delete(seen))
+
+    def test_a_single_input_forwarder_is_refused_whatever_its_one_parameter_is_called(
+        self, example
+    ):
+        """Pins Q11: the single-input check must never treat a forwarder as one the model
+        can put nothing through. ``Tool(func=f)`` with ``def f(config, **kwargs)`` hands
+        the model's value to a reserved name and everything else on."""
+        from langchain_core.tools import Tool
+
+        ran, seen = [], []
+
+        def forward(config, **kwargs):
+            ran.append((config, kwargs))
+            return "ok"
+
+        tool = Tool(name="lookup", func=forward, description="Look up.")
+        gates = example.recusal_gates(self.no_delete(seen))
+        node = example.ToolNode([tool], **gates)
+        messages = example.run_in_graph(node, [self.call("lookup", {"__arg1": "x"})])
+        assert ran == [] and seen == []
+        assert self.ONLY_VARIADICS in messages[0].content
+        assert "(and `config`, which LangChain or the host reserves)" in messages[0].content
+
+    # --- limits the README states, asserted on purpose ------------------------------------------
+
+    def test_limitation_a_host_value_the_schema_omits_is_dropped_under_a_schema_with_fields(
+        self, example
+    ):
+        """Documented in the package README: LangChain hands the function only the fields
+        its ``args_schema`` declares. The function has a parameter ``runtime`` the schema
+        does not declare and nothing marks injected, so whatever is put under that name is
+        dropped and the function runs its own default for it. A constant, the same with no
+        gate."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class Args(BaseModel):
+            q: str
+
+        def lookup(q: str, runtime: str = "drt") -> str:
+            ran.append((q, runtime))
+            return "found"
+
+        tool = StructuredTool(name="lookup", description="d", func=lookup, args_schema=Args)
+        calls = [self.call("lookup", {"q": "x"})]
+        messages = self.run(example, "sync", [tool], calls, self.no_delete(seen))
+        assert messages[0].status == "success", messages[0].content
+        assert seen == [("lookup", {"q": "x"})] and ran == [("x", "drt")]
+        ran.clear()
+        self.run(example, "sync", [tool], calls, None, gated=False)
+        assert ran == [("x", "drt")]
+
+    def test_limitation_a_callbacks_parameter_of_a_basetool_runs_its_default_unseen(self, example):
+        """Documented in the package README under what the gate does not see: on a
+        ``BaseTool`` subclass nothing fills ``callbacks`` and the gate does not hold a
+        parameter of that name to the schema, so its default runs unseen. It is still a
+        real argument there: when the model sets it, the call is judged with it."""
+        from langchain_core.tools import BaseTool
+
+        ran, seen = [], []
+
+        class Lookup(BaseTool):
+            name: str = "lookup"
+            description: str = "d"
+
+            def _run(self, callbacks: str = "dcb") -> str:
+                ran.append(callbacks)
+                return "found"
+
+        calls = [self.call("lookup", {}, "a"), self.call("lookup", {"callbacks": "m"}, "b")]
+        messages = self.run(example, "sync", [Lookup()], calls, self.no_delete(seen))
+        assert [m.status for m in messages] == ["success", "success"]
+        assert sorted(seen, key=str) == [("lookup", {"callbacks": "m"}), ("lookup", {})]
+        assert sorted(ran) == ["dcb", "m"]
+
+    def test_the_shapes_of_two_more_census_tools(self, example):
+        """Signatures replicated from the packages' source (not imported):
+        langchain-community's Databricks ``UCFunctionToolkit`` builds a ``StructuredTool``
+        over ``def func(*args, **kwargs)`` under a generated schema, and langchain-snowflake's
+        MCP integration builds ``Tool(func=wrapper.run)`` with ``run(self, *args,
+        **kwargs)``. Both are refused."""
+        from langchain_core.tools import StructuredTool, Tool
+        from pydantic import BaseModel
+
+        ran, seen = [], []
+
+        class Generated(BaseModel):
+            x: int
+
+        def func(*args: Any, **kwargs: Any) -> str:
+            ran.append(kwargs)
+            return "ok"
+
+        class Wrapper:
+            def run(self, *args: Any, **kwargs: Any) -> str:
+                ran.append(args)
+                return "ok"
+
+        tools = [
+            StructuredTool(name="uc_function", description="d", func=func, args_schema=Generated),
+            Tool(name="snowflake_mcp", func=Wrapper().run, description="d"),
+        ]
+        calls = [
+            self.call("uc_function", {"x": 1}, "a"),
+            self.call("snowflake_mcp", {"__arg1": "q"}, "b"),
+        ]
+        node = example.ToolNode(tools, **example.recusal_gates(self.no_delete(seen)))
+        messages = {m.tool_call_id: m.content for m in example.run_in_graph(node, calls)}
+        assert ran == [] and seen == []
+        assert "takes `*args` or `**kwargs` and does not name `x`" in messages["a"]
+        assert "does not take its input as a first named parameter" in messages["b"]

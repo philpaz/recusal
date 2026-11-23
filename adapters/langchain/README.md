@@ -141,10 +141,16 @@ In short, before the policy runs:
 - a function that hands its arguments on to code the gate cannot read: the innermost
   function the gate reaches takes `*args` or `**kwargs` and does not name every field of
   the schema, or takes nothing but `*args`, `**kwargs` and parameters that never count
-  as its own. Those are: a parameter named `run_manager`, `callbacks`, `config` or
-  `runtime`, whatever its annotation or default; one the tool marks injected; and one
-  whose annotation mentions `RunnableConfig`, `ToolRuntime`, an injected-argument
-  marker or a callback manager type anywhere inside it. A tool whose only own parameter
+  as its own. Those are: a parameter LangChain or the agent's ToolNode fills; one the
+  tool marks injected; one named `run_manager`, `callbacks`, `config` or `runtime`,
+  whatever its annotation or default; and one whose annotation is, or is built from,
+  `RunnableConfig`, `ToolRuntime`, an injected-argument marker or a callback manager or
+  run manager type. The annotation is resolved with `typing.get_type_hints` and opened
+  through a fixed list of forms (a class and its bases, `Optional` and other generics,
+  `Annotated`, a `TypeVar`, a `NewType`, a `type` alias, a forward reference); the
+  `recusal-langgraph` README gives the list, and says what happens to a type it cannot
+  relate to one of those: the parameter counts as the function's own, and what the
+  function hands on is not seen. A tool whose only own parameter
   is one of these is refused. That is a decorator built without `functools.wraps`
   (`def wrapper(*args, **kwargs)` or `def wrapper(*args, config: RunnableConfig,
   **kwargs)`, under a JSON schema dict or the schema `@tool` infers from it), a
@@ -158,7 +164,10 @@ In short, before the policy runs:
   `args_schema` that declares no field and does not allow extras, through which the
   model can send nothing, so the call is judged as `{}` and runs (such a schema also
   makes LangChain drop the `state`, `store` or `runtime` the agent injected, so a
-  function under it runs its own default for that parameter, unseen);
+  function under it runs its own default for that parameter, unseen; under a schema
+  with fields the same happens to a parameter the schema does not declare that is named
+  `runtime` without the `ToolRuntime` annotation, or is annotated
+  `Optional[ToolRuntime]`);
 - a function that declares `__signature__`, which LangSmith's `@traceable` and
   `decorator.decorator` set (apply `@traceable` inside the tool's function, or trace at
   the graph level), and one Python cannot inspect, which `cachetools.cached` returns
@@ -182,8 +191,11 @@ In short, before the policy runs:
   `invoke(input, config)`;
 - a single-input `Tool(name, func, description)` whose function names more than one
   parameter, or is a builtin such as `str.upper` or `len`, whose parameter is
-  positional-only. One whose function takes exactly one named parameter is judged under
-  that parameter's name;
+  positional-only, or whose first parameter is one LangChain fills (`run_manager`,
+  `callbacks`, a `config` annotated exactly `RunnableConfig`), or that takes `**kwargs`
+  besides one parameter with a reserved name (`def f(config, **kwargs)`). One whose
+  function takes exactly one named parameter is judged under that parameter's name,
+  `def lookup(config)` included;
 - a call whose name is not the name of the tool that would run. An earlier middleware
   that attaches a tool to a call (`request.override(tool=...)`) must set the call's name
   to that tool's name in the same override; otherwise the policy would judge the model's

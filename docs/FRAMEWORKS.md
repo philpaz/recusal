@@ -27,9 +27,11 @@ refuses the call: Python would fill it after judgment and the policy would never
 value that runs; so does a parameter a forwarding decorator names that the function it wraps
 names too; and so does an innermost function that takes `*args` or `**kwargs` without naming
 every schema field, or that takes nothing else besides parameters that never count as its
-own (one named `run_manager`, `callbacks`, `config` or `runtime` whatever its annotation, one
-the tool marks injected, and one whose annotation mentions `RunnableConfig`, `ToolRuntime`, an
-injected-argument marker or a callback manager type),
+own (one LangChain or ToolNode fills, one the tool marks injected, one named `run_manager`,
+`callbacks`, `config` or `runtime` whatever its annotation, and one whose annotation, resolved
+with `typing.get_type_hints` and opened through the forms the package README lists, is or is
+built from `RunnableConfig`, `ToolRuntime`, an injected-argument marker or a callback manager
+or run manager type),
 which hands arguments on to code the gate cannot read: a decorator built without
 `functools.wraps` that names no parameter of its own (`def wrapper(*args, **kwargs)`, under a
 JSON schema dict or the schema inferred from it; one that names a parameter and then calls

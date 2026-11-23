@@ -1079,6 +1079,78 @@ class TestLangChainAgentGate:
         example.run_calls(calls, gated=False, tools=[Export()])
         assert ran == [("users", 5)], "ungated, the model's limit reaches the function"
 
+    # --- review round 6 ----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("shape", ["alias_pep563", "quoted_alias", "partly_quoted_runtime"])
+    @pytest.mark.parametrize("is_async", [False, True], ids=["invoke", "ainvoke"])
+    def test_a_forwarder_whose_filled_parameter_only_type_hints_reveal_is_refused(
+        self, example, is_async, shape
+    ):
+        """A parameter LangChain or the agent's ToolNode really fills, annotated so that
+        only ``typing.get_type_hints`` finds its type (an import alias under ``from
+        __future__ import annotations``, a quoted alias, ``Optional['ToolRuntime']``), was
+        read as the tool's own: the policy judged ``{}`` and the function behind the
+        forwarder ran ``limit=1000000``."""
+        from typing import Optional
+
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import BaseTool
+        from langgraph.prebuilt import ToolRuntime
+
+        ran, seen = [], []
+
+        def export_rows(table: str = "users", limit: int = 1000000) -> str:
+            ran.append((table, limit))
+            return "exported"
+
+        sources = {
+            "alias_pep563": (
+                "cfg",
+                "from __future__ import annotations\n"
+                "def _run(self, *args, cfg: RC = None, **kwargs):\n"
+                "    return export_rows(*args, **kwargs)\n",
+            ),
+            "quoted_alias": (
+                "cfg",
+                "def _run(self, *args, cfg: 'RC' = None, **kwargs):\n"
+                "    return export_rows(*args, **kwargs)\n",
+            ),
+            "partly_quoted_runtime": (
+                "rt",
+                "def _run(self, *args, rt: Optional['ToolRuntime'] = None, **kwargs):\n"
+                "    return export_rows(*args, **kwargs)\n",
+            ),
+        }
+        named, source = sources[shape]
+        namespace = {
+            "RC": RunnableConfig,
+            "ToolRuntime": ToolRuntime,
+            "Optional": Optional,
+            "export_rows": export_rows,
+        }
+        exec(source, namespace)  # noqa: S102
+        body = namespace["_run"]
+
+        class Export(BaseTool):
+            name: str = "export"
+            description: str = "Export rows of a table."
+            _run = body
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        kwargs = {"policy": recording, "tools": [Export()]}
+        calls = [self.call("export", {})]
+        if is_async:
+            messages, _ = asyncio.run(example.arun_calls(calls, **kwargs))
+        else:
+            messages, _ = example.run_calls(calls, **kwargs)
+        assert ran == [] and seen == []
+        assert f"(and `{named}`, which LangChain or the host reserves)" in str(messages[0].content)
+        example.run_calls(calls, gated=False, tools=[Export()])
+        assert ran == [("users", 1000000)], "ungated, the default nobody judged runs"
+
     # --- the tool shapes the LangGraph gate takes, through the middleware -----------------
 
     @pytest.mark.parametrize("route", ["sync", "async"])

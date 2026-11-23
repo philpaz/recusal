@@ -260,52 +260,139 @@ _NODE_NAMES = frozenset({"runtime"})
 #: annotation or default. It is the union of the gate's by-name authorities and nothing
 #: else: :data:`_RESERVED` (``run_manager``, ``callbacks``), :data:`_HOLDER_TAKES`
 #: (``config``, ``run_manager``) and :data:`_NODE_NAMES` (``runtime``). Used by the
-#: forwarder rule only (:func:`_its_own`).
+#: forwarder rule only (:func:`_not_its_own`).
 _RESERVED_NAMES = _RESERVED | _HOLDER_TAKES | _NODE_NAMES
 
 #: The types that mark a parameter as one the framework or the host fills: a callback
 #: manager, a run manager, and every injected-argument marker (``InjectedState``,
 #: ``InjectedStore``, ``InjectedToolCallId`` and a custom one all subclass
-#: ``InjectedToolArg``). ``RunnableConfig`` and ``ToolRuntime`` are matched by identity or
-#: as a base. The names are for an annotation that is still text (PEP 563).
+#: ``InjectedToolArg``), each as a class, a subclass or an instance; ``ToolRuntime`` and a
+#: subclass of it; ``RunnableConfig`` itself and a ``TypedDict`` that has it as a base.
 _FILLED_TYPES = (BaseCallbackManager, BaseRunManager, InjectedToolArg)
+
+#: Substrings that name a filled type, used ONLY for an annotation that is still text
+#: because it could not be resolved (an unresolved forward reference). A resolved
+#: annotation is never matched by text, and neither is a string that is ``Annotated``
+#: metadata or a ``Literal`` value.
 _FILLED_TYPE_NAMES = ("RunnableConfig", "ToolRuntime", "Injected", "CallbackManager", "RunManager")
 
+#: PEP 695 ``type X = ...`` aliases (Python 3.12 and later).
+_TYPE_ALIAS = getattr(typing, "TypeAliasType", ())
 
-def _mentions_a_filled_type(annotation, _depth: int = 0) -> bool:
-    """Whether ``annotation`` mentions, anywhere inside it (``Optional``, a union,
-    ``Annotated`` and its metadata, a generic's arguments), a type that marks a parameter
-    as the framework's or the host's to fill."""
-    if _depth > 16:
-        return True
-    if isinstance(annotation, str):
-        return any(name in annotation for name in _FILLED_TYPE_NAMES)
-    if annotation is RunnableConfig or isinstance(annotation, _FILLED_TYPES):
-        return True
-    if isinstance(annotation, type) and issubclass(annotation, (*_FILLED_TYPES, ToolRuntime)):
-        return True
-    origin = typing.get_origin(annotation)
-    if origin is not None and _mentions_a_filled_type(origin, _depth + 1):
-        return True
-    return any(_mentions_a_filled_type(inner, _depth + 1) for inner in typing.get_args(annotation))
+_RESOLVED, _BY_NAME = "resolved", "by name"
 
 
-def _its_own(name: str, parameter, injected: frozenset[str]) -> bool:
-    """Whether a named parameter counts as the callable's own in the forwarder rule
-    (:func:`_read_to_the_end`), and there only.
+def _innermost(func):
+    """The function at the end of ``func``'s ``functools.wraps`` chain, the one whose
+    parameters the forwarder rule reads, with a ``functools.partial`` opened to the
+    function it holds."""
+    for _ in range(64):
+        if isinstance(func, functools.partial):
+            func = func.func
+        elif hasattr(func, "__wrapped__"):
+            func = func.__wrapped__
+        else:
+            break
+    return func
 
-    It does not when its name is reserved (:data:`_RESERVED_NAMES`), whatever its
-    annotation or default; when the tool marks it injected, by its schema or its function
-    (``injected``, :func:`_host_keys`); or when its annotation mentions a type the
-    framework or the host fills (:func:`_mentions_a_filled_type`). Such a parameter says
-    nothing about what the callable does with the model's arguments:
-    ``def _run(self, *args, config: Optional[RunnableConfig] = None, **kwargs)`` forwards
-    exactly as ``def _run(self, *args, **kwargs)`` does, whether or not LangChain fills
-    ``config`` there.
+
+def _hints(func) -> dict[str, Any]:
+    """The innermost function's annotations as the frameworks read them: resolved with
+    ``typing.get_type_hints``, so an alias under ``from __future__ import annotations``, a
+    quoted name and a forward reference inside ``Optional`` are the types they name. An
+    empty dict when they cannot be resolved; each raw annotation is then read on its own
+    (:func:`_filled_type`)."""
+    try:
+        return typing.get_type_hints(_innermost(func), include_extras=True)
+    except Exception:  # noqa: BLE001, unresolvable annotations are read raw, one by one
+        return {}
+
+
+def _namespace(func) -> dict[str, Any]:
+    """The globals a forward reference in the innermost function's annotations is resolved
+    against: its module's."""
+    found = getattr(_innermost(func), "__globals__", None)
+    return found if isinstance(found, dict) else {}
+
+
+def _filled_type(annotation, namespace: dict[str, Any], _depth: int = 0) -> str | None:
+    """How ``annotation`` relates to a type the framework or the host fills: ``"resolved"``
+    when it is one or is built from one, ``"by name"`` when it is text that could not be
+    resolved and holds the name of one, ``None`` when it does not.
+
+    What is opened, and nothing else: text and a ``ForwardRef`` (resolved against
+    ``namespace``; when that fails, matched by :data:`_FILLED_TYPE_NAMES`); a ``TypeVar``
+    (its bound and constraints); a ``NewType`` (its supertype); a PEP 695 alias (its
+    value); ``Annotated`` (the type and every metadata item that is not a string); a union
+    and any other generic (its origin and every argument, a string among them being a
+    forward reference); and a class, matched by identity, as a subclass, or through
+    ``__orig_bases__`` (a ``TypedDict`` that extends ``RunnableConfig``). A ``Literal``'s
+    values are not opened. An annotation nested more than 16 deep is taken for a filled
+    type.
     """
-    return not (
-        name in _RESERVED_NAMES or name in injected or _mentions_a_filled_type(parameter.annotation)
-    )
+    if _depth > 16:
+        return _RESOLVED
+    if isinstance(annotation, (str, typing.ForwardRef)):
+        text = annotation if isinstance(annotation, str) else annotation.__forward_arg__
+        try:
+            named = eval(text, dict(namespace))  # noqa: S307, as typing.get_type_hints does
+        except Exception:  # noqa: BLE001, an unresolved name is matched by its text
+            return _BY_NAME if any(name in text for name in _FILLED_TYPE_NAMES) else None
+        return _filled_type(named, namespace, _depth + 1)
+    if annotation is RunnableConfig or isinstance(annotation, _FILLED_TYPES):
+        return _RESOLVED
+    if isinstance(annotation, _TYPE_ALIAS):
+        inside: tuple = (annotation.__value__,)
+    elif isinstance(annotation, typing.TypeVar):
+        inside = (annotation.__bound__, *annotation.__constraints__)
+    elif isinstance(annotation, type):
+        if issubclass(annotation, (*_FILLED_TYPES, ToolRuntime)):
+            return _RESOLVED
+        inside = tuple(getattr(annotation, "__orig_bases__", ()))
+    elif hasattr(annotation, "__supertype__"):
+        inside = (annotation.__supertype__,)
+    elif typing.get_origin(annotation) is typing.Literal:
+        inside = ()
+    elif typing.get_origin(annotation) is typing.Annotated:
+        inside = tuple(item for item in typing.get_args(annotation) if not isinstance(item, str))
+    else:
+        inside = (typing.get_origin(annotation), *typing.get_args(annotation))
+    found = None
+    for inner in inside:
+        if inner is None:
+            continue
+        how = _filled_type(inner, namespace, _depth + 1)
+        if how == _RESOLVED:
+            return _RESOLVED
+        found = found or how
+    return found
+
+
+def _not_its_own(
+    name: str,
+    parameter,
+    filled: frozenset[str],
+    hints: dict[str, Any],
+    namespace: dict[str, Any],
+) -> str | None:
+    """Why a named parameter does not count as the callable's own in the forwarder rule
+    (:func:`_read_to_the_end`), and there only; None when it does count.
+
+    It does not count when the framework or the host fills it or the tool marks it
+    injected (``filled``: what :func:`_framework_keys`, :func:`_host_keys` and
+    :func:`_node_fills` answer for this tool; their answer is never set aside); when its
+    name is reserved (:data:`_RESERVED_NAMES`), whatever its annotation or default; or
+    when its annotation, read as the frameworks read it (``hints``) and opened as
+    :func:`_filled_type` opens it, is or is built from a type the framework or the host
+    fills. Such a parameter says nothing about what the callable does with the model's
+    arguments: ``def _run(self, *args, config: Optional[RunnableConfig] = None,
+    **kwargs)`` forwards exactly as ``def _run(self, *args, **kwargs)`` does, whether or
+    not LangChain fills ``config`` there. The answer is ``"by name"`` only when the one
+    reason is an annotation that could not be resolved and was matched by its text.
+    """
+    if name in filled or name in _RESERVED_NAMES:
+        return _RESOLVED
+    return _filled_type(hints.get(name, parameter.annotation), namespace)
 
 
 def _variadic(parameter) -> bool:
@@ -370,8 +457,9 @@ def _stacked(func) -> int:
 def _read_to_the_end(
     levels: list,
     fields: frozenset[str],
-    injected: frozenset[str] = frozenset(),
+    filled: frozenset[str] = frozenset(),
     closed: bool = False,
+    func: Any = None,
 ) -> None:
     """Raise ``TypeError`` when the innermost callable hands on an argument the gate must
     account for.
@@ -392,9 +480,10 @@ def _read_to_the_end(
     own name accounts for a field only on a callable that also names a parameter
     (``def f(q, **kwargs)``).
 
-    A parameter with a reserved name, an injected one, or one annotated with a type the
-    framework or the host fills is not a parameter of the callable's own for this purpose
-    (:func:`_its_own`): ``def wrapper(*args, config: RunnableConfig, **kwargs)`` forwards
+    A parameter the framework or the host fills, one with a reserved name, or one
+    annotated with a type the framework or the host fills is not a parameter of the
+    callable's own for this purpose (:func:`_not_its_own`; ``func`` is the callable the
+    annotations are resolved for): ``def wrapper(*args, config: RunnableConfig, **kwargs)`` forwards
     exactly as ``def wrapper(*args, **kwargs)`` does, and so does the same wrapper with
     ``config: Optional[RunnableConfig] = None`` or a bare ``config=None``. The one such
     callable that is let through is one under a schema the model can put nothing through
@@ -405,13 +494,22 @@ def _read_to_the_end(
     if not any(_variadic(parameter) for parameter in innermost.values()):
         return
     unread = sorted(fields - innermost.keys())
-    forwards_everything = all(
-        _variadic(parameter) or not _its_own(name, parameter, injected)
+    hints, namespace = _hints(func), _namespace(func)
+    why = {
+        name: _not_its_own(name, parameter, filled, hints, namespace)
         for name, parameter in innermost.items()
-    )
+        if not _variadic(parameter)
+    }
+    forwards_everything = all(why.values())
     if not unread and forwards_everything and not closed:
-        kept = ", ".join(f"`{name}`" for name, p in innermost.items() if not _variadic(p))
+        kept = ", ".join(f"`{name}`" for name, how in why.items() if how == _RESOLVED)
+        unresolved = ", ".join(f"`{name}`" for name, how in why.items() if how == _BY_NAME)
         besides = f" (and {kept}, which LangChain or the host reserves)" if kept else ""
+        if unresolved:
+            besides += (
+                f" (and {unresolved}, whose type could not be resolved and was matched by "
+                "name as one LangChain or the host reserves)"
+            )
         raise TypeError(
             f"the tool's innermost callable takes only `*args` or `**kwargs`{besides}, so it "
             "passes every argument on to code the gate cannot read; name the arguments in "
@@ -602,7 +700,8 @@ def _completed(
     to_a_server = _calls_an_mcp_server(func)
     framework_keys = _framework_keys(func)
     if not to_a_server:
-        _read_to_the_end(levels, fields, _host_keys(tool), _closed_to_the_model(tool))
+        filled = framework_keys | _host_keys(tool) | _node_fills(tool)
+        _read_to_the_end(levels, fields, filled, _closed_to_the_model(tool), func)
     named = [{n for n, p in level.items() if not _variadic(p)} for level in levels]
     completed = dict(kwargs)
     for index, level in enumerate(levels):
@@ -716,7 +815,7 @@ def _single_input(tool, args: tuple, kwargs: dict[str, Any], is_async: bool) -> 
                 f"the callable's parameter `{name}` is not the tool's single input, so it "
                 "would run with a value no policy judged"
             )
-    _read_to_the_end(levels, frozenset({first[0]}))
+    _read_to_the_end(levels, frozenset({first[0]}), func=func)
     return first[0]
 
 
@@ -1285,8 +1384,10 @@ def _checked(node: ToolNode) -> ToolNode:
     reason its definition already shows: a ``StructuredTool`` or ``Tool`` whose function
     names a parameter ``config`` that is not its ``RunnableConfig``. LangChain keeps that
     name for the run configuration, so the function never receives the model's value
-    (:func:`_fills_itself`). A function that cannot be inspected here is left to the gate,
-    which refuses it when it is called."""
+    (:func:`_fills_itself`). The first parameter of a single-input ``Tool``'s function is
+    not such a parameter: it is handed the tool's one value by position, whatever it is
+    called, and the call is judged under that name. A function that cannot be inspected
+    here is left to the gate, which refuses it when it is called."""
     for tool in node.tools_by_name.values():
         if not isinstance(tool, (StructuredTool, Tool)):
             continue
@@ -1297,11 +1398,12 @@ def _checked(node: ToolNode) -> ToolNode:
                 levels, framework_keys = _reached(func), _framework_keys(func)
             except Exception:  # noqa: BLE001, refused at call time, with the reason
                 continue
+            single_input = next(iter(levels[0]), None) if isinstance(tool, Tool) else None
             for level in levels:
                 for name, parameter in level.items():
                     if _variadic(parameter) or name in framework_keys:
                         continue
-                    if name in _HOLDER_TAKES:
+                    if name in _HOLDER_TAKES and name != single_input:
                         raise TypeError(
                             f"tool `{tool.name}`: its function's parameter `{name}` has a "
                             "name LangChain fills itself at call time, so the function would "

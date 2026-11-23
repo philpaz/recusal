@@ -252,16 +252,47 @@ does not run, and an audited gate records it as one entry:
   it passes those arguments on, and whatever receives them fills its own defaults after
   the policy has judged. The call is refused, naming one such field. And if that function
   takes nothing but `*args` and `**kwargs`, the call is refused, with the one exception
-  given below. For this rule, and for this rule only, three kinds of parameter never
+  given below. For this rule, and for this rule only, four kinds of parameter never
   count as the function's own:
+  - one LangChain or ToolNode fills for this tool: the gate asks them, with the helpers
+    they use themselves (see "Private names"), and their answer is never set aside;
+  - one the tool marks injected, in its `args_schema` or in its function;
   - one named `run_manager`, `callbacks`, `config` or `runtime`, whatever its
     annotation or default. These are the names LangChain or ToolNode reserve: the ones
     they may write their own value under, keep for themselves or leave out of a schema;
-  - one the tool marks injected, in its `args_schema` or in its function;
-  - one whose annotation mentions, anywhere inside it (`Optional[...]`, `... | None`,
-    `Annotated[...]`), `RunnableConfig`, `ToolRuntime`, an injected-argument marker
-    (`InjectedState`, `InjectedStore`, `InjectedToolArg`, `InjectedToolCallId`) or a
-    callback or run manager type.
+  - one whose annotation is, or is built from, a filled type: `RunnableConfig`,
+    `ToolRuntime`, an injected-argument marker (`InjectedState`, `InjectedStore`,
+    `InjectedToolArg`, `InjectedToolCallId`, or a subclass of one) or a callback
+    manager or run manager type.
+
+  How the gate reads an annotation for that last kind. It first resolves the function's
+  annotations with `typing.get_type_hints`, as the frameworks do, so an import alias, a
+  quoted name and an annotation under `from __future__ import annotations` are the types
+  they name. It then opens these forms, and no others:
+  - a class: one of the filled types, a subclass of one, or a `TypedDict` that has
+    `RunnableConfig` as a base;
+  - `Optional[...]`, a union (`X | None`) and any other generic: its origin and every
+    argument;
+  - `Annotated[...]`: the type, and each metadata item that is not a string (a marker
+    class or an instance of one);
+  - a `TypeVar`: its bound and its constraints;
+  - a `NewType`: the type it is made from;
+  - a `type X = ...` alias (Python 3.12): its value;
+  - a forward reference (`Optional['ToolRuntime']`), when the annotations could not be
+    resolved together: resolved on its own against the globals of the function's module.
+
+  A string that is `Annotated` metadata (a description) and the values of a `Literal`
+  are not read. When a name cannot be resolved at all (it is not in the module's
+  globals), the gate falls back to its text: the parameter does not count as the
+  function's own when the text contains `RunnableConfig`, `ToolRuntime`, `Injected`,
+  `CallbackManager` or `RunManager`, and the refusal says that the type could not be
+  resolved and was matched by name. An annotation nested more than 16 levels deep is
+  taken for a filled type. A parameter whose type cannot be related to a filled type by
+  these means counts as the function's own: a type of your own that holds a filled type
+  in a field, a `Protocol`, or an unresolvable name that does not contain one of those
+  five words. The function then names a parameter, so it is not refused under this rule,
+  and what it hands on falls under "A function that names its parameters and then calls
+  another function" in "Not seen".
 
   So `def wrapper(*args, config: RunnableConfig, **kwargs)`,
   `def _run(self, *args, config: Optional[RunnableConfig] = None, **kwargs)`,
@@ -285,15 +316,23 @@ does not run, and an audited gate records it as one entry:
     `args_schema` that declares fields or with no `args_schema` at all; and a function
     of your own written as `def call(**arguments)`, `@tool def call(**kwargs)`
     included. Among published tools (read from their source, and checked on tools built
-    to the same signatures and schemas, not by installing them) this is the shape of:
+    to the same signatures and schemas, not by installing them) this is the shape of
+    the following. The list is not exhaustive: it names the tools a reading of some
+    integration packages found, and any other tool written the same way is refused the
+    same way.
     langchain-community's `SlackGetChannel` (no `args_schema`;
     `_run(self, *args, run_manager=None)`); its AINetwork tools (`AINBaseTool`), its
     `ConneryAction` and langchain-ibm's `WatsonxTool` whenever their schema declares a
     field, which their `_run` does not name; toolbox-langchain's `ToolboxTool` and
     `AsyncToolboxTool`, which is every tool Google's MCP Toolbox client loads
     (`_run(self, **kwargs)`); langchain-anchorbrowser's tools (`_run(self, **kwargs)`
-    under schemas with fields); and langchain-writer's `NoCodeAppTool`
-    (`_run(self, *args, **kwargs)`, no `args_schema`). Two that take no input run under
+    under schemas with fields); langchain-writer's `NoCodeAppTool`
+    (`_run(self, *args, **kwargs)`, no `args_schema`); the tools langchain-community's
+    Databricks `UCFunctionToolkit` builds (a `StructuredTool` over
+    `def func(*args, **kwargs)` under a generated `args_schema`); and the tools of
+    langchain-snowflake's MCP integration (`Tool(func=wrapper.run)` with
+    `run(self, *args, **kwargs)`, refused under the single-input rule below). Two that
+    take no input run under
     the exception below, because their schema declares no field: langchain-aws's
     `NovaSystemTool` and langchain-cohere's `DirectlyAnswerTool`. The gate cannot tell
     such a function from a decorator that forwards. Give the node a function that names
@@ -316,7 +355,16 @@ does not run, and an audited gate records it as one entry:
   under it, forwarder or not: LangChain drops what ToolNode injected as well, so a
   `state`, `store` or `runtime` parameter of the function receives the function's own
   default, not the host's value, and the policy is not shown that default. It is a
-  constant of the code, the same with no gate, and nothing the model can change.
+  constant of the code, the same with no gate, and nothing the model can change. The
+  same happens under a schema that does declare fields, to a parameter the schema omits
+  and LangChain does not itself take for injected: one named `runtime` whose annotation
+  is not `ToolRuntime` (`def lookup(q: str, runtime: str = "eu")` under a schema that
+  declares only `q`), and one annotated `Optional[ToolRuntime]`. LangChain hands the
+  function only what the schema declares and what it takes for injected, so the function
+  runs its own default: the policy is shown `{"q": ...}` and the function runs
+  `runtime="eu"`. Under a schema with fields, a parameter annotated `ToolRuntime`
+  itself, or `Annotated` with an injected-argument marker, does receive the host's
+  value.
 
   A function that takes `**kwargs` and also names every schema field runs: the variadic
   then carries only keys the schema does not declare (the ones an `extra="allow"` schema
@@ -348,7 +396,10 @@ does not run, and an audited gate records it as one entry:
   it is the function's `RunnableConfig`: LangChain writes the run configuration under
   that name, so the function never receives the model's value. `gated_tool_node` and
   `audited_tool_node` raise `TypeError` for such a tool when the node is built. Rename
-  the parameter. A call is refused for the same reason when it sets a name under which
+  the parameter. The first parameter of a single-input `Tool`'s function is not such a
+  parameter: it receives the tool's one value by position whatever it is called, so
+  `Tool(name="lookup", func=lookup)` over `def lookup(config)` is built and judged as
+  `{"config": ...}`. A call is refused for the same reason when it sets a name under which
   the function would not receive the value, and only then: `config` or `run_manager` on
   a `@tool` or `StructuredTool` (LangChain keeps both for itself there); `callbacks`
   on one whose function names a parameter `callbacks`, itself or behind a
@@ -400,16 +451,22 @@ does not run, and an audited gate records it as one entry:
   `_run(self, url: str, config: Optional[RunnableConfig] = None, **_)`). Give the node
   a function of your own that names the arguments and calls the tool
   (`def navigate(url: str) -> str: return aws_tool.invoke({"url": url})` under `@tool`).
-- A parameter named `runtime` with a plain type such as `str`: ToolNode puts its runtime
-  object under that name, so the input does not validate. Rename the parameter.
+- A parameter named `runtime` with a plain type such as `str`, under a schema that
+  declares it (the one `@tool` infers does): ToolNode puts its runtime object under that
+  name, so the input does not validate. Rename the parameter.
 - A Pydantic v1 `args_schema`: the gate reads no fields from it, so it cannot hold the
   function to it and every call is refused. Use a Pydantic v2 model.
 - A single-input `Tool` when any function the call reaches names a second parameter;
   when its function does not take the input as its first named parameter (a decorator
   with `*args` in front of it, or a builtin such as `Tool(func=str.upper)` or
-  `Tool(func=len)`, whose one parameter is positional-only); or when the innermost
-  function the gate reaches takes `*args` or `**kwargs` and does not name the input.
-  Use `@tool` with a schema, or wrap the builtin (`func=lambda text: text.upper()`).
+  `Tool(func=len)`, whose one parameter is positional-only; a method that takes only
+  `*args` and `**kwargs`; or a function whose first parameter is one LangChain fills:
+  `run_manager`, `callbacks`, or a `config` annotated exactly `RunnableConfig`); when
+  the innermost function the gate reaches takes `*args` or `**kwargs` and does not name
+  the input; or when that function takes `*args` or `**kwargs` and its one named
+  parameter is one that never counts as its own under the forwarder rule above
+  (`def f(config, **kwargs)`). Use `@tool` with a schema, or wrap the builtin
+  (`func=lambda text: text.upper()`).
 - A call whose name is not the name of the tool that would run. That happens when an
   earlier hook attaches a tool to a call ToolNode could not resolve
   (`request.override(tool=...)`): the policy would judge the model's string and the
@@ -494,7 +551,19 @@ gate has decided nothing, and no entry is written.
   single-input `Tool` function; `callbacks` on a `BaseTool` subclass's `_run`; and a
   `callbacks` keyword on a `functools.wraps` decorator over a `@tool` or
   `StructuredTool` function that does not itself name `callbacks` (LangChain reads the
-  wrapped function's signature and finds none).
+  wrapped function's signature and finds none). On a `BaseTool` subclass's `_run` a
+  parameter named `callbacks` is also a real argument the model can set when the tool's
+  schema lets the key through, as it does when the tool has no `args_schema`: a call
+  that sets it is judged with the value, and a call that leaves it out runs the default
+  unseen. With
+  `def _run(self, callbacks: str = "all")` and no `args_schema`, the policy is shown
+  `{}` and the function runs `callbacks="all"`. Rename the parameter.
+- A host value a schema drops: a `state`, `store` or `runtime` parameter under an
+  explicit schema that declares no field, and under a schema with fields that does not
+  declare it, a parameter named `runtime` that is not annotated `ToolRuntime` or one
+  annotated `Optional[ToolRuntime]`. The function runs
+  its own default for it, a constant of the code (see the closed-schema exception
+  above).
 - What a tool does once it runs.
 
 **Private names.** This package depends on ten names that are private to LangChain and

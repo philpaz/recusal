@@ -52,10 +52,15 @@ All notable changes to this project are documented here. The format follows
     `@tool` infers from `def wrapper(*args, **kwargs)`, whose fields are `args` and
     `kwargs`, the policy judged `{}` and the function behind the wrapper ran
     `limit=1000000`. For this rule a parameter never counts as the function's own when
+    LangChain or ToolNode fills it for the tool, when the tool marks it injected, when
     it is named `run_manager`, `callbacks`, `config` or `runtime` (whatever its
-    annotation or default), when the tool marks it injected, or when its annotation
-    mentions `RunnableConfig`, `ToolRuntime`, an injected-argument marker or a callback
-    manager type anywhere inside it:
+    annotation or default), or when its annotation is, or is built from,
+    `RunnableConfig`, `ToolRuntime`, an injected-argument marker or a callback manager
+    or run manager type. The annotation is resolved with `typing.get_type_hints`, as the
+    frameworks resolve it, and then opened through the forms the README lists (a class
+    and its bases, `Optional` and other generics, `Annotated`, a `TypeVar`, a `NewType`,
+    a `type` alias, a forward reference); a name that cannot be resolved is matched by
+    its text, and the refusal says so:
     `def wrapper(*args, config: RunnableConfig, **kwargs)`, a `BaseTool` with no
     `args_schema` whose `_run` is `(*args, run_manager=None, **kwargs)`, and one whose
     `_run` is `(*args, config: Optional[RunnableConfig] = None, **kwargs)` ran the same
@@ -111,7 +116,9 @@ All notable changes to this project are documented here. The format follows
     the defaults of the method the route runs, `_run` or the class's own `_arun`, since
     LangChain validates nothing for it), and a single-input `Tool(name, func,
     description)` or `@tool(infer_schema=False)` whose function takes exactly one named
-    parameter (judged under that parameter's name).
+    parameter (judged under that parameter's name, `config` included: the build-time
+    check for a parameter named `config` leaves the first parameter of a single-input
+    `Tool` alone, since it receives the tool's one value by position).
   - A Pydantic v1 `args_schema` refuses the call with that reason; its parameters were
     refused one by one as absent from the schema, and a function taking only `**kwargs`
     under it was not refused at all. A callable Python cannot inspect is refused with
