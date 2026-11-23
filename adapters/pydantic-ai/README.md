@@ -88,8 +88,10 @@ in the innermost function's defaults, so the policy sees those. A wrapper on the
 that has a parameter of its own is read by nothing, and whether its value reaches the
 function under it depends on the wrapper's body, which cannot be read. So all four forms
 of the gate (the two capabilities and the two hook functions) read the stack from the
-callable Pydantic AI calls down to the innermost function, following `__wrapped__`,
-bound methods, callable objects and `functools.partial`, and each wrapper on it must be
+callable Pydantic AI calls down to the innermost function, as Python hands the call on
+(a wrapper's `__wrapped__`, a bound method's function, a callable object's `__call__`,
+the function of a `functools.partial`, whatever `__wrapped__` the partial itself
+carries), and each wrapper on it must be
 one of these (the wrappers under a `functools.partial` that binds keywords are held to
 this twice, as the partial shows them and as they are written, because a partial with a
 keyword shows every later parameter as keyword-only and would make a wrapper that takes
@@ -138,8 +140,9 @@ type-checked function from a plain function and register that one. Also refused:
   given each search argument the model can set, or call the Tavily client from a plain
   function of your own that has the fixed value in its body.
 - **A decorator that cannot be inspected**: a class-based decorator that is also a
-  descriptor, such as `cachetools.cached`, or a stack more than 31 decorators deep. Call
-  the decorated function from a plain function and register that one.
+  descriptor, such as `cachetools.cached`, a `functools.lru_cache` or `functools.cache`
+  wrapper under a `functools.partial`, or a stack more than 31 decorators deep. Call the
+  decorated function from a plain function and register that one.
 - **A single-dispatch function** (`functools.singledispatch`) with an implementation
   registered beside its base one, or in its place (`register(object)`): the
   implementation that runs is chosen at call time, by the type of an argument, so its
@@ -149,25 +152,56 @@ type-checked function from a plain function and register that one. Also refused:
   one. (Pydantic AI cannot run a `functools.singledispatchmethod` as a tool built from
   its signature. Given its schema by hand, one with a registered implementation is
   refused by this rule.)
-- **A value bound by position past a wrapper that names a positional parameter**
-  (`def wrapper(tenant, *args, **kwargs)`), by a `functools.partial` with a positional
-  argument or by a bound method. The value is read as filling the function's leading
-  parameter, and the wrapper may keep it. Refused where a wrapper that kept it might
-  not fail the call: that parameter of the function has a default; the function takes
-  `*args` or a positional-only parameter after it; or the values after it can be
+- **A `functools.partial` that binds a value by position over a wrapper that names a
+  parameter.** The partial's own signature, which is what Pydantic AI and the gate
+  read, drops the leading parameter of every wrapper under it, and that parameter's
+  default with it: `functools.partial(scoped(default_table(purge)), "acme")` with
+  `def wrapper(tenant, *args, **kwargs)` over `def wrapper(table="archive", *, limit=100)`
+  looks like a stack that names nothing, and ran `table="archive"` with the policy
+  handed `{"limit": 5}`. The gate does not reason about what such a wrapper's body
+  would do. Under a partial that binds by position there may be only wrappers that
+  take nothing but `*args` and `**kwargs` (and other partials); a wrapper there that
+  names any parameter of its own, of any kind and name, with or without a default, the
+  run context included, refuses the call, whether or not a body that kept the value
+  would fail. So `functools.partial(scoped(purge), "acme")` is refused for any
+  `scoped` whose wrapper names `tenant`. Bind the value by keyword, or call the wrapped
+  function from a plain function and register that one. A value bound by position
+  directly over the function, or over wrappers that only forward, is read as the
+  function's leading parameter and is not refused. Two more refusals of such a partial:
+  one that was named with `functools.update_wrapper` or `functools.wraps` (see the next
+  point), and one that binds a positional-only parameter of a function that also takes
+  `**kwargs` (`functools.partial(fetch, "acme")` over `def fetch(tenant, /, table,
+  **extra)`): an argument sent as `tenant` is not a duplicate to Python, it lands in
+  `**extra` while the function runs the bound value.
+- **A signature Pydantic AI reads that is not the function the call reaches.** Pydantic
+  AI validates the arguments against `inspect.signature` of the callable it is given,
+  and decides from it which values to pass by position. That reading follows
+  `__wrapped__`; the gate reads what Python binds. For every tool built from its
+  signature the two must be the same parameters (names, kinds, order and defaults), or
+  the call is refused. The case that differs is a partial named the standard-library
+  way, `functools.update_wrapper(functools.partial(insert, "acme"), insert)`: the
+  signature is then the function's own, with the parameter the partial fills still in
+  it, and `insert(tenant, *rows)` ran `tenant="acme"` with the model's `tenant` as its
+  first row. A keyword partial named that way is refused too: Pydantic AI would show,
+  and fill in, the function's default in place of the value the partial binds. Set
+  `__name__` and `__doc__` on the partial instead, or register a plain function.
+- **The object of a bound method past a wrapper that names a positional parameter**
+  (`def wrapper(self, *args, **kwargs)`). The object is read as filling the function's
+  leading parameter, and the wrapper may keep it. Refused where a wrapper that kept it
+  might not fail the call: that parameter of the function has a default; the function
+  takes `*args` or a positional-only parameter after it; or the values after it can be
   passed on by position and move up a place, with a default to fill the gap they
   leave. The last is counted: a wrapper on the stack that names positional parameters
-  beyond the bound one can pass that many on by position (the run context of a
-  context-taking tool is one such value, and so is a value another partial binds), and
-  the call is refused when the last parameter of the function they reach has a default.
-  A `functools.lru_cache` or `functools.cache` wrapper keeps nothing and does not count
-  as such a wrapper. So
-  `functools.partial(scoped(purge), "acme")` with `def wrapper(tenant, limit, dry)`
-  over `def purge(table, limit, dry=False)` is refused, and so is a method decorator
-  that restates the method's parameters (`def wrapper(self, table, limit=10)`) over a
-  method with a positional parameter that has a default. An ordinary method decorator
-  (`def wrapper(self, *args, **kwargs)`) over a method whose other parameters are named
-  and not positional-only is not refused.
+  beyond the object can pass that many on by position (the run context of a
+  context-taking tool is one such value, and so is a value a partial binds), and the
+  call is refused when the last parameter of the function they reach has a default. A
+  `functools.lru_cache` or `functools.cache` wrapper keeps nothing and does not count
+  as such a wrapper. So a method decorator that restates the method's parameters
+  (`def wrapper(self, table, limit=10)`) over a method with a positional parameter that
+  has a default is refused. That refusal is conservative: no wrapper body that passes
+  the object on can misuse such a stack, and it is the price of not reading bodies. An
+  ordinary method decorator (`def wrapper(self, *args, **kwargs)`) over a method whose
+  other parameters are named and not positional-only is not refused.
 - **A keyword a `functools.partial` binds that does not reach the parameter it names**:
   `functools.partial(fetch, limit=77)` over `def fetch(table, limit=10, /, **extra)`.
   Python does not bind a keyword to a positional-only parameter, so `**extra` takes
@@ -186,7 +220,8 @@ hand (`Tool.from_schema`) is not validated, and a hook of yours can hand argumen
 in place of validation (`SkipToolValidation`), so there the gate completes whatever was
 left out. A value a `functools.partial` binds by keyword is the default of the
 parameter it names. A class used as the tool function is completed from the signature
-Pydantic AI validates against. Two more refusals follow from it:
+Pydantic AI validates against, also behind a partial that binds keywords. Two more
+refusals follow from it:
 
 - **A default that is not plain data** (a logger, a client, a sentinel object) cannot be
   shown to a policy. For a tool given its schema by hand the refusal names the
@@ -360,16 +395,33 @@ path.
   no wrappers and does not see two output functions of one name either.
 - **What a function does in its own body.** A value a function sets itself, a wrapper
   that restates the function's parameters and then does not pass one on (the function
-  runs on its own default for it, or, where the wrapper passes the others on by
-  position, each of those reaches the parameter before its own), a function that calls
+  runs on its own default for it, or on the value a partial under the wrapper binds;
+  or, where the wrapper passes the others on by position, each of those reaches the
+  parameter before its own), a function that calls
   a single-dispatch function, and a decorator that applies another decorator inside
   itself (the gate follows the function a wrapper says it wraps, `__wrapped__`, and
   that is not the one such a wrapper calls): the policy judged the arguments, and what
   the code does with them is its own.
 - **What a class used as a tool function does when it is built.** The gate reads the
   signature Pydantic AI validates the class against and completes the arguments from
-  it. It does not read `__init__` or `__new__` themselves, so a decorator on one of
-  them with a parameter of its own is not seen.
+  it. It does not read `__init__`, `__new__` or a metaclass themselves, so none of
+  these is seen: a decorator on one of them with a parameter of its own; a `__new__`
+  that shows fewer parameters than `__init__` (`def __new__(cls, table, **kwargs)`
+  beside `def __init__(self, table, force=False, **kwargs)` is judged without `force`); a
+  declared `__signature__` that leaves a defaulted parameter of `__init__` out; a
+  metaclass `__call__` that takes other parameters than `__init__` does.
+- **A method whose decorators were written for free functions.** For a bound method the
+  object is read as filling the leading parameter of the function, and the rules above
+  assume each wrapper under it takes the object first, as `def wrapper(self, *args,
+  **kwargs)` does. A method without `self` under decorators that take something else
+  there is not read that way: `class Repo` with `@scoped @default_table def
+  purge(table, *, limit=100)`, where `scoped` has `def wrapper(tenant, *args, **kwargs)`
+  and `default_table` has `def wrapper(table="archive", *, limit=100)`, puts the object
+  in `tenant` and runs `table="archive"`, the wrapper's own default, with the policy
+  handed `{"limit": 5}`. So does a wrapper that hands the object on by keyword
+  (`fn(*args, owner=self, **kwargs)`) above one whose leading parameter the model can
+  then fill through the function's `**extra`. The same stacks behind a
+  `functools.partial` that binds by position are refused.
 - **An output validator.** A function registered with `@agent.output_validator` runs on
   the model's output, plain text and plain structured output included, and is not
   judged: the gate judges output functions. Behind an output function it is handed

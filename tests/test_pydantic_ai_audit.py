@@ -771,7 +771,7 @@ class TestPydanticAiAudit:
         causes = {
             "c1": "names `table` and also forwards, over a function that takes `*args`",
             "c2": "the implementation that runs is chosen at call time",
-            "c3": "hands a value in by position past a wrapper that names a positional parameter",
+            "c3": "binds a value by position past a wrapper that names a parameter (`table`)",
         }
         for name, sent, call_id in calls:
             outcome, reason = responses[call_id]
@@ -868,8 +868,91 @@ class TestPydanticAiAudit:
         causes = {
             "c1": "takes `limit` as a positional or keyword parameter where the function takes",
             "c2": "a `functools.partial` binds `limit` by keyword, and the function this tool runs",
-            "c3": "the function's `note` has a default, so if the wrapper keeps that value",
+            "c3": "binds a value by position past a wrapper that names a parameter (`tenant`)",
             "c4": "registered beside its base one or in its place",
+        }
+        for name, sent, call_id in calls:
+            outcome, reason = responses[call_id]
+            entry = entries[call_id]
+            assert outcome == "failed" and causes[call_id] in reason
+            assert reason.startswith(f"Recusal refused `{name}` [FAIL]")
+            assert entry["action"]["decision"] == "deny" and entry["decision"] == "FAIL"
+            assert entry["action"]["reason"] == reason and "MARKER" not in reason
+            assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+            assert entry["action"]["input_sha256"] == _sha(sent)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    @ROUTES
+    def test_a_partial_that_binds_by_position_is_one_recorded_deny(
+        self, example, log, log_path, via_hooks
+    ):
+        """The refusals of the eleventh review round, by both audited forms: a value bound by
+        position over a wrapper that names a parameter, a partial named with
+        ``functools.update_wrapper``, and a bound positional-only parameter beside
+        ``**extra``. Nothing runs, the policy is not asked, and each is exactly one entry
+        with none of the model's text."""
+        import functools
+
+        ran, asked = [], []
+
+        def scoped(function):
+            @functools.wraps(function)
+            def wrapper(tenant, *args, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def default_table(function):
+            @functools.wraps(function)
+            def wrapper(table="archive", *, limit=100):
+                return function(table, limit=limit)
+
+            return wrapper
+
+        def purge(table, *, limit=100):
+            """Purge rows."""
+            ran.append(("purge", table, limit))
+            return "purged"
+
+        def insert(tenant: str, *rows: str, table: str = "events") -> str:
+            """Insert rows for a tenant."""
+            ran.append(("insert", tenant, rows, table))
+            return "inserted"
+
+        def fetch(tenant: str, /, table: str, **extra: str) -> str:
+            """Fetch."""
+            ran.append(("fetch", tenant, table, extra))
+            return "fetched"
+
+        def named(tool, name):
+            tool.__name__ = tool.__qualname__ = name
+            tool.__doc__ = "A tool."
+            return tool
+
+        tools = [
+            named(functools.partial(scoped(default_table(purge)), "tenant-MARKER"), "purge_acme"),
+            functools.update_wrapper(functools.partial(insert, "tenant-MARKER"), insert),
+            named(functools.partial(fetch, "tenant-MARKER"), "fetch_acme"),
+        ]
+
+        def policy(name, args):
+            asked.append(name)
+            return []
+
+        calls = [
+            ("purge_acme", {"limit": 5}, "c1"),
+            ("insert", {"tenant": "MARKER DROP TABLE", "rows": ["MARKER-a"]}, "c2"),
+            ("fetch_acme", {"tenant": "MARKER-evil", "table": "t"}, "c3"),
+        ]
+        responses, _ = example.run_calls(
+            calls, log, policy=policy, tools=tools, via_hooks=via_hooks
+        )
+        assert ran == [] and asked == [] and len(log.entries) == 3
+        entries = self.by_id(log)
+        causes = {
+            "c1": "binds a value by position past a wrapper that names a parameter (`tenant`)",
+            "c2": "was named with `functools.update_wrapper` or `functools.wraps`",
+            "c3": "binds the positional-only parameter `tenant` of a function that also takes",
         }
         for name, sent, call_id in calls:
             outcome, reason = responses[call_id]

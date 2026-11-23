@@ -703,8 +703,10 @@ def _as_bound(levels: list[Any], takes_ctx: bool) -> list[list[Any]]:
     parameter is the context whatever the wrapper calls it and whether it is
     positional-only or not, unless it carries the name of another parameter of the
     function: that one a wrapper above can hand it by keyword, so it is read as the
-    parameter it names. The context is then one more leading positional-or-keyword
-    parameter, held to the same rules as any other."""
+    parameter it names. Nor is it renamed where the wrapper has another parameter under
+    the context's name: then the first one is a parameter of the wrapper's own. The
+    context is then one more leading positional-or-keyword parameter, held to the same
+    rules as any other."""
     rows = [list(level.values()) for level in levels]
     inner = rows[-1]
     if not (takes_ctx and inner and _positional(inner[0])):
@@ -713,7 +715,8 @@ def _as_bound(levels: list[Any], takes_ctx: bool) -> list[list[Any]]:
     others = {parameter.name for parameter in inner[1:]}
     for row in rows:
         if row and _positional(row[0]) and row[0].name not in others:
-            row[0] = row[0].replace(name=inner[0].name, kind=keyword)
+            if all(parameter.name != inner[0].name for parameter in row[1:]):
+                row[0] = row[0].replace(name=inner[0].name, kind=keyword)
     return rows
 
 
@@ -948,18 +951,71 @@ def _dispatches(step: Any) -> bool:
 _CACHED = type(functools.lru_cache(maxsize=None)(len))
 
 
-def _written(levels: list[Any], function: Any) -> list[Any]:
-    """The levels of the callables that have parameters of their own: the copy the walk
-    shows for a cache wrapper (a level equal to the one under it, one for each cache
-    wrapper a call to ``function`` passes through) is left out."""
-    copies = sum(isinstance(step, _CACHED) for step in _steps(function))
-    kept = []
-    for index, level in enumerate(levels):
-        if copies and index + 1 < len(levels) and dict(level) == dict(levels[index + 1]):
-            copies -= 1
-        else:
-            kept.append(level)
-    return kept
+def _next_callables(function: Any) -> list[Any]:
+    """The callables ``function`` hands the call to, bound as it binds them, in the order
+    the kernel's walk takes them: a method's and a partial's rebound, ``__wrapped__``, then a
+    callable object's ``__call__`` bound to the object."""
+    if inspect.ismethod(function):
+        return [
+            types.MethodType(inner, function.__self__)
+            for inner in _next_callables(function.__func__)
+        ]
+    if isinstance(function, functools.partial):
+        return [
+            functools.partial(inner, *function.args, **function.keywords)
+            for inner in _next_callables(function.func)
+        ]
+    found = []
+    wrapped = getattr(function, "__wrapped__", None)
+    if wrapped is not None:
+        found.append(wrapped)
+    if not (
+        inspect.isfunction(function) or inspect.isbuiltin(function) or isinstance(function, type)
+    ):
+        call = inspect.getattr_static(type(function), "__call__", None)
+        if inspect.isfunction(call):
+            found.append(types.MethodType(call, function))
+    return found
+
+
+def _view(function: Any, validated: bool) -> tuple[list[Any], list[Any]]:
+    """The parameters of every callable a call to ``function`` reaches (the kernel's walk),
+    and beside each level the callable it is the level of. Raises what the kernel's walk
+    raises, and ``ValueError`` where the callables cannot be laid beside the levels.
+
+    A class or a builtin wraps nothing and the kernel does not walk it: for a validated
+    tool it is one level, the signature Pydantic AI validates against."""
+    try:
+        levels = _reached_parameters(function)
+    except _DeclaredSignature:
+        raise
+    except Exception:
+        if not (validated and (isinstance(function, type) or inspect.isbuiltin(function))):
+            raise
+        levels = [inspect.signature(function).parameters]
+    callables = [function]
+    pending = _next_callables(function)
+    while pending and len(callables) <= len(levels):
+        current = pending.pop()
+        callables.append(current)
+        pending.extend(_next_callables(current))
+    if pending or len(callables) != len(levels):
+        raise ValueError("the callables of this stack cannot be laid beside its levels")
+    return levels, callables
+
+
+def _cached(function: Any) -> bool:
+    """True for the level of a cache wrapper, bound to an object or not."""
+    while inspect.ismethod(function):
+        function = function.__func__
+    return isinstance(function, _CACHED)
+
+
+def _written(levels: list[Any], callables: list[Any]) -> list[Any]:
+    """The levels of the callables that have parameters of their own: the level the walk
+    shows for a cache wrapper, which is a copy of the one under it, is left out. It is
+    told by its place in the walk, the callable beside it, and never by what it holds."""
+    return [level for level, function in zip(levels, callables) if not _cached(function)]
 
 
 def _binds(step: Any) -> int:
@@ -971,16 +1027,15 @@ def _binds(step: Any) -> int:
 
 
 def _bound_past_a_wrapper(step: Any, reach: int) -> Optional[str]:
-    """What makes a bound positional argument unreadable, in the words that follow "past a
+    """What makes the object of a bound method unreadable, in the words that follow "past a
     wrapper that names a positional parameter: ", or None.
 
-    A ``functools.partial`` with positional arguments, and a bound method, hand values in
-    by position, and the kernel's walk reads them as bound to the innermost function's
-    leading parameters. Under a wrapper that names a positional parameter, that holds
-    only if the wrapper hands the value on. It is safe to assume where a wrapper that
-    keeps the value fails the call:
+    A bound method hands its object in by position, and the kernel's walk reads it as
+    bound to the innermost function's leading parameter. Under a wrapper that names a
+    positional parameter, that holds only if the wrapper hands the value on. It is assumed
+    where a wrapper that keeps the value fails the call:
 
-    - each innermost parameter bound that way has no default;
+    - the innermost parameter bound that way has no default;
     - the innermost function takes nothing else by position (no ``*args``, no further
       positional-only parameter), so Pydantic AI passes no value that can move into its
       place;
@@ -991,17 +1046,20 @@ def _bound_past_a_wrapper(step: Any, reach: int) -> Optional[str]:
       after the kept one each move up a place, so the last of them leaves its own
       parameter empty, and the call fails unless that parameter has a default. A cache
       wrapper keeps nothing, so this is asked only where a wrapper with parameters of
-      its own (``_written``) names a positional one."""
-    bound = _binds(step)
-    if not bound:
+      its own (``_written``) names a positional one.
+
+    This is a rule about what a wrapper's body could do, and it is conservative: it also
+    refuses a method decorator that restates the method's parameters, which no body that
+    passes the object on can misuse. A ``functools.partial`` that binds by position is not
+    read this way at all (``_bound_over_a_wrapper``)."""
+    if not inspect.ismethod(step):
         return None
-    below = step.__func__ if inspect.ismethod(step) else step.func
-    under = _reached_parameters(below)
+    under, callables = _view(step.__func__, False)
     if not any(_positional(p) for level in under[:-1] for p in level.values()):
         return None
     inner = list(under[-1].values())
     for position, parameter in enumerate(inner):
-        if position < bound:
+        if position < 1:
             if not _positional(parameter) or parameter.default is not parameter.empty:
                 return (
                     f"whether that value reaches the function's `{parameter.name}`, or the "
@@ -1014,10 +1072,10 @@ def _bound_past_a_wrapper(step: Any, reach: int) -> Optional[str]:
                 "wrapper keeps that value the next one moves into its place, and whether it "
                 "does depends on the wrapper's body, which cannot be read"
             )
-    keepers = _written(under, below)[:-1]
+    keepers = _written(under, callables)[:-1]
     if not any(_positional(p) for level in keepers for p in level.values()):
         return None
-    later = [parameter for parameter in inner[bound:] if _positional(parameter)]
+    later = [parameter for parameter in inner[1:] if _positional(parameter)]
     reach = min(reach, len(later))
     if reach and later[reach - 1].default is not inspect.Parameter.empty:
         return (
@@ -1029,10 +1087,62 @@ def _bound_past_a_wrapper(step: Any, reach: int) -> Optional[str]:
     return None
 
 
-def _without_keywords(step: Any) -> Any:
-    """The callable a ``functools.partial`` with keywords stands for once they are left
-    out: its function, with the positional arguments it binds."""
-    return functools.partial(step.func, *step.args) if step.args else step.func
+def _bound_over_a_wrapper(step: Any) -> Optional[str]:
+    """Why a ``functools.partial`` that binds a value by position cannot be read, or None.
+
+    The partial's own signature, which is what Pydantic AI and the walk read, drops the
+    leading parameter of EVERY callable under it, with that parameter's default: a wrapper
+    under the partial that names a parameter of its own then looks like one that names
+    none, and which parameter the bound value fills, what a wrapper hands on under
+    another name and what it falls back on are all out of sight. No reasoning about what
+    a wrapper's body would do holds here, so the rule is about shape alone. Under a
+    partial that binds by position, down to the function, there may only be:
+
+    - a wrapper that takes nothing but ``*args`` and ``**kwargs``;
+    - another ``functools.partial`` (its own level shows what is under it).
+
+    (A cache wrapper under any partial never gets here: the kernel's walk cannot read a
+    partial of one, and the call is refused as one that cannot be inspected.)
+
+    Refused as well: such a partial that carries ``__wrapped__`` (it was named with
+    ``functools.update_wrapper``, and ``inspect.signature`` then reads past it), and one
+    that binds a positional-only parameter of a function that takes ``**kwargs`` (an
+    argument sent under that parameter's name is not a duplicate to Python: it lands in
+    ``**kwargs`` while the function runs the bound value)."""
+    if not (isinstance(step, functools.partial) and step.args):
+        return None
+    advice = "or call the wrapped function from a plain function and register that one"
+    if inspect.getattr_static(step, "__wrapped__", None) is not None:
+        return (
+            "a `functools.partial` that binds a value by position was named with "
+            "`functools.update_wrapper` or `functools.wraps`, which makes "
+            "`inspect.signature`, and so Pydantic AI, read past the partial to the function "
+            "under it: the value the partial binds is not in the signature the arguments "
+            "are validated against; set `__name__` and `__doc__` on the partial instead, "
+            f"{advice}"
+        )
+    levels = _view(step.func, False)[0]
+    for level in levels[:-1]:
+        for parameter in level.values():
+            if not _variadic(parameter):
+                return (
+                    "a `functools.partial` binds a value by position past a wrapper that "
+                    f"names a parameter (`{parameter.name}`): which parameter the value "
+                    "fills, and what each wrapper then keeps, cannot be read; bind it by "
+                    f"keyword, {advice}"
+                )
+    inner = list(levels[-1].values())
+    takes_keywords = any(parameter.kind is parameter.VAR_KEYWORD for parameter in inner)
+    # positional-only parameters come first, so the first one says whether one is bound
+    if inner and inner[0].kind is inspect.Parameter.POSITIONAL_ONLY and takes_keywords:
+        return (
+            "a `functools.partial` binds the positional-only parameter "
+            f"`{inner[0].name}` of a function that also takes `**kwargs`: an argument "
+            "sent under that name is not refused as a duplicate, it lands in `**kwargs` "
+            "while the function runs the bound value; make the parameter an ordinary "
+            f"one, {advice}"
+        )
+    return None
 
 
 def _keyword_past_a_parameter(step: Any, levels: list[Any]) -> Optional[str]:
@@ -1065,29 +1175,32 @@ def _keyword_past_a_parameter(step: Any, levels: list[Any]) -> Optional[str]:
     return None
 
 
-def _unreadable_step(function: Any, levels: list[Any], takes_ctx: bool) -> Optional[str]:
+def _unreadable_step(
+    function: Any, levels: list[Any], callables: list[Any], takes_ctx: bool, validated: bool
+) -> Optional[str]:
     """Why a callable on the way to the code that runs cannot be read from signatures, or
-    None. ``levels`` is the walk of the whole stack. Raises what ``_steps`` and the
-    kernel's walk raise.
+    None. ``levels`` and ``callables`` are the walk of the whole stack (``_view``). Raises
+    what ``_steps`` and the kernel's walk raise.
 
     A ``functools.partial`` with keywords is read twice. Its own signature states what a
     call binds, and it also turns every parameter from the first keyword-bound one on
     into a keyword-only one and drops ``*args``, on a wrapper's level and on the
     function's alike, so a wrapper that takes a parameter as another kind than the
     function does looks like one that restates it. So the levels under such a partial are
-    read without its keywords as well, and a stack that is refused without the partial is
-    refused with it."""
+    read without it as well, and a stack that is refused without the partial is refused
+    with it. (A partial that also binds by position has only pure forwarders under it,
+    ``_bound_over_a_wrapper``, so leaving its positional values out too changes nothing.)"""
     steps = _steps(function)
     unbound = {
-        index: _reached_parameters(_without_keywords(step))
+        index: _view(step.func, validated)
         for index, step in enumerate(steps)
         if isinstance(step, functools.partial) and step.keywords
     }
     named = max(
         (
             sum(map(_positional, level.values()))
-            for view in (levels, *unbound.values())
-            for level in _written(view, function)[:-1]
+            for view in ((levels, callables), *unbound.values())
+            for level in _written(*view)[:-1]
         ),
         default=0,
     )
@@ -1102,19 +1215,52 @@ def _unreadable_step(function: Any, levels: list[Any], takes_ctx: bool) -> Optio
                 "argument, so its parameters and defaults cannot be read; call it from a "
                 "plain function and register that one"
             )
+        cause = _bound_over_a_wrapper(step)
+        if cause is not None:
+            return cause
         cause = _bound_past_a_wrapper(step, max(named, int(takes_ctx)) + bound - _binds(step))
         if cause is not None:
             return (
-                "a `functools.partial` or a bound method hands a value in by position past "
-                f"a wrapper that names a positional parameter: {cause}; "
+                "a bound method hands its object in by position past a wrapper that names "
+                f"a positional parameter: {cause}; "
                 "call it from a plain function and register that one"
             )
         if index in unbound:
-            cause = _keyword_past_a_parameter(step, unbound[index])
+            under = unbound[index][0]
+            cause = _keyword_past_a_parameter(step, under)
             if cause is None:
-                cause = _opaque_wrapper(unbound[index], takes_ctx)
+                cause = _opaque_wrapper(under, takes_ctx)
             if cause is not None:
                 return cause
+    return None
+
+
+def _another_signature(function: Any, inner: Any) -> Optional[str]:
+    """Why the signature Pydantic AI reads for this tool is not the function the call
+    reaches, or None. Pydantic AI validates the arguments against
+    ``inspect.signature(function)`` and builds the call from it (which values go by
+    position). That reading follows ``__wrapped__`` from the callable it is handed; the
+    gate's walk follows what Python binds. For every tool the two must be the same
+    parameters: the same names, kinds, order and defaults as the innermost level."""
+    different = (
+        "the signature Pydantic AI reads for this tool (`inspect.signature`, which follows "
+        "`__wrapped__`) is not that of the function the call reaches, so the arguments are "
+        "validated, and passed by position, for another function; a `functools.partial` "
+        "named with `functools.update_wrapper` or `functools.wraps` does this: set "
+        "`__name__` and `__doc__` on the partial instead, or register a plain function"
+    )
+    try:
+        read = list(inspect.signature(function).parameters.values())
+    except Exception:  # noqa: BLE001, no signature to hold against the walk
+        return different
+    reached = list(inner.values())
+    if len(read) != len(reached):
+        return different
+    for theirs, ours in zip(read, reached):
+        if theirs.name != ours.name or theirs.kind is not ours.kind:
+            return different
+        if not _same_value(theirs.default, ours.default):
+            return different
     return None
 
 
@@ -1160,29 +1306,28 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
         "register that one"
     )
     try:
-        levels = _reached_parameters(function)
+        # A class or a builtin wraps nothing, and Pydantic AI validates against the signature
+        # it shows. A hook can hand arguments in in place of validation, so that signature
+        # is read as well (`_view`), and a default they leave out is completed below.
+        levels, callables = _view(function, validated)
     except _DeclaredSignature:
         return args, (
             "a function this tool runs declares a signature of its own (`__signature__`), so "
             "the parameters Python binds, and their defaults, cannot be read"
         )
     except Exception:  # noqa: BLE001, a callable the kernel does not walk
-        if not (validated and (isinstance(function, type) or inspect.isbuiltin(function))):
-            return args, unread
-        # A class or a builtin wraps nothing, and Pydantic AI validates against the signature
-        # it shows. A hook can hand arguments in in place of validation, so that signature
-        # is read here as well, and a default they leave out is completed below.
-        try:
-            levels = [inspect.signature(function).parameters]
-        except Exception:  # noqa: BLE001, no signature to complete the arguments from
-            return args, unread
+        return args, unread
     try:
-        unreadable = _unreadable_step(function, levels, takes_ctx)
+        unreadable = _unreadable_step(function, levels, callables, takes_ctx, validated)
     except Exception:  # noqa: BLE001, a step that cannot be read is not let through
         return args, unread
     if unreadable is not None:
         return args, unreadable
     inner = levels[-1]
+    if validated:
+        another = _another_signature(function, inner)
+        if another is not None:
+            return args, another
     opaque = _opaque_wrapper(levels, takes_ctx)
     if opaque is not None:
         return args, opaque

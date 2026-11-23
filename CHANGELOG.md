@@ -82,14 +82,29 @@ All notable changes to this project are documented here. The format follows
     function with an implementation registered beside its base one, or in its place
     (`register(object)`), is refused. A function that only has attributes called
     `registry` and `dispatch` is not taken for one.
-  - A `functools.partial` with a positional argument, or a bound method, over a wrapper
-    that names a positional parameter was read as filling the function's first
-    parameter, which then ran on its own default when the wrapper kept the value:
-    `partial(scoped(purge), "acme")` was judged `{"limit": 5}` and ran `table="prod"`.
-    Refused where a wrapper that kept the value might not fail the call, which includes
-    the values after it moving up a place: with `wrapper(tenant, limit, dry)` over
-    `purge(table, limit, dry=False)` the call was judged `{"limit": 5, "dry": True}`
-    and ran `table=5, limit=True, dry=False`.
+  - A `functools.partial` that binds a value by position hides the leading parameter of
+    every wrapper under it, with that parameter's default: `partial(scoped(purge),
+    "acme")` was judged `{"limit": 5}` and ran `table="prod"`; with a wrapper that kept
+    the value and passed the rest on by position, `{"limit": 5, "dry": True}` ran
+    `table=5, limit=True, dry=False`; and `partial(scoped(default_table(purge)), "acme")`
+    ran the lower wrapper's own `table="archive"`. Such a partial is now allowed only
+    over the function itself or over wrappers that take nothing but `*args` and
+    `**kwargs`: any wrapper under it that names a parameter refuses the call, with no
+    reasoning about what the wrapper's body would do. Refused as well: such a partial
+    over a function whose bound parameter is positional-only and which takes `**kwargs`
+    (an argument sent under that name landed in `**kwargs` while the function ran the
+    bound value).
+  - A partial named with `functools.update_wrapper` carries `__wrapped__`, and
+    `inspect.signature`, which Pydantic AI validates against and builds the positional
+    call from, reads past it: `update_wrapper(partial(insert, "acme"), insert)` was
+    judged `tenant="DROP TABLE"` and ran `tenant="acme"` with that text as a row. It is
+    refused, and for every tool built from its signature the parameters Pydantic AI
+    reads must be those of the function the call reaches.
+  - The object of a bound method past a wrapper that names a positional parameter is
+    refused where a wrapper that kept it might not fail the call, which includes the
+    values after it moving up a place into a parameter with a default. That also
+    refuses a method decorator that restates the method's parameters over a method
+    with a defaulted positional parameter, which is conservative.
   - A `functools.partial` with a keyword shows every later parameter as keyword-only,
     on a wrapper and on the function alike, so a wrapper that takes a parameter as
     another kind than the function was refused alone and allowed behind the partial:
