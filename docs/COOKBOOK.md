@@ -126,7 +126,7 @@ every crew in the process and returns the uninstall. The hook judges the invocat
 tool receives (defaults completed, the tool's own schema validation run once, the values
 written back) and supports CrewAI's stock tools and generated schemas; a customised schema
 or an unsupported annotation is refused. Install it after your other hooks.
-Python 3.11+, tested with exactly `crewai==1.15.40`; not a Recusal dependency.
+Python 3.11+, tested with exactly `crewai==1.15.44`; not a Recusal dependency.
 [`../examples/crewai_audit.py`](../examples/crewai_audit.py) is the same gate with a
 record: `install_audited_hooks(policy, log)` writes each decision, allowed or refused, to
 a hash-chained `AuditLog` entry labeled `crewai.before_tool_call`, and

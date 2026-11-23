@@ -439,7 +439,7 @@ process-global: one install covers every agent, task and crew in the process, an
 function it returns uninstalls both hooks. Install it after your other hooks, because a hook
 that runs after the gate can change the argument dict the gate judged; the tests show the
 bypass and the fix. Offline (a scripted `BaseLLM`, no key), Python 3.11+, tested with
-exactly `crewai==1.15.40`. To put every one of those calls on the record,
+exactly `crewai==1.15.44`. To put every one of those calls on the record,
 [`examples/crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py)
 swaps in `install_audited_hooks(policy, log)`: the same decision, written as a hash-chained
 `AuditLog` entry labeled `crewai.before_tool_call` with a fingerprint of the prepared

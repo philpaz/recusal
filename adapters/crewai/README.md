@@ -45,9 +45,11 @@ Install it from PyPI:
 pip install recusal-crewai
 ```
 
-Requires Python 3.11+, `recusal>=0.14.0` and `crewai>=1.15.40`. It is
-tested on every pull request against exactly `crewai==1.15.40`, and weekly against the
-newest release.
+Requires Python 3.11+, `recusal>=0.14.0` and `crewai>=1.15.42`. It is
+tested on every pull request against exactly `crewai==1.15.44`, and weekly against the
+newest release. The floor is the first CrewAI release in which `chromadb` is optional:
+earlier releases install `chromadb` 1.5.9, which has published advisories and no fixed
+release.
 
 The package ships inline types (`py.typed`) for your editor and type checker.
 

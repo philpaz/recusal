@@ -39,6 +39,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
+  CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has
+  four published advisories (GHSA-36p7-vc44-83pf and GHSA-f4j7-r4q5-qw2c, critical;
+  GHSA-2wm9-hf6c-p5cr and GHSA-xph7-9rjv-w5fr, high) and no fixed release. `crewai`
+  1.15.42 made `chromadb` an optional extra. The pull request lanes now test against
+  exactly `crewai==1.15.44`, and `requirements/adapter-crewai.txt` holds no `chromadb`
+  and none of the twenty packages only it needed; every one of its pins was checked
+  against the OSV database, with no advisory found. `crewai`, `crewai-cli` and
+  `crewai-core` 1.15.44 were published on 2026-11-19, less than the seven days a lock
+  waits, so `tools/lock.py` takes those three early under `COOLING_OFF_EXCEPTIONS`,
+  which names the advisories they close; the lock states it in its header, every other
+  package keeps the seven days, and a test asks for the exception to be removed once the
+  lock's own cutoff reaches it. The floor of `recusal-crewai` rises from
+  `crewai>=1.15.40` to `crewai>=1.15.42`, so an install can no longer resolve to a
+  CrewAI that installs `chromadb`; it reaches users with the package's next release.
+  The adapter's own tests pass unchanged on 1.15.44, its compatibility probes included.
+
 - **`recusal-openai` 0.2.2: the gate refuses what it cannot tie to what
   would run, tells the model the truth about what ran, and both loops decide the same
   way.** Found by the adapter review of 2026-11-21 and reproduced on `openai` 3.49.0.

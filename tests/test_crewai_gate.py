@@ -50,12 +50,12 @@ def test_crewai_stays_out_of_the_recusal_package_and_dependencies():
 
 def test_pinned_version_is_explicit_in_example_docs_and_ci():
     for path in (EXAMPLE, ROOT / "README.md", ROOT / "docs" / "COOKBOOK.md"):
-        assert "crewai==1.15.40" in path.read_text(encoding="utf-8"), path.name
+        assert "crewai==1.15.44" in path.read_text(encoding="utf-8"), path.name
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     # the pin is a root of the hash-locked file the pull request lanes install: the two
     # example jobs and the recusal-crewai wheel job
     assert (
-        "crewai==1.15.40"
+        "crewai==1.15.44"
         in (ROOT / "requirements" / "adapter-crewai.txt")
         .read_text(encoding="utf-8")
         .splitlines()[0]

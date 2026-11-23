@@ -37,7 +37,7 @@ dependencies = [
     "recusal>=0.14.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
-    "crewai>=1.15.40,<2",
+    "crewai>=1.15.42,<2",
     # imported directly (the gate reads a tool's argument schema), so declared here and
     # not left to CrewAI's own requirement
     "pydantic>=2,<3",
