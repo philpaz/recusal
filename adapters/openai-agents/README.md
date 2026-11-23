@@ -216,7 +216,8 @@ guardrail cannot judge:
   descriptor (`cachetools.cached`, `cachetools.func.ttl_cache`, `cachetools.func.lru_cache`)
   hides the functions under it from inspection. Call the decorated function from a plain
   function and register that. `functools.lru_cache` and `functools.cache` are read
-  through and gated.
+  through and gated, except with `functools.wraps` written above the cache (open; see
+  Status).
 - **A `functools.singledispatch` function or a `singledispatchmethod`, with or without
   an implementation registered.** The implementation that runs is chosen at call time by
   the type of an argument, each one has its own parameters and defaults, and one can be
@@ -253,8 +254,8 @@ guardrail cannot judge:
   its own there would run with a value no policy judged. So a function that is or
   carries a partialmethod is refused, whatever it holds, a plain function too. That is
   what you get when you read a partialmethod from the class (`Db.export`), and from an
-  object (`db.export`) when the callable it holds has no `__get__`: a class-based
-  decorator's instance, or a `functools.partial` up to Python 3.13. A partialmethod over
+  object (`db.export`) when the callable it holds does not bind as a method: a
+  class-based decorator's instance, or a `functools.partial`. A partialmethod over
   a plain function or method read from an object is a `functools.partial`, which the
   SDK refuses itself (`function_tool` raises). Register a plain function that calls it;
   the gate judges that function's parameters, and what its body calls is not read.
@@ -311,7 +312,9 @@ What the gate does not see:
   anything the tool reads from elsewhere, is not seen.
 - **A function a wrapper holds some other way than `__wrapped__`.** The gate reads the
   function, what its `__wrapped__` chain leads to, a bound method's function and a
-  callable object's `__call__`. A decorator that applies a second decorator inside itself
+  callable object's `__call__`, with the two exceptions under Status below (a
+  `functools.partial` that carries a `__wrapped__`, and `functools.wraps` written above
+  `functools.lru_cache`). A decorator that applies a second decorator inside itself
   and calls that one (the inner wrapper sits in a closure, and `functools.wraps` points
   past it), or a callable object that copies another function's `__wrapped__`, runs a
   wrapper the gate never read. A parameter that wrapper takes or adds is not judged.
@@ -371,26 +374,42 @@ full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-know
 
 ## Status
 
-**In-depth review under way.** Its fixes so far are released in 0.2.0, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes so far are released in 0.2.1, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
-**From the latest review round.** Round five found three gaps, all about
-`functools.singledispatch`, and the 0.2.0 release has them: a single-dispatch tool with
-nothing registered was accepted, so an implementation registered during a model turn ran
-unjudged for a later call of that turn; a dispatcher that is a callable object's
-`__call__` was not found under a `functools.wraps` wrapper; and a dispatcher was
-recognised by one code object read at import. The three are closed after 0.2.0: every
-single-dispatch function is refused as a tool (see the bullet on single dispatch above).
-Round six, on those fixes, found one more gap, which the 0.2.0 release has too: a
-`functools.partialmethod` hid the callable it holds, so a single-dispatch function or a
-wrapper with a parameter of its own under it ran with a value no policy judged. It also
-found that a `weakref.proxy` of a single-dispatch function was accepted, and that an
-ordinary event bus was refused as a single-dispatch function. These are closed after
-0.2.0 as well (see the bullets on `functools.partialmethod` and `weakref.proxy` above),
-and no review round has been run on that change yet.
-What is still not found is listed under "What the gate does not see".
+**From the latest review rounds.** Rounds five and six found gaps that the 0.2.0 release
+has and 0.2.1 closes: a `functools.singledispatch` tool with nothing registered was
+accepted, so an implementation registered during a model turn ran unjudged for a later
+call of that turn; a dispatcher behind a callable object's `__call__` was not found; a
+dispatcher was recognised by one code object read at import; a `functools.partialmethod`
+hid the callable it holds; a `weakref.proxy` of a single-dispatch function was accepted;
+and an ordinary event bus was refused as a single-dispatch function. Every single-dispatch
+function, every partialmethod and every weak proxy is now refused as a tool (see the
+bullets above).
+
+**Open from round seven**, not yet fixed, stated so you can judge them. Both are in how
+the kernel (`recusal` 0.15.0) reads a stack of decorators, both are also in 0.2.0, and a
+fix for both is in review in the kernel
+([#299](https://github.com/philpaz/recusal/pull/299)):
+
+- **A `functools.partial` that carries a `__wrapped__`.** A decorator written as
+  `functools.update_wrapper(functools.partial(helper, f), f)` (or
+  `functools.wraps(f)(functools.partial(helper, f))`) is read as a pass-through, and what
+  sits under it is not read. Stacked over a wrapper that adds a parameter of its own, that
+  parameter runs with a value the policy was not shown. Until it is fixed, write such a
+  decorator with a nested function and `functools.wraps`, which the gate reads.
+- **`functools.wraps(f)` written above `functools.lru_cache`.** The cache then names `f`
+  and calls the wrapper it was built over, which is not read: a parameter of that
+  wrapper's own runs with a value the policy was not shown. `functools.lru_cache` and
+  `functools.cache` applied to the function itself, or with the cache above
+  `functools.wraps`, are read. Until it is fixed, put the cache above `functools.wraps`.
+
+Four refusals advise calling the function from a plain function and registering that one
+(a weak proxy, a decorator that holds a second wrapper, a decorator the gate cannot read,
+too many wrappers). What that plain function's body calls is not read, as the first
+bullet of this section's list above says of every tool body.
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:

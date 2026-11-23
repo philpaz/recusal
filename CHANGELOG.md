@@ -76,10 +76,13 @@ All notable changes to this project are documented here. The format follows
     default. The question is now asked of every callable the gate's walk reaches (the
     function, a `functools.partial`'s function, a bound method's function, the function
     under a `staticmethod` or a `classmethod`, what `__wrapped__` names, a callable
-    object's `__call__` and the callable a `functools.partialmethod` holds). Those are
-    the four steps the 0.15.0 kernel's walk takes from one callable to the next
-    (`recusal.invocation._next_callables`, which a test compares the gate's walk with)
-    and one that walk does not take, into a partialmethod. A walk that does not finish,
+    object's `__call__` and the callable a `functools.partialmethod` holds). A test
+    holds that every step the 0.15.0 kernel's walk takes from one callable to the next
+    (`recusal.invocation._next_callables`) is among them; the gate's walk also steps
+    into a partialmethod and into the `__wrapped__` a `functools.partial` carries,
+    which that kernel's walk does not, so a parameter of a wrapper under such a
+    partial is still not held to the tool's schema (open, stated on the page). A walk
+    that does not finish,
     and a callable the question cannot be asked of, are refused.
   - A `functools.partialmethod` hid the callable it holds (round six, and in 0.2.0).
     Read from a class, or from an object when the callable it holds has no `__get__` (a

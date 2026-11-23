@@ -384,15 +384,16 @@ setup was found.
 
 ## `recusal-openai-agents`
 
-**Where it stands.** `recusal-openai-agents` 0.2.0 is released (tag
-`recusal-openai-agents-v0.2.0`, 2026-11-22), with the fixes of the rounds below, merged in
-[#297](https://github.com/philpaz/recusal/pull/297). The review continues: the findings
-of rounds five and six are closed in the source after 0.2.0 and are not in a release yet.
+**Where it stands.** `recusal-openai-agents` 0.2.1 is the release with the fixes of
+rounds five and six, merged in [#308](https://github.com/philpaz/recusal/pull/308); 0.2.0
+(tag `recusal-openai-agents-v0.2.0`, 2026-11-22) has the fixes of the rounds before them,
+merged in [#297](https://github.com/philpaz/recusal/pull/297). The review continues: a
+seventh round found the open items below, which the package page states.
 [Package](../adapters/openai-agents/README.md).
 
 **The rounds.** `review-history/openai-agents` holds a first commit and the commits of
-rounds two to four. A fifth and a sixth round found what the last two entries below
-close.
+rounds two to four. A fifth and a sixth round found what the next two entries close, and
+a seventh found the open items.
 
 - **The first commit** (`bfc41e5`). For one kind of tool the gate named every argument
   one parameter off, so the policy saw the SQL under the wrong name and it ran. The gate
@@ -455,9 +456,29 @@ close.
     type.
   - Five mutations of the gate passed the suite. Each is now killed by a test.
 
+- **Round seven**, on the changes that close round six, confirmed those closed and found
+  no call a model can cause to run unjudged. It found two ordinary stacks of decorators
+  that run a wrapper's own parameter unjudged. Both come from how the kernel's walk in
+  `recusal` 0.15.0 reads them, both are in 0.2.0 too, and neither is fixed in 0.2.1: the
+  fix is in the kernel, in review in [#299](https://github.com/philpaz/recusal/pull/299).
+  They are the first two open items below. It also found sentences that overstated what
+  the walk reads, which 0.2.1 corrects, and refusal reasons whose advice or wording is
+  the third and fourth open items.
+
 **Open items.**
 
-- No review round has been run on the changes that close round six.
+- A `functools.partial` that carries a `__wrapped__` (a decorator written with
+  `functools.update_wrapper` over a partial) is read as a pass-through, so a wrapper
+  under it with a parameter of its own runs that parameter unjudged. Open; stated on the
+  package page with what to write instead.
+- `functools.wraps` written above `functools.lru_cache`: the cache names one function and
+  calls the wrapper it was built over, which is not read. Open; stated on the package
+  page with what to write instead.
+- Four refusal reasons advise calling the function from a plain function and registering
+  that one, without saying that what its body calls is not read. The page says so; the
+  reasons do not yet.
+- Two refusals name only an exception class (`DeclaredSignature` for the `decorator`
+  package, `TypeError` for a wrapper over `wrapt.ObjectProxy`), with no cause or advice.
 - A single-dispatch function that a wrapper calls from a closure, a global or an
   attribute, and not through `__wrapped__`, is not found, and neither is one a plain
   function's body calls. The README lists it under what the gate does not see.
