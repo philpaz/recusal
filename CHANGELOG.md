@@ -756,9 +756,10 @@ All notable changes to this project are documented here. The format follows
     its closure cells and the module globals its code names (a plain function) or its
     instance attributes (any other callable, as a class-based decorator). The globals are
     those the code object lists (`co_names`, with those of every function, lambda and
-    comprehension defined inside it), found in the function's own `__globals__` when that
-    is exactly a `dict`, listed in one step with no key looked up; a name the code uses
-    only as an attribute and that is also a global is read too, and builtins are not. So a
+    comprehension defined inside it), each looked up in the function's own `__globals__`
+    when that is exactly a `dict`, which is the lookup the function's own code makes each
+    time it reads that global; a name the code uses only as an attribute and that is also
+    a global is read too, and builtins are not. So a
     wrapper written beside the function it wraps, which calls a second wrapper or a
     single-dispatch function of that same function by its global name, is refused like
     one that holds it in a closure. A helper, a logger or a formatter the wrapper calls,
@@ -817,9 +818,20 @@ All notable changes to this project are documented here. The format follows
     which no class can stand in for. No attribute an application could answer is looked
     up on a held value, no descriptor its class declares is called, and values are
     compared by identity only. A dictionary that is read (a function's `__dict__`, an instance's, a
-    class's) is listed in one step, so another thread changing it cannot break the walk,
-    and no key is looked up in it: a key is compared only when it is exactly a `str`, so
-    no key's `__hash__` or `__eq__` runs.
+    class's) is listed in one call into C, so another thread changing it cannot change it
+    halfway through, and no key is looked up in it: a key is compared only when it is
+    exactly a `str`, so no key's `__hash__` or `__eq__` runs. On Python 3.9 to 3.11 that
+    call is not one step: it makes a tuple for each item, a collection can start at any
+    of them, and a finalizer or weak-reference callback the collection runs can change
+    the size of the dictionary being listed, which then raises `RuntimeError`. The
+    listing is made again, up to eight times, and a dictionary that changed at every one
+    is not read: the walk raises `ValueError`, which a gate turns into a refusal. From
+    3.12 a collection does not start inside the call. One dictionary is read by lookup
+    and not by listing, the module globals a wrapper names: every name looked up is
+    exactly a `str`, as is every key of an ordinary module, and the lookup then runs no
+    code but the dictionary's own; a key that is not exactly a `str` is compared, by its
+    own `__eq__`, only if it hashes as one of the names looked up, as it is each time
+    the wrapper itself reads that global.
   - *Not found, by design.* A second wrapper that does not itself name what it wraps as
     `__wrapped__`: a plain inner function, a lambda, a helper, a callable object, a bound
     method of an object that holds the function. One that is, or is held by, an object of
@@ -845,7 +857,13 @@ All notable changes to this project are documented here. The format follows
     walk is what it was in 0.15.0.
   - *Nothing at import.* Importing `recusal.invocation` reads nothing of `functools` that
     0.15.0 did not read, runs no code that stands there and raises nothing, whatever a
-    process put in `functools`, in `sys.modules` or in the audit hooks first. What the
+    process put in `functools`, in `sys.modules` or in the audit hooks first. It does
+    import two modules 0.15.0 did not, `gc` and `weakref`, as any import is made (a
+    finder or an audit hook the process installed is asked, and `weakref` is run if
+    nothing imported it before), each inside a guard: where the process refuses one
+    (None in `sys.modules`, a hook that raises, whatever it raises but an interrupt from
+    the keyboard), the module is imported all the same, without it, and reads as 0.15.0
+    does where it would have used it. Nothing is imported at a walk. What the
     checks read with is found at the first walk, from the standard library's own objects,
     each identified before it is used (a plain module, types C code defines, functions
     compiled from the standard library's own file) and none of them called. What the first
@@ -889,8 +907,8 @@ All notable changes to this project are documented here. The format follows
     walk reaches it. A callable that merely holds a dispatcher, or whose class has a
     single-dispatch method beside the one called.
   - *Nothing is run.* `dispatch` is never called. The registry is read only when the
-    closure holds a plain `dict`, listed in one step; anything else there is refused,
-    unread.
+    closure holds a plain `dict`, listed in one call as every dictionary above is;
+    anything else there is refused, unread.
   - *Not found, by design.* A dispatch written by hand in a function's body; a dispatcher
     another library builds; an implementation registered after a gate has read the tool; a
     dispatcher reached through a wrapper or a helper that names nothing as `__wrapped__`;
@@ -987,19 +1005,34 @@ All notable changes to this project are documented here. The format follows
     wrapper has a parameter of its own gets the refusal that wrapper gets without the
     cache, naming the parameter. What that wrapper holds (a second wrapper in its
     closure) and what it is (a single-dispatch function) is judged as for a wrapper that
-    names the function itself, and a cache a wrapper holds is read the same way. A cache
-    on the function itself is read as before. Where the list is not laid out either
+    names the function itself, and a cache a wrapper holds is read the same way. On a
+    method the same: a method over such a cache is read as what the cache calls, with
+    the object bound, whether that is a plain function, a `functools.partial`, a
+    callable object or a second cache named again (until review round seven it was read
+    by the name unless the cache called a plain function). A cache on the function
+    itself is read as before. Where the list is not laid out either
     way, the name stands if the named function is listed, and the cache is refused
     otherwise with the new public `recusal.invocation.UnreadCache`, a subclass of
     `HiddenWrapper` ("a `functools.lru_cache` wrapper names one function as
     `__wrapped__` and calls another, which cannot be told from what the cache refers to;
     apply the cache to the function itself, or call the cached function from a plain
-    function and register that one"). *Not found, by design:* all of it where `gc` is
-    not the interpreter's own module at the first walk, where the listing raises (an
-    audit hook on `gc.get_referents`), or where the checks are off: the cache is then
-    read by its name, as in 0.15.0. What a cache calls cannot change, so it is told once
-    per cache and kept, weakly, for the next walk: a full cache of 100,000 entries is
-    listed once (about 7 milliseconds on 3.12) and not on every call. One reading is
+    function and register that one"). *Not found, by design:* all of it where `gc`
+    could not be imported, is not the interpreter's own module at the first walk, or has
+    anything under `get_referents` but its own built-in function of that name (another
+    function of `gc` put there would list something else); where the listing raises (an
+    audit hook on `gc.get_referents`, whatever it raises but an interrupt from the
+    keyboard); where the checks are off; and for an instance of a subclass of the cache
+    type, which only Python 3.9 lets a class be: the cache is then read by its name, as
+    in 0.15.0. A hook that stops the listing is not passed on, because 0.15.0 asked no
+    such question and reads every such tool; a `BaseException` a hook raises at any
+    other read of the walk is passed on, as in 0.15.0. What a cache calls cannot change,
+    so it is told once per cache and kept for the next walk: a full cache of 100,000
+    entries is listed once (about 5 milliseconds on 3.12) and not on every call. It is
+    kept in a plain `dict` under the cache's `id()`, beside a weak reference to the
+    cache that tells it from a later object at the same address, and holds the function
+    weakly too: neither lives longer for it, no code written in Python runs to read or
+    write it (no `weakref.WeakKeyDictionary`, no callback), and where `weakref` could
+    not be imported or its `ref` is not the interpreter's own type nothing is kept. One reading is
     kept as 0.15.0 made it, so that nothing it refused is now accepted: a method over a
     cache NAMED for something that is not a plain function (a cache of a cache) is read
     by the names alone, without the object bound, which refuses it for the method's
@@ -1022,12 +1055,20 @@ All notable changes to this project are documented here. The format follows
     `recusal.invocation.BoundArgumentKept`, a subclass of `ValueError`, when a bound
     argument is taken on the wrapper by a named parameter and would fill, on the
     function it names, a parameter of ANOTHER name that has a default; the message names
-    both parameters and what to do, and `unsupported_signature` returns it. An ordinary
-    bound method, decorated or not, cached, a `classmethod`, a wrapper that takes
-    `(*args, **kwargs)`, one that takes the argument under the same name, and a wrapped
-    function whose parameter has no default (`self`) are read as before. *Not found, by
-    design:* a wrapper that takes the bound argument in `*args` and drops it in its body,
-    and one that takes it under the same name and does not hand it on.
+    both parameters and what to do, and `unsupported_signature` returns it. The name
+    goes with the argument down the walk, through every callable that takes it in
+    `*args` and names nothing for it, so the free function is refused bare and under any
+    number of layers that only pass arguments on: a `(*args, **kwargs)` wrapper, a
+    class-based decorator, a caching decorator, a `functools.partial` (review round
+    seven: with one such decorator on the free function the method was accepted again).
+    An ordinary bound method, decorated or not, cached, a `classmethod`, a wrapper that
+    takes `(*args, **kwargs)`, one that takes the argument under the same name
+    (`def wrapper(self, *args, **kwargs)` over a method), a facade that hands its
+    receiver on to a method, and a wrapped function whose parameter has no default
+    (`self`) are read as before. *Not found, by design:* a wrapper that takes the bound
+    argument in `*args` and drops it in its body, and one that takes it under the same
+    name and does not hand it on (a method that takes `self` and wraps another class's
+    method without passing its own object).
   - *Fixed in this change before release:* the `partialmethod` check asked
     `isinstance(..., functools.partialmethod)` of every callable, so a process in which
     another object stands under that name refused every tool. See the entry above.
@@ -1044,10 +1085,51 @@ All notable changes to this project are documented here. The format follows
     and `recusal-crewai` (it is a `HiddenWrapper`, and was reported as a decorator that
     holds a second wrapper), and reaches `recusal-openai` and `recusal-google-adk` as the
     kernel's own words.
-  - The module globals a wrapper names are found in one pass over the namespace with a
-    set of the names (875 microseconds a walk became about 260 for a module-level
-    wrapper in a module of 5,000 globals; a wrapper inside a decorator names no such
-    global and is not affected).
+  - The module globals a wrapper names are looked up by name, and the names are found
+    once for each code object: a walk no longer passes over the namespace. In a module
+    of 5,000 globals, on 3.12, a wrapper that names one global is walked in about 21
+    microseconds (it was about 280, and 0.15.0 takes 16), and five such
+    decorators stacked in about 53 (it was about 1,320; 0.15.0 takes 37).
+    Any wrapper that names a global paid the pass, one written inside a decorator
+    included (a logger, `time`, a helper).
+  - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
+- **Kernel: what review round seven found in the change above, closed before release.**
+  Nothing that 0.15.0 refused is now accepted, and the bound methods and partials of the
+  standard library and of 90 installed packages are read as 0.15.0 reads them.
+  - *A bound argument kept, under layers.* See "a bound argument a wrapper takes under
+    another name" above: a delegating method was accepted again as soon as the free
+    function wore one decorator that passes its arguments on (judged `{'limit': 5}`, ran
+    a first parameter no signature showed). Refused now under any number of such layers.
+  - *A cache named again, over a method.* See "a `functools.lru_cache` wrapper that
+    names one function and calls another" above: over a method, a cache that calls a
+    `functools.partial`, a callable object or a second cache was read by its name
+    (judged `{'query', 'limit'}`, ran a wrapper's `skip_review=True`). It is read as what
+    it calls.
+  - *The import.* `import gc` at the top of the module raised where a process had put
+    None in `sys.modules` under that name, and 0.15.0 imports there. The two imports
+    0.15.0 did not make are guarded, and made when the module is imported, never at a
+    walk: a walk can be the first thing a worker thread does, and an import there would
+    wait on the import lock of whichever thread holds it.
+  - *A listing a hook stops, and a replaced `gc.get_referents`.* An audit hook that
+    stopped the listing with a `BaseException` stopped every tool with a cache, and
+    another function of `gc` under the name refused every one; 0.15.0 reads them all.
+    Both now leave the cache read by its name.
+  - *A listing a collection interrupts.* `list(d.items())` is not one step on Python
+    3.9 to 3.11 and could raise out of the walk; it is made again. See "nothing held is
+    run" above.
+  - *What is kept between walks* is no longer a `weakref.WeakKeyDictionary`, whose
+    Python code and callbacks ran during a walk and which a stand-in under that name
+    could replace. See the cache entry above.
+  - *A reason for a callable object that defines `__get__`.* `inspect.signature` shows
+    no signature for an object whose class defines `__get__` (it takes it for a method
+    descriptor of a built-in type), and the walk, which now follows a
+    `functools.partial`'s own `__wrapped__`, refused a decorator written as
+    `functools.wraps(f)(functools.partial(helper, f))` over such an object as "its
+    signature cannot be inspected". The walk raises the same `ValueError` as before,
+    and its message, which `unsupported_signature` returns, now says the cause and what
+    to do: register a plain function that calls the object, or give the class no
+    `__get__`. No exception class is added for it, so a gate that names the class of
+    what the walk raised goes on naming `ValueError`.
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;

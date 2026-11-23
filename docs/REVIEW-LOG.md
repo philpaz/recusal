@@ -86,16 +86,45 @@ decorated tool. `recusal-crewai` still carries its own copy.
   as handing its object on. All four are closed. One regression of the change itself
   was found and fixed: the `partialmethod` check asked `functools.partialmethod` about
   every callable, so a process with another object under that name refused every tool.
-  Five sentences of the changelog and the docstrings were corrected.
+  Five sentences of the changelog and the docstrings were corrected. After it, a cache
+  that was named again is read as the wrapper it calls, which is picked out of what the
+  cache refers to by its place, in place of refusing every such cache (a caching
+  decorator written as `functools.wraps(f)` over `functools.lru_cache` over a
+  forwarding wrapper was refused though nothing unjudged ran); a cache whose function
+  cannot be told has a refusal of its own (`UnreadCache`); and what a cache calls is
+  told once per cache (commit `e9b3dcb`).
+- **Kernel review round seven** (commit `e9b3dcb`). No category 1; round six's four
+  confirmed closed, and nothing 0.15.0 refused accepted in about 3.2 million generated
+  shapes. Two category 2. The fourth shape of round six came back when the free
+  function wore one decorator that only passes its arguments on (a forwarding wrapper,
+  a class-based decorator, a caching decorator): the method was accepted, and the free
+  function ran its first parameter at a default no signature showed. And over a method,
+  a cache named again that calls something other than a plain function (a
+  `functools.partial`, a callable object, a second cache) was still read by its name.
+  Four regressions of the change itself: `import gc` at the top of the module raised
+  where a process had None under that name in `sys.modules`; an audit hook that stopped
+  the listing of a cache with a `BaseException` stopped every tool with a cache; another
+  function of `gc` under `get_referents` refused every cache; and on Python 3.9 to 3.11
+  `list(d.items())` could raise out of the walk when a collection it set off changed
+  the dictionary. Also: 41 clean shapes refused with a reason that did not help (a
+  callable object that defines `__get__`), four surviving mutants, eight sentences that
+  were untrue or incomplete, and a walk that cost 1.3 milliseconds for five stacked
+  decorators in a module of 5,000 globals.
 
 **Open items.**
 
-- After round six, a change is written and not committed: a cache that was named again
-  is read as the wrapper it calls, which is picked out of what the cache refers to by
-  its place, in place of refusing every such cache (a caching decorator written as
-  `functools.wraps(f)` over `functools.lru_cache` over a forwarding wrapper was refused
-  though nothing unjudged ran); a cache whose function cannot be told has a refusal of
-  its own (`UnreadCache`); and what a cache calls is told once per cache.
+- After round seven, a change is written and not committed. The name a bound argument
+  was taken under goes with it through every layer that only passes arguments on, so
+  the delegating method is refused under any number of them. A method over a cache
+  named again is read as what the cache calls. The two imports 0.15.0 did not make are
+  guarded and never made at a walk; a listing a hook stops, whatever it raises but an
+  interrupt from the keyboard, and a replaced `gc.get_referents` leave the cache read
+  by its name; a listing a collection interrupts is made again. What is kept between
+  walks is a plain `dict` by `id()` beside a weak reference, in place of a
+  `weakref.WeakKeyDictionary`. The module globals a wrapper names are looked up by
+  name, with the names kept for each code object. The `ValueError` for a callable
+  object that defines `__get__` says the cause and what to do. Each surviving mutant is
+  pinned by a test, and the sentences are corrected.
 - A wrapper that takes the object of a method under the same name as the first
   parameter of the function it wraps, and does not hand it on, is read as handing it
   on: the two cannot be told apart from signatures. Stated in the changelog; not fixed.

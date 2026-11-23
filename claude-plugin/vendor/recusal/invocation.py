@@ -30,14 +30,41 @@ prepares an invocation, and which of its own parameters it injects.
 """
 
 import functools
-import gc
 import inspect
 import math
 import types
 import typing
-import weakref
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# ``gc`` and ``weakref`` are two modules 0.15.0 did not import, and one check reads with
+# each (:func:`_cache_calls`, :func:`_kept`). A process can refuse either import (None put
+# in ``sys.modules``, an import hook or an audit hook that raises): the module is then
+# imported as 0.15.0 is, with None in its place and that one reading off. So whatever the
+# import raises is caught, but for an interrupt from the keyboard, which is no answer about
+# the module. The import is made here, where this module is itself being imported, and
+# never at a walk: a walk can be the first thing a worker thread does, and an import there
+# would wait on the import lock of whatever thread holds it. What was imported is not
+# used, and nothing of it is read, until the first walk has shown it to be the
+# interpreter's own (:func:`_collector`, :func:`_reference_type`).
+_gc: Any = None
+_weakref: Any = None
+try:
+    import gc as _gc_module
+
+    _gc = _gc_module
+except KeyboardInterrupt:
+    raise
+except BaseException:  # noqa: BLE001, S110, a refused import leaves one reading off
+    pass
+try:
+    import weakref as _weakref_module
+
+    _weakref = _weakref_module
+except KeyboardInterrupt:
+    raise
+except BaseException:  # noqa: BLE001, S110, a refused import leaves one reading off
+    pass
 
 #: The scalar types a judged parameter may be annotated with.
 SCALARS: Tuple[type, ...] = (str, int, float, bool)
@@ -110,8 +137,9 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
             own_parameters(func)
         except PartialMethodSignature as refused:
             return str(refused)
-        except Exception:  # noqa: BLE001, uninspectable either way
-            pass
+        except Exception as raised:  # noqa: BLE001, uninspectable either way
+            if _a_descriptor(raised):
+                return _DESCRIPTOR
         return "its signature cannot be inspected"
     # ``inspect.signature`` reads a ``functools.wraps`` wrapper as the function it wraps, and
     # honours a declared ``__signature__``: a wrapper's own parameter (``force=True``) would
@@ -144,6 +172,8 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
         return _DISPATCHED_AT_CALL_TIME
     if isinstance(failed, BoundArgumentKept):
         return str(failed)
+    if _a_descriptor(failed):
+        return _DESCRIPTOR
     if failed is not None:  # an uninspectable callable cannot be judged
         return "its signature cannot be inspected"
     return _argument_of_its_own([_read_level(level) for level in reached], parameters, skip)
@@ -227,9 +257,14 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     own). The first is turned off; the second raises :class:`DeclaredSignature` wherever it
     is found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
     ``staticmethod``, and ``lru_cache`` over a method) are looked through, a cache
-    wrapper to the function it calls, which need not be the one it names
-    (:func:`_cache_target`, which raises :class:`HiddenWrapper` where that function
-    cannot be known). A class is not a
+    wrapper to what it calls, which need not be the function it names
+    (:func:`_cache_target`, which raises :class:`UnreadCache`, a :class:`HiddenWrapper`,
+    where that cannot be known). On a plain function and under a method alike: a method
+    over a cache named for a plain function is read as what the cache calls, with the
+    object bound, whether that is a plain function, a ``functools.partial``, a callable
+    object or a second cache. One reading is kept as 0.15.0 made it: a method over a
+    cache NAMED for something that is not a plain function is read by the names alone.
+    A class is not a
     callable this reads: calling it runs ``__new__`` and ``__init__``. Neither is the method
     ``functools.partialmethod`` builds over a callable that does not bind as one, nor
     anything else ``inspect.signature`` would read as a ``functools.partialmethod``
@@ -247,10 +282,13 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     if inspect.ismethod(func) and isinstance(func.__func__, _PASS_THROUGH):
         inner, named = _cache_target(func.__func__), func.__func__.__wrapped__
         if inspect.isfunction(named):
-            # the wrapper the cache calls, where that is a plain function, with the
-            # object bound; else the function it names, as before
-            bound = inner if inspect.isfunction(inner) else named
-            return own_parameters(types.MethodType(bound, func.__self__), _depth + 1)
+            # what the cache calls, with the object bound, whatever it is: the function
+            # it names, a wrapper, a ``functools.partial``, a callable object, a second
+            # cache. The function it names is read as well, bound, as a callable of its
+            # own (:func:`_next_callables`), so nothing 0.15.0 refused for it is accepted
+            if isinstance(inner, type):
+                raise TypeError("a class is not inspected as a callable")
+            return own_parameters(types.MethodType(inner, func.__self__), _depth + 1)
         # a cache NAMED for something that is not a plain function (a second cache, a
         # callable object) is read here as 0.15.0 read it, by the names alone and without
         # the object bound: what that refused stays refused. The callables behind it are
@@ -261,7 +299,45 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
             named = named.__wrapped__
         return own_parameters(named, _depth + 1)
     _refuse_declared_signature(func, _depth)
-    return inspect.signature(func, follow_wrapped=False).parameters
+    try:
+        return inspect.signature(func, follow_wrapped=False).parameters
+    except ValueError:
+        # ``inspect`` shows no signature for a callable object whose class defines
+        # ``__get__``: the same ``ValueError`` as before, saying the cause and what to do
+        if _read_as_a_descriptor(func):
+            raise ValueError(_DESCRIPTOR) from None
+        raise
+
+
+_DESCRIPTOR = (
+    "a callable on the way is an object whose class defines `__get__` (a class-based "
+    "decorator that binds as a method, or a `staticmethod` object called as a method): "
+    "`inspect.signature` reads such an object as a built-in and shows no parameters for "
+    "it, so what it runs cannot be read; register a plain function that calls it, or "
+    "give the class no `__get__` and bind the object another way"
+)
+
+
+def _a_descriptor(raised: Any) -> bool:
+    """True for the ``ValueError`` :func:`own_parameters` raises with that reason."""
+    return type(raised) is ValueError and raised.args == (_DESCRIPTOR,)
+
+
+def _read_as_a_descriptor(func: Any) -> bool:
+    """True if what ``inspect.signature`` reads for ``func`` (``func``, or the function of
+    the methods it is bound through) is an object ``inspect`` takes for a method
+    descriptor, because its class defines ``__get__`` and no ``__set__``, while it is
+    called through a ``__call__`` written in Python, or is a ``staticmethod`` object.
+    ``inspect.signature`` shows no signature for those ("no signature found for
+    builtin"). Asked only after it has raised, with the test ``inspect`` itself makes."""
+    for _ in range(8):
+        if not inspect.ismethod(func):
+            break
+        func = func.__func__
+    if not inspect.ismethoddescriptor(func):
+        return False
+    call = inspect.getattr_static(type(func), "__call__", None)
+    return isinstance(func, staticmethod) or inspect.isfunction(call)
 
 
 _REWRAPPED_CACHE = (
@@ -337,10 +413,19 @@ def _cache_calls(cache: Any, named: Any) -> Any:
 
     Where the list is not laid out as either known way, the name stands only if the
     named function is, by identity, among what is listed; otherwise ``_MISSING``: the
-    cache calls something that cannot be told. And where the listing is not to be had
-    (the checks are off, :func:`_prepare`; ``gc`` is not the interpreter's own module at
-    the first walk; the listing raises, an audit hook's doing), nothing is proven and
-    the name stands, as it does in 0.15.0."""
+    cache calls something that cannot be told. And where the listing is not to be had,
+    nothing is known and the name stands, as it does in 0.15.0: the checks are off
+    (:func:`_prepare`); ``gc`` could not be imported, or is not the interpreter's own
+    module, or has another function under ``get_referents``, at the first walk
+    (:func:`_collector`); the listing raises, an audit hook's doing, whatever it raises
+    but an interrupt from the keyboard, which is not caught; or the wrapper is an
+    instance of a subclass of the cache type, which only Python 3.9 lets a class be.
+
+    Why a listing that is stopped is not passed on: 0.15.0 asked no such question, so a
+    hook that stops it would stop every tool with a cache that 0.15.0 reads, and the
+    listing is the one read of the walk it can do without. A ``BaseException`` an audit
+    hook raises at any other read of the walk (the ``__code__`` a signature is read
+    from) is passed on, here as in 0.15.0, because nothing can be read without it."""
     if not _prepare() or _referents is None or type(cache) is not _CACHE_WRAPPER:
         return named
     called = _told(cache)
@@ -348,7 +433,9 @@ def _cache_calls(cache: Any, named: Any) -> Any:
         return called
     try:
         referred = _referents(cache)
-    except Exception:  # noqa: BLE001, a listing that is refused proves nothing
+    except KeyboardInterrupt:
+        raise
+    except BaseException:  # noqa: BLE001, a listing that is refused proves nothing
         return named
     called = _called_by(cache, referred)
     if called is not _MISSING:
@@ -359,10 +446,49 @@ def _cache_calls(cache: Any, named: Any) -> Any:
     return _MISSING
 
 
-#: The function each ``functools.lru_cache`` wrapper calls, once it has been told: by the
-#: wrapper, which is not kept alive by it, to a weak reference to the function. None
-#: until the first cache is read.
-_TOLD: Any = None
+#: What was found once about an object and cannot change while it lives, by the object's
+#: ``id()``: a weak reference to the object, which tells it from a later object at the
+#: same address, and what was found. A plain ``dict`` with ``int`` keys: no code written
+#: in Python runs to read or write it, the standard library's included.
+_KEPT: Dict[int, Any] = {}
+#: The size at which entries of objects that are gone are dropped (:func:`_keep`).
+_SWEEP_AT = 256
+
+
+def _kept(owner: Any) -> Any:
+    """What :func:`_keep` kept for ``owner``, or ``_MISSING``. One read of a ``dict`` under
+    an ``int`` and one call of a weak reference, both in C; nothing of ``owner`` is asked."""
+    entry = _KEPT.get(id(owner))
+    if entry is None or entry[0]() is not owner:
+        return _MISSING  # nothing kept, or kept for an object that stood at this address
+    return entry[1]
+
+
+def _keep(owner: Any, value: Any) -> None:
+    """Keep ``value`` for as long as ``owner`` lives, without keeping ``owner`` alive: under
+    its ``id()``, beside a weak reference to it made by the interpreter's own type
+    (:func:`_reference_type`), with no callback. Nothing is kept where that type is not to
+    be had, or for an object that cannot be weakly referenced. An entry whose object is
+    gone is never read as another's (:func:`_kept`) and is dropped when the dictionary
+    has doubled since the last time they were dropped."""
+    global _KEPT, _SWEEP_AT
+    if _reference is None:
+        return
+    try:
+        entry = (_reference(owner), value)
+    except TypeError:  # not every object can be weakly referenced
+        return
+    if len(_KEPT) >= _SWEEP_AT:
+        # a new dictionary of the entries whose objects live, put in place in one step;
+        # an entry another thread adds to the old one meanwhile is found again later
+        live = {}
+        for key in list(_KEPT):
+            kept = _KEPT.get(key)
+            if kept is not None and kept[0]() is not None:
+                live[key] = kept
+        _SWEEP_AT = max(256, 2 * len(live))
+        _KEPT = live
+    _KEPT[id(owner)] = entry
 
 
 def _told(cache: Any) -> Any:
@@ -372,26 +498,20 @@ def _told(cache: Any) -> Any:
     offers no way to change it), and a bounded cache lists every key and result it holds
     along with it: tens of thousands of objects for a large cache that is full, on every
     walk, with every thread stopped for it on a free-threaded build. So what was told
-    once is kept, under the wrapper itself (hashed and compared by identity, as its C
-    type does), weakly both ways, so that neither the cache nor the function lives
-    longer for it. A function that cannot be weakly referenced is told again each time."""
-    if _TOLD is None:
-        return _MISSING
-    try:
-        reference = _TOLD.get(cache)
-    except Exception:  # noqa: BLE001, not kept: told again
-        return _MISSING
-    called = reference() if reference is not None else None
+    once is kept (:func:`_keep`), weakly both ways, so that neither the cache nor the
+    function lives longer for it. A function that cannot be weakly referenced is told
+    again each time."""
+    reference = _kept(cache)
+    called = reference() if reference is not _MISSING else None
     return _MISSING if called is None else called
 
 
 def _tell(cache: Any, called: Any) -> None:
-    global _TOLD
+    if _reference is None:
+        return
     try:
-        if _TOLD is None:
-            _TOLD = weakref.WeakKeyDictionary()
-        _TOLD[cache] = weakref.ref(called)
-    except Exception:  # noqa: BLE001, S110, not every callable can be weakly referenced
+        _keep(cache, _reference(called))
+    except TypeError:  # not every callable can be weakly referenced
         pass
 
 
@@ -495,18 +615,27 @@ def _refuse_partialmethod(func: Any) -> None:
 # identity, nothing is hashed. A value of any other type is skipped without being read.
 #
 # Two rules hold for every dictionary read here that is not this module's own (a function's
-# ``__dict__``, an instance's, a class's, a registry). It is listed in one C-level step
-# (``list(d.items())`` of a plain ``dict``) before any loop, so another thread changing it
-# cannot break the loop. And no key is looked up in it: a key is compared only when it is
-# exactly a ``str``, so no key's ``__hash__`` or ``__eq__`` runs.
-
+# ``__dict__``, an instance's, a class's, a registry). It is listed in one call into C
+# (``list(d.items())`` of a plain ``dict``, :func:`_listed`) before any loop, so another
+# thread changing it cannot break the loop; on Python 3.9 to 3.11 a collection that call
+# itself sets off can change the dictionary and make it raise, and it is then made again.
+# And no key is looked up in it: a key is compared only when it is exactly a ``str``, so
+# no key's ``__hash__`` or ``__eq__`` runs. One dictionary is read another way: the module
+# globals a wrapper names are looked up by name, as the wrapper's own code looks them up
+# (:func:`_named_globals`, which says what that can compare).
 #
-# Nothing of this is built when the module is imported: importing it does what it did before
-# these checks existed and no more, whatever stands in ``functools``, in ``sys.modules`` or
-# in the audit hooks. The accessors and the standard-library objects the checks rely on are
-# found at the first walk (:func:`_prepare`), each one identified as the standard library's
-# own before it is used, and none of them called. If any cannot be, both checks are off:
-# the walk is then what it was before them, and nothing is raised.
+# What is kept between walks is kept in a plain ``dict`` of this module's own, under the
+# ``id()`` of an object and beside a weak reference to it (:func:`_keep`): reading and
+# writing it runs no code written in Python, the standard library's included.
+#
+# Nothing of this is built when the module is imported. Importing it reads nothing of
+# ``functools`` that 0.15.0 did not read and raises nothing, whatever stands in
+# ``functools``, in ``sys.modules`` or in the audit hooks; it does import two modules
+# 0.15.0 did not, ``gc`` and ``weakref``, each inside a guard (see the top of the module).
+# The accessors and the standard-library objects the checks rely on are found at the first
+# walk (:func:`_prepare`), each one identified as the standard library's own before it is
+# used, and none of them called. If any cannot be, both checks are off: the walk is then
+# what it was before them, and nothing is raised.
 
 _MISSING: Any = object()
 _DEPTH = 32
@@ -520,6 +649,8 @@ _function_code: Any = None
 _function_globals: Any = None
 #: ``gc.get_referents``, or None where ``gc`` is not the interpreter's own module.
 _referents: Any = None
+#: The interpreter's weak reference type, or None where it is not to be had.
+_reference: Any = None
 _method_function: Any = None
 _static_function: Any = None
 _class_function: Any = None
@@ -547,9 +678,11 @@ _METHOD_ACCESS: Any = None
 def _prepare() -> bool:
     """Find, once, what the two checks read with; True if they are on.
 
-    Run at the first walk, not at import. Everything is read through the C-level accessors
-    of built-in types and from dictionaries listed as :func:`_entry` lists them; nothing
-    found is called, and no attribute is looked up on ``functools`` or on anything in it.
+    Run at the first walk, not at import, and importing nothing: ``gc`` and ``weakref``
+    were imported with this module or are left out. Everything is read through the
+    C-level accessors of built-in types and from dictionaries listed as :func:`_entry`
+    lists them; nothing found is called, and no attribute is looked up on ``functools``
+    or on anything in it.
     The checks are on only if ``functools`` is a plain module whose ``partial`` and whose
     ``lru_cache`` wrapper are types C code defines, with the accessors those have. What
     stands in ``functools`` is read as it is then: a ``functools`` reloaded afterwards
@@ -558,7 +691,7 @@ def _prepare() -> bool:
     them off. What the first walk finds stands for the process: a ``functools`` patched
     when it is made and restored afterwards leaves the checks as that walk found them."""
     global _READY, _function_dict, _function_code, _method_function, _static_function
-    global _function_globals, _referents
+    global _function_globals, _referents, _reference
     global _class_function, _type_mro, _type_dict, _module_dict
     global _PARTIAL, _partial_function, _partial_args, _CACHE_WRAPPER, _cache_dict
     global _WRAPPER_CODE, _DISPATCH_CODE, _METHOD_ACCESS
@@ -582,6 +715,10 @@ def _prepare() -> bool:
         listing = _collector()
     except Exception:  # noqa: BLE001, without it one check is off, the rest stand
         listing = None
+    try:
+        reference = _reference_type()
+    except Exception:  # noqa: BLE001, without it nothing is kept between walks
+        reference = None
     # threads that make their first walk at once each get here with what they found; the
     # first to arrive decides for the process, in one step, and every thread sets the same
     # values, so no walk ever sees a part of one finding beside a part of another
@@ -590,24 +727,53 @@ def _prepare() -> bool:
         _PARTIAL, _partial_function, _partial_args, _CACHE_WRAPPER, _cache_dict = found[:5]
         _WRAPPER_CODE, _DISPATCH_CODE, _METHOD_ACCESS = found[5:]
         _referents = _DECIDED.setdefault("referents", (listing,))[0]
+        _reference = _DECIDED.setdefault("reference", (reference,))[0]
     _READY = found is not None  # last: once it is set, everything above is
     return _READY
 
 
-#: What the first walk of the process found (:func:`_prepare`), under the one key "found".
+#: What the first walk of the process found (:func:`_prepare`): under "found" what the
+#: checks read ``functools`` with, under "referents" and "reference" the two below.
 _DECIDED: Dict[str, Any] = {}
 
 
 def _collector() -> Any:
-    """``gc.get_referents`` if ``gc`` is a plain module and what it has under that name is
-    a built-in function of that module, else None. Asked at the first walk, not when
-    this module is imported; nothing found is called here."""
-    if type(gc) is not types.ModuleType:
+    """``gc.get_referents``, if this module imported ``gc``, that is a plain module, and
+    what it has under that name is the built-in function of that module and of that name,
+    by its type and by what the function itself says in C; else None. So a ``gc`` put in
+    ``sys.modules`` by the application is not used, and neither is another function of
+    ``gc`` put under the name (``gc.get_referrers``, which would list something else).
+    Asked at the first walk, not when this module is imported; nothing found is called
+    here."""
+    if type(_gc) is not types.ModuleType:
         return None
-    listing = _entry(_module_dict(gc), "get_referents")
-    if type(listing) is not types.BuiltinFunctionType or listing.__self__ is not gc:
+    listing = _entry(_module_dict(_gc), "get_referents")
+    if type(listing) is not types.BuiltinFunctionType:
+        return None
+    if listing.__self__ is not _gc or listing.__name__ != "get_referents":
         return None
     return listing
+
+
+def _reference_type() -> Any:
+    """The interpreter's weak reference type, ``weakref.ref``, if this module imported
+    ``weakref``, that is a plain module, and what it has under that name is a type C code
+    defines; else None, and nothing is kept between walks (:func:`_keep`). Calling that
+    type makes a weak reference in C: no code written in Python runs, and no callback is
+    given."""
+    if type(_weakref) is not types.ModuleType:
+        return None
+    kind = _entry(_module_dict(_weakref), "ref")
+    return kind if _compiled(kind) else None
+
+
+def _compiled(kind: Any) -> bool:
+    """True for a type C code defines: static, or declared immutable (a flag no class
+    written in Python can have), so not a look-alike put in its place."""
+    flags = _type_dict(type)["__flags__"].__get__
+    return type(kind) is type and (
+        not flags(kind) & _HEAP_TYPE or bool(flags(kind) & _IMMUTABLE_TYPE)
+    )
 
 
 def _standard_library() -> Any:
@@ -616,15 +782,7 @@ def _standard_library() -> Any:
     and arguments, the ``lru_cache`` wrapper type and the accessor of its dictionary, the
     two code objects of a dispatcher and where a single-dispatch method keeps its
     registry (those three None where the dispatcher is not identified)."""
-    type_flags = _type_dict(type)["__flags__"].__get__
-
-    def compiled(kind: Any) -> bool:
-        # a type C code defines: static, or declared immutable (a flag no class written in
-        # Python can have), so not a look-alike put in its place
-        return type(kind) is type and (
-            not type_flags(kind) & _HEAP_TYPE or bool(type_flags(kind) & _IMMUTABLE_TYPE)
-        )
-
+    compiled = _compiled
     if type(functools) is not types.ModuleType:
         return None
     names = _module_dict(functools)
@@ -653,14 +811,39 @@ def _standard_library() -> Any:
 
 def _entry(attributes: Any, name: str) -> Any:
     """The value under the string ``name`` in a plain ``dict`` (or in the ``mappingproxy``
-    of a class), or ``_MISSING``: the items are listed in one step, and no key is hashed or
-    compared unless it is exactly a ``str``."""
+    of a class), or ``_MISSING``: the items are listed in one call (:func:`_listed`), and
+    no key is hashed or compared unless it is exactly a ``str``."""
     if type(attributes) is not dict and type(attributes) is not types.MappingProxyType:
         return _MISSING
-    for key, value in list(attributes.items()):
+    for key, value in _listed(attributes.items):
         if type(key) is str and key == name:
             return value
     return _MISSING
+
+
+_TRIES = 8
+_UNLISTED = "a dictionary the walk reads was changed each time it was listed"
+
+
+def _listed(view: Any) -> List[Any]:
+    """``list(view())``, where ``view`` is the ``items`` or ``values`` of a plain ``dict``
+    or of the ``mappingproxy`` of a class: the whole listing is one call into C, so a
+    thread that changes the dictionary cannot change it halfway through.
+
+    On Python 3.9 to 3.11 that call is not always one step. Listing the items makes a
+    tuple for each, a collection can start at any of them, and a finalizer or a
+    weak-reference callback it runs can change the size of the very dictionary being
+    listed: the call then raises ``RuntimeError`` ("dictionary changed size during
+    iteration"). Nothing was read, so the listing is made again, up to eight times; a
+    dictionary that changed at every one of them is not read at all, and the walk raises
+    ``ValueError``, which a gate turns into a refusal. From 3.12 a collection does not
+    start inside the call, and it does not raise."""
+    for _ in range(_TRIES):
+        try:
+            return list(view())
+        except RuntimeError:
+            continue
+    raise ValueError(_UNLISTED)
 
 
 def _own(value: Any, name: str) -> Any:
@@ -737,22 +920,38 @@ def _named_globals(function: Any) -> List[Any]:
     ``functools.wraps(fetch)`` wrapper that returns ``guarded(...)``): the second wrapper
     is in no closure cell, and is held all the same. The namespace is the function's own
     ``__globals__``, read through the C-level accessor and only when it is exactly a
-    ``dict``; it is listed in one step and no key is looked up in it, as for every other
-    dictionary read here. A name the code uses only as an attribute (``self.guarded``)
-    and that is also a global is included: the code object does not tell the two apart.
-    Builtins are not read. What is returned is then judged like anything else held: only
-    a value of the closed set that reaches, by identity, a callable the walk read is a
-    hidden wrapper, so a helper, a logger or a formatter the wrapper calls is not."""
+    ``dict``. A name the code uses only as an attribute (``self.guarded``) and that is
+    also a global is included: the code object does not tell the two apart. Builtins are
+    not read. What is returned is then judged like anything else held: only a value of
+    the closed set that reaches, by identity, a callable the walk read is a hidden
+    wrapper, so a helper, a logger or a formatter the wrapper calls is not.
+
+    Each name is looked up in the namespace, which is what the function's own code does
+    with it each time it runs (a global is read by this lookup): a handful of reads,
+    whatever the size of the module. This is the one dictionary here that is read by
+    lookup and not by listing. Every name is exactly a ``str``, and so is every key of an
+    ordinary module namespace, and the lookup then runs no code but the dictionary's own.
+    A key that is not exactly a ``str`` is compared, by its own ``__eq__``, only if it
+    hashes as one of the names looked up, as it is whenever the function reads that
+    global. The names a code object refers to cannot change, so they are found once for
+    each code object and kept (:func:`_keep`)."""
     namespace = _function_globals(function)
     if type(namespace) is not dict:
         return []
-    # every name is exactly a ``str`` (:func:`_names`), so a set of them hashes nothing of
-    # the application's, and a key of the namespace is looked for in it only when it is
-    # exactly a ``str`` too: one pass over the namespace, however many names there are
-    names = frozenset(_names(_function_code(function)))
-    if not names:
-        return []
-    return [value for key, value in list(namespace.items()) if type(key) is str and key in names]
+    code = _function_code(function)
+    names = _kept(code)
+    if names is _MISSING:
+        names = tuple(dict.fromkeys(_names(code)))  # each once, in the order of the code
+        _keep(code, names)
+    held = []
+    for name in names:
+        try:
+            value = namespace.get(name, _MISSING)
+        except Exception:  # noqa: BLE001, a key of the namespace that raises when compared
+            raise ValueError("the module globals a wrapper names cannot be read") from None
+        if value is not _MISSING:
+            held.append(value)
+    return held
 
 
 def _held(func: Any, wrapped: Any) -> List[Any]:
@@ -766,10 +965,10 @@ def _held(func: Any, wrapped: Any) -> List[Any]:
     if type(func) is types.FunctionType:
         return _cells(func) + _named_globals(func)
     copied = _function_dict(wrapped) if type(wrapped) is types.FunctionType else {}
-    copied = list(copied.values()) if type(copied) is dict else []
+    copied = _listed(copied.values) if type(copied) is dict else []
     held = [
         value
-        for value in list(_instance_attributes(func).values())
+        for value in _listed(_instance_attributes(func).values)
         if not any(value is other for other in copied)
     ]
     # the ``__call__`` of its class is what runs: a class written inside a decorator closes
@@ -881,11 +1080,11 @@ def _argument_of_its_own(
 
 def _walk() -> Any:
     """What one walk has read (``read``) and found held (``held``), for the judgement made
-    at its end, what it reached through a ``__wrapped__`` (``named``, :func:`_rebound`),
-    and whether the two checks are on (``checked``, :func:`_prepare`: where it
+    at its end, the names its bound arguments were taken under (``taken``,
+    :func:`_rebound`), and whether the two checks are on (``checked``, :func:`_prepare`: where it
     is False the walk collects nothing held). A plain namespace, not a class of this
     module: importing the module defines no class but the exceptions it adds."""
-    return types.SimpleNamespace(read=[], held=[], named=[], checked=_prepare())
+    return types.SimpleNamespace(read=[], held=[], taken=[], checked=_prepare())
 
 
 def _hidden_levels(value: Any, read: List[Any], bound: int) -> List[Any]:
@@ -1090,7 +1289,7 @@ def _only_runs(dispatch: Any, base: Any) -> bool:
     registry = _cell(dispatch, "registry")
     if type(registry) is not dict:
         return False
-    items = list(registry.items())
+    items = _listed(registry.items)
     return len(items) == 1 and items[0][0] is object and items[0][1] is base
 
 
@@ -1177,9 +1376,10 @@ def _refuse_call_time_dispatch(func: Any, wrapped: Any) -> None:
 
 class BoundArgumentKept(ValueError):
     """An argument bound on the way (the object of a method, a positional argument of a
-    ``functools.partial``) is taken by a wrapper under one name, and on the function the
-    wrapper names as ``__wrapped__`` it would fill a parameter of another name that has a
-    default. Whether the wrapper hands the argument on cannot be read from a signature;
+    ``functools.partial``) is taken by a wrapper under one name, and on a function that
+    wrapper reaches (the one it names as ``__wrapped__``, or one under any number of
+    layers that only pass arguments on) it would fill a parameter of another name that
+    has a default. Whether the wrapper hands the argument on cannot be read from a signature;
     if it keeps it, the function runs that parameter at a default no policy judged, and
     the signature the tool shows no longer has the parameter. :func:`_rebound` says
     exactly what is refused and what is not. The message names the two parameters and
@@ -1188,9 +1388,9 @@ class BoundArgumentKept(ValueError):
 
 _UNHANDED = (
     "an argument bound on the way (the object of a method, a positional argument of a "
-    "`functools.partial`) is taken by a wrapper as `{taken}`, and on the function the "
-    "wrapper names as `__wrapped__` it would fill `{filled}`, which has a default: whether "
-    "the wrapper hands it on cannot be read, and if it keeps it, `{filled}` runs at a "
+    "`functools.partial`) is taken by a wrapper as `{taken}`, and on a function the "
+    "wrapper reaches through `__wrapped__` it would fill `{filled}`, which has a default: "
+    "whether the wrapper hands it on cannot be read, and if it keeps it, `{filled}` runs at a "
     "default no policy judged; call the function from a plain function that names every "
     "parameter the tool takes, and register that one"
 )
@@ -1207,40 +1407,68 @@ def _leading(parameters: Any) -> List[Any]:
     return leading
 
 
-def _rebound(level: Any, inner: Any, rebound: Any, count: int, walk: Any) -> Any:
+def _taken_under(walk: Any, bound: Any, count: int) -> Tuple[Optional[str], ...]:
+    """The name each of the ``count`` arguments the callable ``bound`` binds was last taken
+    under on this walk (:func:`_rebound`), None for one no wrapper has named: all None for
+    the tool itself and for any callable the walk did not bind."""
+    for known, names in walk.taken:
+        if known is bound and len(names) == count:
+            return tuple(names)
+    return (None,) * count
+
+
+def _rebound(outer: Any, level: Any, inner: Any, rebound: Any, count: int, walk: Any) -> Any:
     """``rebound``: the callable ``inner`` that ``level`` hands the call to, bound with the
-    ``count`` leading arguments ``level`` receives bound. Raises
-    :class:`BoundArgumentKept` where binding them to ``inner`` assumes what cannot be read.
+    ``count`` leading arguments that ``outer`` (a method of ``level``, or a
+    ``functools.partial`` of it) binds. Raises :class:`BoundArgumentKept` where binding
+    them to ``inner`` assumes what cannot be read.
 
     The walk binds the arguments a method or a ``functools.partial`` holds to what its
-    function names as ``__wrapped__``, as if the wrapper handed them on. A wrapper that
-    takes ``(*args, **kwargs)`` does, and so does one that takes the argument under the
-    name the wrapped function has for it. A wrapper that takes it under ANOTHER name need
-    not: ``def search(self, *args, **kwargs): return free_search(*args, **kwargs)`` under
-    ``functools.wraps(free_search)`` keeps the object, and ``free_search`` runs with its
-    first parameter at its default, which the signature the tool shows no longer has.
-    Where that parameter has no default the call fails; where it has one, nothing fails
-    and no policy judged the value. So, for an ``inner`` reached through ``__wrapped__``:
-    refused when a bound argument is taken on ``level`` by a named parameter and would
-    fill, on ``inner``, a parameter of another name that has a default. An ordinary bound
-    method, decorated or not, is not refused: its function names nothing as
-    ``__wrapped__``, or the wrapped function takes the object under the same name or as a
-    parameter without a default (``self``).
+    function hands the call to, as if every wrapper on the way handed them on. A wrapper
+    that takes ``(*args, **kwargs)`` does, and so does one that takes the argument under
+    the name the function under it has for it. A wrapper that takes it under ANOTHER
+    name need not: ``def search(self, *args, **kwargs): return free_search(*args,
+    **kwargs)`` under ``functools.wraps(free_search)`` keeps the object, and
+    ``free_search`` runs with its first parameter at its default, which the signature
+    the tool shows no longer has. Where that parameter has no default the call fails;
+    where it has one, nothing fails and no policy judged the value.
+
+    So the name each bound argument was last taken under goes with it down the walk
+    (``walk.taken``, by the identity of each callable the walk binds), through every
+    callable that takes it in ``*args`` and names nothing for it: a ``(*args, **kwargs)``
+    wrapper, a class-based decorator whose ``__call__`` passes everything on, a cache, a
+    ``functools.partial``, however many there are. Refused: a bound argument that was
+    taken under a name, on ``level`` or on a wrapper above it, and would fill on
+    ``inner`` a parameter of another name that has a default. The free function of the
+    example is refused bare and under any number of such layers alike.
+
+    An ordinary bound method, decorated or not, is not refused: its function hands the
+    call to nothing, or no wrapper names the object, or the function under the wrapper
+    takes the object under the same name or as a parameter without a default
+    (``self``). So ``def wrapper(self, *args, **kwargs)`` over a method is read as
+    before, and so is a facade that hands its receiver on to a method.
 
     Not found, by design: a wrapper that takes the bound argument in ``*args`` and drops
     it in its body, and one that takes it under the same name and does not hand it on."""
-    if not any(inner is named for named in walk.named):
-        return rebound
-    walk.named.append(rebound)
-    if count < 1:
-        return rebound  # nothing is bound at this step (a partial without arguments)
+    taken = list(_taken_under(walk, outer, count))
     try:
         above, below = _leading(own_parameters(level)), _leading(own_parameters(inner))
     except Exception:  # noqa: BLE001, what cannot be read here is read, or refused, bound
-        return rebound
-    for taken, filled in list(zip(above, below))[:count]:
-        if filled.default is not filled.empty and taken.name != filled.name:
-            raise BoundArgumentKept(_UNHANDED.format(taken=taken.name, filled=filled.name))
+        above, below = [], []
+    for index in range(min(count, len(above))):
+        taken[index] = above[index].name  # the name the nearest wrapper has for it
+    for name, filled in zip(taken, below):
+        if name is not None and filled.default is not filled.empty and name != filled.name:
+            raise BoundArgumentKept(_UNHANDED.format(taken=name, filled=filled.name))
+    # what ``rebound`` binds: these arguments, after those of a ``functools.partial`` it
+    # was merged with (``partial(partial(f, a), b)`` is ``partial(f, a, b)``)
+    if type(rebound) is _PARTIAL and _PARTIAL is not None:
+        merged = _partial_args(rebound)
+        ahead = len(merged) - count if type(merged) is tuple else -1
+        if ahead < 0:
+            return rebound
+        taken = list(_taken_under(walk, inner, ahead)) + taken
+    walk.taken.append((rebound, tuple(taken)))
     return rebound
 
 
@@ -1278,7 +1506,7 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
     if inspect.ismethod(func):
         inners = _next_callables(func.__func__, walk, None if bound is None else bound + 1)
         return [
-            _rebound(func.__func__, inner, types.MethodType(inner, func.__self__), 1, walk)
+            _rebound(func, func.__func__, inner, types.MethodType(inner, func.__self__), 1, walk)
             for inner in inners
         ]
     if isinstance(func, functools.partial):
@@ -1289,6 +1517,7 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
         under = bound + len(args) if bound is not None and type(args) is tuple else None
         found = [
             _rebound(
+                func,
                 func.func,
                 inner,
                 functools.partial(inner, *func.args, **func.keywords),
@@ -1306,7 +1535,6 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
             if walk.checked and bound is not None:
                 walk.held.extend((value, bound) for value in _held(func, wrapped))
             found.append(wrapped)
-            walk.named.append(wrapped)
         return found
     found = []
     wrapped = getattr(func, "__wrapped__", None)
@@ -1316,7 +1544,6 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
         if walk.checked and bound is not None:
             walk.held.extend((value, bound) for value in _held(func, wrapped))
         found.append(wrapped)
-        walk.named.append(wrapped)
         if isinstance(func, _PASS_THROUGH):
             # a cache named again for another function (``functools.wraps(f)`` over
             # ``functools.lru_cache`` over a wrapper): the wrapper it calls is the one
@@ -1360,15 +1587,21 @@ def reached_parameters(func: Any, skip: Tuple[str, ...] = ()) -> List[Any]:
     ``TypeError``: a callable on the way is read by ``inspect.signature`` as a
     ``functools.partialmethod``), :class:`BoundArgumentKept` (a ``ValueError``: a bound
     argument is taken by a wrapper under another name than the parameter with a default
-    it would fill on the function the wrapper names), ``TypeError`` or ``ValueError`` for
+    it would fill on a function that wrapper reaches), ``TypeError`` or ``ValueError`` for
     a callable it cannot read, which a gate turns into a refusal.
 
-    The two refusals are exact and narrow: each finds one shape and states the rest as
-    limits (:func:`_refuse_hidden_wrapper`, :func:`_refuse_call_time_dispatch`). They read
-    what a callable holds without running any of it. A wrapper a callable holds is judged
-    by the rule and the code that judge the levels returned here
-    (:func:`_argument_of_its_own`), so it gets the verdict it would get read directly. The
-    callables on the way themselves are read as before, by attribute lookup.
+    :class:`UnreadCache` is a :class:`HiddenWrapper`. The ``ValueError`` for a callable
+    object whose class defines ``__get__`` (``inspect.signature`` shows no signature for
+    one) says that cause and what to do.
+
+    Each of these refusals is exact and narrow: it finds one shape and states the rest
+    as limits (:func:`_refuse_hidden_wrapper`, :func:`_refuse_call_time_dispatch`,
+    :func:`_refuse_partialmethod`, :func:`_rebound`, :func:`_cache_calls`). The two that
+    read what a callable HOLDS (a hidden wrapper, a dispatcher) read it without running
+    any of it. A wrapper a callable holds is judged by the rule and the code that judge
+    the levels returned here (:func:`_argument_of_its_own`), so it gets the verdict it
+    would get read directly. The callables on the way themselves are read as before, by
+    attribute lookup.
     """
     return _reached(func, skip, None)
 

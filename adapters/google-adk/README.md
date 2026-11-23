@@ -173,7 +173,10 @@ path.
   one at module level whose `__call__` names that wrapper as a global; and a method
   that delegates to a free function under `functools.wraps` of it and keeps its object,
   where the free function's first parameter has a default (that parameter ran at its
-  default and was in no signature). A kernel later than 0.15.0 reads the first three
+  default and was in no signature), with or without decorators on the free function
+  that only pass their arguments on. The second is the same on a method as on a plain
+  function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
+  object, a second cache). A kernel later than 0.15.0 reads the first three
   like the same decorator written with a nested function, so a wrapper with a parameter
   of its own is refused, naming the parameter, and one that only passes its arguments
   on is accepted; it refuses the fourth, naming both parameters. Not found by either

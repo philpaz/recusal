@@ -187,11 +187,14 @@ order of a turn's entries on the chain is not always the order the model propose
   else, so each of these lets a value run that the policy did not judge: a decorator
   written as `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a
   parameter of its own; `@functools.wraps(f)` above `@functools.lru_cache` above a
-  wrapper with a parameter of its own; a class-based decorator written inside the
+  wrapper with a parameter of its own (on a function or on a method, and whatever the
+  cache calls: a wrapper, a `functools.partial`, a callable object, a second cache); a
+  class-based decorator written inside the
   decorator, whose `__call__` calls a second wrapper the decorator built, or one at
   module level whose `__call__` names that wrapper as a global; and a method that
   delegates to a free function under `functools.wraps` of it and keeps its object,
-  where the free function's first parameter has a default. Beside a kernel later than
+  where the free function's first parameter has a default, with or without decorators
+  on the free function that only pass their arguments on. Beside a kernel later than
   0.15.0 the gate asks the kernel's walk as well, holds every level it returns to the
   schema, and refuses all four with the cause. Until that kernel is this package's
   floor, an install beside 0.15.0 or 0.14.x has these four. Not found beside any

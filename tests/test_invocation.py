@@ -4278,7 +4278,7 @@ def test_a_cache_whose_function_cannot_be_told_is_refused_or_read_as_before(monk
     assert invocation._collector() is None  # not the interpreter's own function
     monkeypatch.undo()
     stand_in = types.SimpleNamespace(get_referents=gc.get_referents)
-    monkeypatch.setattr(invocation, "gc", stand_in)
+    monkeypatch.setattr(invocation, "_gc", stand_in)
     assert invocation._collector() is None  # not a module
 
 
@@ -4718,3 +4718,801 @@ def test_the_gates_that_used_a_copy_import_the_shared_helper():
 def test_negative_control_the_lock_sees_a_copy_when_one_exists():
     tree = ast.parse("def _json_data(value):\n    return True\n")
     assert [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in SHARED]
+
+
+# --- review round seven --------------------------------------------------------------------
+#
+# F1: a bound argument a wrapper takes under another name, with layers that only pass
+# arguments on between the wrapper and the function. F2: a cache named again, over a method,
+# that calls something other than a plain function. R1 to R4: the import of ``gc``, a
+# listing an audit hook stops, a replaced ``gc.get_referents``, a listing a collection
+# interrupts. And what is kept between walks, the globals a wrapper names, and a reason of
+# its own for a callable object that defines ``__get__``.
+
+
+class _SevenTraced:
+    """An ordinary class-based decorator that passes every argument on."""
+
+    def __init__(self, function):
+        import functools
+
+        functools.update_wrapper(self, function)
+        self.function = function
+
+    def __call__(self, *args, **kwargs):
+        return self.function(*args, **kwargs)
+
+
+def _seven_memo(function):
+    """An ordinary caching decorator: ``functools.wraps`` over ``functools.lru_cache`` over
+    a wrapper that passes every argument on."""
+    import functools
+
+    @functools.wraps(function)
+    @functools.lru_cache(maxsize=64)
+    def inner(*args, **kwargs):
+        return function(*args, **kwargs)
+
+    return inner
+
+
+def _seven_cache_over(function):
+    import functools
+
+    return functools.lru_cache(maxsize=None)(_traced(function))
+
+
+def _seven_partial(function):
+    import functools
+
+    return functools.partial(function)
+
+
+def _seven_with_session(function):
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(session, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+_SEVEN_LAYERS = {
+    "a forwarding wrapper": _traced,
+    "a class-based decorator": _SevenTraced,
+    "a caching decorator": _seven_memo,
+    "a cache over a forwarding wrapper": _seven_cache_over,
+    "a partial that binds nothing": _seven_partial,
+    "a partial that carries the name": _six_retry,
+    "two forwarding wrappers": lambda f: _traced(_traced(f)),
+    "three layers": lambda f: _SevenTraced(_seven_memo(_traced(f))),
+    "four layers": lambda f: _traced(_six_retry(_SevenTraced(_seven_cache_over(f)))),
+}
+
+
+@pytest.mark.parametrize("layer", sorted(_SEVEN_LAYERS))
+def test_f1_a_bound_argument_kept_is_refused_through_layers_that_pass_arguments_on(layer):
+    """Round six's C came back when the free function wore one ordinary decorator: the
+    method takes the object as ``self`` and wraps the decorated function, whose
+    ``(*args, **kwargs)`` level has no leading parameter to compare with, and the walk
+    bound the object to the free function's first parameter under it. Declared
+    ``(limit=10)``, judged ``{'limit': 5}``, ran ``query='*'``. The name the argument was
+    taken under now goes with it through every layer that only passes arguments on."""
+    import functools
+
+    free = _SEVEN_LAYERS[layer](_six_search)
+
+    class Tools:
+        @functools.wraps(free)
+        def search(self, *args, **kwargs):
+            return free(*args, **kwargs)
+
+        @classmethod
+        @functools.wraps(free)
+        def search_cm(cls, *args, **kwargs):
+            return free(*args, **kwargs)
+
+    method = Tools().search
+    _SIX.clear()
+    method(limit=5)
+    assert _SIX == [("search", "*", 5)] and list(inspect_signature(method)) == ["limit"]
+    for tool, taken in ((method, "self"), (Tools.search_cm, "cls"), (_traced(method), "self")):
+        with pytest.raises(invocation.BoundArgumentKept) as refused:
+            reached_parameters(tool)
+        text = str(refused.value)
+        assert f"is taken by a wrapper as `{taken}`" in text and "it would fill `query`" in text
+        assert unsupported_signature(tool) is not None
+    if layer == "a forwarding wrapper":  # the layers that keep the annotations
+        assert unsupported_signature(method) == text
+    # behind a ``functools.partial`` the same: one that binds nothing carries the name on,
+    # and one that binds the argument has it taken as ``session``. A partial of a cache
+    # cannot be read by ``inspect.signature`` and was refused for that before
+    session = functools.partial(_seven_with_session(free), object())
+    _SIX.clear()
+    session(limit=6)
+    assert _SIX == [("search", "*", 6)]
+    for tool, taken in ((functools.partial(method), "self"), (session, "session")):
+        with pytest.raises(ValueError) as refused:
+            reached_parameters(tool)
+        if not ("cach" in layer or "layers" in layer):
+            assert type(refused.value) is invocation.BoundArgumentKept
+            assert f"is taken by a wrapper as `{taken}`" in str(refused.value)
+
+
+def test_f1_the_name_goes_with_each_bound_argument_also_where_partials_merge():
+    """``functools.partial(functools.partial(f, a), b)`` is ``functools.partial(f, a, b)``:
+    the walk's own rebinding merges two partials, and the name each argument was taken
+    under stays with that argument."""
+    import functools
+
+    def target(first, query: str = "*", limit: int = 10) -> str:
+        return query
+
+    inner = functools.partial(_traced(target), 1)
+    tool = functools.partial(_seven_with_session(inner), object())
+    assert tool() == "*"  # the session was kept: ``query`` ran at its default
+    with pytest.raises(invocation.BoundArgumentKept, match="`session`.*`query`"):
+        reached_parameters(tool)
+    # a partial the walk bound, merged into the next: its name is kept ahead of the rest
+    holds = functools.partial(_seven_with_session(_traced(_six_search)), object())
+    holds.note = "a partial with an attribute is not merged when it is built"
+    for tool in (functools.partial(holds), functools.partial(_traced(holds))):
+        assert type(tool.func) is not functools.partial or tool.func is holds
+        with pytest.raises(invocation.BoundArgumentKept, match="`session`.*`query`"):
+            reached_parameters(tool)
+    # the bound argument a partial on the way holds itself was taken by no wrapper
+    reached_parameters(functools.partial(_traced(functools.partial(_traced(target), 1)), "q"))
+
+
+def test_f1_an_ordinary_method_under_layers_is_read_as_before():
+    """What must not be refused: a method decorator that names the receiver and hands it
+    on, over any layers; a facade that hands its receiver on under another name; a
+    decorated ``classmethod``; a delegating method whose function takes no default
+    first."""
+    import functools
+
+    def naming_self(function):
+        @functools.wraps(function)
+        def wrapper(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        return wrapper
+
+    def another_name(function):
+        @functools.wraps(function)
+        def wrapper(instance, *args, **kwargs):
+            return function(instance, *args, **kwargs)
+
+        return wrapper
+
+    def required(query: str, limit: int = 10) -> str:
+        return "rows"
+
+    class Service:
+        @naming_self
+        @_traced
+        def one(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @_traced
+        @naming_self
+        @_traced
+        def two(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @another_name
+        @_seven_memo
+        @_traced
+        def three(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @naming_self
+        @_seven_cache_over
+        def four(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @classmethod
+        @naming_self
+        @_traced
+        def five(cls, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @another_name
+        @another_name
+        def six(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @functools.wraps(_traced(_traced(required)))
+        def delegating(self, *args, **kwargs):  # the first parameter has no default
+            return required(*args, **kwargs)
+
+        def __hash__(self):
+            return 1
+
+    # the name that counts is the one the nearest wrapper has for the argument: a facade
+    # hands its receiver on to a wrapper that names it as the function under it does
+    def owned(owner: Any = None, limit: int = 10) -> str:
+        return "rows"
+
+    @functools.wraps(owned)
+    def naming_owner(owner, *args, **kwargs):
+        return owned(owner, *args, **kwargs)
+
+    class Facade:
+        @functools.wraps(naming_owner)
+        def call(self, *args, **kwargs):
+            return naming_owner(self, *args, **kwargs)
+
+    assert Facade().call(limit=5) == "rows"
+    reached_parameters(Facade().call)
+
+    service = Service()
+    for name in ("one", "two", "three", "four", "five", "six"):
+        tool = getattr(service, name)
+        assert tool("q", 5) == "rows"
+        assert unsupported_signature(tool) is None, name
+        if name not in ("three", "four"):  # a partial of a cache was never read
+            reached_parameters(functools.partial(tool, "q"))
+    reached_parameters(service.delegating)
+
+    def table(table: str = "users", limit: int = 10) -> str:
+        return table
+
+    for tool in (
+        functools.partial(_traced(_traced(table)), "orders"),
+        functools.partial(_SevenTraced(_traced(table)), "orders"),
+        functools.partial(_six_retry(_SevenTraced(table)), "orders"),
+    ):
+        assert tool() == "orders"
+        reached_parameters(tool)
+
+
+def test_f2_a_cache_named_again_over_a_method_is_read_as_what_it_calls():
+    """A method whose function is a cache named for the method and calling something that
+    is not a plain function (a ``functools.partial`` of a wrapper, a callable object, a
+    second cache named again) was read by the name: judged ``{'query', 'limit'}``, ran a
+    wrapper's ``skip_review=True``. It is read as what it calls, as on a plain function."""
+    import functools
+
+    def method(self, query: str, limit: int = 10) -> str:
+        _SIX.append(("fetch", query, limit))
+        return "rows"
+
+    def over_a_partial(function):
+        def wrapper(mode, self, query, limit=10, skip_review=True):
+            _SIX.append(("audited", skip_review))
+            return function(self, query, limit)
+
+        cached = functools.lru_cache(maxsize=64)(functools.partial(wrapper, "strict"))
+        return functools.wraps(function)(cached)
+
+    class Audited:
+        def __init__(self, function):
+            self.function = function
+
+        def __call__(self, receiver, query, limit=10, skip_review=True):
+            _SIX.append(("audited", skip_review))
+            return self.function(receiver, query, limit)
+
+    def over_an_object(function):
+        return functools.wraps(function)(functools.lru_cache(maxsize=64)(Audited(function)))
+
+    def twice(function):  # wraps(f)(cache(wraps(f)(cache(wrapper))))
+        return _six_cached(lambda f: _six_cached(_six_audited)(function))(function)
+
+    def holder(attribute):
+        return type("Service", (), {"fetch": attribute, "__hash__": lambda self: 1})()
+
+    for decorate in (over_a_partial, over_an_object, twice):
+        tool = holder(decorate(method)).fetch
+        _SIX.clear()
+        assert tool("q", 5) == "rows" and _SIX == [("audited", True), ("fetch", "q", 5)]
+        assert list(inspect_signature(tool)) == ["query", "limit"]
+        assert unsupported_signature(tool).startswith(_SIX_UNDECLARED), decorate.__name__
+        assert "skip_review" in _levels(tool)[0], decorate.__name__
+        assert unsupported_signature(decorate(_six_fetch)) is not None  # as on a function
+
+    # a cache that calls something that only passes arguments on is read, and accepted
+    def passing(function):
+        relay = functools.partial(_six_call_with_retry, function)
+        return functools.wraps(function)(functools.lru_cache(maxsize=64)(relay))
+
+    for decorate in (passing, lambda f: _six_cached(_SevenTraced)(f)):
+        tool = holder(decorate(method)).fetch
+        assert tool("q", 5) == "rows"
+        assert unsupported_signature(tool) is None
+    # and a class is not a callable the walk reads, here as anywhere
+    renamed = functools.wraps(method)(functools.lru_cache(maxsize=None)(dict))
+    with pytest.raises(TypeError, match="a class is not inspected"):
+        invocation.own_parameters(holder(renamed).fetch)
+
+
+_SEVEN_ENVIRONMENT = """
+import enum, functools, importlib.util, inspect, json, math, sys, types, typing
+scenario, alone = sys.argv[1], sys.argv[2]
+RAN = []
+class Stop(BaseException):
+    pass
+if scenario in ("gc-none", "both-none"):
+    sys.modules["gc"] = None
+if scenario in ("weakref-none", "both-none"):
+    sys.modules["weakref"] = None
+if scenario == "gc-namespace":
+    import gc, types
+    sys.modules["gc"] = types.SimpleNamespace(get_referents=gc.get_referents)
+elif scenario.startswith("import-"):
+    sys.modules.pop("gc", None)
+    sys.modules.pop("weakref", None)
+    RAISED = {"import-refused": RuntimeError, "import-stopped": Stop}
+    NAMES = {"import-interrupted-gc": ("gc",), "import-interrupted-weakref": ("weakref",)}
+    def hook(event, args):
+        if event == "import" and args[0] in NAMES.get(scenario, ("gc", "weakref")):
+            RAN.append("import " + args[0])
+            raise RAISED.get(scenario, KeyboardInterrupt)(args[0])
+    sys.addaudithook(hook)
+elif scenario == "referents-is-referrers":
+    import gc
+    gc.get_referents = gc.get_referrers
+elif scenario == "referents-is-tracked":
+    import gc
+    gc.get_referents = gc.is_tracked
+elif scenario == "referents-python":
+    import gc
+    REAL = gc.get_referents
+    def get_referents(*values):
+        RAN.append("get_referents")
+        return REAL(*values)
+    gc.get_referents = get_referents
+elif scenario in ("listing-refused", "listing-stopped"):
+    def hook(event, args):
+        if event == "gc.get_referents":
+            RAN.append("hook")
+            raise (RuntimeError if scenario == "listing-refused" else Stop)("no listing")
+    sys.addaudithook(hook)
+elif scenario == "weak-dictionary-replaced":
+    import weakref
+    def refusing(*args, **kwargs):
+        RAN.append("WeakKeyDictionary")
+        raise RuntimeError("no weak dictionary")
+    weakref.WeakKeyDictionary = weakref.WeakValueDictionary = refusing
+try:
+    spec = importlib.util.spec_from_file_location("recusal_invocation_alone", alone)
+    invocation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(invocation)  # this module alone: what its own import does
+    imported = "ok"
+except BaseException as error:
+    print(json.dumps({"imported": type(error).__name__, "ran": RAN}))
+    sys.exit(0)
+def fetch(query: str, limit: int = 10):
+    return "rows"
+def traced(function):
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        return function(*args, **kwargs)
+    return wrapper
+def memo(function):
+    @functools.wraps(function)
+    @functools.lru_cache(maxsize=16)
+    def wrapper(*args, **kwargs):
+        return function(*args, **kwargs)
+    return wrapper
+def memo_own(function):
+    @functools.wraps(function)
+    @functools.lru_cache(maxsize=16)
+    def wrapper(*args, skip_review: bool = True, **kwargs):
+        return function(*args, **kwargs)
+    return wrapper
+class Service:
+    def fetch(self, query: str, limit: int = 10):
+        return "rows"
+    @functools.lru_cache(maxsize=None)
+    def cached(self, query: str, limit: int = 10):
+        return "rows"
+# before any walk: a cache read on its own finds what it reads with
+first = list(invocation.own_parameters(memo_own(fetch)))
+tools = {
+    "plain": fetch, "traced": traced(fetch), "method": Service().fetch,
+    "lru": functools.lru_cache(maxsize=None)(fetch), "lru-method": Service().cached,
+    "memo": memo(fetch), "memo-own": memo_own(fetch), "partial": functools.partial(traced(fetch)),
+}
+def verdict(tool):
+    try:
+        invocation.reached_parameters(tool)
+        # a partial has no hints to read: its reason is not the walk's, on any kernel
+        partial = isinstance(tool, functools.partial)
+        why = invocation.unsupported_signature(tool) if not partial else None
+    except BaseException as error:
+        return "RAISES " + type(error).__name__
+    return "accept" if why is None else why[:13]
+verdicts = {name: verdict(tool) for name, tool in tools.items()}
+again = {name: verdict(tool) for name, tool in tools.items()}
+print(json.dumps({
+    "imported": imported, "first": first, "verdicts": verdicts, "again": again,
+    "ran": sorted(set(RAN)), "referents": invocation._referents is not None,
+    "reference": invocation._reference is not None, "kept": len(invocation._KEPT),
+}))
+"""
+
+_SEVEN_SCENARIOS = {
+    # scenario: (the cache is listed, something is kept between walks, what ran)
+    "none": (True, True, []),
+    "gc-none": (False, True, []),
+    "weakref-none": (True, False, []),
+    "both-none": (False, False, []),
+    "gc-namespace": (False, True, []),
+    "import-refused": (False, False, ["import gc", "import weakref"]),
+    "import-stopped": (False, False, ["import gc", "import weakref"]),
+    # an interrupt from the keyboard is not caught, at either import
+    "import-interrupted-gc": "import gc",
+    "import-interrupted-weakref": "import weakref",
+    "referents-is-referrers": (False, True, []),
+    "referents-is-tracked": (False, True, []),
+    "referents-python": (False, True, []),
+    "listing-refused": (False, True, ["hook"]),
+    "listing-stopped": (False, True, ["hook"]),
+    "weak-dictionary-replaced": (True, True, []),
+}
+
+
+@pytest.mark.parametrize("scenario", sorted(_SEVEN_SCENARIOS))
+def test_r_the_module_imports_and_walks_wherever_0_15_0_does(scenario):
+    """R1 to R3. 0.15.0 imported neither ``gc`` nor ``weakref`` and listed nothing. So where
+    a process refuses either import (None in ``sys.modules``, an import or audit hook that
+    raises, whatever it raises), has another function under ``gc.get_referents``, or
+    stops the listing with an audit hook (whatever that raises), this module is imported
+    and every tool is read as 0.15.0 reads it: nothing is raised and nothing is refused.
+    Nothing written in Python is called for it: not a function put under
+    ``gc.get_referents``, not a stand-in for ``weakref.WeakKeyDictionary``."""
+    import json
+    import os
+    import subprocess
+
+    root = str(pathlib.Path(__file__).resolve().parent.parent)
+    alone = os.path.join(root, "recusal", "invocation.py")
+    done = subprocess.run(
+        [sys.executable, "-c", _SEVEN_ENVIRONMENT, scenario, alone],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    if scenario.startswith("import-interrupted"):
+        assert seen == {"imported": "KeyboardInterrupt", "ran": [_SEVEN_SCENARIOS[scenario]]}
+        return
+    listed, keeps, ran = _SEVEN_SCENARIOS[scenario]
+    assert seen["imported"] == "ok"
+    assert seen["ran"] == ran
+    told = listed or scenario in ("listing-refused", "listing-stopped")
+    assert (seen["referents"], seen["reference"]) == (told, keeps)
+    # the cache named again is read as what it calls where it can be listed, and by its
+    # name, as in 0.15.0, where it cannot; everything else is accepted either way
+    expected = {name: "accept" for name in seen["verdicts"]}
+    if listed:
+        expected["memo-own"] = "`skip_review`"
+    assert seen["verdicts"] == expected and seen["again"] == expected
+    assert seen["first"] == (["args", "skip_review", "kwargs"] if listed else ["query", "limit"])
+    assert (seen["kept"] > 0) == keeps
+
+
+def test_r_a_listing_that_is_stopped_proves_nothing_and_an_interrupt_is_not_caught(monkeypatch):
+    """R2 and R3 on the helpers: whatever stops the listing but an interrupt from the
+    keyboard leaves the name standing, and the listing is the interpreter's own function
+    by its type, its module and its name."""
+    import gc
+    import types
+
+    own = ["query", "limit"]
+    reached_parameters(_six_fetch)  # the first walk has been made
+
+    class Stop(BaseException):
+        pass
+
+    def stopped(value):
+        raise Stop("an audit hook stopped the listing")
+
+    monkeypatch.setattr(invocation, "_referents", stopped)
+    assert _levels(_six_cached(_six_audited)(_six_fetch)) == [own, own]
+
+    def interrupted(value):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(invocation, "_referents", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        reached_parameters(_six_cached(_six_audited)(_six_fetch))
+    monkeypatch.undo()
+
+    assert invocation._collector() is gc.get_referents
+    # the built-in under another module object of that name is not that module's own
+    another = types.ModuleType("gc")
+    another.get_referents = gc.get_referents
+    monkeypatch.setattr(invocation, "_gc", another)
+    assert invocation._collector() is None
+    monkeypatch.undo()
+    for other in (gc.get_referrers, gc.is_tracked, gc.get_objects, len):
+        monkeypatch.setattr(gc, "get_referents", other)
+        assert invocation._collector() is None, other
+    monkeypatch.undo()
+    assert invocation._collector() is gc.get_referents
+
+
+def test_r4_a_listing_a_collection_interrupts_is_made_again():
+    """On Python 3.9 to 3.11 ``list(d.items())`` is not one step: a collection can start
+    at any of the tuples it makes, and a weak-reference callback it runs can change the
+    dictionary, which then raises ``RuntimeError``. The listing is made again."""
+    import gc
+    import weakref
+
+    calls: list = []
+
+    def twice_interrupted():
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("dictionary changed size during iteration")
+        return iter([("a", 1)])
+
+    assert invocation._listed(twice_interrupted) == [("a", 1)] and len(calls) == 3
+
+    def always_interrupted():
+        calls.append(1)
+        raise RuntimeError("dictionary changed size during iteration")
+
+    del calls[:]
+    with pytest.raises(ValueError, match="was changed each time it was listed"):
+        invocation._listed(always_interrupted)
+    assert len(calls) == invocation._TRIES == 8
+
+    def another_failure():
+        calls.append(1)
+        raise TypeError("not what a collection does to a listing")
+
+    del calls[:]
+    with pytest.raises(TypeError):
+        invocation._listed(another_failure)
+    assert len(calls) == 1  # only the interrupted listing is made again
+
+    # the reviewer's reproduction: a callback changes the dictionary being listed
+    def tool():
+        pass
+
+    tool.__dict__.update({"key%d" % index: index for index in range(5000)})
+    attributes, kept = tool.__dict__, []
+
+    class Node:
+        pass
+
+    def spoil(_reference=None):
+        attributes["added-by-a-callback"] = 1
+        attributes.pop("added-by-a-callback", None)
+        attributes["added-%d" % len(attributes)] = 1
+
+    def garbage():
+        one, other = Node(), Node()
+        one.other, other.other = other, one  # a cycle: freed only by the collector
+        kept.append(weakref.ref(one, spoil))
+
+    thresholds = gc.get_threshold()
+    gc.collect()
+    gc.set_threshold(50, 1, 1)
+    try:
+        for _ in range(60):
+            garbage()
+            assert invocation._entry(tool.__dict__, "key4999") == 4999
+            garbage()
+            assert 4999 in invocation._listed(tool.__dict__.values)
+    finally:
+        gc.set_threshold(*thresholds)
+    if sys.version_info < (3, 12):
+        assert len(attributes) > 5000  # the callback ran
+
+
+def test_what_is_kept_between_walks_is_kept_by_identity_and_weakly(monkeypatch):
+    """What a cache calls, and the names a code object refers to, are kept in a plain
+    ``dict`` under the ``id()`` of the object, beside a weak reference to it: an entry
+    whose object is gone is not read as another's, nothing is kept alive, and entries of
+    objects that are gone are dropped."""
+    import gc
+    import weakref
+
+    reached_parameters(_six_fetch)  # the first walk has been made
+    assert invocation._reference is weakref.ref
+    assert type(invocation._KEPT) is dict
+    monkeypatch.setattr(invocation, "_KEPT", {})
+
+    class Owner:
+        pass
+
+    first, second = Owner(), Owner()
+    invocation._keep(first, "one")
+    assert invocation._kept(first) == "one" and invocation._kept(second) is invocation._MISSING
+    # an entry left under the address of another object is not that object's
+    invocation._KEPT[id(second)] = invocation._KEPT[id(first)]
+    assert invocation._kept(second) is invocation._MISSING
+    invocation._keep(second, "two")
+    assert invocation._kept(second) == "two" and invocation._kept(first) == "one"
+    gone = weakref.ref(first)
+    del first
+    gc.collect()
+    assert gone() is None  # not kept alive
+    # an object that cannot be weakly referenced is not kept
+    invocation._keep(7, "seven")
+    assert invocation._kept(7) is invocation._MISSING and id(7) not in invocation._KEPT
+
+    # entries of objects that are gone are dropped once the dictionary has grown
+    owners = [Owner() for _ in range(40)]
+    for owner in owners:
+        invocation._keep(owner, "kept")
+    survivor = owners[0]
+    del owners, owner
+    gc.collect()
+    assert len(invocation._KEPT) >= 41
+    monkeypatch.setattr(invocation, "_SWEEP_AT", 1)
+    third = Owner()
+    invocation._keep(third, "three")
+    assert sorted(invocation._KEPT) == sorted({id(second), id(survivor), id(third)})
+    assert invocation._SWEEP_AT == 256
+    assert invocation._kept(third) == "three" and invocation._kept(survivor) == "kept"
+
+    # where the interpreter's weak reference type is not to be had, nothing is kept
+    monkeypatch.setattr(invocation, "_reference", None)
+    fourth = Owner()
+    invocation._keep(fourth, "four")
+    invocation._tell(fourth, _six_fetch)
+    assert invocation._kept(fourth) is invocation._MISSING
+    assert invocation._told(fourth) is invocation._MISSING
+    monkeypatch.undo()
+
+    assert invocation._reference_type() is weakref.ref
+
+    class Lookalike:
+        def __init__(self, *args):  # a stand-in: never called by the kernel
+            pass
+
+    monkeypatch.setattr(weakref, "ref", Lookalike)
+    assert invocation._reference_type() is None  # not a type C code defines
+    monkeypatch.undo()
+    monkeypatch.setattr(invocation, "_weakref", None)
+    assert invocation._reference_type() is None
+
+
+_SEVEN_GUARDED: Any = None
+
+
+def test_the_globals_a_wrapper_names_are_looked_up_as_they_stand_and_named_once(monkeypatch):
+    """The names a code object refers to cannot change: they are found once and kept.
+    What stands under them in the module is looked up at each walk, a handful of reads
+    whatever the size of the module, so a global bound again is read as it now stands. A
+    key of the namespace that is not a ``str`` is neither hashed nor compared unless it
+    hashes as one of those names."""
+    import functools
+    import types
+
+    @functools.wraps(_six_fetch)
+    def wrapper(*args, **kwargs):
+        return _SEVEN_GUARDED(*args, **kwargs)
+
+    real, named = invocation._names, []
+
+    def counting(code, depth=0):
+        named.append(code)
+        return real(code, depth)
+
+    monkeypatch.setattr(invocation, "_names", counting)
+    monkeypatch.setitem(globals(), "_SEVEN_GUARDED", _traced(_six_fetch))
+    for _ in range(3):
+        assert unsupported_signature(wrapper) is None
+    assert named == [wrapper.__code__]
+    assert invocation._kept(wrapper.__code__) == ("_SEVEN_GUARDED",)
+    monkeypatch.setitem(globals(), "_SEVEN_GUARDED", _six_audited(_six_fetch))
+    assert unsupported_signature(wrapper).startswith(_SIX_UNDECLARED)
+    assert named == [wrapper.__code__]
+    assert invocation._named_globals(wrapper) == [globals()["_SEVEN_GUARDED"]]
+    monkeypatch.delitem(globals(), "_SEVEN_GUARDED")
+    assert invocation._named_globals(wrapper) == []  # a name that is not there is no value
+
+    class Key:
+        __hash__ = _touch("key __hash__", 20261123)
+        __eq__ = _touch("key __eq__", False)
+
+    namespace = dict(globals(), _SEVEN_GUARDED=_six_audited(_six_fetch))
+    namespace[Key()] = None
+    elsewhere = types.FunctionType(wrapper.__code__, namespace, "wrapper")
+    functools.update_wrapper(elsewhere, _six_fetch)
+    del _TOUCHED[:]
+    assert unsupported_signature(elsewhere).startswith(_SIX_UNDECLARED)
+    assert _TOUCHED == []
+
+
+def test_a_callable_object_that_defines_get_is_refused_with_a_reason_of_its_own():
+    """``inspect.signature`` shows no signature for a callable object whose class defines
+    ``__get__`` (it takes it for a method descriptor of a built-in type). The walk raised
+    ``ValueError`` for it and still does: with the cause and what to do in its message."""
+    import functools
+    import types
+
+    class Binding:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+        def __get__(self, instance, owner=None):
+            return self if instance is None else types.MethodType(self, instance)
+
+    for tool in (_six_retry(Binding(_six_fetch)), _traced(_six_retry(Binding(_six_fetch)))):
+        assert tool("q", 5) == "rows"
+        with pytest.raises(ValueError) as refused:
+            reached_parameters(tool)
+        text = str(refused.value)
+        assert type(refused.value) is ValueError  # the class every gate already names
+        assert unsupported_signature(tool) == text == invocation._DESCRIPTOR
+        assert "defines `__get__`" in text and "register a plain function that calls it" in text
+
+    class Service:
+        fetch = Binding(lambda self, query, limit=10: "rows")
+
+    bound = _six_retry(Service().fetch)  # the object, bound as a method
+    assert bound("q") == "rows"
+    with pytest.raises(ValueError, match="defines `__get__`"):
+        reached_parameters(bound)
+    if sys.version_info >= (3, 10):  # a ``staticmethod`` object is callable from 3.10
+        static = types.MethodType(staticmethod(lambda self, query: "rows"), Service())
+        with pytest.raises(ValueError, match="defines `__get__`"):
+            invocation.own_parameters(static)
+    # what ``inspect`` cannot read for another reason keeps the reason it had
+    unread = functools.partial(functools.lru_cache(maxsize=None)(_six_fetch), "q")
+    with pytest.raises(ValueError) as refused:
+        invocation.own_parameters(unread)
+    assert str(refused.value) != invocation._DESCRIPTOR
+    assert not invocation._read_as_a_descriptor(str.upper)
+    assert not invocation._read_as_a_descriptor(_six_fetch)
+
+
+def test_a_partial_that_carries_a_wrapped_is_a_callable_the_walk_read():
+    """A held wrapper is followed until it reaches a callable the walk read, for 32 links.
+    A ``functools.partial`` that carries a ``__wrapped__`` is such a callable: a chain of
+    31 wrappers that ends on it is judged, where the 32nd link would refuse it unread."""
+    import functools
+
+    relay = _six_retry(_six_fetch)
+    held = relay
+    for _ in range(31):
+        held = _traced(held)
+
+    @functools.wraps(relay)
+    def outer(*args, **kwargs):
+        return held(*args, **kwargs)
+
+    assert outer("q", 5) == "rows"
+    assert unsupported_signature(outer) is None
+    held = _traced(held)  # one more: still going at the 32nd link
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(outer)
+
+
+def test_the_partialmethod_check_asks_nothing_of_functools_without_a_mark(monkeypatch):
+    """A callable that shows nothing under either name of the mark is not asked about:
+    ``functools.partialmethod`` is looked up only once a mark is there."""
+    import functools
+
+    asked: list = []
+
+    class Recording:
+        def __getattr__(self, name):
+            asked.append(name)
+            return getattr(functools, name)
+
+    class Repo:
+        marked = functools.partialmethod(_Fetcher(), "customers")
+
+    marked = Repo().marked
+    monkeypatch.setattr(invocation, "functools", Recording())
+    for unmarked in (_six_fetch, _traced(_six_fetch), Repo(), len):
+        invocation._refuse_partialmethod(unmarked)
+    assert asked == []
+    with pytest.raises(PartialMethodSignature):
+        invocation._refuse_partialmethod(marked)
+    assert asked == ["partialmethod"]
