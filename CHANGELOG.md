@@ -50,9 +50,12 @@ All notable changes to this project are documented here. The format follows
 ### Security
 
 - **`recusal-openai-agents-mcp` 0.2.1: no number the model chooses makes the check of
-  its arguments cost more than the allowance counts, the reason for a refused string
-  says what is true, and text JavaScript reads as a number is refused beside a number
-  type.** The open findings of the fifth review round, which the 0.2.0 page stated.
+  its arguments cost more than the allowance counts, the check of one call stops at a
+  ceiling of steps, JSON text past the limits of the gate's own Python is refused, the
+  reason for a refused string says what is true, and text JavaScript reads as a number
+  is refused beside a number type.** The open findings of the fifth review round, which
+  the 0.2.0 page stated, and the findings of the sixth round, on the changes that
+  answer them.
   - Under `uniqueItems` (`set[int]`), integers chosen to share one hash (the multiples
     of 2^61 - 1) turned the set the items are gathered into into a scan, which the step
     allowance did not count: on the review machine checking 10,000 of them (245 KB)
@@ -62,24 +65,24 @@ All notable changes to this project are documented here. The format follows
     took 2.4 s. A number is now compared by its text (`0x1` for `1`, `1.0` and `true`;
     `float.hex` for a float that is not a whole number), whose hash Python keys for the
     process, and a comparison key that is gathered into a set holds no number at any
-    depth. 100,000 integers of one hash take what 100,000 ordinary ones do (412 ms and
-    389 ms), and which items are equal is unchanged: two equal numbers are one item
-    whatever their JSON type and size.
+    depth. Integers of one hash take what as many ordinary ones do (20,000 of them:
+    70 ms and 71 ms), and which items are equal is unchanged: two equal numbers are
+    one item whatever their JSON type and size.
   - `unevaluatedProperties` and `unevaluatedItems`, which `jsonschema` checks by looking
     every member or item up in a list of the ones other keywords evaluated, were
     counted as a few steps for each: 30,000 members of one object took 1.9 s with
     240,016 of 30,012,000 steps counted. They are now counted as the square of the
     members or items they are applied to, before they run, so a call that would take
-    that long is refused as too costly: 1,000 members are checked in 8 ms, and 1,100
-    and 30,000 are refused in 3 ms and 58 ms. No SDK publishes these keywords;
-    hand-written schemas do.
+    that long is refused as too costly: under the ceiling below, 400 members are
+    checked in 3 ms, and 500 and 30,000 are refused in 1 ms and 59 ms. No SDK
+    publishes these keywords; hand-written schemas do.
   - The reason for a string a server may read as another type ended "Send the value as
     JSON, not as text", which is wrong where the text is not that value: `"007"`, the
     postal code `"01234"`, `"no"` for `str | bool`. The rule is unchanged. The reason
     now says how to send the other type where that was meant (a JSON number, `true` or
     `false`, the list or the object itself), and, where the text was meant, that the
     call cannot be made while the schema allows both and that the server's author can
-    declare the parameter a string only (`str`).
+    declare the parameter a string only (`str`, or `z.string()` with zod).
   - A zod `z.union([z.coerce.number(), z.string()])` lists `number` and `string`, as a
     plain union does, and reads the text with JavaScript's `Number()`: the policy
     judged `"0x1F"` and the server ran 31, judged `""` and it ran 0. Beside a number
@@ -108,11 +111,65 @@ All notable changes to this project are documented here. The format follows
     now holds this, and that the same requirement written with `if` and `then` is
     judged); and the time the check takes beside Pydantic's own validation, measured
     by the new `tools/measure_mcp_cost.py`, which the page's numbers
-    come from (10,000 items of a four-field model: 673 ms against 3.3 ms). The check
-    runs on the event loop and grows in proportion to the arguments.
+    come from (3,571 items of a four-field model, the most the ceiling below
+    completes: 243 ms against 1.1 ms). The check runs on the event loop and grows in
+    proportion to the arguments, up to that ceiling.
   - Tests added for what the round found unpinned: a default with a member that
     `unevaluatedProperties: false` forbids refuses the call, and the allowance is the
     10,000 steps and 1,000 for each value the page states, no larger.
+  - Sixth round: JSON text that the gate's own Python gives up decoding was judged a
+    string, and a server under another Python decoded it and ran a list or an object.
+    `json.loads` stops at a nesting depth that differs by version (about 1,000 levels
+    before Python 3.12, about 3,000 in 3.12 and 3.13, more after) and at an integer of
+    4,300 digits, which a server can switch off. With the gate on Python 3.10 and the
+    server on 3.12, a list nested 1,200 deep sent as a 2,410-character string for a
+    parameter typed `Any` passed a policy that allows only text there, and the server
+    ran the list; `"[" + 4,301 digits + "]"` did the same against a server without the
+    digit limit. Text the gate's Python gives up on for such a limit is now refused
+    like other JSON text when it opens a list or an object. A long run of digits alone
+    is still judged and sent as the string it is: it could decode only to a number,
+    which the MCP Python SDK's server keeps a string. The cost: text that opens a list
+    or an object, passes one of those limits and is then not JSON after all is refused
+    too.
+  - Sixth round: the steps allowed for each value did not bound the time a call takes,
+    which grew with what the model sent: 4,000 items of a ten-model discriminated
+    union (56 KB) took 1.6 s and held the event loop for that long, 16,000 took 6.6 s,
+    and 1,000 short lists (6.9 KB) against a hand-written schema of twelve `allOf`
+    levels ran 6.1 s before they were refused. The allowance is now the smaller of
+    10,000 steps and 1,000 for each value, and a ceiling of 200,000 steps for one call
+    (`STEP_CEILING`, a new public name). The largest calls of the measured shapes that
+    it completes take between 124 ms and 482 ms on the measuring laptop, and the
+    hand-written schema is stopped in 598 ms. The cost is that a large ordinary call
+    is refused although the server would run it: more than 49,997 integers or short
+    strings, 3,571 records of a four-field model (110 KB), 5,403 children of a
+    recursive model, 809 items of a ten-model discriminated union (11 KB) or 308 of a
+    thirty-model one (4.5 KB). An application that expects such calls raises the
+    ceiling for a connection with the new keyword `step_ceiling=` on `gate_mcp_server`,
+    `gated_agent` and `audited_agent` (a whole number of steps; a server object carries
+    one, and gating it again with another raises `ValueError`). The reason for a call
+    that is too costly now says which limit stopped it, and where it was the ceiling,
+    how the application raises it.
+  - Sixth round: an integer of more than about 308 digits for a parameter whose
+    `multipleOf` is a fraction was refused with "the server's listed schema for this
+    tool could not be applied to the arguments (OverflowError)", which blamed the
+    schema for an argument. The reason now says that the arguments hold an integer too
+    large to be a float; a `multipleOf` that is itself too large for one says that of
+    the schema; and an error the gate does not know says only that the arguments could
+    not be checked.
+  - Sixth round, stated on the package page under "What the gate does not see", each
+    with what to do, and each held by a test against a real stdio server: in a
+    default-mode Pydantic union a number runs as the first member that converts it
+    (`5` for `Union[datetime, Decimal]` runs as 1970-01-01T00:00:05); `1` and `0` run
+    as booleans for `Union[bool, Decimal]`, and `true` runs as `1` for
+    `Literal[1, 2] | bool`; and a string with a `format` runs normalised
+    (`"HTTP://X/a/../admin"` for an `AnyUrl` runs as `http://x/admin`, `""` for a
+    `Path` as `.`, a UUID in braces and capitals in its plain form).
+  - The page's sentence that the largest ordinary calls spend under a twentieth of the
+    allowance was wrong: they spend from 4 steps for each value to 323 (a list of a
+    thirty-model discriminated union), up to a third of the 1,000 a value adds. The
+    time table has the union rows, and `tools/measure_mcp_cost.py` produces every
+    number on the page, the largest call of each shape that the ceiling completes
+    among them.
 
 - **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
   CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has

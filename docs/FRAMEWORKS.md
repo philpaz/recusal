@@ -235,7 +235,9 @@ whose default has a member its own schema does not allow, a tool the server no l
 lists. The work is bounded by counting it: each keyword applied to a value, each value
 walked or read for a comparison is a step, a recursive schema is checked once for each
 value, and a call that costs more
-steps than the gate allows for the size of its arguments is refused. The policy
+steps than the gate allows for the size of its arguments, or more than a ceiling of
+200,000 steps for one call that the application can raise (`step_ceiling=`), is
+refused. The policy
 judges a copy of the completed arguments and the server is sent the completed arguments,
 so a policy's write to what it judged changes its copy, not the call. The one exception
 is a listed default that cannot be sent: one that is not valid

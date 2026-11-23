@@ -81,8 +81,10 @@ from recusal import decide
 from recusal.claude_code import identity_getter
 from recusal.invocation import detached as _detached
 
+from ._schema import STEP_CEILING
 from ._schema import Listed as _Listed
 from ._schema import Refused as _Refused
+from ._schema import ceiling_of as _ceiling_of
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -149,8 +151,9 @@ def _judged_call(
     too deeply, a tool the server does not list, arguments that are not valid against the
     schema as they stand, an object or a list the schema offers more than one form for, a
     string a server may read as another type the schema admits, arguments that cost more
-    to check than the gate allows, and a schema the gate cannot check or complete them
-    against.
+    to check than the gate allows (a ``schema`` that is a ``Listed`` carries its
+    connection's ceiling; any other is checked under ``STEP_CEILING``), and a schema the
+    gate cannot check or complete them against.
 
     ``record`` goes straight to ``decide``, which then writes the decision to an audit
     log; the entry of a judged call carries the fingerprint of the arguments as judged,
@@ -246,7 +249,11 @@ def _name_domain_refusal(policy: Policy, server_name: Any, where: str) -> Option
 
 
 def gate_mcp_server(
-    server: MCPServer, policy: Policy, recording: Optional[Recording] = None
+    server: MCPServer,
+    policy: Policy,
+    recording: Optional[Recording] = None,
+    *,
+    step_ceiling: int = STEP_CEILING,
 ) -> MCPServer:
     """Wrap the server's ``call_tool`` so every call is judged by the server's own tool
     name and the arguments that are sent to it, in place; returns the same server.
@@ -268,9 +275,16 @@ def gate_mcp_server(
     tool that is not in
     the most recent listing makes the gate call ``list_tools()`` itself, with no run
     context and no agent, once for that call; a tool that is still not listed is refused.
+
+    ``step_ceiling`` is the most steps the check of one call's arguments may cost
+    (``STEP_CEILING``, 200,000, unless given), whatever the arguments hold: the check
+    runs on the event loop, and the ceiling is what bounds how long one call can hold
+    it. A call that would cost more is refused before the policy runs. Raise it for a
+    server whose ordinary calls are larger; like the policy, a connection carries one.
     """
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
+    ceiling = _ceiling_of(step_ceiling)
     mismatch = _name_domain_refusal(policy, server.name, "gate_mcp_server")
     if mismatch is not None:
         raise ValueError(mismatch)
@@ -286,6 +300,12 @@ def gate_mcp_server(
                     f"Recusal: server {server.name!r} is already gated with a different "
                     "recording; a connection carries one audit record for every agent that "
                     "shares it. Gate a separate server object to record elsewhere."
+                )
+            if server.call_tool.recusal_step_ceiling != ceiling:  # type: ignore[attr-defined]
+                raise ValueError(
+                    f"Recusal: server {server.name!r} is already gated with a different "
+                    "step_ceiling; a connection carries one for every agent that shares "
+                    "it. Gate a separate server object for another ceiling."
                 )
             return server
         raise ValueError(
@@ -304,7 +324,7 @@ def gate_mcp_server(
             schema = getattr(tool, "input_schema", None)
             if schema is None:
                 schema = getattr(tool, "inputSchema", None)
-            latest[tool.name] = _Listed(copy.deepcopy(schema))
+            latest[tool.name] = _Listed(copy.deepcopy(schema), ceiling)
         listed.clear()  # a tool the server withdrew is no longer listed
         listed.update(latest)
 
@@ -368,6 +388,7 @@ def gate_mcp_server(
     gated_call_tool.recusal_gate = True  # type: ignore[attr-defined]
     gated_call_tool.recusal_policy = policy  # type: ignore[attr-defined]
     gated_call_tool.recusal_recording = recording  # type: ignore[attr-defined]
+    gated_call_tool.recusal_step_ceiling = ceiling  # type: ignore[attr-defined]
     server.call_tool = gated_call_tool  # type: ignore[method-assign]
     server.list_tools = gated_list_tools  # type: ignore[method-assign]
     return server
@@ -484,7 +505,13 @@ def is_gated(agent: Any, _seen: Optional[set[int]] = None) -> bool:
     return _tools_gated(others, lambda sub: is_gated(sub, seen))
 
 
-def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = None) -> Agent:
+def gated_agent(
+    agent: Agent,
+    policy: Policy,
+    recording: Optional[Recording] = None,
+    *,
+    step_ceiling: int = STEP_CEILING,
+) -> Agent:
     """Return a copy of the agent whose every tool call is judged by Recusal.
 
     Function tools and hosted MCP tools are replaced by gated copies; the servers in
@@ -494,8 +521,11 @@ def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = N
     The copy has its own ``tools``, ``mcp_servers`` and ``handoffs`` lists, so a later
     change to the original agent's lists does not reach it. Build the agent completely,
     then gate it: a tool or a server appended to the gated copy afterwards is not gated,
-    and ``is_gated`` then says so.
+    and ``is_gated`` then says so. ``step_ceiling`` is given to ``gate_mcp_server`` for
+    every server in ``mcp_servers``: the most steps the check of one call to a local
+    server may cost.
     """
+    ceiling = _ceiling_of(step_ceiling)
     reason = _ungateable_reason(agent)
     if reason is not None:
         raise ValueError(f"Recusal cannot gate agent {agent.name!r}: {reason}")
@@ -513,5 +543,8 @@ def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = N
             # a sub-agent behind as_tool is gated when THIS package says so: it may hold
             # MCP servers and hosted tools, which the function-tool package alone refuses
             tools.extend(gate_tools([tool], policy, for_function_tools, agent_gated=is_gated))
-    servers = [gate_mcp_server(server, policy, recording) for server in agent.mcp_servers]
+    servers = [
+        gate_mcp_server(server, policy, recording, step_ceiling=ceiling)
+        for server in agent.mcp_servers
+    ]
     return agent.clone(tools=tools, mcp_servers=servers, handoffs=list(agent.handoffs))

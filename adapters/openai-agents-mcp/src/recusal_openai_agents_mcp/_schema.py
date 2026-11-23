@@ -52,8 +52,8 @@ draft-07, 2019-09 and 2020-12, a ``$ref`` that does not resolve inside the schem
 that refers to itself without a value in between, ``unevaluatedProperties`` together with
 ``patternProperties``, a default where the walk does not write one, a left-out property
 whose alternatives list different defaults, a listed default with a member its own schema
-does not allow, and arguments that cost more to check than the work the gate allows for
-their size.
+does not allow, and arguments that cost more to check than the work the gate allows a
+call.
 
 The work is bounded by counting it, never by a timer. A step is one keyword of the schema
 applied to one value (and one more for each member or item the value holds directly), one
@@ -63,7 +63,11 @@ value visited by the walk, one value read for a comparison (``enum``, ``const``,
 comparing every member or item with every other, the square of their number. Nothing is
 validated twice for the same schema and the same value while the arguments stand as they
 are, a value is walked once for a schema, and every step is counted against an allowance
-that grows with the number of values in the arguments. What one step costs beyond that
+that grows with the number of values in the arguments up to a ceiling
+(:data:`STEP_CEILING`, which an application can raise for a connection). The ceiling is
+what bounds the time one call can take: an ordinary schema spends between 4 and a few
+hundred steps on each value, so without it the time grows with whatever the model
+sends. What one step costs beyond that
 is bounded by the size of the keyword in the listed schema, which the model does not
 choose, and by the length of the string or the size of the number it reads. The items
 ``uniqueItems`` compares are gathered into a set by keys that hold no number, only text:
@@ -180,16 +184,55 @@ _SPACE = "".join(
 _MAX_PASSES = 16
 
 #: The work one call may cost: this many steps, and this many more for every value in its
-#: arguments (an object, a list, and each member, item and scalar in them). What a step is
-#: the module's own text says. The largest ordinary calls measured (the tools of a server
-#: built with the MCP Python SDK, the listed tools of the reference GitHub server, and a
-#: recursive model nested to the 64-level limit) spend under a twentieth of this.
+#: arguments (an object, a list, and each member, item and scalar in them), up to the
+#: ceiling below. What a step is the module's own text says. The ordinary calls measured
+#: (``tools/measure_mcp_cost.py``) spend from 4 steps for each value (a list of integers)
+#: to 123 (a list of a discriminated union of ten models) and 323 (of thirty models): up
+#: to a third of what a value adds.
 _STEPS = 10_000
 _STEPS_PER_VALUE = 1_000
+
+#: The most steps one call may cost, however many values its arguments hold, unless the
+#: application names another ceiling for a connection (``step_ceiling=`` on
+#: ``gate_mcp_server``, ``gated_agent`` and ``audited_agent``). The steps allowed for
+#: each value do not bound the time a call takes, which grows with what the model sends;
+#: this does.
+STEP_CEILING = 200_000
 
 _SCHEMA = "the server's listed schema for this tool"
 
 _TOO_COSTLY = f"the arguments are too costly to check against {_SCHEMA}"
+
+
+def ceiling_of(value: Any) -> int:
+    """``value`` as a ceiling on the steps of one call: a whole number of at least 1."""
+    if type(value) is not int or value < 1:
+        raise ValueError(
+            "Recusal: step_ceiling is the most steps the gate spends checking the "
+            "arguments of one call, a whole number of at least 1 (the default is "
+            f"{STEP_CEILING:,})"
+        )
+    return value
+
+
+def _too_costly(allowed: int, ceiling: int) -> str:
+    """The reason for a call whose check was stopped at ``allowed`` steps: which of the
+    two limits stopped it, and what the application can do about that one."""
+    if allowed >= ceiling:
+        return (
+            f"{_TOO_COSTLY}: the check was stopped at {ceiling:,} steps, the ceiling the "
+            "gate sets on one call so that the time a call takes does not grow with what "
+            "is sent. Send fewer values in one call. Where calls of this size are "
+            "expected, the application can raise the ceiling: `step_ceiling=` on "
+            "`gate_mcp_server`, `gated_agent` or `audited_agent`."
+        )
+    return (
+        f"{_TOO_COSTLY}: the check costs more than the {_STEPS:,} steps and "
+        f"{_STEPS_PER_VALUE:,} more for every value in the arguments that the gate allows "
+        "a call. That is what the schema costs for each value here, which raising the "
+        "gate's ceiling on a call (`step_ceiling=`) does not change."
+    )
+
 
 #: What a schema lists as the default of a property: none, one value, or different ones.
 _NONE, _ONE, _DIFFERENT = "none", "one", "different"
@@ -209,6 +252,15 @@ class _Forms(Refused):
 
 class _TooCostly(Exception):
     """The work a call is allowed is spent."""
+
+
+class _NoFloat(Exception):
+    """A ``multipleOf`` could not be checked: a number is too large to be a float.
+    ``sent`` says whether that number is the argument's or the schema's."""
+
+    def __init__(self, sent: bool):
+        super().__init__()
+        self.sent = sent
 
 
 class _Work:
@@ -413,6 +465,22 @@ def _squared(check: Any, kind: Any) -> Any:
     return squared
 
 
+def _multiple_of(check: Any) -> Any:
+    """``check``, the ``multipleOf`` of ``jsonschema``, which divides as floats when one
+    side is a float. An integer of more than about 308 digits has no float, and Python
+    raises ``OverflowError`` there: for an argument that large beside a ``multipleOf``
+    that is a fraction, or for a ``multipleOf`` that large beside an argument that is a
+    fraction. Which of the two it was is kept for the reason."""
+
+    def multiple_of(validator: Any, factor: Any, instance: Any, schema: Any) -> Iterable[Any]:
+        try:
+            return list(check(validator, factor, instance, schema) or ())
+        except OverflowError:
+            raise _NoFloat(type(instance) is int and type(factor) is float) from None
+
+    return multiple_of
+
+
 def _is_integer(checker: Any, instance: Any) -> bool:
     return type(instance) is int
 
@@ -483,6 +551,7 @@ def _strict(base: Any) -> Any:
         "additionalProperties": _additional_properties,
         "anyOf": _any_of,
         "oneOf": _one_of,
+        "multipleOf": _multiple_of(base.VALIDATORS["multipleOf"]),
     }
     for keyword, kind in (("unevaluatedProperties", dict), ("unevaluatedItems", list)):
         if keyword in keywords:  # draft-07 has neither
@@ -654,11 +723,22 @@ def _declared(types: Any) -> list[str]:
 def _json_text(text: str) -> bool:
     """Whether a string is JSON text for null, a list or an object: what the MCP Python
     SDK's server decodes and runs in the string's place when it is an argument. Text that
-    is not JSON is not."""
+    is not JSON is not.
+
+    The server decodes under its own interpreter, and this one has limits another does
+    not share: how deep a list or an object may be nested (about 1,000 levels before
+    Python 3.12, about 3,000 in 3.12 and 3.13, more after) and how many digits an
+    integer may have (4,300, or none where the limit is switched off or the Python is
+    older). Text this interpreter gives up on for such a limit is text a server may
+    still decode, so it is JSON text here when it opens a list or an object. Text that
+    opens neither could decode only to a number, which a server keeps a string: a long
+    run of digits is judged and sent as the string it is."""
     try:
         decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return False  # not JSON, for any interpreter
     except (ValueError, RecursionError):
-        return False
+        return text.lstrip()[:1] in ("[", "{")
     return decoded is None or type(decoded) in (list, dict)
 
 
@@ -725,8 +805,10 @@ def _reads(work: _Work, text: str) -> frozenset[str]:
 class Listed:
     """One tool's input schema as a server listed it."""
 
-    def __init__(self, schema: Any):
+    def __init__(self, schema: Any, ceiling: int = STEP_CEILING):
         self.schema = schema
+        #: the most steps the check of one call may cost, whatever its arguments hold
+        self._ceiling = ceiling_of(ceiling)
         self._validator: Any = None
         self._failure: Optional[Refused] = None
         self._names: set[str] = set()
@@ -1109,8 +1191,8 @@ class Listed:
             f"run with that value, not with the string the policy judged. If {meant}, not "
             "text. If the text itself is meant (an identifier, a code, a word), the gate "
             "cannot send it while the schema allows both: the server's author can declare "
-            "this parameter a string only (`str`), and the gate then takes every string "
-            "there as the string it is."
+            "this parameter a string only (`str`, or `z.string()` with zod), and the gate "
+            "then takes every string there as the string it is."
         )
 
     def _chosen(self, value: Any, alternatives: list, link: Any) -> list:
@@ -1270,8 +1352,18 @@ class Listed:
         if state == _NONE or (id(value), name) in held:
             return
         default = _detached(default)  # a copy: the schema was checked to be JSON data
-        errors = list(validator.descend(default, member))
-        if self._stray(validator, errors):
+        try:
+            errors = list(validator.descend(default, member))
+            stray = self._stray(validator, errors)
+        except _NoFloat:
+            # both numbers are the schema's here: its default and its `multipleOf`
+            raise Refused(
+                f"argument `{self._path(here)}` is left out, and the default the server's "
+                "schema lists for it cannot be checked against a `multipleOf` listed "
+                "there, one of the two being too large to be a float, so the gate "
+                "cannot tell what the server would run with"
+            ) from None
+        if stray:
             raise Refused(
                 f"argument `{self._path(here)}` is left out, and the default the server's "
                 "schema lists for it has a member its own schema does not allow there (a "
@@ -1400,22 +1492,34 @@ class Listed:
         too costly to check, and for a schema the gate cannot check or complete them
         against."""
         validator = self._prepared()
-        work = _Work(_STEPS + _STEPS_PER_VALUE * _count(arguments))
+        work = _Work(min(_STEPS + _STEPS_PER_VALUE * _count(arguments), self._ceiling))
         token = _WORK.set(work)
         try:
             return self._complete(validator, work, arguments)
         except Refused:
             raise
         except _TooCostly:
-            raise Refused(_TOO_COSTLY) from None
+            raise Refused(_too_costly(work.allowed, self._ceiling)) from None
         except RecursionError:
             raise Refused(
                 f"the arguments are nested too deeply to check against {_SCHEMA} within "
                 "the interpreter's recursion limit"
             ) from None
-        except Exception as exc:  # noqa: BLE001, a schema the gate cannot apply is refused
+        except _NoFloat as cause:
+            if cause.sent:
+                raise Refused(
+                    "the arguments hold an integer too large to be a float (more than "
+                    "about 308 digits) where the server's schema lists a `multipleOf` "
+                    "that is a fraction, which is checked by dividing the two as floats, "
+                    "so the gate cannot check it. Send a number a float can hold."
+                ) from None
             raise Refused(
-                f"{_SCHEMA} could not be applied to the arguments ({type(exc).__name__})"
+                f"{_SCHEMA} lists a `multipleOf` too large to be a float, which the gate "
+                "cannot check a number that is not an integer against"
+            ) from None
+        except Exception as exc:  # noqa: BLE001, what the gate cannot check is refused
+            raise Refused(
+                f"the arguments could not be checked against {_SCHEMA} ({type(exc).__name__})"
             ) from None
         finally:
             _WORK.reset(token)

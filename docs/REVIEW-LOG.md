@@ -473,10 +473,15 @@ found the open items below.
   calls against a zod server and a Python server. Those scripts are not in the
   repository.
 
-**Open items**, from round five. The untrue sentence is corrected in 0.2.0, and the
-package page states the others; none of the others is fixed in the code.
+**Open items**, from round five, as 0.2.0 was released. The untrue sentence is corrected
+in 0.2.0, and the 0.2.0 package page states the others; none of the others is fixed in
+0.2.0. The changes that answer them, and the findings of a sixth round on those changes
+(JSON text nested deeper, or holding a longer integer, than the gate's own Python
+decodes ran as a list on a server under another Python; and the time one call takes
+grew with what the model sent, which a ceiling on the steps of one call now bounds),
+are in the changelog's Unreleased entry for 0.2.1, which is not released.
 
-- **The most serious.** A model can still stall the agent's process. Under
+- **The most serious.** In 0.2.0 a model can still stall the agent's process. Under
   `uniqueItems`, integers chosen to share one hash make the uniqueness check slow, and
   the step allowance does not count that work (`_unique_items`, `_key` in `_schema.py`).
 - **Not seen, now stated on the package page.** A zod server that converts text

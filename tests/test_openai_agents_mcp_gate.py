@@ -1,9 +1,13 @@
 """Regression tests for the offline OpenAI Agents SDK + Recusal MCP example."""
 
 import asyncio
+import contextlib
+import importlib
+import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Union
 
 import pytest
 
@@ -1434,6 +1438,41 @@ FILLED = {"recursive": True, "dry_run": False}
 
 _SCHEMA = "the server's listed schema for this tool"
 _AS_THEY_STAND = "the gate sends only arguments that are valid against it as they stand"
+_TOO_COSTLY = f"the arguments are too costly to check against {_SCHEMA}"
+#: the reason when the ceiling on one call stopped the check, at the default ceiling
+_OVER_THE_CEILING = (
+    f"{_TOO_COSTLY}: the check was stopped at 200,000 steps, the ceiling the gate sets on "
+    "one call so that the time a call takes does not grow with what is sent. Send fewer "
+    "values in one call. Where calls of this size are expected, the application can raise "
+    "the ceiling: `step_ceiling=` on `gate_mcp_server`, `gated_agent` or `audited_agent`."
+)
+
+
+@contextlib.contextmanager
+def _digit_limit(limit):
+    """Run under another limit on the digits of an integer read from text (0: none), as
+    a server's interpreter may; an interpreter that has no such limit runs as it is."""
+    if not hasattr(sys, "set_int_max_str_digits"):
+        yield
+        return
+    before = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(limit)
+    try:
+        yield
+    finally:
+        sys.set_int_max_str_digits(before)
+
+
+def _over_each_value(steps=10_000, more=1_000):
+    """The reason when the steps allowed for the values of the arguments stopped it."""
+    return (
+        f"{_TOO_COSTLY}: the check costs more than the {steps:,} steps and {more:,} more for "
+        "every value in the arguments that the gate allows a call. That is what the schema "
+        "costs for each value here, which raising the gate's ceiling on a call "
+        "(`step_ceiling=`) does not change."
+    )
+
+
 _SEND_THE_TYPE = (
     "the server would not run with the value the policy judged. Send the declared JSON type."
 )
@@ -2173,11 +2212,13 @@ import datetime
 import json
 import os
 import threading
+import uuid
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal, Optional, Union
 
 from mcp.server.mcpserver import MCPServer
-from pydantic import AliasPath, BaseModel, Field, StringConstraints
+from pydantic import AliasPath, AnyUrl, BaseModel, Field, StringConstraints
 
 app = MCPServer("files")
 LOG = os.environ["RECUSAL_TEST_SERVER_LOG"]
@@ -2406,6 +2447,40 @@ def expire(
 @app.tool()
 def find(ident: Union[int, str], name: str = "") -> str:
     return record("find", ident=ident, name=name)
+
+
+def told(value):
+    return type(value).__name__ + " " + str(value)
+
+
+@app.tool()
+def stamp(at: Union[datetime.datetime, Decimal]) -> str:
+    return record("stamp", at=told(at))
+
+
+@app.tool()
+def forced(force: Union[bool, Decimal] = False) -> str:
+    return record("forced", force=told(force))
+
+
+@app.tool()
+def levelled(n: Union[Literal[1, 2], bool]) -> str:
+    return record("levelled", n=told(n))
+
+
+@app.tool()
+def visit(url: AnyUrl) -> str:
+    return record("visit", url=str(url))
+
+
+@app.tool()
+def opened(at: Path) -> str:
+    return record("opened", at=at.as_posix())
+
+
+@app.tool()
+def ident(key: uuid.UUID) -> str:
+    return record("ident", key=str(key))
 
 
 def swap_v1(path: str, recursive: bool = False) -> str:
@@ -2855,8 +2930,8 @@ def _reads_as(held, allows, read, meant):
         f"may read the text as {read} and run with that value, not with the string the policy "
         f"judged. If {meant}, not text. If the text itself is meant (an identifier, a code, a "
         "word), the gate cannot send it while the schema allows both: the server's author can "
-        "declare this parameter a string only (`str`), and the gate then takes every string "
-        "there as the string it is."
+        "declare this parameter a string only (`str`, or `z.string()` with zod), and the gate then "
+        "takes every string there as the string it is."
     )
 
 
@@ -3552,8 +3627,10 @@ class TestThirdReview:
 
     # --- the work is bounded --------------------------------------------------------------------
 
-    def spent(self, arguments, schema):
-        """``(steps spent, steps allowed, the result or the reason it was refused)``."""
+    def spent(self, arguments, schema, ceiling=10**9):
+        """``(steps spent, steps allowed, the result or the reason it was refused)``,
+        under a ceiling no call here reaches unless the test names one: these tests
+        are of what is counted for each value."""
         module = self.schema_module()
         made: list = []
         original = module._Work.__init__
@@ -3565,7 +3642,7 @@ class TestThirdReview:
         module._Work.__init__ = remembering
         try:
             try:
-                result = module.Listed(schema).complete(arguments)
+                result = module.Listed(schema, ceiling).complete(arguments)
             except module.Refused as refused:
                 result = refused.reason
         finally:
@@ -3628,7 +3705,7 @@ class TestThirdReview:
         module = self.schema_module()
         monkeypatch.setattr(module, "_STEPS", 150)
         monkeypatch.setattr(module, "_STEPS_PER_VALUE", 1)
-        reason = f"Recusal refused `purge`: the arguments are too costly to check against {_SCHEMA}"
+        reason = f"Recusal refused `purge`: {_over_each_value(150, 1)}"
         assert self.judged(_nested(16, {"args": []}), EXPRESSION) == (None, None, reason)
         assert self.judged(_nested(16, {"args": 5}), EXPRESSION) == (None, None, reason)
         small = {"where": {"op": "leaf", "field": "a", "eq": "b"}}
@@ -3643,7 +3720,7 @@ class TestThirdReview:
         monkeypatch.setattr(module, "_STEPS", steps - 1)
         over, limit, result = self.spent(_nested(8, {"args": []}), EXPRESSION)
         assert (over, limit) == (steps, steps - 1)
-        assert result == f"the arguments are too costly to check against {_SCHEMA}"
+        assert result == _over_each_value(steps - 1, 0)
         monkeypatch.setattr(module, "_STEPS", steps)
         again, _, result = self.spent(_nested(8, {"args": []}), EXPRESSION)
         assert again == steps and type(result) is tuple
@@ -5332,7 +5409,7 @@ class TestFifthReview:
         "Recusal refused `purge`: argument `ids` does not meet `uniqueItems` in the server's "
         f"schema; {_AS_THEY_STAND}"
     )
-    TOO_COSTLY = f"the arguments are too costly to check against {_SCHEMA}"
+    TOO_COSTLY = _over_each_value()
     UNEVALUATED = {
         "properties": {
             "o": {
@@ -5476,8 +5553,9 @@ class TestFifthReview:
         assert type(result) is tuple and steps < 30 * 2000
 
     def test_the_allowance_is_the_one_the_readme_states_and_no_larger(self, example):
-        """1,000 steps for every value: 1,500 members under ``unevaluatedProperties`` cost
-        their square, which is more, and the call is refused before the policy runs."""
+        """1,000 steps for every value: under ``unevaluatedProperties`` members cost
+        their square, and from 142 members that is more, whatever the ceiling: the call
+        is refused before the policy runs."""
         module = self.schema_module()
         assert (module._STEPS, module._STEPS_PER_VALUE) == (10_000, 1_000)
         readme = (ROOT / "adapters" / "openai-agents-mcp" / "README.md").read_text(encoding="utf-8")
@@ -5489,10 +5567,18 @@ class TestFifthReview:
         steps, allowed, result = self.spent(given, self.UNEVALUATED)
         assert allowed == 10_000 + 1_000 * 1502
         assert steps > allowed and result == self.TOO_COSTLY
+        # at the default ceiling 150 members are allowed 162,000 steps, under it
+        few = {"o": {f"k{number}": 1 for number in range(150)}}
+        assert self.spent(few, self.UNEVALUATED, module.STEP_CEILING)[1] == 162_000
+        assert self.judged(few, self.UNEVALUATED) == (few, few, None)
+        many = {"o": {f"k{number}": 1 for number in range(420)}}
+        steps, allowed, result = self.spent(many, self.UNEVALUATED, module.STEP_CEILING)
+        assert allowed == 200_000 and 420**2 < steps < allowed
+        assert self.judged(many, self.UNEVALUATED) == (many, many, None)
         assert self.judged(given, self.UNEVALUATED) == (
             None,
             None,
-            f"Recusal refused `purge`: {self.TOO_COSTLY}",
+            f"Recusal refused `purge`: {_OVER_THE_CEILING}",
         )
 
     # --- the reason for text a server may read as another type ----------------------------------
@@ -5504,8 +5590,9 @@ class TestFifthReview:
             ({"anyOf": [{"type": "integer"}, {"type": "string"}]}, "01234", _NUMBER_TEXT),
             ({"anyOf": [{"type": "string"}, {"type": "boolean"}]}, "no", _BOOLEAN_TEXT),
             ({"anyOf": [{"type": "string"}, {"type": "null"}]}, "null", _JSON_TEXT),
+            ({"type": ["number", "string"]}, "0x1F", _JAVASCRIPT_NUMBER_TEXT),
         ],
-        ids=["an-identifier", "a-postal-code", "a-word", "json-text"],
+        ids=["an-identifier", "a-postal-code", "a-word", "json-text", "javascript"],
     )
     def test_the_reason_for_text_names_both_ways_out(self, example, listed, text, reason):
         """The text is not always the other type written wrongly: ``"007"`` is not 7. The
@@ -5517,7 +5604,10 @@ class TestFifthReview:
             f"Recusal refused `purge`: argument `p` {reason}",
         )
         assert "Send the value as JSON" not in reason
-        assert "the server's author can declare this parameter a string only (`str`)" in reason
+        assert (
+            "the server's author can declare this parameter a string only (`str`, or "
+            "`z.string()` with zod)"
+        ) in reason
         given = {"p": text}
         assert self.judged(given, {"properties": {"p": {"type": "string"}}}) == (given, given, None)
 
@@ -5678,6 +5768,498 @@ class TestFifthReview:
                 ("expire", {"when": "1970-01-01"}),
             ]
         )
+
+
+class TestSixthReview:
+    """The sixth review, of the fixes to the fifth. JSON text nested deeper than the gate's
+    own interpreter decodes, or holding an integer of more digits than it reads, was
+    judged a string, and a server under another interpreter decoded it and ran a list
+    or an object; the steps allowed for each value did not bound the time a call takes,
+    which grew with what the model sent; the reason for an integer too large for a
+    float blamed the server's schema; and a Pydantic server converts a number into a
+    date, a time or a boolean in a default-mode union, which the page did not say."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    stdio = TestARealServerRunsWhatWasJudged.stdio
+    judged = TestTheWholeListedSchema.judged
+    schema_module = staticmethod(TestThirdReview.schema_module)
+    spent = TestThirdReview.spent
+
+    #: More levels than any released interpreter decodes (3.15 reads about 13,850).
+    DEEPEST = 200_000
+    #: Schemas of a parameter that admits another JSON type than string.
+    OPEN = [
+        {},
+        {"anyOf": [{"type": "string"}, {"type": "array"}]},
+        {"anyOf": [{"type": "string"}, {"type": "object"}]},
+        {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    ]
+    INTEGERS = {"properties": {"p": {"type": "array", "items": {"type": "integer"}}}}
+
+    # --- JSON text this interpreter gives up on, which another decodes --------------------------
+
+    def test_the_premise_this_interpreter_gives_up_on_json_text_for_its_own_limits(self):
+        """Neither error says the text is not JSON: ``json.loads`` raises them for JSON a
+        later interpreter, or one with the digit limit switched off, decodes."""
+        with pytest.raises(RecursionError):
+            json.loads("[" * self.DEEPEST + "]" * self.DEEPEST)
+        with _digit_limit(640):
+            with pytest.raises(ValueError) as raised:
+                json.loads("[" + "9" * 641 + "]")
+            assert not isinstance(raised.value, json.JSONDecodeError)
+            assert json.loads("[" + "9" * 640 + "]") == [int("9" * 640)]
+
+    @pytest.mark.parametrize(
+        "depth", [5, 600, 900, 992, 1200, 2500, 2990, 2997, 3100, 11_326, 13_850, 20_000, DEEPEST]
+    )
+    @pytest.mark.parametrize("listed", OPEN, ids=[str(n) for n in range(len(OPEN))])
+    def test_json_text_nested_to_any_depth_is_refused(self, example, listed, depth):
+        """The reviewer's case: nested 1,200 deep, the text was judged a string by a gate
+        on Python 3.10 and ran as a list on a server on 3.12. Whatever this interpreter's
+        limit is, the text is refused below it (it decodes) and above it (it does not)."""
+        for text in (
+            "[" * depth + '"rm -rf /"' + "]" * depth,
+            '{"a":' * depth + "1" + "}" * depth,
+            " \n" + "[" * depth + "]" * depth,
+        ):
+            assert self.judged({"payload": text}, {"properties": {"payload": listed}}) == (
+                None,
+                None,
+                f"Recusal refused `purge`: argument `payload` {_JSON_TEXT}",
+            )
+
+    @pytest.mark.parametrize("digits", [100, 640, 641, 4300, 4301, 6000, 100_000])
+    @pytest.mark.parametrize("limit", [640, 4300, 0])
+    def test_json_text_that_holds_an_integer_of_any_length_is_refused(self, example, limit, digits):
+        """The second limit: a list holding an integer of 4,301 digits was judged a string,
+        and a server without the digit limit ran a list. Refused under every limit this
+        interpreter can be given, and under none."""
+        number = "9" * digits
+        with _digit_limit(limit):
+            for text in (f"[{number}]", f'{{"a": {number}}}', f"\t[1, [2, -{number}]]"):
+                for listed in self.OPEN:
+                    schema = {"properties": {"payload": listed}}
+                    assert self.judged({"payload": text}, schema) == (
+                        None,
+                        None,
+                        f"Recusal refused `purge`: argument `payload` {_JSON_TEXT}",
+                    )
+
+    @pytest.mark.parametrize("digits", [100, 4300, 4301, 6000, 100_000])
+    @pytest.mark.parametrize("limit", [640, 4300, 0])
+    def test_a_long_run_of_digits_alone_is_judged_and_sent_as_the_string_it_is(
+        self, example, limit, digits
+    ):
+        """Text that opens neither a list nor an object could decode only to a number,
+        which the MCP Python SDK's server keeps a string, so its length refuses nothing."""
+        number = "9" * digits
+        with _digit_limit(limit):
+            for text in (number, f"-{number}", f" {number}\n", f'"{number}"', f"{number}]"):
+                for listed in (self.OPEN[0], self.OPEN[3]):
+                    given = {"payload": text}
+                    schema = {"properties": {"payload": listed}}
+                    assert self.judged(given, schema) == (given, given, None)
+
+    def test_text_that_is_not_json_is_still_judged_as_sent(self, example):
+        for text in ("[draft] notes", "{braces} are fine", "[1, 2", "{", "[9" + "x" * 6000):
+            given = {"payload": text}
+            assert self.judged(given, {"properties": {"payload": {}}}) == (given, given, None)
+
+    def test_negative_control_the_sdks_server_decodes_what_this_interpreter_would_not(self):
+        """The server's side, under the other limit: with no digit limit the MCP Python
+        SDK decodes the text into a list, which is what ran."""
+        from mcp.server.mcpserver.tools import Tool
+
+        def store(payload: Union[str, list, None]) -> str:
+            return ""
+
+        text = "[" + "9" * 641 + "]"
+        with _digit_limit(640):
+            kept = Tool.from_function(store).fn_metadata.pre_parse_json({"payload": text})
+            assert kept == {"payload": text}
+            assert self.schema_module()._json_text(text) is True
+        with _digit_limit(0):
+            ran = Tool.from_function(store).fn_metadata.pre_parse_json({"payload": text})
+        assert ran == {"payload": [int("9" * 641)]}
+
+    def test_on_a_real_server_json_text_past_the_limits_never_runs(self, stdio):
+        deep = 20_000
+        calls = [
+            ("either", {"v": '{"a":' * deep + "1" + "}" * deep}),
+            ("scoped", {"scope": "[" * deep + '"rm -rf /"' + "]" * deep}),
+            ("either", {"v": '{"a": ' + "9" * 6000 + "}"}),
+            ("scoped", {"scope": "[" + "9" * 6000 + "]"}),
+        ]
+        found = stdio([calls])
+        assert found.ran == [] and found.wire == [] and found.judged == []
+        for number, (_, arguments) in enumerate(calls, 1):
+            (name,) = arguments
+            assert found.outputs[f"c{number}"] == (
+                f"Recusal refused `{calls[number - 1][0]}`: argument `{name}` {_JSON_TEXT}"
+            )
+        # the digits alone are a string for both, and run as the string judged
+        sent = [("scoped", {"scope": "9" * 6000, "confirm": False})]
+        found = stdio([[("scoped", {"scope": "9" * 6000})]])
+        assert found.judged == found.wire == found.ran == sent
+
+    # --- a ceiling on the steps of one call -----------------------------------------------------
+
+    def test_the_ceiling_is_the_one_the_readme_states(self, example):
+        module = self.schema_module()
+        package = importlib.import_module("recusal_openai_agents_mcp")
+        assert module.STEP_CEILING == package.STEP_CEILING == 200_000
+        assert "STEP_CEILING" in package.__all__
+        readme = (ROOT / "adapters" / "openai-agents-mcp" / "README.md").read_text(encoding="utf-8")
+        assert (
+            f"up to a ceiling of {module.STEP_CEILING:,} steps for one call "
+            "(`recusal_openai_agents_mcp.STEP_CEILING`)"
+        ) in " ".join(readme.split())
+
+    def test_the_allowance_grows_with_the_values_up_to_the_ceiling_and_no_further(self, example):
+        module = self.schema_module()
+        for count, allowed in ((1, 13_000), (100, 112_000), (188, 200_000), (50_000, 200_000)):
+            given = {"p": list(range(count))}
+            assert self.spent(given, self.INTEGERS, module.STEP_CEILING)[1] == allowed
+        assert self.spent({"p": [1] * 500}, self.INTEGERS, 300_000)[1] == 300_000
+        assert self.spent({"p": [1] * 500}, self.INTEGERS, 600_000)[1] == 512_000
+
+    def test_a_call_over_the_ceiling_is_refused_before_the_policy_and_says_how_to_raise_it(
+        self, example
+    ):
+        """Four steps for each integer: 49,998 of them are the last the default ceiling
+        completes."""
+        module = self.schema_module()
+        most = {"p": list(range(49_998))}
+        steps, allowed, result = self.spent(most, self.INTEGERS, module.STEP_CEILING)
+        assert (steps, allowed) == (200_000, 200_000) and type(result) is tuple
+        assert self.judged(most, self.INTEGERS) == (most, most, None)
+        over = {"p": list(range(49_999))}
+        steps, allowed, result = self.spent(over, self.INTEGERS, module.STEP_CEILING)
+        assert allowed == 200_000 < steps <= 200_004 and result == _OVER_THE_CEILING
+        assert self.judged(over, self.INTEGERS) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_OVER_THE_CEILING}",
+        )
+        for name in ("step_ceiling=", "gate_mcp_server", "gated_agent", "audited_agent"):
+            assert name in _OVER_THE_CEILING
+
+    def test_the_ceiling_stops_a_schema_that_costs_a_thousand_steps_for_a_value(self, example):
+        """The reviewer's case: a hand-written schema that reaches one subschema 4,096
+        ways. 1,000 short lists (6.9 KB) ran six seconds, to 2,012,002 steps, before
+        they were refused; they are now stopped at the ceiling."""
+        schema = {
+            "properties": {"p": {"type": "array", "items": {"$ref": "#/$defs/a0"}}},
+            "$defs": {"a12": {"type": "integer"}},
+        }
+        for level in range(12):
+            onward = {"$ref": f"#/$defs/a{level + 1}"}
+            schema["$defs"][f"a{level}"] = {"allOf": [onward, dict(onward)]}
+        given = {"p": [[number] for number in range(1000)]}
+        steps, allowed, result = self.spent(given, schema, self.schema_module().STEP_CEILING)
+        assert allowed == 200_000 < steps <= 200_002 and result == _OVER_THE_CEILING
+        # without one, the steps allowed for each value are what stops it, ten times later
+        steps, allowed, result = self.spent(given, schema)
+        assert allowed == 2_012_000 and steps > allowed and result == _over_each_value()
+
+    def test_the_reason_says_which_of_the_two_limits_stopped_the_check(self, example):
+        """Raising the ceiling helps only where the ceiling was the limit, so only that
+        reason says to."""
+        module = self.schema_module()
+        assert module._too_costly(200_000, 200_000) == _OVER_THE_CEILING
+        assert module._too_costly(250_000, 200_000) == _OVER_THE_CEILING
+        assert module._too_costly(199_999, 200_000) == _over_each_value()
+        assert module._too_costly(700, 700) == _OVER_THE_CEILING.replace("200,000", "700")
+        assert "can raise the ceiling" not in _over_each_value()
+
+    def _storing(self, example, schema):
+        """An in-process server that lists one tool, ``store``, and keeps what it ran."""
+        import copy
+
+        from mcp.types import CallToolResult, TextContent, Tool
+
+        class Storing(example.InProcessMCPServer):
+            async def list_tools(self, run_context=None, agent=None):
+                return [Tool(name="store", description="d", inputSchema=copy.deepcopy(schema))]
+
+            async def call_tool(self, tool_name, arguments, meta=None):
+                self.ran.append((tool_name, arguments))
+                return CallToolResult(content=[TextContent(type="text", text="ran")])
+
+        server = Storing(name="files")
+        server.ran = []
+        return server
+
+    @staticmethod
+    def _call(server, arguments):
+        return asyncio.run(server.call_tool("store", arguments)).content[0].text
+
+    def test_an_application_raises_the_ceiling_for_a_connection(self, example):
+        over = {"p": list(range(60_000))}
+        seen = []
+
+        def policy(name, arguments):
+            seen.append(len(arguments["p"]))
+            return []
+
+        default = example.gate_mcp_server(self._storing(example, self.INTEGERS), policy)
+        assert default.call_tool.recusal_step_ceiling == 200_000
+        assert self._call(default, over) == f"Recusal refused `store`: {_OVER_THE_CEILING}"
+        assert default.ran == [] and seen == []
+        raised = example.gate_mcp_server(
+            self._storing(example, self.INTEGERS), policy, step_ceiling=400_000
+        )
+        assert raised.call_tool.recusal_step_ceiling == 400_000
+        assert self._call(raised, over) == "ran"
+        assert raised.ran == [("store", over)] and seen == [60_000]
+        # and lowers it: the reason then names the ceiling that was set
+        lowered = example.gate_mcp_server(
+            self._storing(example, self.INTEGERS), policy, step_ceiling=100
+        )
+        assert self._call(lowered, {"p": list(range(30))}) == (
+            f"Recusal refused `store`: {_OVER_THE_CEILING.replace('200,000', '100')}"
+        )
+        assert self._call(lowered, {"p": [1, 2]}) == "ran"
+        assert lowered.ran == [("store", {"p": [1, 2]})]
+
+    def test_gated_agent_and_audited_agent_hand_the_ceiling_to_every_server(
+        self, example, tmp_path
+    ):
+        from agents import Agent
+
+        from recusal.audit import AuditLog
+
+        package = importlib.import_module("recusal_openai_agents_mcp")
+        first = self._storing(example, self.INTEGERS)
+        second = self._storing(example, self.INTEGERS)
+        agent = Agent(name="a", mcp_servers=[first, second])
+        gated = package.gated_agent(agent, lambda *_: [], step_ceiling=300_000)
+        assert package.is_gated(gated)
+        assert [s.call_tool.recusal_step_ceiling for s in gated.mcp_servers] == [300_000] * 2
+        assert self._call(first, {"p": list(range(60_000))}) == "ran"
+        third = self._storing(example, self.INTEGERS)
+        log = AuditLog(path=str(tmp_path / "decisions.jsonl"))
+        package.audited_agent(
+            Agent(name="b", mcp_servers=[third]), lambda *_: [], log, step_ceiling=7
+        )
+        assert third.call_tool.recusal_step_ceiling == 7
+        plain = self._storing(example, self.INTEGERS)
+        package.audited_agent(Agent(name="c", mcp_servers=[plain]), lambda *_: [], log)
+        assert plain.call_tool.recusal_step_ceiling == package.STEP_CEILING
+
+    def test_a_connection_carries_one_ceiling(self, example):
+        from agents import Agent
+
+        def policy(name, arguments):
+            return []
+
+        server = example.gate_mcp_server(self._storing(example, self.INTEGERS), policy)
+        gated_once = server.call_tool
+        assert example.gate_mcp_server(server, policy, step_ceiling=200_000) is server
+        assert server.call_tool is gated_once
+        with pytest.raises(ValueError, match="already gated with a different step_ceiling"):
+            example.gate_mcp_server(server, policy, step_ceiling=400_000)
+        with pytest.raises(ValueError, match="already gated with a different step_ceiling"):
+            example.gated_agent(Agent(name="a", mcp_servers=[server]), policy, step_ceiling=1)
+        assert server.call_tool is gated_once
+        assert server.call_tool.recusal_step_ceiling == 200_000
+
+    @pytest.mark.parametrize("ceiling", [0, -1, True, 1.5, 200_000.0, "200000", None])
+    def test_a_ceiling_that_is_not_a_whole_number_of_steps_is_refused(self, example, ceiling):
+        from agents import Agent
+
+        module = self.schema_module()
+        server = self._storing(example, self.INTEGERS)
+        told = "step_ceiling is the most steps the gate spends checking the arguments of one call"
+        with pytest.raises(ValueError, match=told):
+            example.gate_mcp_server(server, lambda *_: [], step_ceiling=ceiling)
+        assert not example.is_gated_mcp_server(server)
+        with pytest.raises(ValueError, match=told):
+            example.gated_agent(Agent(name="a"), lambda *_: [], step_ceiling=ceiling)
+        with pytest.raises(ValueError, match=told):
+            module.Listed({}, ceiling)
+
+    # --- an integer too large for a float -------------------------------------------------------
+
+    NO_FLOAT_SENT = (
+        "the arguments hold an integer too large to be a float (more than about 308 digits) "
+        "where the server's schema lists a `multipleOf` that is a fraction, which is checked "
+        "by dividing the two as floats, so the gate cannot check it. Send a number a float "
+        "can hold."
+    )
+
+    @pytest.mark.parametrize("listed", [{"type": "number", "multipleOf": 0.5}, {"multipleOf": 0.1}])
+    def test_an_integer_too_large_for_a_float_is_refused_for_what_it_is(self, example, listed):
+        """The reviewer's case: the reason said the server's schema could not be applied,
+        for an argument the model chose."""
+        schema = {"properties": {"amount": listed, "rows": {"type": "array", "items": listed}}}
+        for given in ({"amount": 10**309}, {"amount": -(10**400)}, {"rows": [1, 2**1024]}):
+            assert self.judged(given, schema) == (
+                None,
+                None,
+                f"Recusal refused `purge`: {self.NO_FLOAT_SENT}",
+            )
+        for given in ({"amount": 10**308}, {"amount": 2**1023}, {"rows": [1.5, 3]}):
+            assert self.judged(given, schema)[2] != f"Recusal refused `purge`: {self.NO_FLOAT_SENT}"
+        if listed["multipleOf"] == 0.5:
+            whole = {"amount": 10**308}
+            assert self.judged(whole, schema) == (whole, whole, None)
+
+    def test_a_multiple_too_large_for_a_float_is_the_schemas_and_the_reason_says_so(self, example):
+        schema = {"properties": {"amount": {"type": "number", "multipleOf": 10**400}}}
+        assert self.judged({"amount": 1.5}, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} lists a `multipleOf` too large to be a float, "
+            "which the gate cannot check a number that is not an integer against",
+        )
+        whole = {"amount": 10**400}
+        assert self.judged(whole, schema) == (whole, whole, None)
+
+    @pytest.mark.parametrize(
+        "listed",
+        [
+            {"type": "number", "multipleOf": 0.5, "default": 10**309},
+            {"type": "number", "multipleOf": 10**400, "default": 1.5},
+            {
+                "anyOf": [{"type": "number", "multipleOf": 0.5}, {"type": "null"}],
+                "default": 10**309,
+            },
+        ],
+    )
+    def test_a_listed_default_too_large_for_a_float_is_not_blamed_on_the_arguments(
+        self, example, listed
+    ):
+        schema = {"properties": {"amount": listed, "path": {"type": "string"}}}
+        assert self.judged({"path": "/"}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: argument `amount` is left out, and the default the "
+            "server's schema lists for it cannot be checked against a `multipleOf` listed "
+            "there, one of the two being too large to be a float, so the gate cannot tell "
+            "what the server would run with",
+        )
+        given = {"path": "/", "amount": 3 if listed.get("multipleOf") != 10**400 else 10**400}
+        assert self.judged(given, schema) == (given, given, None)
+
+    def test_an_error_the_gate_does_not_know_blames_neither_side(self, example, monkeypatch):
+        module = self.schema_module()
+
+        def broken(*_):
+            raise KeyError("MARKER")
+
+        monkeypatch.setattr(module.Listed, "_complete", broken)
+        assert self.judged({"path": "/"}, {}) == (
+            None,
+            None,
+            f"Recusal refused `purge`: the arguments could not be checked against {_SCHEMA} "
+            "(KeyError)",
+        )
+
+    # --- what a Pydantic server makes of a number, which the page now says ----------------------
+
+    def test_on_a_real_server_a_number_runs_as_a_date_a_time_or_a_boolean(self, stdio):
+        """Not closed, stated: in a default-mode union Pydantic converts a number into
+        the first member that takes it. The policy judges the number it was given."""
+        calls = [
+            ("stamp", {"at": 5}),
+            ("stamp", {"at": 1.5}),
+            ("forced", {"force": 1}),
+            ("forced", {"force": 0}),
+            ("forced", {"force": 2}),
+            ("levelled", {"n": True}),
+        ]
+        found = stdio([calls], schemas=("stamp", "forced", "levelled"))
+        assert found.schemas["stamp"]["at"]["anyOf"] == [
+            {"format": "date-time", "type": "string"},
+            {"type": "number"},
+            {"type": "string"},
+        ]
+        assert found.schemas["forced"]["force"]["anyOf"] == [
+            {"type": "boolean"},
+            {"type": "number"},
+            {"type": "string"},
+        ]
+        assert found.schemas["levelled"]["n"]["anyOf"] == [
+            {"enum": [1, 2], "type": "integer"},
+            {"type": "boolean"},
+        ]
+        assert _in_order(found.judged) == _in_order(found.wire) == _in_order(calls)
+        assert _in_order(found.ran) == _in_order(
+            [
+                ("stamp", {"at": "datetime 1970-01-01 00:00:05+00:00"}),
+                ("stamp", {"at": "datetime 1970-01-01 00:00:01.500000+00:00"}),
+                ("forced", {"force": "bool True"}),
+                ("forced", {"force": "bool False"}),
+                ("forced", {"force": "Decimal 2"}),
+                ("levelled", {"n": "int 1"}),
+            ]
+        )
+
+    def test_on_a_real_server_a_string_with_a_format_runs_normalised(self, stdio):
+        """Not closed, stated: a ``format`` is not asserted, and the type behind it
+        rewrites the text."""
+        calls = [
+            ("visit", {"url": "HTTP://X/a/../admin"}),
+            ("opened", {"at": ""}),
+            ("ident", {"key": "{12345678-1234-5678-1234-56781234ABCD}"}),
+        ]
+        found = stdio([calls], schemas=("visit", "opened", "ident"))
+        formats = {
+            name: next(iter(found.schemas[name].values()))["format"] for name in found.schemas
+        }
+        assert formats == {"visit": "uri", "opened": "path", "ident": "uuid"}
+        assert _in_order(found.judged) == _in_order(found.wire) == _in_order(calls)
+        assert _in_order(found.ran) == _in_order(
+            [
+                ("visit", {"url": "http://x/admin"}),
+                ("opened", {"at": "."}),
+                ("ident", {"key": "12345678-1234-5678-1234-56781234abcd"}),
+            ]
+        )
+
+    def test_the_other_conversions_the_page_names_are_pydantics_own(self):
+        """The cases the page names beside the ones the stdio server runs."""
+        import datetime
+        from decimal import Decimal
+        from enum import IntEnum
+        from typing import Literal
+
+        from pydantic import TypeAdapter
+
+        class Level(IntEnum):
+            low = 1
+            high = 2
+
+        def ran(kind, value):
+            result = TypeAdapter(kind).validate_python(value)
+            return type(result), result
+
+        assert ran(Union[datetime.date, Decimal], 0) == (datetime.date, datetime.date(1970, 1, 1))
+        assert ran(Union[datetime.time, Decimal], 5)[0] is datetime.time
+        assert ran(Union[datetime.datetime, Level], 1)[0] is datetime.datetime
+        assert ran(Union[Decimal, datetime.datetime], 5) == (Decimal, Decimal(5))
+        assert ran(Union[bool, Level], 1) == (bool, True)
+        assert ran(Union[bool, Level], 2) == (Level, Level.high)
+        assert ran(Union[Literal[True], int], 1) == (bool, True)
+        assert ran(Union[Literal[True], float], 1) == (bool, True)
+        # a number that is exactly the type of a member runs as that member
+        assert ran(Union[datetime.date, float], 0) == (float, 0.0)
+        assert ran(Union[bool, int], 1) == (int, 1)
+
+    def test_the_page_says_what_the_gate_does_not_see_of_a_number(self):
+        readme = " ".join(
+            (ROOT / "adapters" / "openai-agents-mcp" / "README.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for stated in (
+            "**A number a Pydantic server reads as a date, a time or an enum member.**",
+            "**`1` and `0` that run as booleans, and `true` that runs as `1`.**",
+            '`"HTTP://X/a/../admin"` for a parameter typed `AnyUrl` runs as `http://x/admin`',
+        ):
+            assert stated in readme, stated
 
 
 class SimpleRequest:

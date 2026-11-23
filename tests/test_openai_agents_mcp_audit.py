@@ -484,7 +484,10 @@ class TestOpenAIAgentsMcpAudit:
             == _text(outputs["c1"])
             == (
                 "Recusal refused `purge` [FAIL]: the arguments are too costly to check against the "
-                "server's listed schema for this tool"
+                "server's listed schema for this tool: the check costs more than the 3 steps and "
+                "0 more for every value in the arguments that the gate allows a call. That is "
+                "what the schema costs for each value here, which raising the gate's ceiling on "
+                "a call (`step_ceiling=`) does not change."
             )
         )
         assert entry["action"]["input_sha256"] == _sha(arguments)

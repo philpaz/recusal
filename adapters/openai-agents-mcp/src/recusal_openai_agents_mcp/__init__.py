@@ -9,7 +9,8 @@
 ``gated_agent`` gates the agent's function tools, every local MCP server in place, and
 every hosted MCP tool as a copy that always asks approval. ``gate_mcp_server`` and
 ``gate_hosted_mcp`` gate one of each, and ``audited_agent`` puts each decision on a
-hash-chained audit log.
+hash-chained audit log. ``STEP_CEILING`` is the most steps the check of one call to a
+local server may cost, which ``step_ceiling=`` on those functions raises for a connection.
 
 The decision is made by ``recusal.decide``, and the function-tool gate is
 ``recusal-openai-agents``. This package adds only the two MCP seams.
@@ -28,10 +29,12 @@ from ._gate import (
     is_gated_mcp_server,
     recusal_approval,
 )
+from ._schema import STEP_CEILING
 
 __version__ = "0.2.0"
 
 __all__ = [
+    "STEP_CEILING",
     "SURFACES",
     "Policy",
     "Recording",
