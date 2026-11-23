@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-23
+
+A PATCH release of the kernel under `STABILITY.md`: one correctness fix in the audit log,
+under Fixed below. `AuditLog.append` handed the same mutable entry to every sink, to the
+`entries` mirror and to its caller, so a sink or a caller that changed it changed what the
+others held; each now gets a copy of its own. The file on disk was never affected. No
+verdict, decision path, reason string of the frozen kernel or import path changed. Under
+`recusal/`, 0.15.1 differs from 0.15.0 in `recusal.audit` and the version string.
+
+Everything else listed here was added to the repository since 0.15.0 and is not part of
+the `recusal` wheel: the adapter packages, each a separate distribution on PyPI under its
+own version and tag, and documentation. Since 0.15.0 every adapter has had a release, most
+of them security releases, listed under Security and Changed below: `recusal-crewai`
+0.2.2, `recusal-google-adk` 0.2.1, `recusal-langchain` 0.2.0, `recusal-langgraph` 0.3.0,
+`recusal-openai` 0.2.2, `recusal-openai-agents` 0.2.1, `recusal-openai-agents-mcp` 0.2.0
+and `recusal-pydantic-ai` 0.2.0. If you gate one of those frameworks, upgrade that
+package.
+
 ### Added
 
 - **The `recusal-google-adk` wheel is checked on its minimum Python.** CI builds the

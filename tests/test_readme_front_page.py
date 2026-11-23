@@ -61,29 +61,38 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
     note = _callout()
     flat = " ".join(line.lstrip("> ") for line in note.splitlines())
     for claim, evidence in (
-        ("walks every callable a tool call reaches", ROOT / "recusal" / "invocation.py"),
-        ("two adapter packages", ROOT / "adapters" / "google-adk" / "README.md"),
+        ("gives each sink a copy of its own", ROOT / "recusal" / "audit.py"),
+        ("all eight adapter packages", ROOT / "adapters" / "google-adk" / "README.md"),
     ):
         assert claim in flat, claim
         assert evidence.is_file(), evidence
-    # the kernel helper the note describes is public in the tree
-    from recusal import invocation
+    # the fix the note describes is in the tree: a sink's entry is not the one the log keeps
+    from recusal import Finding, compute_verdict
+    from recusal.audit import AuditLog
 
-    assert callable(invocation.reached_parameters)
-    # the versions the note tells a reader to upgrade to are the ones in the tree, and the
-    # Google ADK package requires this kernel, as the note says
-    for directory, version in (("crewai", "0.2.1"), ("google-adk", "0.2.0")):
+    received: list = []
+
+    class Sink:
+        def write(self, entry):
+            received.append(entry)
+
+    log = AuditLog(sinks=[Sink()])
+    verdict = compute_verdict([Finding.ok("demo", message="observed")])
+    returned = log.append(verdict, action={"tool": "t"})
+    assert received[0] == log.entries[0] == returned
+    assert received[0] is not log.entries[0] and returned is not log.entries[0]
+    # the versions the note tells a reader to upgrade to are the ones in the tree, all eight
+    named = dict(re.findall(r"`recusal-([a-z-]+)`\s+to\s+(\d+\.\d+\.\d+)", flat))
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert sorted(named) == directories
+    for directory, version in named.items():
         package = "recusal_" + directory.replace("-", "_")
         init = (ROOT / "adapters" / directory / "src" / package / "__init__.py").read_text("utf-8")
-        current = re.search(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', init, re.M).groups()
-        assert tuple(map(int, current)) >= tuple(map(int, version.split("."))), directory
-        assert f"`recusal-{directory}` to {version}" in flat or (
-            f"`recusal-{directory}`" in flat and f"to {version}" in flat
-        ), directory
-    adk = (ROOT / "adapters" / "google-adk" / "pyproject.toml").read_text(encoding="utf-8")
-    assert f'"recusal>={_version()},<1"' in adk and "requires this kernel" in flat
+        current = re.search(r'^__version__ = "(\d+\.\d+\.\d+)"$', init, re.M).group(1)
+        newer = tuple(map(int, current.split("."))) >= tuple(map(int, version.split(".")))
+        assert newer, (directory, current, version)
     # what the note says of the kernel diff is what the kernel diff is
-    assert "in `recusal.invocation` and the version string" in flat
+    assert "in `recusal.audit` and the version string" in flat
 
 
 def test_every_place_says_the_adapters_are_on_pypi_and_installs_them_by_name():
