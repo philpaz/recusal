@@ -225,6 +225,11 @@ def test_google_adk_wheel_ci_smokes_and_type_checks_312_and_its_minimum():
             f'{environment}/bin/python "$GITHUB_WORKSPACE/adapters/google-adk/smoke_test.py"' in job
         )
         assert f"{environment}/bin/python -m mypy " in job
+    strict_flags = (
+        "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
+        "--warn-unused-ignores --warn-redundant-casts -p recusal_google_adk"
+    )
+    assert job.count(strict_flags) == 2
     adapter_build = "python -m build --no-isolation --outdir dist-adapters adapters/google-adk"
     assert job.count(adapter_build) == 1
     assert 'python-version: "3.12"' in job
@@ -236,6 +241,10 @@ def test_google_adk_wheel_ci_smokes_and_type_checks_312_and_its_minimum():
     assert job.count(wheel_install) == 2
     assert (f"{minimum_environment}/bin/{wheel_install}") in job
     assert f"python -m venv {minimum_environment}" in job
+    assert job.count("/tmp/adapter/bin/pip check") == 1
+    assert job.count(f"{minimum_environment}/bin/pip check") == 1
+    adapter_requirements = "pip install --quiet --require-hashes -r requirements/adapter-google-adk.txt"
+    assert job.count(adapter_requirements) == 2
 
 
 @pytest.mark.parametrize("directory", sorted(PACKAGES))
