@@ -971,18 +971,40 @@ All notable changes to this project are documented here. The format follows
     `@functools.wraps(f)` above `@functools.lru_cache` above a wrapper (or
     `functools.update_wrapper(cached, f)`) overwrites the cache's `__wrapped__` with `f`;
     the walk read the cache as `f`, and the wrapper the cache really calls is held only
-    in C. The function a cache calls is always among the objects it refers to, which
-    `gc.get_referents` lists from the wrapper's own C type without looking up an
-    attribute or calling anything the application wrote. A cache whose `__wrapped__` is
-    not, by identity, among them is refused as a `HiddenWrapper` ("a `functools.lru_cache`
-    wrapper names one function as `__wrapped__` and calls another, which the walk cannot
-    read"), on the walk and held by a wrapper. A cache on the function itself, used or
-    not, bounded or not, on a method, under a wrapper, is read as before. *Not found, by
-    design:* an overwritten wrapper of a bounded cache that holds the named function as a
-    cached key or result (it is listed among the same objects); and all of it where `gc`
-    is not the interpreter's own module at the first walk, where the listing raises (an
-    audit hook on `gc.get_referents`), or where the checks are off. The listing is as
-    long as a bounded cache is full, once per walk of such a tool.
+    in C. `gc.get_referents` lists what a cache refers to from the wrapper's own C type,
+    without looking up an attribute or calling anything the application wrote, and in a
+    fixed order: on Python 3.10 to 3.15 the wrapper's type, then for each entry of a
+    bounded cache its key, its result and the entry's type, then the cache's dictionary,
+    the function, an `object()`, the entry type, the `CacheInfo` class and the wrapper's
+    own `__dict__`; on 3.9 the entries' keys and results, then the function, the cache's
+    dictionary, `CacheInfo` and the `__dict__`. So the function is the fifth from the
+    end (the fourth on 3.9) and is never one of the cached keys and results, which all
+    come before the cache's dictionary; `tests/test_invocation.py` holds each of the
+    eight interpreters to that layout, for unbounded, bounded, typed and zero-size
+    caches, empty and used, with functions among the cached keys and results. The walk
+    picks the function out by its place and READS it as what the cache calls: a caching
+    decorator whose wrapper only passes its arguments on is accepted, and one whose
+    wrapper has a parameter of its own gets the refusal that wrapper gets without the
+    cache, naming the parameter. What that wrapper holds (a second wrapper in its
+    closure) and what it is (a single-dispatch function) is judged as for a wrapper that
+    names the function itself, and a cache a wrapper holds is read the same way. A cache
+    on the function itself is read as before. Where the list is not laid out either
+    way, the name stands if the named function is listed, and the cache is refused
+    otherwise with the new public `recusal.invocation.UnreadCache`, a subclass of
+    `HiddenWrapper` ("a `functools.lru_cache` wrapper names one function as
+    `__wrapped__` and calls another, which cannot be told from what the cache refers to;
+    apply the cache to the function itself, or call the cached function from a plain
+    function and register that one"). *Not found, by design:* all of it where `gc` is
+    not the interpreter's own module at the first walk, where the listing raises (an
+    audit hook on `gc.get_referents`), or where the checks are off: the cache is then
+    read by its name, as in 0.15.0. What a cache calls cannot change, so it is told once
+    per cache and kept, weakly, for the next walk: a full cache of 100,000 entries is
+    listed once (about 7 milliseconds on 3.12) and not on every call. One reading is
+    kept as 0.15.0 made it, so that nothing it refused is now accepted: a method over a
+    cache NAMED for something that is not a plain function (a cache of a cache) is read
+    by the names alone, without the object bound, which refuses it for the method's
+    `self` though such a call runs clean. The wrapper a cache of that kind calls is read
+    all the same, as a callable of its own.
   - *What the `__call__` of a class-based decorator holds.* The instance attributes of a
     callable object that names a `__wrapped__` were read; the closure cells of its
     class's `__call__`, and the module globals that method names, were not. A class
@@ -1013,7 +1035,19 @@ All notable changes to this project are documented here. The format follows
     keeps its reasons for them; it now refuses the other two through the kernel.
     `recusal-crewai`, which reads a tool with a walk of its own, had all four: beside a
     kernel later than 0.15.0 it asks the kernel's walk and holds every level it returns
-    to the schema. Beside 0.15.0 or older it has them still.
+    to the schema. Beside 0.15.0 or older it has them still, and its page says so.
+  - `recusal-crewai` also did not refuse a forwarding wrapper that names a parameter
+    the function it wraps takes too (`def wrapper(*args, limit=1000, **kwargs)` around
+    `def fetch(query, limit=10)`: judged `limit=5`, ran `limit=10`), which the kernel
+    has refused since 0.15.0. Its own walk now refuses it, beside every kernel.
+  - `UnreadCache` has a reason of its own in `recusal-pydantic-ai`, `recusal-langgraph`
+    and `recusal-crewai` (it is a `HiddenWrapper`, and was reported as a decorator that
+    holds a second wrapper), and reaches `recusal-openai` and `recusal-google-adk` as the
+    kernel's own words.
+  - The module globals a wrapper names are found in one pass over the namespace with a
+    set of the names (875 microseconds a walk became about 260 for a module-level
+    wrapper in a module of 5,000 globals; a wrapper inside a decorator names no such
+    global and is not affected).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;

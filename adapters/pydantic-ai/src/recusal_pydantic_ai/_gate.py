@@ -108,6 +108,9 @@ _PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
 #: A bound argument is taken by a wrapper under another name than the parameter with a
 #: default it would fill on the function the wrapper names (the same kernels).
 _BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 
 #: A deferred-call handler, as ``HandleDeferredToolCalls`` takes one: ``handler(ctx,
 #: requests)`` returns the results it has, or None. Sync or async.
@@ -1323,6 +1326,8 @@ def _walk_reason(refused: BaseException) -> str:
         return _PARTIALMETHOD
     if isinstance(refused, _BoundArgumentKept):
         return f"the function this tool runs cannot be read: {refused}"
+    if isinstance(refused, _UnreadCache):
+        return f"a cache on the function this tool runs cannot be read: {refused}"
     return (
         "a decorator on the function this tool runs holds a second wrapper of that "
         "function (in its closure or on the decorator object), which is not reached "

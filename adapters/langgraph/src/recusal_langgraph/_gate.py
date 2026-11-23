@@ -105,6 +105,9 @@ _PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
 #: A bound argument is taken by a wrapper under another name than the parameter with a
 #: default it would fill on the function the wrapper names (the same kernels).
 _BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 
 
 class RecusalRefusal(ToolException):
@@ -466,6 +469,8 @@ def _reached(func) -> list:
         ) from None
     except _BoundArgumentKept as refused:
         raise TypeError(f"the tool's callable cannot be read: {refused}") from None
+    except _UnreadCache as refused:
+        raise TypeError(f"a cache on the tool's callable cannot be read: {refused}") from None
     except _HiddenWrapper as refused:
         raise TypeError(
             "a decorator on the tool's function holds a second wrapper of that function (in "

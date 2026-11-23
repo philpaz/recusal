@@ -35,6 +35,7 @@ import inspect
 import math
 import types
 import typing
+import weakref
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -164,6 +165,14 @@ class HiddenWrapper(ValueError):
     names that parameter and no value."""
 
 
+class UnreadCache(HiddenWrapper):
+    """A ``functools.lru_cache`` wrapper on the way names one function as ``__wrapped__``
+    and calls another, and which one it calls cannot be told from what the cache refers
+    to (:func:`_cache_calls`). A subclass of :class:`HiddenWrapper`, so a gate that
+    refuses that one refuses this; its message is the cause and what to do, and names no
+    value. A cache whose function can be told is not refused for this: it is read."""
+
+
 _HIDDEN_WRAPPER = (
     "a wrapper holds another wrapper of the function it wraps, which the walk does not follow"
 )
@@ -218,8 +227,9 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     own). The first is turned off; the second raises :class:`DeclaredSignature` wherever it
     is found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
     ``staticmethod``, and ``lru_cache`` over a method) are looked through, a cache
-    wrapper only when it calls the function it names (:func:`_refuse_rewrapped_cache`,
-    which raises :class:`HiddenWrapper`). A class is not a
+    wrapper to the function it calls, which need not be the one it names
+    (:func:`_cache_target`, which raises :class:`HiddenWrapper` where that function
+    cannot be known). A class is not a
     callable this reads: calling it runs ``__new__`` and ``__init__``. Neither is the method
     ``functools.partialmethod`` builds over a callable that does not bind as one, nor
     anything else ``inspect.signature`` would read as a ``functools.partialmethod``
@@ -233,60 +243,166 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     if isinstance(func, staticmethod):
         return own_parameters(func.__func__, _depth + 1)
     if isinstance(func, _PASS_THROUGH):
-        _refuse_rewrapped_cache(func)
-        return own_parameters(func.__wrapped__, _depth + 1)
+        return own_parameters(_cache_target(func), _depth + 1)
     if inspect.ismethod(func) and isinstance(func.__func__, _PASS_THROUGH):
-        _refuse_rewrapped_cache(func.__func__)
-        inner = func.__func__.__wrapped__
-        bound = types.MethodType(inner, func.__self__) if inspect.isfunction(inner) else inner
-        return own_parameters(bound, _depth + 1)
+        inner, named = _cache_target(func.__func__), func.__func__.__wrapped__
+        if inspect.isfunction(named):
+            # the wrapper the cache calls, where that is a plain function, with the
+            # object bound; else the function it names, as before
+            bound = inner if inspect.isfunction(inner) else named
+            return own_parameters(types.MethodType(bound, func.__self__), _depth + 1)
+        # a cache NAMED for something that is not a plain function (a second cache, a
+        # callable object) is read here as 0.15.0 read it, by the names alone and without
+        # the object bound: what that refused stays refused. The callables behind it are
+        # read, as what they are, when the walk reaches them
+        for _ in range(8):
+            if not isinstance(named, _PASS_THROUGH):
+                break
+            named = named.__wrapped__
+        return own_parameters(named, _depth + 1)
     _refuse_declared_signature(func, _depth)
     return inspect.signature(func, follow_wrapped=False).parameters
 
 
 _REWRAPPED_CACHE = (
     "a `functools.lru_cache` wrapper names one function as `__wrapped__` and calls another, "
-    "which the walk cannot read"
+    "which cannot be told from what the cache refers to; apply the cache to the function "
+    "itself, or call the cached function from a plain function and register that one"
 )
 
 
-def _calls_what_it_names(cache: Any) -> bool:
-    """False for a ``functools.lru_cache`` wrapper that, provably, calls another function
-    than the one its own ``__dict__`` names as ``__wrapped__``; True for everything else.
+def _called_by(cache: Any, referred: Any) -> Any:
+    """The function a ``functools.lru_cache`` wrapper calls, picked out of ``referred``,
+    what ``gc.get_referents`` lists for it; ``_MISSING`` where the list is not laid out
+    as one of the two ways below.
+
+    The wrapper's C type lists what it refers to in a fixed order, the same for a cache
+    that is unbounded, bounded, typed or of size zero, empty or full, and
+    ``tests/test_invocation.py`` holds every supported interpreter to it:
+
+    - Python 3.10 to 3.15 (3.14 free-threaded included): the wrapper's type; for each
+      entry of a BOUNDED cache its key, its result and the type of the entry; then the
+      cache's dictionary, THE FUNCTION, an ``object()`` that marks keywords, the type of an
+      entry, the ``CacheInfo`` class, and the wrapper's own ``__dict__``;
+    - Python 3.9: for each entry of a bounded cache its key and its result; then THE
+      FUNCTION, the cache's dictionary, the ``CacheInfo`` class, and the wrapper's own
+      ``__dict__``.
+
+    So the function is the fifth from the end, or the fourth, and never one of the keys
+    and results a bounded cache holds, which all come before the cache's dictionary: a
+    cached result that is itself a function, or the very function the wrapper names,
+    cannot be taken for it. The layout is recognised by what stands around the function,
+    each by exact type or by identity, and anything else is ``_MISSING``. Nothing listed
+    is called, compared but by identity, or asked for an attribute."""
+    if type(referred) is not list:
+        return _MISSING
+    own, size = _cache_dict(cache), len(referred)
+    if (
+        size >= 7
+        and referred[0] is _CACHE_WRAPPER
+        and referred[-1] is own
+        and type(referred[-2]) is type
+        and type(referred[-3]) is type
+        and type(referred[-4]) is object
+        and type(referred[-6]) is dict
+    ):
+        return referred[-5]
+    if (
+        size >= 4
+        and referred[-1] is own
+        and type(referred[-2]) is type
+        and type(referred[-3]) is dict
+    ):
+        return referred[-4]
+    return _MISSING
+
+
+def _cache_calls(cache: Any, named: Any) -> Any:
+    """What a ``functools.lru_cache`` wrapper calls: ``named``, the function its own
+    ``__dict__`` names as ``__wrapped__``, or another; ``_MISSING`` where that cannot be
+    known.
 
     ``functools.lru_cache`` names the function it caches as ``__wrapped__``, and the walk
-    reads the wrapper as that function. ``functools.wraps(f)`` applied over the cache
-    (``@functools.wraps(f)`` above ``@functools.lru_cache`` above a wrapper, or
-    ``functools.update_wrapper(cached, f)``) overwrites the name with ``f``, while the
-    function the cache calls, a wrapper with parameters of its own, is held only in C.
-    That function is always among the objects the wrapper refers to, which
-    ``gc.get_referents`` lists by asking the wrapper's own C type and nothing else: no
-    attribute is looked up and nothing the application wrote is called (the interpreter
-    raises its ``gc.get_referents`` audit event, as it raises one for other reads here).
-    So a wrapper whose ``__wrapped__`` is not, by identity, among those objects calls
-    something else, and what that is cannot be read.
+    read the wrapper as that function. ``functools.wraps(f)`` applied over the cache
+    (``@functools.wraps(f)`` above ``@functools.lru_cache`` above a wrapper, an ordinary
+    way to write a caching decorator, or ``functools.update_wrapper(cached, f)``)
+    overwrites the name with ``f``, while the function the cache calls, the wrapper, is
+    held only in C. ``gc.get_referents`` lists what the cache refers to by asking the
+    wrapper's own C type and nothing else: no attribute is looked up and nothing the
+    application wrote is called (the interpreter raises its ``gc.get_referents`` audit
+    event, as it raises one for other reads here). The function is picked out of that
+    list by its place (:func:`_called_by`) and read as what the cache calls: a wrapper
+    that only passes its arguments on is accepted, and one with a parameter of its own
+    gets the refusal a wrapper written without the cache gets.
 
-    Not found, by design: an overwritten wrapper of a bounded cache that happens to hold
-    the named function as a cached key or result, which is listed among the same objects;
-    and everything, where the checks are off (:func:`_prepare`), where ``gc`` is not the
-    interpreter's own module at the first walk, or where the listing raises."""
+    Where the list is not laid out as either known way, the name stands only if the
+    named function is, by identity, among what is listed; otherwise ``_MISSING``: the
+    cache calls something that cannot be told. And where the listing is not to be had
+    (the checks are off, :func:`_prepare`; ``gc`` is not the interpreter's own module at
+    the first walk; the listing raises, an audit hook's doing), nothing is proven and
+    the name stands, as it does in 0.15.0."""
     if not _prepare() or _referents is None or type(cache) is not _CACHE_WRAPPER:
-        return True
-    named = _entry(_cache_dict(cache), "__wrapped__")
-    if named is _MISSING:
-        return True  # it names nothing: the walk fails on that, as before
+        return named
+    called = _told(cache)
+    if called is not _MISSING:
+        return called
     try:
         referred = _referents(cache)
     except Exception:  # noqa: BLE001, a listing that is refused proves nothing
-        return True
-    return type(referred) is not list or any(value is named for value in referred)
+        return named
+    called = _called_by(cache, referred)
+    if called is not _MISSING:
+        _tell(cache, called)
+        return called
+    if type(referred) is list and any(value is named for value in referred):
+        return named
+    return _MISSING
 
 
-def _refuse_rewrapped_cache(cache: Any) -> None:
-    """Raise :class:`HiddenWrapper` for a ``functools.lru_cache`` wrapper on the walk that
-    names one function and calls another (:func:`_calls_what_it_names`)."""
-    if not _calls_what_it_names(cache):
-        raise HiddenWrapper(_REWRAPPED_CACHE)
+#: The function each ``functools.lru_cache`` wrapper calls, once it has been told: by the
+#: wrapper, which is not kept alive by it, to a weak reference to the function. None
+#: until the first cache is read.
+_TOLD: Any = None
+
+
+def _told(cache: Any) -> Any:
+    """The function ``cache`` was found to call at an earlier walk, or ``_MISSING``.
+
+    A cache calls the same function for as long as it lives (the C type sets it once and
+    offers no way to change it), and a bounded cache lists every key and result it holds
+    along with it: tens of thousands of objects for a large cache that is full, on every
+    walk, with every thread stopped for it on a free-threaded build. So what was told
+    once is kept, under the wrapper itself (hashed and compared by identity, as its C
+    type does), weakly both ways, so that neither the cache nor the function lives
+    longer for it. A function that cannot be weakly referenced is told again each time."""
+    if _TOLD is None:
+        return _MISSING
+    try:
+        reference = _TOLD.get(cache)
+    except Exception:  # noqa: BLE001, not kept: told again
+        return _MISSING
+    called = reference() if reference is not None else None
+    return _MISSING if called is None else called
+
+
+def _tell(cache: Any, called: Any) -> None:
+    global _TOLD
+    try:
+        if _TOLD is None:
+            _TOLD = weakref.WeakKeyDictionary()
+        _TOLD[cache] = weakref.ref(called)
+    except Exception:  # noqa: BLE001, S110, not every callable can be weakly referenced
+        pass
+
+
+def _cache_target(cache: Any) -> Any:
+    """The function a ``functools.lru_cache`` wrapper on the walk calls
+    (:func:`_cache_calls`). Raises :class:`UnreadCache`, a :class:`HiddenWrapper`, where
+    it cannot be known."""
+    called = _cache_calls(cache, cache.__wrapped__)
+    if called is _MISSING:
+        raise UnreadCache(_REWRAPPED_CACHE)
+    return called
 
 
 def _refuse_declared_signature(func: Any, depth: int) -> None:
@@ -630,14 +746,13 @@ def _named_globals(function: Any) -> List[Any]:
     namespace = _function_globals(function)
     if type(namespace) is not dict:
         return []
-    names = _names(_function_code(function))
+    # every name is exactly a ``str`` (:func:`_names`), so a set of them hashes nothing of
+    # the application's, and a key of the namespace is looked for in it only when it is
+    # exactly a ``str`` too: one pass over the namespace, however many names there are
+    names = frozenset(_names(_function_code(function)))
     if not names:
         return []
-    return [
-        value
-        for key, value in list(namespace.items())
-        if type(key) is str and any(key == name for name in names)
-    ]
+    return [value for key, value in list(namespace.items()) if type(key) is str and key in names]
 
 
 def _held(func: Any, wrapped: Any) -> List[Any]:
@@ -805,9 +920,17 @@ def _hidden_levels(value: Any, read: List[Any], bound: int) -> List[Any]:
             levels.append(_held_level(value, bound))
             dispatches = dispatches or _chosen_at_call_time(value)
         elif type(value) is _CACHE_WRAPPER:
-            # a held cache that calls another function than the one it names: what it
-            # reaches by that name is not what runs, so the way cannot be judged
-            dispatches = dispatches or not _calls_what_it_names(value)
+            # a held cache that calls another function than the one it names: that
+            # function is one more wrapper on the way, read like the others; where it
+            # cannot be known, or is not a plain function, the way cannot be judged
+            called = _cache_calls(value, inner)
+            if called is _MISSING or (
+                called is not inner and type(called) is not types.FunctionType
+            ):
+                dispatches = True
+            elif called is not inner:
+                levels.append(_held_level(called, bound))
+                dispatches = dispatches or _chosen_at_call_time(called)
         links.append(value)
         if type(value) is _PARTIAL:
             args = _partial_args(value)
@@ -1194,6 +1317,22 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
             walk.held.extend((value, bound) for value in _held(func, wrapped))
         found.append(wrapped)
         walk.named.append(wrapped)
+        if isinstance(func, _PASS_THROUGH):
+            # a cache named again for another function (``functools.wraps(f)`` over
+            # ``functools.lru_cache`` over a wrapper): the wrapper it calls is the one
+            # that stands for ``f``. Its parameters are the cache's own level
+            # (:func:`own_parameters`); what it holds and what it hands the call to are
+            # read here, as for a wrapper that names ``f`` itself
+            called = _cache_target(func)
+            if called is not wrapped:
+                if type(called) is types.FunctionType and walk.checked and bound is not None:
+                    walk.held.extend((value, bound) for value in _held(called, wrapped))
+                found.extend(_next_callables(called, walk, bound))
+                if not inspect.isfunction(wrapped):
+                    # a cache NAMED for something that is not a plain function is read,
+                    # under a method, by the names alone (:func:`own_parameters`): the
+                    # wrapper it calls is then read here, as a callable of its own
+                    found.append(called)
     if not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
         call = inspect.getattr_static(type(func), "__call__", None)
         if inspect.isfunction(call):

@@ -91,6 +91,9 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 #: Given the call's ``ToolContext``, the recording arguments ``decide`` takes for it
 #: (``audit=``, ``surface=``, ``tool_use_id=``, ...). ``recusal_google_adk.recording``
 #: builds one.
@@ -252,6 +255,8 @@ def _with_remedy(func: Any, why: str, skip: tuple = ()) -> str:
     added only when what it raises is, word for word, the reason the kernel gave."""
     try:
         _reached_parameters(func, skip) if _WALK_TAKES_SKIP else _reached_parameters(func)
+    except _UnreadCache:
+        return why  # the kernel's reason for it says what it is and what to do
     except _HiddenWrapper as refused:
         if str(refused) == why:
             return (

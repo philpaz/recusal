@@ -3531,6 +3531,74 @@ class TestBothRoutes:
             assert under_a_partial is None and kept is None
         assert swapped(retry(free_search)) is None  # the decorator alone, beside either kernel
 
+        # a cache named again for the function, over a wrapper with a parameter of its
+        # own, and a class-based decorator whose ``__call__`` closes over a second wrapper
+        def cached_and_audited(function):
+            return functools.update_wrapper(
+                functools.lru_cache(maxsize=8)(audited(function)), function
+            )
+
+        def inside(function):
+            guarded = with_timeout(function)
+
+            class Tool:
+                def __init__(self):
+                    functools.update_wrapper(self, function)
+
+                def __call__(self, *args, **kwargs):
+                    return guarded(*args, **kwargs)
+
+            return Tool()
+
+        named_again, in_a_class = swapped(cached_and_audited(free_search)), swapped(inside(fetch))
+        if later:
+            assert named_again == (
+                "its callable's parameter `skip_review` is absent from the argument schema"
+            )
+            assert in_a_class.startswith("a decorator on its callable holds a second wrapper")
+        else:  # the package page states these, until a later kernel is the floor
+            assert named_again is None and in_a_class is None
+
+        # a cache whose function cannot be told has a reason of its own
+        if later:
+            unread = functools.update_wrapper(
+                functools.lru_cache(maxsize=None)(lambda *a, **k: free_search(*a, **k)), free_search
+            )
+            real = invocation._referents
+            monkeypatch.setattr(invocation, "_referents", lambda value: real(value)[:-1])
+            reason = swapped(unread)
+            monkeypatch.undo()
+            assert reason.startswith(
+                "a cache on its callable cannot be read: a `functools.lru_cache` wrapper names"
+            )
+            assert "holds a second wrapper" not in reason
+
+        # beside every kernel: a forwarding wrapper that keeps a parameter the function
+        # takes too (judged ``timeout=9``, ran the function's own 5)
+        def keeps(function):
+            @functools.wraps(function)
+            def wrapper(*args, timeout: int = 30, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        assert keeps(free_search)("u", timeout=9) == "u"
+        kept_parameter = swapped(keeps(free_search))
+        assert kept_parameter.startswith(
+            "its callable's parameter `timeout` is taken by a wrapper and by the function it wraps"
+        )
+        passing = functools.wraps(free_search)(lambda *a, **k: free_search(*a, **k))
+        assert swapped(passing) is None
+
+        def _undeclared_only(levels):
+            return gate._undeclared(levels, {"url": None, "timeout": None})
+
+        import inspect
+
+        own = inspect.signature(free_search).parameters
+        restating = inspect.signature(lambda url="*", timeout=5: None).parameters
+        assert _undeclared_only([own, restating]) is None  # no level forwards
+
         # a kernel without the walk, or without the two names, is not asked anything
         monkeypatch.setattr(gate, "_HiddenWrapper", gate._NotInThisKernel)
         assert gate._kernel_refusal(fetch) is None and gate._kernel_refusal(lookup) is None

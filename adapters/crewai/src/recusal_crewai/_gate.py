@@ -567,7 +567,27 @@ def _undeclared(levels: Any, fields: Any) -> Optional[str]:
                 return f"its callable's parameter `{name}` is positional-only"
             if name not in fields:
                 return f"its callable's parameter `{name}` is absent from the argument schema"
+    # a wrapper that passes ``*args`` or ``**kwargs`` on and also names a parameter takes
+    # that argument itself; a callable further in that names it too then runs with its own
+    # default, not the value the policy judged
+    for index, parameters in enumerate(levels):
+        if not any(_variadic(parameter) for parameter in parameters.values()):
+            continue
+        for name, parameter in parameters.items():
+            if _variadic(parameter):
+                continue
+            for position, other in enumerate(levels):
+                if position != index and name in other and not _variadic(other[name]):
+                    return (
+                        f"its callable's parameter `{name}` is taken by a wrapper and by "
+                        "the function it wraps, which can then run with a value no policy "
+                        "judged; drop the name from the wrapper, or pass it on by name"
+                    )
     return None
+
+
+def _variadic(parameter: Any) -> bool:
+    return parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
 
 
 class _NotInThisKernel(Exception):
@@ -594,6 +614,9 @@ _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
 #: A bound argument is taken by a wrapper under another name than the parameter with a
 #: default it would fill on the function the wrapper names (the same kernels).
 _BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 
 
 def _kernel_refusal(func: Any, fields: Any = None) -> Optional[str]:
@@ -624,6 +647,8 @@ def _kernel_refusal(func: Any, fields: Any = None) -> Optional[str]:
         levels = walk(func)
     except _BoundArgumentKept as refused:
         return f"its callable cannot be read: {refused}"
+    except _UnreadCache as refused:
+        return f"a cache on its callable cannot be read: {refused}"
     except _HiddenWrapper as refused:
         return (
             "a decorator on its callable holds a second wrapper of it (in its closure or "

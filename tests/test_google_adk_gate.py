@@ -704,6 +704,47 @@ class TestGoogleAdkGate:
             "or in its place; call it from a plain function and register that one)"
         ) in responses["c1"]["error"]
 
+    @staticmethod
+    def _unread_cache(monkeypatch):
+        """A cache named again for ``fetch`` whose function cannot be told: the listing is
+        handed over without its last entry, so it is laid out as neither known way."""
+        import functools
+
+        from recusal import invocation
+
+        def fetch(url: str, timeout: int = 5) -> str:
+            """Fetch a url."""
+            return "fetched"
+
+        cached = functools.lru_cache(maxsize=None)(lambda *args, **kwargs: fetch(*args, **kwargs))
+        tool = functools.update_wrapper(cached, fetch)
+        invocation.reached_parameters(fetch)  # the first walk has been made
+        real = invocation._referents
+        monkeypatch.setattr(invocation, "_referents", lambda value: real(value)[:-1])
+        return tool
+
+    def test_a_cache_whose_function_cannot_be_told_keeps_the_kernels_reason(
+        self, example, monkeypatch
+    ):
+        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.0). The kernel's
+        reason for it says what it is and what to do, and the words for a decorator that
+        holds a second wrapper are not added to it."""
+        import importlib  # noqa: F401
+
+        from recusal import invocation
+
+        if not hasattr(invocation, "UnreadCache"):
+            return  # 0.15.0 reads such a cache by its name
+        tool = self._unread_cache(monkeypatch)
+        words = invocation.unsupported_signature(tool)
+        assert words.startswith("a `functools.lru_cache` wrapper names one function")
+        assert words.endswith("from a plain function and register that one")
+        adapter = _adapter()
+        assert adapter._with_remedy(tool, words) == words
+        assert adapter._with_remedy(tool, words, ("tool_context",)) == words
+        assert adapter._UnreadCache is invocation.UnreadCache
+        assert "holds a second wrapper" not in adapter._with_remedy(tool, words)
+
     def test_the_remedy_is_added_only_to_the_reason_the_walk_raised(self, example, monkeypatch):
         """Beside a kernel without the two exceptions the gate handles a stand-in that
         nothing raises, and the kernel's reason is passed on as it is. A reason for

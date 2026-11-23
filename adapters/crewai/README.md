@@ -177,6 +177,27 @@ order of a turn's entries on the chain is not always the order the model propose
   A `functools.partialmethod` over a callable object is refused beside every kernel,
   with a reason that says so. For each, call the function from a plain function and
   give the tool that.
+- **Refused beside every kernel:** a `functools.wraps` wrapper that passes `*args` or
+  `**kwargs` on and also names a parameter the function it wraps takes
+  (`def wrapper(*args, limit=1000, **kwargs)` around `def fetch(query, limit=10)`): the
+  wrapper keeps the judged value and the function runs with its own default. Drop the
+  name from the wrapper, or pass it on by name.
+- **Four more decorator shapes, not found beside `recusal` 0.15.0 or older.** This
+  package reads a tool with a walk of its own, which follows `__wrapped__` and nothing
+  else, so each of these lets a value run that the policy did not judge: a decorator
+  written as `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a
+  parameter of its own; `@functools.wraps(f)` above `@functools.lru_cache` above a
+  wrapper with a parameter of its own; a class-based decorator written inside the
+  decorator, whose `__call__` calls a second wrapper the decorator built, or one at
+  module level whose `__call__` names that wrapper as a global; and a method that
+  delegates to a free function under `functools.wraps` of it and keeps its object,
+  where the free function's first parameter has a default. Beside a kernel later than
+  0.15.0 the gate asks the kernel's walk as well, holds every level it returns to the
+  schema, and refuses all four with the cause. Until that kernel is this package's
+  floor, an install beside 0.15.0 or 0.14.x has these four. Not found beside any
+  kernel: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. For each, call the
+  function from a plain function and give the tool that.
 - **Annotations:** `str`, `int`, `float`, `bool`, optionals, and lists and string-keyed
   dicts of those. `Literal`, `Enum`, `Any`, `Annotated` and models are refused; use
   `str` and check the value in your policy. CrewAI builds an MCP tool's `enum`

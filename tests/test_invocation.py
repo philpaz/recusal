@@ -3805,7 +3805,11 @@ def test_the_globals_of_a_wrapper_are_read_without_running_anything():
     import types
 
     class Key:
+        hashed = True  # until the namespace holds it
+
         def __hash__(self):
+            if not Key.hashed:
+                raise AssertionError("a key of the namespace was hashed")
             return 7
 
         def __eq__(self, other):
@@ -3815,6 +3819,7 @@ def test_the_globals_of_a_wrapper_are_read_without_running_anything():
     assert "_GLOBAL_GUARDED" in invocation._names(code)
     namespace = {"_GLOBAL_GUARDED": _GLOBAL_GUARDED}
     namespace[Key()] = _GLOBAL_GUARDED
+    Key.hashed = False
     hostile = types.FunctionType(code, namespace)
     hostile.__wrapped__ = _global_fetch
     with pytest.raises(HiddenWrapper):
@@ -3961,6 +3966,8 @@ def test_e_a_wrapped_carried_by_a_partial_is_followed():
 
 
 def _six_cached(make_wrapper, **options):
+    """A caching decorator written as ``functools.wraps(f)`` over ``functools.lru_cache``
+    over a wrapper: the cache is named for ``f`` and calls the wrapper."""
     import functools
 
     def decorate(function):
@@ -3970,23 +3977,97 @@ def _six_cached(make_wrapper, **options):
     return decorate
 
 
-def test_a_an_lru_cache_wrapper_that_names_one_function_and_calls_another_is_refused():
+def _six_forwarder(function):
+    return lambda *args, **kwargs: function(*args, **kwargs)
+
+
+_CACHES = (
+    {"maxsize": 128},
+    {"maxsize": None},
+    {"maxsize": 0},
+    {"maxsize": 2, "typed": True},
+)
+
+
+def test_a_what_a_cache_refers_to_is_laid_out_as_the_walk_reads_it():
+    """The function a ``functools.lru_cache`` wrapper calls is picked out of
+    ``gc.get_referents`` by its place. This holds every interpreter to the two layouts
+    the kernel knows, for every kind of cache, empty and used, with functions and the
+    named function itself among the cached keys and results: a Python that lists them
+    another way fails here first."""
+    import functools
+    import gc
+
+    reached_parameters(_six_fetch)  # the first walk has been made
+    results: dict = {}
+
+    def called(key, limit: int = 10):
+        return results.get(key, key)
+
+    def named(key, limit: int = 10):
+        return key
+
+    for options in _CACHES:
+        cache = functools.lru_cache(**options)(called)
+        states = [gc.get_referents(cache)]
+        cache(1), cache("a")
+        states.append(gc.get_referents(cache))
+        results["f"], results["n"] = _six_fetch, named
+        cache("f"), cache("n"), cache(named), cache(_six_fetch)  # functions cached
+        states.append(gc.get_referents(cache))
+        functools.update_wrapper(cache, named)  # named again for another function
+        states.append(gc.get_referents(cache))
+        for referred in states:
+            assert invocation._called_by(cache, referred) is called, (options, referred)
+            assert referred[-1] is cache.__dict__ and type(referred[-2]) is type
+            if sys.version_info >= (3, 10):
+                assert referred[0] is type(cache) and referred[-5] is called
+                assert type(referred[-4]) is object and type(referred[-6]) is dict
+                assert type(referred[-3]) is type
+            else:
+                assert referred[-4] is called and type(referred[-3]) is dict
+        assert invocation._cache_calls(cache, named) is called
+        assert invocation._cache_target(cache) is called
+    # a bounded cache lists its keys and results before its dictionary, never after
+    bounded = functools.lru_cache(maxsize=8)(called)
+    bounded("f")
+    listed = gc.get_referents(bounded)
+    tail = 6 if sys.version_info >= (3, 10) else 4
+    assert any(value is _six_fetch for value in listed[:-tail])
+    assert not any(value is _six_fetch for value in listed[-tail:])
+    # what is not laid out either way is not read: each thing that stands around the
+    # function is held to, by exact type or by identity
+    for odd in ([], [called], listed[:-1], [*listed, 1], tuple(listed), None):
+        assert invocation._called_by(bounded, odd) is invocation._MISSING
+    around = (0, -1, -2, -3, -4, -6) if sys.version_info >= (3, 10) else (-1, -2, -3)
+    for index in around:
+        altered = list(listed)
+        altered[index] = "not what stands there"
+        assert invocation._called_by(bounded, altered) is invocation._MISSING, index
+
+
+def test_a_cache_named_again_is_read_as_the_wrapper_it_calls():
     """``@functools.wraps(f)`` over ``@functools.lru_cache`` over a wrapper overwrites the
-    cache's ``__wrapped__`` with ``f``; the wrapper the cache really calls is held in C
-    and was read by nothing. Refused when the named function is, provably, not the one the
-    cache refers to."""
-    for make in (_six_audited, _six_capped):
-        for options in ({"maxsize": 128}, {"maxsize": None}, {"maxsize": 0}):
-            tool = _six_cached(make, **options)(_six_fetch)
-            with pytest.raises(HiddenWrapper) as refused:
-                reached_parameters(tool)
-            assert str(refused.value) == invocation._REWRAPPED_CACHE
-            assert unsupported_signature(tool) == invocation._REWRAPPED_CACHE
-            with pytest.raises(HiddenWrapper):
-                invocation.own_parameters(tool)
-    ran = _six_cached(_six_capped, maxsize=128)(_six_fetch)
+    cache's ``__wrapped__`` with ``f``; the walk read the cache as ``f``, and the wrapper
+    it really calls, held only in C, was read by nothing. The wrapper is found among what
+    the cache refers to and read: one that only passes its arguments on is accepted, and
+    one with a parameter of its own gets the refusal it would get without the cache."""
+    own = ["query", "limit"]
+    for options in _CACHES:
+        passing = _six_cached(_six_forwarder, **options)(_six_fetch)
+        assert passing("q", 5) == "rows"
+        assert _levels(passing) == [_FORWARD, own]
+        assert unsupported_signature(passing) is None
+        assert _levels(_traced(passing)) == [_FORWARD, _FORWARD, own]
+
+        audited = _six_cached(_six_audited, **options)(_six_fetch)
+        assert _levels(audited) == [["args", "skip_review", "kwargs"], own, own]
+        assert unsupported_signature(audited).startswith(_SIX_UNDECLARED)
+        assert unsupported_signature(_traced(audited)).startswith(_SIX_UNDECLARED)
+        capped = _six_cached(_six_capped, **options)(_six_fetch)
+        assert unsupported_signature(capped).startswith(_SIX_KEPT)
     _SIX.clear()
-    ran(query="q", limit=5)
+    _six_cached(_six_capped, maxsize=128)(_six_fetch)(query="q", limit=5)
     assert _SIX == [("fetch", "q", 10)]
 
     class Service:
@@ -3994,18 +4075,35 @@ def test_a_an_lru_cache_wrapper_that_names_one_function_and_calls_another_is_ref
         def fetch(self, query: str, limit: int = 10) -> str:
             return "rows"
 
+        @_six_cached(_six_forwarder, maxsize=128)
+        def passing(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
         def __hash__(self):
             return 1
 
-    with pytest.raises(HiddenWrapper):
-        reached_parameters(Service().fetch)
-    with pytest.raises(HiddenWrapper):
-        reached_parameters(_traced(_six_cached(_six_audited)(_six_fetch)))
+    assert unsupported_signature(Service().fetch).startswith(_SIX_UNDECLARED)
+    assert _levels(Service().passing) == [_FORWARD, own]
+    assert unsupported_signature(Service().passing) is None
 
-    # a cache held by a wrapper, named for the function and calling another: the way
-    # through it cannot be judged
+    # the wrapper the cache calls is read like one that names the function itself: a
+    # second wrapper it holds in its closure is found, and a dispatcher it is, refused
+    def holding(function):
+        guarded = _with_timeout(function)
+        return lambda *args, **kwargs: guarded(*args, **kwargs)
+
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(_six_cached(holding)(_fetch()))
+    assert str(refused.value).startswith("`timeout` is taken by a wrapper and by the function")
+    lookup = _dispatching()
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(_six_cached(lambda function: lookup)(lookup.__wrapped__))
+
+    # a cache a wrapper holds, named for the function and calling a wrapper with a
+    # parameter of its own, is a hidden wrapper; one that only passes on is not
     with pytest.raises(HiddenWrapper):
-        reached_parameters(_calling(_six_cached(lambda f: lambda *a, **k: f(*a, **k)))(_fetch()))
+        reached_parameters(_calling(_six_cached(_with_timeout))(_fetch()))
+    assert _levels(_calling(_six_cached(_six_forwarder))(_fetch())) == [_FORWARD, _FETCH]
 
 
 def test_a_cache_that_calls_what_it_names_is_read_as_before():
@@ -4018,12 +4116,7 @@ def test_a_cache_that_calls_what_it_names_is_read_as_before():
     def fetch(query: str, limit: int = 10) -> str:
         return "rows"
 
-    for options in (
-        {"maxsize": 2},
-        {"maxsize": None},
-        {"maxsize": 0},
-        {"maxsize": 2, "typed": True},
-    ):
+    for options in _CACHES:
         cached = functools.lru_cache(**options)(fetch)
         for query in ("a", "b", "c", fetch):  # links, evictions, and the function as a key
             cached(query)
@@ -4038,22 +4131,136 @@ def test_a_cache_that_calls_what_it_names_is_read_as_before():
             return "rows"
 
     assert _levels(Service().fetch) == [own, own]
-    assert invocation._calls_what_it_names(fetch) and invocation._calls_what_it_names(None)
+    assert invocation._cache_calls(fetch, fetch) is fetch  # not a cache: the name stands
 
 
-def test_a_what_the_cache_check_does_not_find_is_stated(monkeypatch):
-    """A bounded cache that holds the named function as a cached result lists it among
-    what it refers to: not found. And where the listing is not available, or raises, the
-    check proves nothing and the wrapper is read as 0.15.0 reads it."""
+def test_a_method_over_a_cache_named_for_a_cache_is_read_as_0_15_0_read_it():
+    """0.15.0 read a method over a cache whose ``__wrapped__`` is not a plain function (a
+    cache of a cache) by the names alone and without the object bound, which shows the
+    method's ``self`` as a parameter the tool does not declare, and refused it. The call
+    is clean, and the reading is kept all the same: nothing 0.15.0 refused is accepted
+    now. A cache named for a plain function is read as the wrapper it calls, bound."""
+    import functools
+
+    def method(self, query: str, limit: int = 10) -> str:
+        return "rows"
+
+    undeclared = "`self` is a parameter of a function the call reaches that the tool does not"
+
+    def holder(attribute):
+        return type("Service", (), {"fetch": attribute, "__hash__": lambda self: 1})()
+
+    twice = functools.lru_cache(maxsize=None)(functools.lru_cache(maxsize=None)(method))
+    over_a_cache = _six_cached(_six_forwarder)(functools.lru_cache(maxsize=None)(method))
+    for attribute in (twice, over_a_cache, functools.lru_cache(maxsize=None)(over_a_cache)):
+        tool = holder(attribute).fetch
+        assert tool("q") == "rows"
+        assert unsupported_signature(tool).startswith(undeclared), attribute
+
+    # the wrapper such a cache calls is still read: a parameter of its own is refused
+    # by name, also where the names alone would have been accepted
+    class Passing:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    over_an_object = holder(_six_cached(_six_audited)(Passing(method))).fetch
+    assert unsupported_signature(over_an_object).startswith(_SIX_UNDECLARED)
+    assert unsupported_signature(holder(_six_cached(_six_forwarder)(Passing(method))).fetch) is None
+    # named for the plain function: the wrapper the cache calls, with the object bound
+    named_for_it = holder(_six_cached(_six_forwarder)(method)).fetch
+    assert _levels(named_for_it) == [_FORWARD, ["query", "limit"]]
+    assert unsupported_signature(named_for_it) is None
+
+
+def test_what_a_cache_calls_is_told_once_and_kept_weakly(monkeypatch):
+    """A cache calls the same function for as long as it lives, and a full bounded cache
+    lists every key and result along with it. So the listing is made once per cache and
+    what it told is kept, without keeping the cache or the function alive."""
+    import functools
+    import gc
+    import weakref
+
+    reached_parameters(_six_fetch)  # the first walk has been made
+    real, listed = invocation._referents, []
+
+    def counting(value):
+        listed.append(value)
+        return real(value)
+
+    monkeypatch.setattr(invocation, "_referents", counting)
+
+    def called(query: str, limit: int = 10) -> str:
+        return "rows"
+
+    plain = functools.lru_cache(maxsize=4)(called)
+    renamed = _six_cached(_six_forwarder, maxsize=4)(_six_fetch)
+    for cache in (plain, renamed):
+        del listed[:]
+        for _ in range(3):
+            reached_parameters(cache)
+            unsupported_signature(cache)
+            cache("q")
+        assert len(listed) == 1 and listed[0] is cache
+    assert invocation._told(plain) is called
+    assert invocation._told(called) is invocation._MISSING  # nothing was told of it
+
+    # a callable that cannot be weakly referenced is told again each time, and read
+    class Slotted:
+        __slots__ = ()
+
+        def __call__(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+    slotted = Slotted()
+    unkept = functools.lru_cache(maxsize=None)(slotted)
+    del listed[:]
+    assert invocation._cache_calls(unkept, slotted) is slotted
+    assert invocation._cache_calls(unkept, slotted) is slotted
+    assert len(listed) == 2 and invocation._told(unkept) is invocation._MISSING
+
+    # neither the cache nor the function lives longer for having been told
+    cache_gone, function_gone = weakref.ref(plain), weakref.ref(called)
+    del plain, called, cache, listed[:]
+    gc.collect()
+    assert cache_gone() is None and function_gone() is None
+
+
+def test_a_cache_whose_function_cannot_be_told_is_refused_or_read_as_before(monkeypatch):
+    """A bounded cache that holds the named function as a cached result is told apart by
+    place, not by presence. Where the list is laid out another way, the name stands only
+    if the named function is listed, and the cache is refused otherwise. And where the
+    listing is not to be had, or raises, nothing is proven and the cache is read as
+    0.15.0 reads it."""
+    import gc
+    import types
+
     own = ["query", "limit"]
     returning = _six_cached(lambda f: lambda *a, **k: _six_fetch, maxsize=8)(_six_fetch)
-    with pytest.raises(HiddenWrapper):
-        reached_parameters(returning)
-    assert returning("q") is _six_fetch  # now a cached result
-    assert _levels(returning) == [own, own]
+    assert returning("q") is _six_fetch  # the named function, now a cached result
+    assert _levels(returning) == [["a", "k"], own]
 
     tool = _six_cached(_six_audited)(_six_fetch)
     reached_parameters(_six_fetch)  # the first walk has been made
+    real = invocation._referents
+    monkeypatch.setattr(invocation, "_referents", lambda value: real(value)[:-1])
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert type(refused.value) is invocation.UnreadCache
+    assert issubclass(invocation.UnreadCache, HiddenWrapper)
+    assert str(refused.value) == invocation._REWRAPPED_CACHE
+    assert "apply the cache to the function itself" in str(refused.value)
+    assert unsupported_signature(tool) == invocation._REWRAPPED_CACHE
+    with pytest.raises(HiddenWrapper):
+        invocation.own_parameters(tool)
+    with pytest.raises(HiddenWrapper):  # held by a wrapper: the way cannot be judged
+        reached_parameters(_calling(_six_cached(_six_forwarder))(_fetch()))
+    plain = __import__("functools").lru_cache(maxsize=None)(_six_fetch)
+    assert _levels(plain) == [own, own]  # the named function is listed: the name stands
+
     monkeypatch.setattr(invocation, "_referents", None)
     assert _levels(tool) == [own, own]
 
@@ -4062,14 +4269,8 @@ def test_a_what_the_cache_check_does_not_find_is_stated(monkeypatch):
 
     monkeypatch.setattr(invocation, "_referents", refusing)
     assert _levels(tool) == [own, own]
-    monkeypatch.setattr(invocation, "_referents", lambda value: iter(()))
-    assert _levels(tool) == [own, own]
     monkeypatch.undo()
-    with pytest.raises(HiddenWrapper):
-        reached_parameters(tool)
-
-    import gc
-    import types
+    assert _levels(tool) == [["args", "skip_review", "kwargs"], own, own]
 
     assert invocation._referents is gc.get_referents
     assert invocation._collector() is gc.get_referents

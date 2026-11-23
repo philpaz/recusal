@@ -558,6 +558,24 @@ gate has decided nothing, and no entry is written.
   the policy did not see. A kernel later than 0.15.0 refuses it before the policy runs,
   with a reason that says it is a `partialmethod` over such a callable. Give the tool a
   plain function that calls it.
+- **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
+  0.15.0.** Each let a value run that the policy did not judge: a decorator written as
+  `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
+  its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
+  `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
+  read as `f`, and the wrapper it calls by nothing); a class-based decorator written
+  inside the decorator, whose `__call__` calls a second wrapper the decorator built, or
+  one at module level whose `__call__` names that wrapper as a global; and a method
+  that delegates to a free function under `functools.wraps` of it and keeps its object,
+  where the free function's first parameter has a default (that parameter ran at its
+  default and was in no signature). A kernel later than 0.15.0 reads the first three
+  like the same decorator written with a nested function, so a wrapper with a parameter
+  of its own is refused, naming the parameter, and one that only passes its arguments
+  on is accepted; it refuses the fourth, naming both parameters. Not found by either
+  kernel: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. A cache whose
+  function cannot be told from what it refers to is refused, not read. For each, call
+  the function from a plain function and give the tool that.
 - A function that names its parameters and then calls another function. The gate reads
   signatures, not function bodies: the function it calls runs with its own defaults and
   with whatever values the first one hands it, and the policy is shown only the

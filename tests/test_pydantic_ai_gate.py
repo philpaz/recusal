@@ -3209,6 +3209,44 @@ class TestPydanticAiGate:
             else:
                 assert reason is None
 
+    @staticmethod
+    def _unread_cache(monkeypatch):
+        """A cache named again for ``fetch`` whose function cannot be told: the listing is
+        handed over without its last entry, so it is laid out as neither known way."""
+        import functools
+
+        from recusal import invocation
+
+        def fetch(url: str, timeout: int = 5) -> str:
+            """Fetch a url."""
+            return "fetched"
+
+        cached = functools.lru_cache(maxsize=None)(lambda *args, **kwargs: fetch(*args, **kwargs))
+        tool = functools.update_wrapper(cached, fetch)
+        invocation.reached_parameters(fetch)  # the first walk has been made
+        real = invocation._referents
+        monkeypatch.setattr(invocation, "_referents", lambda value: real(value)[:-1])
+        return tool
+
+    def test_a_cache_whose_function_cannot_be_told_has_a_reason_of_its_own(
+        self, example, adapter, monkeypatch
+    ):
+        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.0), and was reported
+        as a decorator that holds a second wrapper, which is not what happened."""
+        from recusal import invocation
+
+        if not hasattr(invocation, "UnreadCache"):
+            return  # 0.15.0 reads such a cache by its name
+        tool = self._unread_cache(monkeypatch)
+        reason = adapter._with_defaults(self._ctx_for(tool), "t", {"url": "u"})[1]
+        assert reason.startswith(
+            "a cache on the function this tool runs cannot be read: a `functools.lru_cache` "
+            "wrapper names one function as `__wrapped__` and calls another"
+        )
+        assert "apply the cache to the function itself" in reason
+        assert "holds a second wrapper" not in reason
+        assert adapter._UnreadCache is invocation.UnreadCache
+
     def test_beside_a_kernel_without_the_named_refusals_the_walk_still_refuses(
         self, example, adapter, monkeypatch
     ):
