@@ -20,6 +20,7 @@ from recusal.invocation import (
     DeclaredSignature,
     DispatchedAtCallTime,
     HiddenWrapper,
+    PartialMethodSignature,
     detached,
     json_data,
     reached_parameters,
@@ -1815,7 +1816,7 @@ def _limits():
         ),
         ("a subclass of a type of the closed set", _calling(lambda f: Partial(_with_timeout(f)))),
         ("in a container", in_a_container),
-        ("in a module global", in_a_global),
+        ("in a container in a module global", in_a_global),
         ("in a function attribute", in_a_function_attribute),
         ("in a class attribute", in_a_class_attribute),
         ("in a slot", in_a_slot),
@@ -3358,8 +3359,15 @@ def _shows(func) -> List[str]:
 def _refused_as_a_partialmethod(func) -> None:
     with pytest.raises(TypeError, match="functools.partialmethod") as refused:
         reached_parameters(func)
-    assert type(refused.value) is TypeError  # what every gate already refuses on
+    # a ``TypeError``, which every gate already refuses on, with a name of its own
+    assert type(refused.value) is PartialMethodSignature
+    assert issubclass(PartialMethodSignature, TypeError)
+    assert not issubclass(PartialMethodSignature, ValueError)
     assert str(refused.value) == invocation._PARTIALMETHOD
+    assert "register a plain function that calls it" in str(refused.value)
+    assert "put the partialmethod over a plain function" in str(refused.value)
+    # the kernel's own check gives that reason, before any other about the signature shown
+    assert unsupported_signature(func) == invocation._PARTIALMETHOD
 
 
 class _Fetcher:
@@ -3539,7 +3547,51 @@ def test_a_partialmethod_is_refused_whatever_it_binds_and_wherever_it_stands():
 
     assert list(inspect_signature(Bound().all_bound)) == []
     _refused_as_a_partialmethod(Bound().all_bound)
-    assert unsupported_signature(Bound().all_bound) == "its signature cannot be inspected"
+    assert unsupported_signature(Bound().all_bound) == invocation._PARTIALMETHOD
+
+
+def test_a_partialmethod_is_the_reason_given_before_any_other():
+    """``unsupported_signature`` read the signature a partialmethod shows first, and the
+    function ``functools`` builds carries no annotations: a tool whose parameters are all
+    annotated was refused as "`limit` is not annotated with a supported data type". The
+    partialmethod is asked for first, on the callable and further in."""
+    import functools
+
+    class Typed:
+        def __call__(self, repo, table: str, limit: int = 10) -> str:
+            return table
+
+    class Repo:
+        fetch = functools.partialmethod(Typed(), "customers")
+        variadic = functools.partialmethod(_Fetcher(), "customers")
+
+    for tool in (Repo().fetch, Repo().variadic, functools.partial(Repo().fetch, limit=2)):
+        assert unsupported_signature(tool) == invocation._PARTIALMETHOD
+        assert unsupported_signature(tool, ("limit", "extra")) == invocation._PARTIALMETHOD
+
+    @functools.wraps(Repo().fetch)
+    def forwards(*args, **kwargs):
+        return Repo().fetch(*args, **kwargs)
+
+    del forwards.__dict__[next(m for m in invocation._PARTIALMETHOD_MARKS if m in vars(forwards))]
+    # the wrapper no longer carries the mark; what it names as ``__wrapped__`` does
+    assert unsupported_signature(forwards) == invocation._PARTIALMETHOD
+
+    # what is not a partialmethod is judged as before, in the order it was
+    def plain(table, limit: int = 10) -> str:
+        return table
+
+    assert unsupported_signature(plain) == "`table` is not annotated with a supported data type"
+
+    def declared(table, limit: int = 10) -> str:
+        return table
+
+    declared.__signature__ = __import__("inspect").signature(plain)
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(declared)
+    assert unsupported_signature(declared) == (
+        "`table` is not annotated with a supported data type"
+    )
 
 
 def test_a_wrapper_that_carries_a_partialmethods_mark_is_refused():
@@ -3627,6 +3679,186 @@ def test_the_partialmethod_check_prepares_nothing_and_runs_before_any_walk_state
         _refused_as_a_partialmethod(tool)
     finally:
         invocation._READY = ready
+
+
+# --- a second wrapper held in a module global the wrapper names ---------------------------
+#
+# A wrapper written beside the function it wraps can call a second wrapper of that function
+# by its global name. It is in no closure cell and is held all the same: the module globals
+# the code of a wrapper names are read like its closure cells, and judged by the same rule,
+# so only a wrapper or a dispatcher OF A CALLABLE THE WALK READ is refused.
+
+
+def _global_fetch(url: str, timeout: int = 999999) -> int:
+    return timeout
+
+
+def _global_other(url: str, timeout: int = 999999) -> int:
+    return timeout
+
+
+_GLOBAL_GUARDED = _with_timeout(_global_fetch)
+_GLOBAL_GUARDED_OTHER = _with_timeout(_global_other)
+_GLOBAL_HELPER = lambda url: url  # noqa: E731
+_GLOBAL_LOG = __import__("logging").getLogger("recusal.tests.invocation")
+_GLOBAL_PARTIAL_OF_OTHER = __import__("functools").partial(_global_other, timeout=30)
+_GLOBAL_FORWARDS = __import__("functools").wraps(_global_fetch)(
+    lambda *args, **kwargs: _global_fetch(*args, **kwargs)
+)
+
+
+def _global_lookup(key: str, deep: bool = False) -> str:
+    return "base"
+
+
+def _global_lookup_other(key: str, deep: bool = False) -> str:
+    return "other"
+
+
+_GLOBAL_DISPATCHER = __import__("functools").singledispatch(_global_lookup)
+_GLOBAL_DISPATCHER.register(int, lambda key, deep=False, skip_review=True: f"int, {skip_review}")
+_GLOBAL_DISPATCHER_OTHER = __import__("functools").singledispatch(_global_lookup_other)
+_GLOBAL_DISPATCHER_OTHER.register(int, lambda key, deep=False, skip_review=True: "other int")
+_GLOBAL_DISPATCHER_BASE_ONLY = __import__("functools").singledispatch(_global_lookup)
+
+
+def _wraps(function):
+    import functools
+
+    return functools.wraps(function)
+
+
+@_wraps(_global_fetch)
+def _calls_a_global_wrapper(*args, **kwargs):
+    return _GLOBAL_GUARDED(*args, **kwargs)
+
+
+@_wraps(_global_fetch)
+def _calls_a_global_wrapper_in_a_lambda(*args, **kwargs):
+    return (lambda: [_GLOBAL_GUARDED(*args, **kwargs) for _ in (0,)][0])()
+
+
+@_wraps(_global_lookup)
+def _calls_a_global_dispatcher(*args, **kwargs):
+    return _GLOBAL_DISPATCHER(*args, **kwargs)
+
+
+@_wraps(_global_fetch)
+def _calls_global_helpers(*args, **kwargs):
+    _GLOBAL_LOG.debug("fetching")
+    _GLOBAL_HELPER(args)
+    _GLOBAL_FORWARDS("u")  # a second wrapper of the same function with no parameter of its own
+    return _global_fetch(*args, **kwargs)
+
+
+@_wraps(_global_fetch)
+def _calls_globals_of_another_function(*args, **kwargs):
+    _GLOBAL_GUARDED_OTHER("u")
+    _GLOBAL_PARTIAL_OF_OTHER("u")
+    _GLOBAL_DISPATCHER_OTHER(1)
+    _GLOBAL_DISPATCHER_BASE_ONLY("k")
+    return _global_fetch(*args, **kwargs)
+
+
+def test_a_second_wrapper_in_a_module_global_the_wrapper_names_is_refused():
+    """``_GLOBAL_GUARDED = _with_timeout(_global_fetch)`` keeps ``timeout`` for itself, and
+    the wrapper that names ``_global_fetch`` as ``__wrapped__`` calls it by its global
+    name: judged ``timeout=5``, ran the function's own default. Refused with the reason a
+    wrapper the walk reads would get, also when the name is used inside a lambda or a
+    comprehension of the wrapper."""
+    for tool in (_calls_a_global_wrapper, _calls_a_global_wrapper_in_a_lambda):
+        assert tool("u", timeout=5) == 999999
+        with pytest.raises(HiddenWrapper) as refused:
+            reached_parameters(tool)
+        assert str(refused.value).startswith("`timeout` is taken by a wrapper and by the function")
+        assert unsupported_signature(tool) == str(refused.value)
+
+
+def test_a_dispatcher_in_a_module_global_the_wrapper_names_is_refused():
+    """The wrapper names the base as ``__wrapped__`` and calls the dispatcher of that base
+    by its global name: the registered implementation ran its own ``skip_review=True``."""
+    assert _calls_a_global_dispatcher(1) == "int, True"
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(_calls_a_global_dispatcher)
+    assert str(refused.value) == invocation._HIDDEN_WRAPPER
+    assert unsupported_signature(_calls_a_global_dispatcher) == invocation._HIDDEN_WRAPPER
+
+
+def test_what_a_wrapper_calls_by_a_global_name_is_otherwise_not_refused():
+    """Only a second wrapper or a dispatcher of a callable the walk read counts, and only
+    with a parameter of its own (or more than its base to run). A logger, a plain function,
+    a forwarding wrapper of the same function, and a wrapper, a ``functools.partial`` and a
+    registered dispatcher of ANOTHER function are what an ordinary decorator calls."""
+    for tool in (_calls_global_helpers, _calls_globals_of_another_function):
+        assert tool("u", timeout=5) == 5
+        assert _levels(tool) == [_FORWARD, _FETCH]
+        assert unsupported_signature(tool) is None
+
+
+def test_the_globals_of_a_wrapper_are_read_without_running_anything():
+    """The namespace is the function's own ``__globals__``, read only when it is exactly a
+    ``dict``, listed in one step, and no key in it is hashed or compared unless it is
+    exactly a ``str``. A namespace of any other type is not read: a stated limit."""
+    import types
+
+    class Key:
+        def __hash__(self):
+            return 7
+
+        def __eq__(self, other):
+            raise AssertionError("a key of the namespace was compared")
+
+    code = _calls_a_global_wrapper.__code__
+    assert "_GLOBAL_GUARDED" in invocation._names(code)
+    namespace = {"_GLOBAL_GUARDED": _GLOBAL_GUARDED}
+    namespace[Key()] = _GLOBAL_GUARDED
+    hostile = types.FunctionType(code, namespace)
+    hostile.__wrapped__ = _global_fetch
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(hostile)
+
+    class Namespace(dict):
+        def items(self):
+            raise AssertionError("a namespace that is not a dict was read")
+
+    other = types.FunctionType(code, Namespace(_GLOBAL_GUARDED=_GLOBAL_GUARDED))
+    other.__wrapped__ = _global_fetch
+    assert other("u", timeout=5) == 999999
+    assert _levels(other) == [_FORWARD, _FETCH]  # not found: the stated limit
+
+    # a name the code does not use is not read, whatever the namespace holds
+    unused = types.FunctionType(_calls_global_helpers.__code__, dict(globals()))
+    unused.__wrapped__ = _global_fetch
+    assert "_GLOBAL_GUARDED" not in invocation._names(unused.__code__)
+    assert _levels(unused) == [_FORWARD, _FETCH]
+
+    # with the checks off nothing held is collected, as for a closure cell
+    ready = invocation._READY
+    try:
+        invocation._READY = False
+        assert _levels(_calls_a_global_wrapper) == [_FORWARD, _FETCH]
+    finally:
+        invocation._READY = ready
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(_calls_a_global_wrapper)
+
+
+def test_a_global_named_only_as_an_attribute_is_read_too():
+    """The code object lists the names a function reads as globals and as attributes in one
+    tuple. A wrapper that reads an attribute called like a global of its module is judged
+    by that global as well: stated, and only ever a wrapper of the same function."""
+
+    class Settings:
+        _GLOBAL_GUARDED = None
+
+    @_wraps(_global_fetch)
+    def wrapper(*args, **kwargs):
+        Settings._GLOBAL_GUARDED  # noqa: B018, an attribute, not the global
+        return _global_fetch(*args, **kwargs)
+
+    assert wrapper("u", timeout=5) == 5
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(wrapper)
 
 
 # --- detached -----------------------------------------------------------------------------

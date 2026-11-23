@@ -255,7 +255,8 @@ hands on for execution. That decides what it sees:
   later than 0.15.0 (0.15.0 is the newest release as this is written) refuses the
   call before the policy runs when the inner wrapper is
   itself a `functools.wraps` wrapper of the same function, held in the outer wrapper's
-  closure or on a class-based decorator's instance, and takes a parameter of its own.
+  closure, in a module global it names or on a class-based decorator's instance, and
+  takes a parameter of its own.
   Held any other way, it is not found by either kernel. Apply each decorator to the
   function directly, one above the other.
 - **A single-dispatch function and a `partialmethod` over a callable object**, beside

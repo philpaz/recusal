@@ -16,7 +16,7 @@ and they are decisions about data, not about any framework:
   base (:class:`DispatchedAtCallTime`). Both checks are exact, run nothing, and state
   what they do not find. A callable ``inspect.signature`` reads as a
   ``functools.partialmethod`` shows parameters that are not its own and is refused too
-  (``TypeError``);
+  (:class:`PartialMethodSignature`);
 - how to hand a policy a copy it can write to without reaching what executes
   (:func:`detached`).
 
@@ -91,13 +91,37 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
 
     ``skip`` names the parameters the framework injects itself (a context object, a run
     manager); they are not judged and not checked. Name them explicitly: a parameter that
-    is merely absent from a schema is not one of them."""
+    is merely absent from a schema is not one of them.
+
+    A callable ``inspect.signature`` reads as a ``functools.partialmethod`` is refused
+    for that before its parameters are looked at: the parameters it shows are those of
+    what the partialmethod binds, and the function ``functools`` builds for it carries no
+    annotations, so any other reason given for it would be about a signature that is not
+    its own. So the walk is made first and asked for that one refusal; every other
+    outcome of it is reported after the parameters, where it was reported before."""
     try:
         parameters = inspect.signature(func).parameters
         # resolves string annotations (PEP 563) and keeps Annotated so it can be refused
         hints = typing.get_type_hints(func, include_extras=True)
     except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
+        try:
+            own_parameters(func)
+        except PartialMethodSignature as refused:
+            return str(refused)
+        except Exception:  # noqa: BLE001, uninspectable either way
+            pass
         return "its signature cannot be inspected"
+    # ``inspect.signature`` reads a ``functools.wraps`` wrapper as the function it wraps, and
+    # honours a declared ``__signature__``: a wrapper's own parameter (``force=True``) would
+    # run with its default while the gate judged a call without it
+    reached: Any = None
+    failed: Optional[BaseException] = None
+    try:
+        reached = _reached(func, skip, parameters)
+    except PartialMethodSignature as refused:
+        return str(refused)
+    except Exception as raised:  # noqa: BLE001, reported below, after the parameters
+        failed = raised
     for name, parameter in parameters.items():
         if name in skip:
             continue
@@ -110,18 +134,13 @@ def unsupported_signature(func: Callable[..., Any], skip: Tuple[str, ...] = ()) 
             return f"`{name}` is not annotated with a supported data type"
         if parameter.default is not parameter.empty and not json_data(parameter.default):
             return f"`{name}` has a default outside the JSON domain"
-    # ``inspect.signature`` reads a ``functools.wraps`` wrapper as the function it wraps, and
-    # honours a declared ``__signature__``: a wrapper's own parameter (``force=True``) would
-    # run with its default while the gate judged a call without it
-    try:
-        reached = _reached(func, skip, parameters)
-    except DeclaredSignature:
+    if isinstance(failed, DeclaredSignature):
         return "it declares a signature that is not its own"
-    except HiddenWrapper as refused:
-        return str(refused)
-    except DispatchedAtCallTime:
+    if isinstance(failed, HiddenWrapper):
+        return str(failed)
+    if isinstance(failed, DispatchedAtCallTime):
         return _DISPATCHED_AT_CALL_TIME
-    except Exception:  # noqa: BLE001, an uninspectable callable cannot be judged
+    if failed is not None:  # an uninspectable callable cannot be judged
         return "its signature cannot be inspected"
     return _argument_of_its_own([_read_level(level) for level in reached], parameters, skip)
 
@@ -156,6 +175,19 @@ class DispatchedAtCallTime(ValueError):
     :func:`_refuse_call_time_dispatch` lists what is not found."""
 
 
+class PartialMethodSignature(TypeError):
+    """A callable on the way is one ``inspect.signature`` reads as a
+    ``functools.partialmethod``: it shows the parameters of what the partialmethod binds,
+    less what is bound, in place of its own, so the walk cannot read the callable or
+    anything under it. ``functools.partialmethod`` over a callable that does not bind as a
+    method (a callable object, a class-based decorator) hands out such a callable, and
+    ``functools.update_wrapper`` copies its mark onto every wrapper of one.
+    :func:`_refuse_partialmethod` says exactly what is refused and what is not: a
+    ``partialmethod`` over a plain function, read from an instance, is a
+    ``functools.partial`` and is walked. The message names the cause and what to do, and
+    no value."""
+
+
 _DISPATCHED_AT_CALL_TIME = (
     "the function that runs is chosen at call time by the type of an argument, which the "
     "walk cannot read"
@@ -186,7 +218,8 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     callable this reads: calling it runs ``__new__`` and ``__init__``. Neither is the method
     ``functools.partialmethod`` builds over a callable that does not bind as one, nor
     anything else ``inspect.signature`` would read as a ``functools.partialmethod``
-    (:func:`_refuse_partialmethod`): that raises ``TypeError``.
+    (:func:`_refuse_partialmethod`): that raises :class:`PartialMethodSignature`, a
+    ``TypeError``.
     """
     if _depth > 8:
         raise ValueError("too many wrappers to inspect")
@@ -206,8 +239,8 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
 
 def _refuse_declared_signature(func: Any, depth: int) -> None:
     """Raise :class:`DeclaredSignature` if ``func``, or what ``inspect.signature`` would
-    read in its place, declares ``__signature__``, and ``TypeError`` if either would be
-    read as a ``functools.partialmethod`` (:func:`_refuse_partialmethod`)."""
+    read in its place, declares ``__signature__``, and :class:`PartialMethodSignature` if
+    either would be read as a ``functools.partialmethod`` (:func:`_refuse_partialmethod`)."""
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
     if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
@@ -227,13 +260,16 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
 _PARTIALMETHOD_MARKS = ("_partialmethod", "__partialmethod__")
 
 _PARTIALMETHOD = (
-    "`inspect.signature` reads it as a `functools.partialmethod`, which shows parameters "
-    "that are not the callable's own"
+    "it is a `functools.partialmethod` over a callable that does not bind as a method (a "
+    "callable object, a class-based decorator), or a wrapper of one: its signature shows "
+    "the parameters of what the partialmethod binds, not its own, so what runs under it "
+    "cannot be read; register a plain function that calls it, or put the partialmethod "
+    "over a plain function"
 )
 
 
 def _refuse_partialmethod(func: Any) -> None:
-    """Raise ``TypeError`` if ``inspect.signature`` would read ``func`` as a
+    """Raise :class:`PartialMethodSignature` if ``inspect.signature`` would read ``func`` as a
     ``functools.partialmethod``: ``func`` shows, under one of the two names above, an
     instance of ``functools.partialmethod``.
 
@@ -263,7 +299,7 @@ def _refuse_partialmethod(func: Any) -> None:
     not carry the mark."""
     for mark in _PARTIALMETHOD_MARKS:
         if isinstance(getattr(func, mark, None), functools.partialmethod):
-            raise TypeError(_PARTIALMETHOD)
+            raise PartialMethodSignature(_PARTIALMETHOD)
 
 
 # The two checks below read what a callable on the walk HOLDS. A held value is not a
@@ -297,6 +333,7 @@ _HEAP_TYPE, _IMMUTABLE_TYPE = 1 << 9, 1 << 8  # ``Py_TPFLAGS_HEAPTYPE``, ``..._I
 _READY: Optional[bool] = None
 _function_dict: Any = None
 _function_code: Any = None
+_function_globals: Any = None
 _method_function: Any = None
 _static_function: Any = None
 _class_function: Any = None
@@ -335,6 +372,7 @@ def _prepare() -> bool:
     them off. What the first walk finds stands for the process: a ``functools`` patched
     when it is made and restored afterwards leaves the checks as that walk found them."""
     global _READY, _function_dict, _function_code, _method_function, _static_function
+    global _function_globals
     global _class_function, _type_mro, _type_dict, _module_dict
     global _PARTIAL, _partial_function, _partial_args, _CACHE_WRAPPER, _cache_dict
     global _WRAPPER_CODE, _DISPATCH_CODE, _METHOD_ACCESS
@@ -346,6 +384,7 @@ def _prepare() -> bool:
         _type_dict = type.__dict__["__dict__"].__get__
         _function_dict = _type_dict(types.FunctionType)["__dict__"].__get__
         _function_code = _type_dict(types.FunctionType)["__code__"].__get__
+        _function_globals = _type_dict(types.FunctionType)["__globals__"].__get__
         _method_function = _type_dict(types.MethodType)["__func__"].__get__
         _static_function = _type_dict(staticmethod)["__func__"].__get__
         _class_function = _type_dict(classmethod)["__func__"].__get__
@@ -473,14 +512,56 @@ def _cells(function: Any) -> List[Any]:
     return held
 
 
+def _names(code: Any, depth: int = 0) -> List[str]:
+    """The names the code of a function refers to that are not its locals or its closure
+    (``co_names``: the globals it reads, and the attributes it reads off anything), with
+    those of every function, lambda and comprehension defined inside it. Read from the
+    code objects alone; nothing is run. A function nested more than 32 deep is not read
+    further."""
+    found = [name for name in code.co_names if type(name) is str]
+    if depth < _DEPTH:
+        for constant in code.co_consts:
+            if type(constant) is types.CodeType:
+                found.extend(_names(constant, depth + 1))
+    return found
+
+
+def _named_globals(function: Any) -> List[Any]:
+    """The values of the module globals the code of a plain function names.
+
+    A wrapper written beside the function it wraps can call a second wrapper of that
+    function by its global name (``guarded = with_timeout(fetch)`` at module level, and a
+    ``functools.wraps(fetch)`` wrapper that returns ``guarded(...)``): the second wrapper
+    is in no closure cell, and is held all the same. The namespace is the function's own
+    ``__globals__``, read through the C-level accessor and only when it is exactly a
+    ``dict``; it is listed in one step and no key is looked up in it, as for every other
+    dictionary read here. A name the code uses only as an attribute (``self.guarded``)
+    and that is also a global is included: the code object does not tell the two apart.
+    Builtins are not read. What is returned is then judged like anything else held: only
+    a value of the closed set that reaches, by identity, a callable the walk read is a
+    hidden wrapper, so a helper, a logger or a formatter the wrapper calls is not."""
+    namespace = _function_globals(function)
+    if type(namespace) is not dict:
+        return []
+    names = _names(_function_code(function))
+    if not names:
+        return []
+    return [
+        value
+        for key, value in list(namespace.items())
+        if type(key) is str and any(key == name for name in names)
+    ]
+
+
 def _held(func: Any, wrapped: Any) -> List[Any]:
-    """What the walked ``func`` holds: the closure cells of a plain function, the instance
-    attributes of any other callable. An instance attribute that is, by identity, also an
-    attribute of the plain function ``func`` names as ``__wrapped__`` is left out:
+    """What the walked ``func`` holds: the closure cells of a plain function and the
+    module globals its code names (:func:`_named_globals`), the instance attributes of any
+    other callable. An instance attribute that is, by identity, also an attribute of the
+    plain function ``func`` names as ``__wrapped__`` is left out:
     ``functools.update_wrapper`` copied it over, and a function's own attributes are not
     read."""
     if type(func) is types.FunctionType:
-        return _cells(func)
+        return _cells(func) + _named_globals(func)
     copied = _function_dict(wrapped) if type(wrapped) is types.FunctionType else {}
     copied = list(copied.values()) if type(copied) is dict else []
     return [
@@ -582,7 +663,7 @@ def _walk() -> Any:
     """What one walk has read (``read``) and found held (``held``), for the judgement made
     at its end, and whether the two checks are on (``checked``, :func:`_prepare`: where it
     is False the walk collects nothing held). A plain namespace, not a class of this
-    module: importing the module defines no class but the two exceptions it adds."""
+    module: importing the module defines no class but the exceptions it adds."""
     return types.SimpleNamespace(read=[], held=[], checked=_prepare())
 
 
@@ -641,8 +722,9 @@ def _refuse_hidden_wrapper(
     default of its own. This finds exactly one shape of that, and runs nothing to do it.
 
     A callable on the walk that names a ``__wrapped__`` holds what is in its closure cells
-    (a plain function) or its instance attributes (any other callable). A held value is a
-    hidden wrapper when all of these hold:
+    and the module globals its code names (a plain function, :func:`_named_globals`) or
+    its instance attributes (any other callable). A held value is a hidden wrapper when
+    all of these hold:
 
     - it is of the closed set of :func:`_passes_on_to`;
     - what it passes a call on to, followed through that same set, reaches by identity a
@@ -668,8 +750,11 @@ def _refuse_hidden_wrapper(
     inner function, a lambda, a helper, a bound method of an object that holds the
     function); one that is, or is held by, an object of any other type (a callable object,
     a proxy, a wrapper a C extension builds, a subclass of a type of the closed set); one
-    held anywhere but the closure cells or instance attributes of a callable on the walk (a
-    class attribute, a slot, a module global, a container, a function's own attribute); a
+    held anywhere but the closure cells, the named module globals or the instance
+    attributes of a callable on the walk (a class attribute, a slot, a container, a
+    function's own attribute, a global of another module reached through an attribute, a
+    global the ``__call__`` of a callable object names, a global of a function whose
+    ``__globals__`` is not exactly a ``dict``); a
     class-based decorator whose own method keeps the argument; a wrapper that takes an
     argument in its body alone; the arguments a ``functools.partial`` binds; a held wrapper
     that cannot take the bound arguments at all and has no parameter
@@ -928,8 +1013,10 @@ def reached_parameters(func: Any, skip: Tuple[str, ...] = ()) -> List[Any]:
     on the way holds a second ``functools.wraps`` wrapper of a callable the walk reads,
     with a parameter of its own), :class:`DispatchedAtCallTime` (a ``ValueError``: a
     ``functools.singledispatch`` function or ``singledispatchmethod`` on the way can run
-    something other than its base implementation), ``TypeError`` or ``ValueError`` for a
-    callable it cannot read, which a gate turns into a refusal.
+    something other than its base implementation), :class:`PartialMethodSignature` (a
+    ``TypeError``: a callable on the way is read by ``inspect.signature`` as a
+    ``functools.partialmethod``), ``TypeError`` or ``ValueError`` for a callable it cannot
+    read, which a gate turns into a refusal.
 
     The two refusals are exact and narrow: each finds one shape and states the rest as
     limits (:func:`_refuse_hidden_wrapper`, :func:`_refuse_call_time_dispatch`). They read

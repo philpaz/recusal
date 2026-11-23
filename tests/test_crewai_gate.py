@@ -3365,8 +3365,13 @@ class TestBothRoutes:
         uninspectable = "its callable cannot be inspected for its parameters"
         absent = "its callable's parameter `force` is absent from the argument schema"
         check = gate._incomplete_callable
-        assert check(as_tool(account.over_object).to_structured_tool()) == uninspectable
-        assert check(as_tool(Account.over_function).to_structured_tool()) == uninspectable
+        partialmethod = check(as_tool(account.over_object).to_structured_tool())
+        assert partialmethod.startswith("its callable is a `functools.partialmethod` over a")
+        assert "give the tool a plain function that calls it, or put the" in partialmethod
+        assert partialmethod != uninspectable and issubclass(
+            gate._PartialMethodSignature, TypeError
+        )
+        assert check(as_tool(Account.over_function).to_structured_tool()) == partialmethod
         assert check(as_tool(account.over_wrapped_function).to_structured_tool()) == absent
         assert check(as_tool(account.over_function).to_structured_tool()) is None
 
@@ -3381,9 +3386,9 @@ class TestBothRoutes:
             gate._refuse_partialmethod(plain)
             assert check(as_tool(plain).to_structured_tool()) is None
             setattr(plain, mark, functools.partialmethod(Typed(charge)))
-            with pytest.raises(TypeError):
+            with pytest.raises(gate._PartialMethodSignature):
                 gate._refuse_partialmethod(plain)
-            assert check(as_tool(plain).to_structured_tool()) == uninspectable
+            assert check(as_tool(plain).to_structured_tool()) == partialmethod
 
         for func, runs in ((account.over_object, False), (account.over_function, True)):
             ran.clear()

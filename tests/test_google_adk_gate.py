@@ -798,10 +798,14 @@ class TestGoogleAdkGate:
         adapter = _adapter()
         prepared, reason = adapter._prepared(example.FunctionTool(Repo().fetch), {"table": "t"})
         assert prepared is None and reason.startswith("its signature cannot be judged")
+        words = "it is a `functools.partialmethod` over a callable that does not bind as a method (a callable object, a class-based decorator), or a wrapper of one: its signature shows the parameters of what the partialmethod binds, not its own, so what runs under it cannot be read; register a plain function that calls it, or put the partialmethod over a plain function"
+        if hasattr(invocation, "PartialMethodSignature"):
+            # the reason is the true one, not "`table` is not annotated"
+            assert reason == f"its signature cannot be judged ({words})"
         prepared, reason = adapter._prepared(example.FunctionTool(Repo().purge_default), {})
-        if hasattr(invocation, "HiddenWrapper"):  # the kernel that also reads the mark
+        if hasattr(invocation, "PartialMethodSignature"):  # the kernel that reads the mark
             assert prepared is None
-            assert reason == "its signature cannot be judged (its signature cannot be inspected)"
+            assert reason == f"its signature cannot be judged ({words})"
         else:
             assert prepared == {} and reason is None
 

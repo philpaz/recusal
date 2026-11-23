@@ -164,7 +164,7 @@ order of a turn's entries on the chain is not always the order the model propose
   another is, like the tool's body, the tool's own code.
 - **Not seen beside `recusal` 0.15.0 or older, refused beside a later kernel:** a
   decorator that applies another `functools.wraps` wrapper of the same function inside
-  itself, holds it in its closure or on a class-based decorator's instance and calls
+  itself, holds it in its closure, in a module global it names or on a class-based decorator's instance and calls
   that one, where the inner wrapper takes a parameter of its own (that parameter runs
   with a value the policy did not see); and a `functools.singledispatch` function with
   an implementation registered beside its base one, behind a wrapper that passes its
@@ -173,10 +173,10 @@ order of a turn's entries on the chain is not always the order the model propose
   fails in Python). The gate asks a
   kernel later than 0.15.0 (0.15.0 is the newest release as this is written) for these two and refuses the call before the policy runs.
   An inner wrapper held any other way (a plain function or a lambda that names nothing
-  as `__wrapped__`, a callable object, a module global) is not found beside any kernel.
+  as `__wrapped__`, a callable object, a container) is not found beside any kernel.
   A `functools.partialmethod` over a callable object is refused beside every kernel,
-  as a callable that cannot be inspected. For each, call the function from a plain
-  function and give the tool that.
+  with a reason that says so. For each, call the function from a plain function and
+  give the tool that.
 - **Annotations:** `str`, `int`, `float`, `bool`, optionals, and lists and string-keyed
   dicts of those. `Literal`, `Enum`, `Any`, `Annotated` and models are refused; use
   `str` and check the value in your policy. CrewAI builds an MCP tool's `enum`

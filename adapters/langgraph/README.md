@@ -536,10 +536,11 @@ gate has decided nothing, and no entry is written.
   not see. A kernel later than 0.15.0 (0.15.0 is the newest release as this is
   written) refuses the call before the policy runs in one case: the inner wrapper
   is itself a `functools.wraps` wrapper of the same function,
-  it is held in the outer wrapper's closure or on a class-based decorator's instance,
+  it is held in the outer wrapper's closure, in a module global the outer wrapper
+  names or on a class-based decorator's instance,
   and it takes a parameter of its own. The reason names the parameter. Held any other
   way (a plain function or a lambda that names nothing as `__wrapped__`, a callable
-  object, a module global), the inner wrapper is not found by either kernel. Apply
+  object, a container), the inner wrapper is not found by either kernel. Apply
   each decorator to the function directly, one above the other; the gate reads that
   stack.
 - A `functools.singledispatch` function, or a `singledispatchmethod`, with an
@@ -555,7 +556,8 @@ gate has decided nothing, and no entry is written.
   instance, for example) as a tool's function. Beside `recusal` 0.15.0 it is read one
   level deep: what is under the object is not read, so a default there can run that
   the policy did not see. A kernel later than 0.15.0 refuses it before the policy runs,
-  as a callable that cannot be inspected.
+  with a reason that says it is a `partialmethod` over such a callable. Give the tool a
+  plain function that calls it.
 - A function that names its parameters and then calls another function. The gate reads
   signatures, not function bodies: the function it calls runs with its own defaults and
   with whatever values the first one hands it, and the policy is shown only the

@@ -99,6 +99,9 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A callable on the way is read by ``inspect.signature`` as a ``functools.partialmethod``
+#: (the same kernels).
+_PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
 
 
 class RecusalRefusal(ToolException):
@@ -435,11 +438,13 @@ def _reached(func) -> list:
     takes for a builtin. A stack of ``functools.wraps`` decorators deeper than the walk
     follows is the other failure that has a cause the gate can state (:func:`_stacked`).
 
-    Two refusals the kernel's walk makes by name (a kernel later than 0.15.0; beside
-    0.15.0 neither shape is found) are reported as what they are: a decorator that holds
-    a second wrapper with a parameter of its own (``HiddenWrapper``, whose text names the
-    parameter and never a value), and a single-dispatch function that can run more than
-    its base implementation (``DispatchedAtCallTime``).
+    Three refusals the kernel's walk makes by name (a kernel later than 0.15.0; beside
+    0.15.0 none of the shapes is found) are reported as what they are: a decorator that
+    holds a second wrapper with a parameter of its own (``HiddenWrapper``, whose text
+    names the parameter and never a value), a single-dispatch function that can run more
+    than its base implementation (``DispatchedAtCallTime``), and a callable that
+    ``inspect.signature`` reads as a ``functools.partialmethod``
+    (``PartialMethodSignature``).
     """
     try:
         return _reached_parameters(func)
@@ -447,6 +452,14 @@ def _reached(func) -> list:
         raise TypeError(
             "the tool's callable declares a signature that is not its own (`__signature__`), "
             "so the gate cannot tell which parameters it runs with"
+        ) from None
+    except _PartialMethodSignature:
+        raise TypeError(
+            "the tool's callable is a `functools.partialmethod` over a callable that does "
+            "not bind as a method (a callable object, a class-based decorator), or a "
+            "wrapper of one: the signature it shows is that of what the partialmethod "
+            "binds, not its own, so what runs under it cannot be read; give the tool a "
+            "plain function that calls it"
         ) from None
     except _HiddenWrapper as refused:
         raise TypeError(

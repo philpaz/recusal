@@ -2948,10 +2948,16 @@ class TestWhatTheGateCannotReadIsRefused:
         calls = [self.call("drop_table", {"table": "t"})]
         tools = [as_tool(Account().over_object)]
         messages = self.run(example, route, tools, calls, self.no_delete(seen))
-        if hasattr(invocation, "HiddenWrapper"):  # the kernel that also reads the mark
+        assert _adapter()._PartialMethodSignature is getattr(
+            invocation, "PartialMethodSignature", _adapter()._NotInThisKernel
+        )
+        if hasattr(invocation, "PartialMethodSignature"):  # the kernel that reads the mark
             assert ran == [] and seen == []
             assert messages[0].status == "error"
-            assert "cannot be inspected for its parameters (TypeError)" in messages[0].content
+            content = messages[0].content
+            assert "the tool's callable is a `functools.partialmethod` over a callable" in content
+            assert "give the tool a plain function that calls it" in content
+            assert "cannot be inspected" not in content and "descriptor" not in content
         else:
             assert seen == [("drop_table", {"table": "t"})]
             assert ran == [("force", True), ("dropped", "t")]

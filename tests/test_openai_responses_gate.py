@@ -2696,11 +2696,14 @@ class TestWhatCannotBeTiedToWhatRuns:
         out = ex.judge_and_run("fetch", '{"table": "t"}', tools, lambda n, a: seen.append(a) or [])
         assert out.startswith("Recusal refused `fetch`: its signature cannot be judged")
         assert seen == [] and got == []
+        words = "it is a `functools.partialmethod` over a callable that does not bind as a method (a callable object, a class-based decorator), or a wrapper of one: its signature shows the parameters of what the partialmethod binds, not its own, so what runs under it cannot be read; register a plain function that calls it, or put the partialmethod over a plain function"
+        if hasattr(invocation, "PartialMethodSignature"):
+            # the reason is the true one, not "`table` is not annotated"
+            assert out == f"Recusal refused `fetch`: its signature cannot be judged ({words})"
         out = ex.judge_and_run("purge_default", "{}", tools, lambda n, a: seen.append(a) or [])
-        if hasattr(invocation, "HiddenWrapper"):  # the kernel that also reads the mark
+        if hasattr(invocation, "PartialMethodSignature"):  # the kernel that reads the mark
             assert out == (
-                "Recusal refused `purge_default`: its signature cannot be judged "
-                "(its signature cannot be inspected)"
+                f"Recusal refused `purge_default`: its signature cannot be judged ({words})"
             )
             assert seen == [] and got == []
         else:

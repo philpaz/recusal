@@ -147,7 +147,7 @@ path.
   signature can be judged is the kernel's answer, and three shapes are found only by a
   kernel later than 0.15.0 (0.15.0 is the newest release as this is written). A
   decorator that applies another `functools.wraps` wrapper
-  of the same function inside itself, holds it in its closure or on a class-based
+  of the same function inside itself, holds it in its closure, in a module global it names or on a class-based
   decorator's instance and calls that one, where the inner wrapper takes a parameter
   of its own: beside 0.15.0 that parameter runs with a value the policy did not see.
   A `functools.singledispatch` function with an implementation registered beside its
@@ -157,10 +157,11 @@ path.
   `functools.partialmethod` over a callable object that leaves
   no parameter to judge (it binds them all, or leaves only the ones the ADK fills): it
   is judged as a call with no arguments, and what is under the object is not read (one
-  that leaves a parameter is refused beside either kernel, as not annotated). For each,
+  that leaves a parameter is refused beside 0.15.0 as not annotated, and beside a later
+  kernel as the `partialmethod` it is). For each,
   call the function from a plain function and register
   that one. An inner wrapper held any other way (a plain function or a lambda that
-  names nothing as `__wrapped__`, a callable object, a module global) is not found by
+  names nothing as `__wrapped__`, a callable object, a container) is not found by
   either kernel.
 - **Agent tools:** a call to a plain `AgentTool` is judged as the sub-agent receives it
   (the `request` text, or the arguments as JSON), and only when the sub-agent's own tool

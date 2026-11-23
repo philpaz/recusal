@@ -753,8 +753,17 @@ All notable changes to this project are documented here. The format follows
   change. Nothing that 0.15.0 refused is now accepted. The check is exact: it refuses one
   shape it can read with certainty, runs nothing, and leaves the rest as stated limits.
   - *What is looked at.* A callable on the way that names a `__wrapped__` holds what is in
-    its closure cells (a plain function) or its instance attributes (any other callable, as
-    a class-based decorator). A held value is followed only if it is of a closed set of
+    its closure cells and the module globals its code names (a plain function) or its
+    instance attributes (any other callable, as a class-based decorator). The globals are
+    those the code object lists (`co_names`, with those of every function, lambda and
+    comprehension defined inside it), found in the function's own `__globals__` when that
+    is exactly a `dict`, listed in one step with no key looked up; a name the code uses
+    only as an attribute and that is also a global is read too, and builtins are not. So a
+    wrapper written beside the function it wraps, which calls a second wrapper or a
+    single-dispatch function of that same function by its global name, is refused like
+    one that holds it in a closure. A helper, a logger or a formatter the wrapper calls,
+    and a wrapper, a `functools.partial` or a dispatcher of another function, are not
+    refused: nothing held counts unless it reaches a callable the walk read. A held value is followed only if it is of a closed set of
     types CPython itself builds: a plain function, a bound method, `functools.partial`,
     `staticmethod`, `classmethod`, and the `functools.lru_cache` wrapper. What it passes a
     call on to (a function's or an `lru_cache` wrapper's own `__wrapped__`; a method's,
@@ -814,9 +823,11 @@ All notable changes to this project are documented here. The format follows
     method of an object that holds the function. One that is, or is held by, an object of
     any type outside the closed set: a callable object, a proxy (lazy proxies, wrapt), a
     wrapper a C extension builds, a subclass of a type of the closed set. One held anywhere
-    but the closure cells or instance attributes of a callable on the way: a class
-    attribute, a slot, a module global, a container, a function's own attribute
-    (`tool.aio`). A class-based decorator whose own method keeps the argument. A wrapper
+    but the closure cells, the named module globals or the instance attributes of a
+    callable on the way: a class attribute, a slot, a container (in a global too), a
+    function's own attribute (`tool.aio`), a global of another module reached through an
+    attribute (`helpers.guarded`), a global the `__call__` of a class-based decorator
+    names, a global of a function whose `__globals__` is not exactly a `dict`. A class-based decorator whose own method keeps the argument. A wrapper
     that names nothing as `__wrapped__` (one that copies the signature by hand). An
     argument taken in a body alone (`kwargs.pop`), which no signature shows. The arguments
     a `functools.partial` binds. Anything held behind an object that passes for a
@@ -903,13 +914,17 @@ All notable changes to this project are documented here. The format follows
   own and nothing of `f`: not its `__call__`, not a wrapper under it, not a default any
   of them fills. A policy judged `table='orders'` and the object ran with the bound
   `'customers'`; a wrapper under a class-based decorator ran `table='archive'` from a
-  default no policy saw. The walk now raises `TypeError` for it, which every gate that
-  refuses on a failure of the walk already refuses, and `unsupported_signature` returns
-  "its signature cannot be inspected" for the one such tool it accepted, a
-  `partialmethod` that leaves no parameter to judge (one that leaves a parameter the
-  framework does not inject was refused before, as not annotated, because the function
-  `functools` builds carries no annotations). Nothing that 0.15.0 refused is now
-  accepted.
+  default no policy saw. The walk now raises the new public
+  `recusal.invocation.PartialMethodSignature`, a subclass of `TypeError`, which every
+  gate that refuses on a failure of the walk already refuses. Its message names the
+  cause and what to do: register a plain function that calls it, or put the
+  `partialmethod` over a plain function. `unsupported_signature` returns that message,
+  and asks for it before it looks at the parameters: the one such tool it accepted was
+  a `partialmethod` that leaves no parameter to judge, and one that leaves a parameter
+  was refused as "`limit` is not annotated with a supported data type", which was about
+  a signature that is not the tool's own (the function `functools` builds carries no
+  annotations). Every other reason is given in the order it was. Nothing that 0.15.0
+  refused is now accepted.
   - *What is refused.* A callable that `inspect.signature` would read as a
     `functools.partialmethod`: one that shows, under either name (both are looked for on
     every Python), an instance of `functools.partialmethod`. It is looked for wherever
@@ -946,6 +961,11 @@ All notable changes to this project are documented here. The format follows
     class-based descriptor as the example. Each now has its own reason and remedy.
   - `recusal-openai`, `recusal-google-adk`: the kernel's reason is passed on with what
     the kernel found and what to do, added only when the walk raises that very reason.
+  - A `PartialMethodSignature` has a reason of its own in `recusal-pydantic-ai` and
+    `recusal-langgraph` (it was "cannot be inspected", in LangGraph with a class-based
+    descriptor as the example), and reaches `recusal-openai` and `recusal-google-adk` as
+    the kernel's own reason, in place of "not annotated". `recusal-crewai` raises and
+    reports its own, beside every kernel.
   - `recusal-crewai` reads a tool with a walk of its own, which had the `partialmethod`
     gap (judged `{'amount': 5}`, ran a wrapper's `force=True`): it refuses the same
     mark. That walk follows `__wrapped__` alone, so it also found neither a decorator

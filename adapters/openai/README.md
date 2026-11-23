@@ -308,9 +308,10 @@ call id, and the gate always fails closed.
   the newest release as this is written) detects one case and says so through its signature check, and the gate then refuses the call
   before the policy runs, with what to do: the hidden wrapper is itself a
   `functools.wraps` wrapper of the same function, it is held in the outer wrapper's
-  closure or on a class-based decorator's instance, and it takes a parameter of its
+  closure, in a module global it names or on a class-based decorator's instance, and
+  it takes a parameter of its
   own. Held any other way (a plain function or a lambda that names nothing as
-  `__wrapped__`, a callable object, a module global), it is not found by either
+  `__wrapped__`, a callable object, a container), it is not found by either
   kernel. Apply each decorator at the top level, where the walk sees it, or give the
   gate the undecorated function.
 - **Not seen beside `recusal` 0.15.0: a single-dispatch function, and a
@@ -321,7 +322,8 @@ call id, and the gate always fails closed.
   which the gate calls by keyword, fails in Python). A `functools.partialmethod` over
   a callable object that binds every parameter
   is judged as a call with no arguments, and what is under the object is not read (one
-  that leaves a parameter is refused by either kernel, as not annotated). A kernel
+  that leaves a parameter is refused beside 0.15.0 as not annotated, and beside a later
+  kernel as the `partialmethod` it is). A kernel
   later than 0.15.0 refuses a call to either before the policy runs. Call the function
   from a plain function and register that one.
 - **No state between turns.** Within one turn a duplicate or empty call id raises. The

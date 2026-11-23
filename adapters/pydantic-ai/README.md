@@ -147,16 +147,16 @@ type-checked function from a plain function and register that one. Also refused:
   decorated function from a plain function and register that one.
 - **A decorator that holds a second wrapper of the function**, beside a kernel later
   than `recusal` 0.15.0 (0.15.0 is the newest release as this is written). A decorator that applies another `functools.wraps` wrapper of
-  the same function inside itself and calls that one, from its closure or from a
+  the same function inside itself and calls that one, from its closure, by a module global it names or from a
   class-based decorator's instance, where the inner wrapper takes a parameter of its
   own: `functools.wraps` points past the inner wrapper, so it is not read like one
   applied directly. The reason names the parameter. Call the decorated function from a
   plain function and register that one. Beside 0.15.0 this is not detected, and the
   inner wrapper's parameter runs with a value the policy was not handed. An inner
   wrapper held any other way (a plain function or a lambda that names nothing as
-  `__wrapped__`, a callable object, a module global) is not found by either kernel.
+  `__wrapped__`, a callable object, a container) is not found by either kernel.
 - **A `functools.partialmethod` over a callable object**, beside a kernel later than
-  `recusal` 0.15.0: refused as a function that cannot be inspected. Beside 0.15.0 it is
+  `recusal` 0.15.0: refused, with a reason that says so and what to do. Beside 0.15.0 it is
   open, see "Status" below. Over a plain function the same `partialmethod` is read in
   full beside either kernel.
 - **A single-dispatch function** (`functools.singledispatch`) with an implementation

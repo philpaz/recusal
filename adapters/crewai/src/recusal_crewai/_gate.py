@@ -403,8 +403,8 @@ def _own_parameters(func: Any, depth: int = 0) -> Any:
     own). The first is turned off; the second raises ``_DeclaredSignature`` wherever it is
     found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
     ``staticmethod``, and ``lru_cache`` over a method) are looked through. A callable that
-    ``inspect.signature`` would read as a ``functools.partialmethod`` raises ``TypeError``
-    (``_refuse_partialmethod``).
+    ``inspect.signature`` would read as a ``functools.partialmethod`` raises
+    ``_PartialMethodSignature``, a ``TypeError`` (``_refuse_partialmethod``).
     """
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
@@ -481,8 +481,8 @@ def _reached_parameters(func: Any) -> list:
 
 def _refuse_declared_signature(func: Any, depth: int) -> None:
     """Raise ``_DeclaredSignature`` if ``func``, or what ``inspect.signature`` would read
-    in its place, declares ``__signature__``, and ``TypeError`` if either would be read as
-    a ``functools.partialmethod`` (``_refuse_partialmethod``)."""
+    in its place, declares ``__signature__``, and ``_PartialMethodSignature`` if either
+    would be read as a ``functools.partialmethod`` (``_refuse_partialmethod``)."""
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
     if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
@@ -502,8 +502,13 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
 _PARTIALMETHOD_MARKS = ("_partialmethod", "__partialmethod__")
 
 
+class _PartialMethodSignature(TypeError):
+    """A callable on the way is one ``inspect.signature`` reads as a
+    ``functools.partialmethod``: the signature it shows is not its own."""
+
+
 def _refuse_partialmethod(func: Any) -> None:
-    """Raise ``TypeError`` if ``inspect.signature`` would read ``func`` as a
+    """Raise ``_PartialMethodSignature`` if ``inspect.signature`` would read ``func`` as a
     ``functools.partialmethod``: it shows an instance of one under either name above.
 
     ``functools.partialmethod(f, ...)`` over a plain function, read from an instance, is a
@@ -520,7 +525,7 @@ def _refuse_partialmethod(func: Any) -> None:
     ``functools.partialmethod`` is not refused."""
     for mark in _PARTIALMETHOD_MARKS:
         if isinstance(getattr(func, mark, None), functools.partialmethod):
-            raise TypeError("a `functools.partialmethod` that shows parameters not its own")
+            raise _PartialMethodSignature
 
 
 def _incomplete_callable(tool: Any) -> Optional[str]:
@@ -537,6 +542,14 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
         levels = _reached_parameters(func)
     except _DeclaredSignature:
         return "its callable declares a signature that is not its own"
+    except _PartialMethodSignature:
+        return (
+            "its callable is a `functools.partialmethod` over a callable that does not bind "
+            "as a method (a callable object, a class-based decorator), or a wrapper of one: "
+            "the signature it shows is that of what the partialmethod binds, not its own, "
+            "so what runs under it cannot be read; give the tool a plain function that "
+            "calls it, or put the partialmethod over a plain function"
+        )
     except (TypeError, ValueError):
         return "its callable cannot be inspected for its parameters"
     fields = tool.args_schema.model_fields

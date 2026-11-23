@@ -102,6 +102,9 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A callable on the way is read by ``inspect.signature`` as a ``functools.partialmethod``
+#: (the same kernels).
+_PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
 
 #: A deferred-call handler, as ``HandleDeferredToolCalls`` takes one: ``handler(ctx,
 #: requests)`` returns the results it has, or None. Sync or async.
@@ -1261,14 +1264,26 @@ _DISPATCHED = (
 )
 
 
+_PARTIALMETHOD = (
+    "the function this tool runs is a `functools.partialmethod` over a callable that does "
+    "not bind as a method (a callable object, a class-based decorator), or a wrapper of "
+    "one: the signature it shows is that of what the partialmethod binds, not its own, so "
+    "what runs under it cannot be read; register a plain function that calls it, or put "
+    "the partialmethod over a plain function"
+)
+
+
 def _walk_reason(refused: BaseException) -> str:
-    """The reason a call is refused with when the kernel's walk raises one of the two
-    refusals it names (``HiddenWrapper``, ``DispatchedAtCallTime``; a kernel later than
-    0.15.0 raises them). A single-dispatch function gets the reason this gate gives one
-    it finds itself. A hidden wrapper gets the kernel's own words for it, which name a
-    parameter and never a value, and what to do."""
+    """The reason a call is refused with when the kernel's walk raises one of the
+    refusals it names (``HiddenWrapper``, ``DispatchedAtCallTime``,
+    ``PartialMethodSignature``; a kernel later than 0.15.0 raises them). A
+    single-dispatch function gets the reason this gate gives one it finds itself. A
+    hidden wrapper gets the kernel's own words for it, which name a parameter and never a
+    value, and what to do. A partialmethod gets its cause and what to do."""
     if isinstance(refused, _DispatchedAtCallTime):
         return _DISPATCHED
+    if isinstance(refused, _PartialMethodSignature):
+        return _PARTIALMETHOD
     return (
         "a decorator on the function this tool runs holds a second wrapper of that "
         "function (in its closure or on the decorator object), which is not reached "
@@ -1360,13 +1375,13 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
             "a function this tool runs declares a signature of its own (`__signature__`), so "
             "the parameters Python binds, and their defaults, cannot be read"
         )
-    except (_HiddenWrapper, _DispatchedAtCallTime) as refused:
+    except (_HiddenWrapper, _DispatchedAtCallTime, _PartialMethodSignature) as refused:
         return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a callable the kernel does not walk
         return args, unread
     try:
         unreadable = _unreadable_step(function, levels, callables, takes_ctx, validated)
-    except (_HiddenWrapper, _DispatchedAtCallTime) as refused:
+    except (_HiddenWrapper, _DispatchedAtCallTime, _PartialMethodSignature) as refused:
         # the levels under a partial with keywords, walked without it
         return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a step that cannot be read is not let through

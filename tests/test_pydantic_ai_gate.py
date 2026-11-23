@@ -3315,10 +3315,16 @@ class TestPydanticAiGate:
             for validated in (True, False):
                 ctx = self._ctx_for(function, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", dict(sent))
-                if hasattr(invocation, "HiddenWrapper"):  # the kernel that reads the mark
-                    assert same == sent and unread in reason, (function, reason)
+                if hasattr(invocation, "PartialMethodSignature"):  # the kernel that reads it
+                    assert same == sent and reason == adapter._PARTIALMETHOD, (function, reason)
+                    assert "is a `functools.partialmethod` over a callable" in reason
+                    assert "register a plain function that calls it, or put the" in reason
+                    assert unread not in reason
                 else:
                     assert reason is None or unread not in reason
+        assert adapter._PartialMethodSignature is getattr(
+            invocation, "PartialMethodSignature", adapter._NotInThisKernel
+        )
 
         # over a plain function: read in full, completed, not refused
         assert type(repo.plain) is functools.partial
