@@ -422,6 +422,101 @@ class TestOpenAIAgentsAudit:
         assert entry["action"]["reason"] == reason
         assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
 
+    # --- an agent tool with a parameters model: the entry is bound to what the sub-agent gets --
+
+    def ask(self, example, gate, log, arguments):
+        """An audited parent calls ``ask_sub(task, confirm=False, rows=1)`` with
+        ``arguments``: ``(the call's output, whether the sub-agent was started)``."""
+        from agents.testing import ScriptedModel, assistant_message
+        from pydantic import BaseModel
+
+        class Ask(BaseModel):
+            task: str
+            confirm: bool = False
+            rows: int = 1
+
+        sub_model = ScriptedModel([[assistant_message("sub done")]])
+        sub = gate.gated_agent(
+            gate.Agent(name="sub", model=sub_model, tools=[gate.run_sql]), lambda *_: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Ask)
+        parent_model = gate.scripted_model([("ask_sub", arguments, "p1")])
+        parent = example.audited_agent(
+            gate.Agent(name="parent", model=parent_model, tools=[tool]), lambda *_: [], log
+        )
+        asyncio.run(gate.run_agent(parent))
+        return gate.tool_outputs(parent_model)["p1"], sub_model.first_call is not None
+
+    def test_an_agent_tool_call_is_recorded_at_the_input_the_sub_agent_is_given(
+        self, example, gate, log
+    ):
+        output, started = self.ask(example, gate, log, {"task": "list", "rows": "3", "x": 1})
+        assert output == "sub done" and started
+        entry = self.by_id(log)["p1"]
+        assert entry["action"]["decision"] != "deny"
+        assert entry["action"]["input_sha256"] == _sha(
+            {"task": "list", "confirm": False, "rows": 3}
+        )
+
+    def test_agent_tool_arguments_that_do_not_validate_are_one_recorded_deny(
+        self, example, gate, log, log_path
+    ):
+        proposed = {"task": "MARKER", "rows": "many"}
+        output, started = self.ask(example, gate, log, proposed)
+        assert not started
+        assert output == (
+            "Recusal refused `ask_sub` [FAIL]: the input the sub-agent would be given cannot "
+            "be judged (the arguments do not validate against its parameters)"
+        )
+        assert len(log.entries) == 1
+        entry = self.by_id(log)["p1"]
+        assert entry["action"]["decision"] == "deny" and entry["action"]["reason"] == output
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha(proposed)
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
+    def test_an_agent_tool_refused_for_its_parameters_type_on_a_call_is_one_recorded_deny(
+        self, example, gate, log, log_path
+    ):
+        """An agent tool whose ``parameters`` type the gate does not read is refused when
+        it is gated; should its guardrail be attached another way, the refusal on the
+        call is on the log like every other."""
+        from agents.testing import ScriptedModel, assistant_message
+        from pydantic import BaseModel, field_validator
+
+        class Ask(BaseModel):
+            task: str
+
+            @field_validator("task")
+            @classmethod
+            def upper(cls, value):
+                return value.upper()
+
+        sub_model = ScriptedModel([[assistant_message("sub done")]])
+        sub = gate.gated_agent(
+            gate.Agent(name="sub", model=sub_model, tools=[gate.run_sql]), lambda *_: []
+        )
+        tool = sub.as_tool(tool_name="ask_sub", tool_description="Ask.", parameters=Ask)
+        holder = [tool]
+        seen: list = []
+        guardrail = _adapter()._guardrail_for(
+            lambda name, args: seen.append(name) or [], holder, example.recording(log)
+        )
+        tool.tool_input_guardrails = [guardrail]
+        parent_model = gate.scripted_model([("ask_sub", {"task": "MARKER"}, "p1")])
+        asyncio.run(gate.run_agent(gate.Agent(name="p", model=parent_model, tools=[tool])))
+        reason = gate.tool_outputs(parent_model)["p1"]
+        assert reason.startswith(
+            "Recusal refused `ask_sub` [FAIL]: its `parameters` model has a field outside the "
+            "data-only set: `task` (pydantic core type `function-after`)"
+        )
+        assert sub_model.first_call is None and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["reason"] == reason
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha({"task": "MARKER"})
+        assert "MARKER" not in log_path.read_text(encoding="utf-8")
+
     # --- approvals, and what the guardrail never sees, as the example says ------------------
 
     @pytest.mark.parametrize("approve", [True, False], ids=["approved", "rejected"])
@@ -540,3 +635,204 @@ class TestOpenAIAgentsAudit:
         before = set(tmp_path.iterdir())
         example.main()
         assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestOneDecisionPath:
+    """The 2026-11-21 review. "The audited forms are the plain ones with a recording passed
+    in" was false for a non-finite number: the plain gate let ``NaN`` reach a policy that
+    could not compare it, and the audited gate refused it because the record could not
+    fingerprint it. Both now refuse it before the policy runs, for the same reason. And a
+    call waiting for approval is on the log before a person decides when the SDK is told
+    to run tool input guardrails before approval."""
+
+    example = TestOpenAIAgentsAudit.example
+    gate = TestOpenAIAgentsAudit.gate
+    log_path = TestOpenAIAgentsAudit.log_path
+    log = TestOpenAIAgentsAudit.log
+
+    @staticmethod
+    def pay_tool(gate, ran):
+        @gate.function_tool(strict_mode=False)
+        def pay(amount: float) -> str:
+            """Record a payment; contacts nothing."""
+            ran.append(amount)
+            return "paid"
+
+        return pay
+
+    @staticmethod
+    def ceiling(name, args):
+        """``NaN > 1000`` is False: on its own this policy lets a NaN amount through."""
+        from recusal import Finding
+
+        if args.get("amount", 0) > 1000:
+            return [Finding.fail("limit", severity="CRITICAL", message="over limit")]
+        return []
+
+    @ROUTES
+    @pytest.mark.parametrize(
+        "arguments, detail, bound",
+        [
+            (
+                '{"amount": NaN}',
+                "arguments hold a non-finite number, which is not JSON data",
+                {"input": '{"amount": NaN}'},
+            ),
+            (
+                '{"amount": -Infinity}',
+                "arguments hold a non-finite number, which is not JSON data",
+                {"input": '{"amount": -Infinity}'},
+            ),
+            (
+                '{"amount": 1e999}',
+                "arguments hold a non-finite number, which is not JSON data",
+                {"input": '{"amount": 1e999}'},
+            ),
+            (
+                '{"amount": "nan"}',
+                "the arguments the tool would execute cannot be judged (non-finite numbers "
+                "are not JSON data)",
+                {"amount": "nan"},
+            ),
+        ],
+        ids=["nan", "minus-infinity", "overflow", "string-read-as-nan"],
+    )
+    def test_a_non_finite_number_is_refused_the_same_way_with_and_without_a_log(
+        self, example, gate, log, streamed, arguments, detail, bound
+    ):
+        ran: list = []
+        seen: list = []
+
+        def policy(name, args):
+            seen.append(name)
+            return self.ceiling(name, args)
+
+        calls = [("pay", arguments, "c1")]
+        plain, _ = gate.run_calls(
+            calls, policy=policy, streamed=streamed, tools=[self.pay_tool(gate, ran)]
+        )
+        audited, _ = example.run_calls(
+            calls, log, policy=policy, streamed=streamed, tools=[self.pay_tool(gate, ran)]
+        )
+        assert plain == {"c1": f"Recusal refused `pay`: {detail}"}
+        assert audited == {"c1": f"Recusal refused `pay` [FAIL]: {detail}"}
+        assert ran == [] and seen == [], "refused before the policy ran, and nothing ran"
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["tool_use_id"] == "c1"
+        assert entry["action"]["reason"] == audited["c1"]
+        assert entry["action"]["input_sha256"] == _sha(bound)
+
+    @staticmethod
+    def note_tool(gate, ran):
+        import typing
+
+        @gate.function_tool(strict_mode=False)
+        def note(payload: typing.Any) -> str:
+            """Record a note; contacts nothing."""
+            ran.append("ran")
+            return "noted"
+
+        return note
+
+    @ROUTES
+    @pytest.mark.parametrize("depth", [65, 300, 488, 600])
+    def test_deeply_nested_arguments_are_refused_the_same_way_with_and_without_a_log(
+        self, example, gate, log, streamed, depth
+    ):
+        """The second review, F3: at about 488 levels the plain gate ran the call and the
+        audited one refused it (the record could not fingerprint it), and deeper the two
+        refused for different stated causes. One fixed limit, applied by the gate before
+        anything else reads the arguments, now gives one answer in both."""
+        ran: list = []
+        seen: list = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        arguments = '{"payload": ' + "[" * depth + "]" * depth + "}"
+        calls = [("note", arguments, "c1")]
+        plain, _ = gate.run_calls(
+            calls, policy=policy, streamed=streamed, tools=[self.note_tool(gate, ran)]
+        )
+        audited, _ = example.run_calls(
+            calls, log, policy=policy, streamed=streamed, tools=[self.note_tool(gate, ran)]
+        )
+        assert plain == {"c1": "Recusal refused `note`: arguments are nested too deeply"}
+        assert audited == {"c1": "Recusal refused `note` [FAIL]: arguments are nested too deeply"}
+        assert ran == [] and seen == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["tool_use_id"] == "c1"
+        assert entry["action"]["reason"] == audited["c1"]
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["input_sha256"] == _sha({"input": arguments})
+
+    def test_arguments_at_the_depth_limit_take_the_same_path_in_both(self, example, gate, log):
+        ran: list = []
+        arguments = '{"payload": ' + "[" * 64 + "]" * 64 + "}"
+        calls = [("note", arguments, "c1")]
+        plain, _ = gate.run_calls(calls, policy=lambda *_: [], tools=[self.note_tool(gate, ran)])
+        audited, _ = example.run_calls(
+            calls, log, policy=lambda *_: [], tools=[self.note_tool(gate, ran)]
+        )
+        assert plain == audited == {"c1": "noted"} and ran == ["ran", "ran"]
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "defer"
+        assert entry["action"]["input_sha256"] == _sha(json.loads(arguments))
+
+    def test_negative_control_a_finite_amount_takes_the_same_path_in_both(self, example, gate, log):
+        ran: list = []
+        calls = [("pay", '{"amount": 5}', "c1"), ("pay", '{"amount": 5000}', "c2")]
+        plain, _ = gate.run_calls(calls, policy=self.ceiling, tools=[self.pay_tool(gate, ran)])
+        audited, _ = example.run_calls(
+            calls, log, policy=self.ceiling, tools=[self.pay_tool(gate, ran)]
+        )
+        assert plain == audited
+        assert plain["c1"] == "paid" and "over limit" in plain["c2"]
+        assert ran == [5.0, 5.0]
+
+    @pytest.mark.parametrize("approve", [True, False], ids=["approved", "rejected"])
+    def test_with_guardrails_before_approval_a_call_is_recorded_before_a_person_decides(
+        self, example, gate, log, approve
+    ):
+        """``RunConfig(tool_execution=ToolExecutionConfig(pre_approval_tool_input_guardrails=
+        True))`` makes the SDK run the guardrail before it asks a person as well as when
+        the tool is about to run: a rejected call has one passing entry, an approved call
+        has two under the same call id. Nothing runs without the second judgment."""
+        from agents.run_config import ToolExecutionConfig
+
+        tool = copy.copy(gate.run_sql)
+        tool.needs_approval = True
+        model = gate.scripted_model([("run_sql", {"sql": SELECT}, "c1")])
+        agent = example.audited_agent(
+            gate.Agent(name="a", model=model, tools=[tool]), gate.sql_scope_policy, log
+        )
+        config = gate.RunConfig(
+            tracing_disabled=True,
+            tool_execution=ToolExecutionConfig(pre_approval_tool_input_guardrails=True),
+        )
+
+        async def decide_and_resume():
+            result = await gate.Runner.run(agent, "go", run_config=config)
+            assert len(result.interruptions) == 1
+            # judged, recorded and waiting: on the log before a person decided
+            assert gate.EXECUTED == [] and len(log.entries) == 1
+            state = result.to_state()
+            if approve:
+                state.approve(result.interruptions[0])
+            else:
+                state.reject(result.interruptions[0])
+            await gate.Runner.run(agent, state, run_config=config)
+
+        gate.EXECUTED.clear()
+        asyncio.run(decide_and_resume())
+        decisions = [(e["action"]["tool_use_id"], e["action"]["decision"]) for e in log.entries]
+        if approve:
+            assert gate.EXECUTED == [("run_sql", {"sql": SELECT})]
+            assert decisions == [("c1", "defer"), ("c1", "defer")]
+        else:
+            assert gate.EXECUTED == []
+            assert decisions == [("c1", "defer")]

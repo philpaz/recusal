@@ -445,6 +445,253 @@ All notable changes to this project are documented here. The format follows
     given (the prefixed or renamed one) and corrects two sentences on ordering: another
     `innermost` capability listed after the gate runs after it, and the plain `Hooks`
     form is safe only where no `innermost` capability is added.
+- **`recusal-openai-agents` 0.2.0: the policy judges the arguments under the
+  names the function receives them by, and a tool the gate could never judge is refused
+  when the agent is built.** Found by the adapter review of 2026-11-21 and reproduced on
+  `openai-agents` 0.24.0:
+  - The gate worked out for itself which parameter is the context the SDK fills, from the
+    text of the annotation. For a callable-object tool whose context was annotated
+    through an alias in a module with string annotations it found none, so every argument
+    was named one parameter off: the policy saw `{"ctx": "DELETE FROM audit_log"}`, raised
+    no objection, and the tool ran the `DELETE`. The names are now read from the SDK's own
+    schema for the tool (`takes_context` and its signature), and a call whose prepared
+    values are not one for each parameter is refused.
+  - A `functools.wraps` wrapper under `function_tool` ran with values the policy never
+    saw: a wrapper's own keyword default (`dry_run=False`) was in no schema, and a
+    wrapper that took a parameter of the function left the function at its own default
+    (judged `SELECT 1`, ran `DELETE`). The gate now walks the callables the call reaches
+    with the kernel's `reached_parameters` (the function, what its `__wrapped__` chain
+    leads to, a bound method's function and a callable object's `__call__`), at every
+    level of a stack of wrappers, and refuses the tool unless each one takes exactly the
+    parameters the SDK prepared for, or forwards `*args, **kwargs` and names none of its
+    own. This is why the package now requires `recusal>=0.15.0`. A
+    `functools.singledispatch` function with an implementation registered is refused as
+    well: the implementation that runs is chosen by the type of an argument, and a
+    registered one ran with a default (`include_deleted=True`) that was in no schema.
+    One with nothing registered is the function it wraps and is gated, an implementation
+    registered afterwards refuses its next call in a later model turn (in the same turn it
+    runs unjudged, which is open and stated in the README), and a callable object that happens to
+    have a `dispatch` method and a `registry` attribute is not taken for one. The
+    dispatcher is known by the code of `functools.singledispatch`'s own wrapper function
+    and its registry is read from that function's closure, so it is found as a method or
+    a class method (`function_tool(service.handle)`, where a registered implementation
+    ran with its own default) and under `functools.wraps` wrappers, and one with nothing
+    registered is gated there too. A stack of
+    more than 31 wrappers is refused for that reason, not as "cannot be inspected". A
+    wrapper that calls a function it holds in a closure or an attribute is not read; the
+    README lists it under what the gate does not see.
+  - With `agent.as_tool(parameters=Model)` the parent's policy was handed the model's raw
+    JSON while the sub-agent was given the validated input: `{"confirm": "true", "rows":
+    "9"}` was judged as two strings and reached the sub-agent as `true` and `9`, a
+    default left out was judged as absent, and a key the model drops was judged as
+    present. The policy is now handed what the sub-agent is given, worked out with the
+    SDK's own adapter for that tool, and arguments the model does not accept are refused
+    before the policy runs. A `parameters` type that is not a data-only Pydantic model
+    (a validator, a serializer, a computed field, `Field(exclude_if=...)`, a nested
+    model, a dataclass, a field of a type outside the data-only set) is refused when the
+    tool is gated, with a reason that names the field and its pydantic core type; the
+    README lists the types and what to declare in their place. The default `as_tool` is
+    judged by the arguments as proposed, as before.
+  - `gated_agent` returned a copy that shared the original agent's `handoffs` and
+    `mcp_servers` lists, so a handoff appended to the original after gating was the gated
+    copy's too, and the agent it handed off to ran ungated. The copy now has its own
+    lists.
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt`: a prompt stored on
+    OpenAI's servers can configure tools that are not in the agent's `tools` list.
+  - A non-finite number (`NaN`, `Infinity`, a literal too large for a float, the string
+    `"nan"` for a `float` parameter) ran on the plain gate, where a policy that compares
+    it (`amount > 1000`) raises no objection, and was refused only on the audited gate.
+    Both now refuse it before the policy runs, for the same reason, so "the audited forms
+    are the plain ones with a recording passed in" holds. The same was true of deeply
+    nested arguments: at about 488 levels the plain gate ran the call and the audited
+    gate refused it, and deeper the two refused for different stated causes. The gate
+    now refuses arguments that hold a value more than 64 levels down, before anything
+    else reads them, with one reason and one audit entry; the limit is fixed and does not
+    move with the interpreter's recursion limit.
+  - `gate_tools` and `gated_agent` now raise `TypeError`, naming the tool and the
+    parameter, for a function tool they used to accept and then refuse on every call: a
+    parameter the SDK prepares only by running the tool's own code (an `Enum`, a model, a
+    dataclass, a `TypedDict`, `datetime`, `date`, `tuple`, `set`, `Sequence`,
+    `Iterable`, `bytes`, `Field(pattern=...)`, a custom validator), a mapping whose key
+    type is neither `str` nor a `Literal` of strings (`dict[int, str]`) and a variadic
+    parameter. A default that is not JSON data
+    (`tags: list[str] = ()`) and a default factory other than `list` or `dict` are named
+    as what they are. A decorator whose signature cannot be read (a class-based decorator
+    that is also a descriptor, such as `cachetools.cached`) is refused with what to do
+    about it. The README lists the parameter types that are gated. This is why the
+    release is 0.2.0: an agent that carried such a tool was built and is now refused.
+  - `gated_agent` and `is_gated` now refuse an agent whose `model_settings` can put
+    tools into the request themselves: `extra_body` or `extra_args` with a `tools`,
+    `prompt`, `plugins`, `web_search_options` or `mcp_servers` key. In `extra_body` a
+    `tools` key replaces the agent's own tool list in the request and the others are sent
+    beside it; in `extra_args` a `prompt` is sent with a Responses request, and a `tools`
+    key makes the SDK's OpenAI models raise before anything is sent. Settings given to a
+    run (`RunConfig(model_settings=...)`) are not known when the agent is gated and are
+    not read.
+  - Corrected: two tools under one name in different `tool_namespace` groups were refused
+    with a reason that was not true of them (the SDK resolves those by namespace, not
+    last-wins). They are still refused, for the reason that is: the policy and the audit
+    record are given a tool's own name without its namespace. A call that gives
+    arguments to a tool that takes none, and arguments that do not validate, now each say
+    so in place of "its schema runs custom validation".
+  - Corrected in the README and `docs/FRAMEWORKS.md`: "a call a person rejected is not on
+    the log" does not hold under the SDK's `pre_approval_tool_input_guardrails=True`,
+    where the guardrail also runs before the approval. A call then has an entry before a
+    person decides, and a second one if it is approved. Nothing runs without the second
+    judgment. Also in the README now: the calls the SDK itself rejects before the
+    guardrail runs (a tool call id reused for another call, within one response or in a
+    later turn, a blank one, arguments nested about a thousand levels deep, and an
+    unknown tool, which raises unless the run asks for the error to go to the model),
+    that `Field(default_factory=list)` is gated, and that a `dict` parameter needs
+    `strict_mode=False`.
+  - New public names for a gate on another seam of the SDK: `shared_name_reason`,
+    `settings_reason`, `too_deep`, `tools_gated`, and the `agent_gated` argument of
+    `gate_tools`.
+- **`recusal-openai-agents-mcp` 0.2.0: the policy judges the arguments
+  checked against and completed from the server's listed schema; an object or a list the
+  schema offers more than one form for, and a string a server may read as another type
+  the schema lists, are refused; and the server is sent what was judged, less a listed
+  default that cannot be sent, which is judged as listed and not sent.** Found by the
+  same review and reproduced against a real stdio
+  server built with the MCP Python SDK (`mcp` 2.3.0) and one built with the TypeScript
+  SDK and zod:
+  - The gate judged the arguments as sent and never read the tool's listed `inputSchema`,
+    and the server then ran values no policy judged: `{"dry_run": "false"}` (a string,
+    which a policy reading `if not args.get("dry_run")` takes as set) ran as
+    `dry_run=False`, `{"amount": "500"}` ran as `500`, and `{}` ran with every default in
+    the schema (`recursive=True`), under an audit entry that fingerprinted `{}`. The same
+    held one level down and for every shape Pydantic publishes: an `Optional[bool]`
+    (`anyOf`), a nested model (`$ref`, with its own defaults), a `dict[str, bool]`
+    (`additionalProperties`), a tuple (`prefixItems`), and JSON text sent for a model
+    parameter, which the SDK's server parses. Before the policy runs, the arguments must
+    now be valid against the whole listed schema as they stand, validated with
+    `jsonschema` in the draft the schema declares and stricter where a server would
+    still convert (`5.0` is not an integer; an `enum` value must be of the listed JSON
+    type), and every default the schema lists for a property they leave out, at any
+    depth, is written into them: the property's own `default`, or, when its schema lists
+    none itself, the one listed by the schema its `$ref` names, by a member of its
+    `allOf` or by an alternative of its `anyOf` or `oneOf`, which is where zod publishes
+    the default of `z.boolean().default(true).nullable()`. The policy judges the
+    completed arguments, the server is sent the completed arguments, and the entry is
+    bound to them. What the gate cannot check or complete is refused, with a reason that
+    names the place in the arguments and what the schema requires there and carries no
+    argument text: a schema that is not a valid JSON Schema or declares a draft other
+    than draft-07, 2019-09 and 2020-12, a `$ref` that does not resolve inside the schema
+    (a remote one is never fetched), a default under a keyword the walk does not follow
+    or under a keyword the gate does not know, a property left out whose alternatives
+    list different defaults. To read the schema, `gate_mcp_server` now also wraps the server's
+    `list_tools`, in place; each listing replaces the one before, so a call to a tool the
+    server does not list, or no longer lists, is refused. Where the server object keeps
+    its listing as fetched, before any `tool_filter` (`cached_tools`, as the SDK's own
+    servers do), that whole listing is kept, so two agents under a dynamic filter share
+    one server. This is why the release is 0.2.0: a call that relied on the server
+    converting a string is now refused with a reason the model can act on. The package
+    now requires `jsonschema>=4.26.0` and `referencing>=0.37.0`; the MCP SDK requires
+    `jsonschema` itself, and `referencing` comes with `jsonschema`.
+  - JSON text for a parameter that may be null ran as null. The MCP Python SDK's server
+    decodes the text of a string argument as JSON when the parameter is not annotated
+    exactly `str`: `{"scope": "null"}` for `scope: Optional[str]` was judged as the
+    string and ran as `None`. A string that holds JSON text for null, a list or an
+    object, which is what that server decodes, is now refused where the schema of the
+    argument allows another JSON type than string. A property whose schema allows only
+    strings keeps every string. A listed default that is such text
+    (`mode: Optional[str] = "null"`) is judged and not sent: the server runs with the
+    string when the parameter is left out, and would decode it if the gate sent it.
+  - A model could stall the agent's process, in four ways, inside the event loop. Where
+    two alternatives of a recursive `anyOf` both accept a value, the cost of checking
+    more than doubled with every level of the arguments: ten levels took several seconds
+    and twelve more than a minute. A server's `pattern` ran on the model's text with
+    Python's `re`: `^(\w+\s?)+$` took eleven seconds on forty bytes, and a
+    `patternProperties` pattern nine on a member's name. `uniqueItems` compared every
+    item with every other (fifteen seconds for 12,000), and an `enum` every value with
+    every choice. And the types a subschema admits were read again for every way the
+    schema reaches it. Now nothing is validated twice for one schema and one value, a
+    list or an object is walked once for a schema, `uniqueItems`, `enum` and `const`
+    read each value once (except integers chosen to share one hash under `uniqueItems`,
+    which is open), and what the schema alone says is read once, at the first call after
+    each listing. No regular expression of a server's is evaluated at all: `pattern` is not
+    checked (the server checks it), and a member beside `patternProperties` must meet
+    the schema of every pattern listed. The work is bounded by counting it, not by a
+    timer: each keyword applied to a value (and one more for each member or item the
+    value holds), each value walked or read for a comparison, and each part of the place
+    of a validation error is a step, counted against an allowance that grows with the
+    number of values in the arguments; a call over it is refused before the policy runs,
+    as one deny entry. The 12,000 items now take about a tenth of a second.
+  - Which of several object forms a server runs is not in its schema, and the gate had
+    worked it out by JSON Schema's rule. A server built on Pydantic takes the member of a
+    `Union` of models with more of the fields that are set, converting strings to fit
+    it; one built on zod takes the first member of a `z.union` that parses and drops the
+    members that one does not know, although it lists `additionalProperties: false`. So
+    `{"target": {"path": "/data", "pattern": "*.tmp", "dry_run": true}}` was judged as
+    written and ran as `{"path": "/data", "recursive": true}`. An object is now refused
+    wherever the schema offers more than one object form for it (two or more
+    alternatives of an `anyOf` or `oneOf` that admit an object), whatever it holds and
+    at any depth, unless every form fixes one same-named property to a `const` of its
+    own and the object carries the value of exactly one, which is then the only form
+    used. A list is refused where the schema offers more than one list form. One form
+    beside alternatives that are not one (`Optional[Model]`, `Model | str`) is as
+    before. A `Union` of models needs a `Literal` tag on each, sent with the call, or
+    one tool for each form.
+  - The text of a number ran as the number. Pydantic converts a string wherever the
+    value is not taken as a string first: `{"since": "1700000000"}` for
+    `since: Union[int, datetime]` ran as the integer, and `"true"` for
+    `Union[bool, Path]` as `True`. A string that reads as a number, or as one of the
+    words Pydantic reads as a boolean, is now refused where the schema names that type
+    beside string, at any depth. This is one rule with the JSON text above: a string is
+    refused where the schema also admits the type a server reads its text as. It costs
+    the same strings for `Union[int, str]`, which a server would have kept as strings
+    and whose schema is no different.
+  - A listed default with a member its own schema does not allow is refused when it
+    would apply: a Pydantic model with aliased fields and `extra="forbid"`, used as a
+    parameter's default, lists the default under the field names and the schema under
+    the aliases, and was judged under names the schema does not have.
+  - Refused without cause, now accepted: a legal chain of a recursive model
+    (`child: Optional[Node]`) deeper than 42 levels, refused as a schema that "refers to
+    itself without end" (only a schema that leads back to itself with no value in
+    between is one, and it is refused when the tool is called); a `pattern` Python
+    cannot compile (`\p{L}`), which made every call "not a valid JSON Schema" (no
+    pattern is compiled now); and a draft declared under its `https` address.
+  - A listed default that cannot be sent is judged as listed and not sent: one that is
+    not valid against its own property schema (Pydantic publishes `{"default": null,
+    "type": "string"}` for `q: str = None`, and its server would reject the `null` if it
+    were sent), and text a call would be refused for sending. The gate judges the
+    default as the schema lists it. A server that derives its real default another way
+    runs that: zod's `z.number().default(Infinity)` lists `default: null` and runs
+    `Infinity`, `.default(1).optional()` on a schema the `1` fails runs with the
+    parameter absent, a `Set` default is listed as `{}`, and an object default that
+    fails its own schema is parsed again through it. The README says so. A default that
+    holds an object or a list where the schema offers more than one form refuses the
+    call that leaves its property out.
+  - The README says what is not seen: a parameter left out with no listed default (a
+    `default_factory` default among them), a server whose code does more than its schema
+    says (the MCP Python SDK's server parses a string for a parameter without an
+    annotation, which it lists as `type: string`; a numeric string runs as a date; a
+    validator that strips or lowers a string changes it, a default the gate wrote
+    included; zod's `.catch` is in no schema; `str | SkipJsonSchema[None]` lists a
+    string and runs `"null"` as `None`; a `Json[...]` parameter runs what its string
+    decodes to), an integer above 2^53 for a float parameter, a member an object's
+    schema does not name, a schema that changes after it was listed, and the server's
+    handling of a hosted MCP call. It also says what the rules mean for ordinary schemas:
+    a `Union` of two models, a list of two forms, `Union[int, str]`, a tuple with a
+    defaulted member, zod's `additionalProperties: false`, and OpenAPI's `nullable`.
+  - A non-finite number in a local server call (`1e400`) left an audit entry with no
+    fingerprint and the kernel's "cannot be fingerprinted" in place of the gate's reason.
+    Arguments that are not JSON data are now refused with the gate's own reason, in one
+    entry bound to the text the gate writes them as. Arguments that hold a value more
+    than 64 levels down are refused the same way.
+  - Arguments nested about 900 deep were refused with no audit entry, because the copy
+    for the policy was made, and failed, before `decide` ran. Every refusal before the
+    policy runs is now one entry.
+  - `gated_agent` refused a parent whose sub-agent behind `as_tool` was itself gated by
+    this package and held an MCP server or a hosted tool, with advice to do what had been
+    done. The sub-agent is now judged by this package's own `is_gated`.
+  - `gated_agent` and `is_gated` now refuse an agent with a `prompt` and an agent whose
+    `model_settings` put tools into the request, and the gated copy has its own
+    `handoffs` list, as in `recusal-openai-agents`. Requires
+    `recusal-openai-agents>=0.2.0`.
+  - Now in the README's list of what the gate does not see: request metadata from a
+    `tool_meta_resolver`, a hosted approval the SDK answers again from its own memory
+    when the provider repeats a request, and a call the SDK rejects before `call_tool`.
 
 ## [0.15.0] - 2026-11-21
 
