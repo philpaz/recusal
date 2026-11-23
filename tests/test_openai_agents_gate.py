@@ -2906,6 +2906,29 @@ class TestFifthReview:
         with pytest.raises(TypeError, match=r"cannot be inspected \(ValueError\)"):
             example.gate_tools([tool], example.sql_scope_policy)
 
+    def test_a_kernel_that_refuses_a_hidden_wrapper_gets_a_reason_that_names_it(
+        self, example, monkeypatch
+    ):
+        """A later kernel's walk raises ``HiddenWrapper`` (a ``ValueError``) for a wrapper that
+        holds a second wrapper of the function it does not follow. The refusal says so and
+        gives the remedy, with the kernel's own text, which names the parameter."""
+        adapter = _adapter()
+        tool = example.function_tool(self.plain_function())
+
+        class HiddenWrapper(ValueError):
+            pass
+
+        def walk(func):
+            raise HiddenWrapper("`force` is a parameter of a wrapper the walk does not follow")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", walk)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        reason = str(refusal.value)
+        assert "holds a second wrapper of it that the gate does not follow" in reason
+        assert "`force` is a parameter of a wrapper the walk does not follow" in reason
+        assert "cannot be inspected" not in reason
+
     # --- how a dispatcher is known ---------------------------------------------------------------
 
     @staticmethod

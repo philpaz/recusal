@@ -289,6 +289,17 @@ _DISPATCH_NOT_READ = (
 #: the walk itself finds. Known by name: the oldest kernel this package runs on has none.
 _KERNEL_DISPATCH = "DispatchedAtCallTime"
 
+#: The kernel walk's exception, in a kernel that has it, for a wrapper that holds a second
+#: wrapper of the function it wraps, which the walk does not follow. Known by name too.
+_KERNEL_HIDDEN = "HiddenWrapper"
+
+_HIDDEN_WRAPPER = (
+    "a decorator on the function it runs holds a second wrapper of it that the gate does "
+    "not follow, and that wrapper takes a parameter of its own ({}), so a value could run "
+    "that the policy never saw. Apply each decorator to the function directly, or call the "
+    "wrapped function from a plain function and register that."
+)
+
 #: The kernel walk's own message for a stack it stops reading.
 _WALK_LIMIT = "too many wrappers to inspect"
 
@@ -508,6 +519,8 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
     except Exception as exc:  # noqa: BLE001, a callable the gate cannot read is refused
         if type(exc).__name__ == _KERNEL_DISPATCH:
             return _SINGLEDISPATCH
+        if type(exc).__name__ == _KERNEL_HIDDEN:
+            return _HIDDEN_WRAPPER.format(exc)
         if type(exc) is ValueError and any(_opaque_decorator(link) for link in reached):
             return _OPAQUE_DECORATOR
         if type(exc) is ValueError and str(exc) == _WALK_LIMIT:
