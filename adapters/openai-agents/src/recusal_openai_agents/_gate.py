@@ -46,12 +46,18 @@ when you call them, naming the tool and the cause (:func:`_tool_refusal`):
   an implementation registered, wherever it stands among the callables the call reaches:
   it picks the code that runs at call time by the type of an argument, and an
   implementation can be registered after a call was judged and before it runs;
+- a ``functools.partialmethod`` read from a class, or from an object when the callable
+  it holds has no ``__get__`` (a class-based decorator's instance; a ``functools.partial``
+  up to Python 3.13): what runs is the callable it holds, which ``inspect`` reads past;
+- a ``weakref.proxy``, which shows the attributes of the object it stands for and is not
+  that object;
 - a decorator whose signature cannot be read, and a function under more wrappers than
   the walk reads.
 
 Which callables are read for that: the function, what its ``__wrapped__`` chain leads to,
-a bound method's function and a callable object's ``__call__``. A wrapper that calls a
-function it holds some other way (in a closure, in an attribute) is not read.
+a bound method's function, a callable object's ``__call__`` and the callable a
+``functools.partialmethod`` holds. A wrapper that calls a function it holds some other way
+(in a closure, in an attribute) is not read.
 
 ``gated_agent`` checks the agent when you call it. Build the agent completely, then gate
 it; a tool appended to the gated agent's list afterwards is not gated. The gated copy has
@@ -66,6 +72,7 @@ import functools
 import inspect
 import json
 import types
+import weakref
 from collections.abc import Mapping
 from typing import Any, Callable, List, Optional
 
@@ -276,14 +283,33 @@ _SINGLEDISPATCH = (
     "it runs a `functools.singledispatch` function: the implementation that runs is chosen "
     "at call time by the type of an argument, one can be registered at any moment, and "
     "each has its own parameters and defaults, so the gate cannot tie a call to the "
-    "function that will run. Register one plain function as the tool and dispatch inside "
-    "its body."
+    "function that will run. Register one plain function as the tool and branch on the "
+    "type inside its body; a single-dispatch function called from it is not read."
 )
 
 _DISPATCH_NOT_READ = (
-    "the gate could not tell whether a callable it reaches is a `functools.singledispatch` "
-    "function ({}), and one is refused. Register one plain function as the tool."
+    "the gate could not read a callable the call reaches ({}), so it cannot tell whether "
+    "that is one it refuses (a `functools.singledispatch` function, a "
+    "`functools.partialmethod`, a weak proxy). Register one plain function as the tool."
 )
+
+_PARTIALMETHOD_REFUSED = (
+    "it runs a `functools.partialmethod`: the call goes to the callable the partialmethod "
+    "holds, and the tool's parameters are read from that callable without the gate "
+    "reading what is under it, so a wrapper or a single-dispatch function there could run "
+    "with a value no policy judged. Register a plain function that calls it; the gate "
+    "judges that function's parameters, and what its body calls is not read."
+)
+
+_WEAK_PROXY = (
+    "a callable the call reaches is a `weakref.proxy`: it shows the attributes of the "
+    "object it stands for and is not that object, so the gate cannot tell which callables "
+    "a call to it runs. Register the function itself, or a plain function that calls it."
+)
+
+#: The kernel walk's exception, in a kernel that has it, for a callable read through a
+#: ``functools.partialmethod``. A ``TypeError`` there, and known by name like the two below.
+_KERNEL_PARTIALMETHOD = "PartialMethodSignature"
 
 #: The kernel walk's exception, in a kernel that has it, for a single-dispatch function
 #: the walk itself finds. Known by name: the oldest kernel this package runs on has none.
@@ -325,13 +351,50 @@ _C_CALL = (types.WrapperDescriptorType, types.MethodWrapperType)
 _MAX_REACHED = 512
 
 
+#: ``functools.partialmethod`` as it was when this module was imported.
+_PARTIALMETHOD: Any = getattr(functools, "partialmethod", None)
+
+#: The names under which the function ``functools`` hands out for a partialmethod carries
+#: it: ``_partialmethod`` up to Python 3.12, ``__partialmethod__`` from 3.13. The third is
+#: asked as well, so a spelling without underscores is not missed.
+_PARTIALMETHOD_NAMES = ("_partialmethod", "__partialmethod__", "partialmethod")
+
+
+def _is_partialmethod(value: Any) -> bool:
+    """Whether ``value`` is a ``functools.partialmethod``: its type is that class or a
+    subclass of it, as the class was at import or as ``functools`` has it now, or a class
+    of that name (one built by another copy of ``functools``). Asked of the type alone."""
+    for known in (_PARTIALMETHOD, getattr(functools, "partialmethod", None)):
+        if isinstance(known, type) and issubclass(type(value), known):
+            return True
+    return type(value).__name__ == "partialmethod"
+
+
+def _held_partialmethod(link: Any) -> Any:
+    """The ``functools.partialmethod`` that ``link`` is, or carries under one of
+    ``_PARTIALMETHOD_NAMES``, or None. Read with ``inspect.getattr_static``."""
+    if _is_partialmethod(link):
+        return link
+    for name in _PARTIALMETHOD_NAMES:
+        held = inspect.getattr_static(link, name, None)
+        if _is_partialmethod(held):
+            return held
+    return None
+
+
 def _steps(link: Any) -> list[Any]:
-    """The callables ``link`` may hand a call to, by every step the kernel's walk takes:
+    """The callables ``link`` may hand a call to. The four steps the walk of the kernel
+    this package was written beside takes (0.15.0, ``recusal.invocation._next_callables``):
     a ``functools.partial``'s function, a bound method's function, what ``__wrapped__``
     names (as the callable shows it, so a method's function's, a ``functools.lru_cache``
     wrapper's and the function under a ``staticmethod`` or a ``classmethod`` are
     followed) and the ``__call__`` of its type as the class holds it, unless that is
-    implemented in C, as a function's own is."""
+    implemented in C, as a function's own is. And one that walk does not take: the
+    callable a ``functools.partialmethod`` holds, when ``link`` is one or carries one.
+
+    ``__wrapped__`` is read with ``getattr``, as Python and the kernel's walk read it, so
+    a ``__wrapped__`` property or a ``__getattr__`` of the callable runs here. ``__call__``
+    and the partialmethod are read with ``inspect.getattr_static``."""
     found: list[Any] = []
     if isinstance(link, functools.partial):
         found.append(link.func)
@@ -343,6 +406,9 @@ def _steps(link: Any) -> list[Any]:
     call = inspect.getattr_static(type(link), "__call__", None)
     if call is not None and not isinstance(call, _C_CALL):
         found.append(call)
+    held = _held_partialmethod(link)
+    if held is not None:
+        found.append(inspect.getattr_static(held, "func", None))
     return found
 
 
@@ -394,6 +460,11 @@ def _closure_value(func: Any, name: str) -> Any:
         return None
 
 
+#: What the ``dispatch`` function inside a ``functools.singledispatch`` dispatcher closes
+#: over beside its ``registry``, on every Python from 3.10 to 3.15.
+_FUNCTOOLS_DISPATCH_STATE = frozenset({"dispatch_cache", "cache_token"})
+
+
 def _dispatch_function(link: Any) -> bool:
     """Whether ``link`` is the function ``functools.singledispatch`` returns, with or
     without an implementation registered. Yes if any one of three tests says so:
@@ -401,15 +472,17 @@ def _dispatch_function(link: Any) -> bool:
     - its code is the ``wrapper`` nested in ``functools.singledispatch``, as read when
       this module was imported or as ``functools`` stands now (after a reload);
     - it is a plain function whose closure holds a ``dispatch`` function whose closure
-      holds a ``registry`` dict, which is how ``functools`` builds one, whichever copy of
-      ``functools`` built it;
+      holds a ``registry`` dict beside a ``dispatch_cache`` and a ``cache_token``, which
+      is how ``functools`` builds one (Python 3.10 to 3.15), whichever copy of
+      ``functools`` built it. A ``dispatch`` function over a ``registry`` dict alone, as
+      an event bus of your own might have, is not one;
     - it has a ``registry`` that is exactly a ``types.MappingProxyType`` beside a callable
       ``dispatch`` and a callable ``register``. A ``functools.wraps`` wrapper over a
       dispatcher carries a copy of those and is taken for one, which is the same answer:
       it leads to the dispatcher.
 
     The attributes are read with ``inspect.getattr_static`` and the closure from its
-    cells, so no property, ``__getattr__`` or other code of the object runs. A service
+    cells, so this test runs no property and no ``__getattr__`` of the object. A service
     object with a ``dispatch`` method and a ``registry`` that is not a mapping proxy is
     not one."""
     if type(link) is types.FunctionType:
@@ -420,7 +493,9 @@ def _dispatch_function(link: Any) -> bool:
             return True
         dispatch = _closure_value(link, "dispatch")
         if type(dispatch) is types.FunctionType:
-            if type(_closure_value(dispatch, "registry")) is dict:
+            if type(_closure_value(dispatch, "registry")) is dict and (
+                _FUNCTOOLS_DISPATCH_STATE <= set(dispatch.__code__.co_freevars)
+            ):
                 return True
     return (
         type(inspect.getattr_static(link, "registry", None)) is types.MappingProxyType
@@ -449,7 +524,9 @@ def _dispatch_method(link: Any) -> bool:
     """Whether ``link`` is a ``functools.singledispatchmethod`` or the callable one hands
     out when it is read from an object or a class: up to Python 3.13 a function that
     carries the descriptor's bound ``register``, from 3.14 an object that holds the
-    descriptor as ``_unbound``. Read without running code of the object's."""
+    descriptor as ``_unbound``. The attributes are read with ``inspect.getattr_static``,
+    so no property and no ``__getattr__`` of the object runs; the ``isinstance`` tests
+    read the object's type and, when that is not the class, its ``__class__``."""
     if _dispatch_method_descriptor(link):
         return True
     register = inspect.getattr_static(link, "register", None)
@@ -491,25 +568,42 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
     runs it at a default that is in no schema; one that takes a parameter of the function
     leaves the function at its own default; one that reorders them swaps the values.
 
-    The walk reads the callable, what ``__wrapped__`` leads to, a bound method's function
-    and a callable object's ``__call__``. A ``functools.singledispatch`` function or a
-    ``singledispatchmethod`` anywhere among those callables is refused, with or without
-    an implementation registered: which implementation runs is chosen at call time, and
-    one can be registered between the moment a call is judged and the moment it runs
-    (the SDK judges every call of a model turn before any tool body runs). The question
-    is asked of every callable :func:`_reached_callables` finds, which takes every step
-    the kernel's walk takes; a callable it cannot be asked of is refused. A wrapper that
-    calls a function it holds in a closure or an attribute is not read, and is not
-    refused."""
+    The walk reads the callable, what ``__wrapped__`` leads to, a bound method's function,
+    a callable object's ``__call__`` and the callable a ``functools.partialmethod`` holds
+    (:func:`_steps`). Three kinds of callable are refused wherever they stand among those:
+
+    - a ``functools.singledispatch`` function or a ``singledispatchmethod``, with or
+      without an implementation registered: which implementation runs is chosen at call
+      time, and one can be registered between the moment a call is judged and the moment
+      it runs (the SDK judges every call of a model turn before any tool body runs);
+    - a ``weakref.proxy``: reading ``__wrapped__`` from it reads the attribute of the
+      object it stands for, so the walk would step past that object, and a dispatcher
+      behind a proxy would not be asked;
+    - a callable that is or carries a ``functools.partialmethod``: ``inspect`` reads the
+      parameters of the callable the partialmethod holds as the tool's own, and neither
+      it nor the 0.15.0 kernel's walk reads what is under that callable. That is what
+      reading a partialmethod from a class gives, and from an object when the callable
+      it holds has no ``__get__``. Over a plain function read from an object it gives a
+      ``functools.partial``, which the SDK refuses itself.
+
+    The questions are asked of every callable :func:`_reached_callables` finds; a
+    callable they cannot be asked of is refused. A wrapper that calls a function it holds
+    in a closure or an attribute is not read, and is not refused."""
     get_callable = getattr(tool.on_invoke_tool, "_get_wrapped_callable", None)
     func = get_callable() if callable(get_callable) else None
     try:
         reached, complete = _reached_callables(func)
         dispatches = any(_is_dispatcher(link) for link in reached)
+        proxied = any(type(link) in weakref.ProxyTypes for link in reached)
+        partialmethod = any(_held_partialmethod(link) is not None for link in reached)
     except Exception as exc:  # noqa: BLE001, a callable the gate cannot question is refused
         return _DISPATCH_NOT_READ.format(type(exc).__name__)
     if dispatches:
         return _SINGLEDISPATCH
+    if proxied:
+        return _WEAK_PROXY
+    if partialmethod:
+        return _PARTIALMETHOD_REFUSED
     if not complete:
         return _TOO_MANY_WRAPPERS
     try:
@@ -521,6 +615,8 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
             return _SINGLEDISPATCH
         if type(exc).__name__ == _KERNEL_HIDDEN:
             return _HIDDEN_WRAPPER.format(exc)
+        if type(exc).__name__ == _KERNEL_PARTIALMETHOD:
+            return _PARTIALMETHOD_REFUSED
         if type(exc) is ValueError and any(_opaque_decorator(link) for link in reached):
             return _OPAQUE_DECORATOR
         if type(exc) is ValueError and str(exc) == _WALK_LIMIT:

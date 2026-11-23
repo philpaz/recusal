@@ -224,23 +224,44 @@ guardrail cannot judge:
   body runs, so an implementation that one call of a turn registers (or that the tool
   registers on its own first use) would run, unjudged, for a later call of that turn. So
   every single-dispatch function is refused when the agent is built, whether or not
-  anything is registered. Register one plain function as the tool and dispatch inside
-  its body. The dispatcher is refused wherever it stands among the callables the gate
-  reads: as the tool itself, as a method, a class method or a static method
-  (`function_tool(service.handle)`), as a callable object's `__call__`, and under
-  `functools.wraps` wrappers or `functools.lru_cache`. It is recognised in three ways,
-  any one of which is enough: by the code of the function `functools.singledispatch`
-  returns (as read when this package was imported, and as `functools` stands when the
-  tool is checked, so after `importlib.reload(functools)` too); by how that function is
-  built (its closure holds a `dispatch` function whose closure holds the registry); and
-  by its attributes (a `registry` that is a `types.MappingProxyType` beside a callable
-  `dispatch` and a callable `register`, on any object, so a service object of your own
-  that has all three is refused too). A `functools.wraps` wrapper over a dispatcher
-  carries a copy of those attributes and is refused with it. A callable object that
-  happens to have a `dispatch` method and a `registry` attribute that is not a mapping
-  proxy is not taken for one. A dispatcher that a wrapper calls from a closure, a global
-  or an attribute, and not through `__wrapped__`, is not found: see "What the gate does
-  not see" below.
+  anything is registered. Register one plain function as the tool and branch on the type
+  inside its body (`if isinstance(...)`). Do not call a single-dispatch function from
+  that body in its place: a single-dispatch function called from the body is not read,
+  and the implementation it picks runs with its own defaults. The dispatcher is refused
+  wherever it stands among the callables the gate reads: as the tool itself, as a
+  method, a class method or a static method (`function_tool(service.handle)`), as a
+  callable object's `__call__`, under `functools.wraps` wrappers or
+  `functools.lru_cache`, and as the callable a `functools.partialmethod` holds. It is
+  recognised in three ways, any one of which is enough: by the code of the function
+  `functools.singledispatch` returns (as read when this package was imported, and as
+  `functools` stands when the tool is checked, so after `importlib.reload(functools)`
+  too); by how that function is built (its closure holds a `dispatch` function whose
+  closure holds a `registry` dict, a `dispatch_cache` and a `cache_token`, as
+  `functools` builds it on Python 3.10 to 3.15); and by its attributes (a `registry`
+  that is a `types.MappingProxyType` beside a callable `dispatch` and a callable
+  `register`, on any object, so a service object of your own that has all three is
+  refused too). A `functools.wraps` wrapper over a dispatcher carries a copy of those
+  attributes and is refused with it. Not taken for one: a callable object that happens
+  to have a `dispatch` method and a `registry` attribute that is not a mapping proxy,
+  and an event bus of your own whose function closes over a `dispatch` function and a
+  `registry` dict. A dispatcher that a wrapper calls from a closure, a global or an
+  attribute, and not through `__wrapped__`, is not found: see "What the gate does not
+  see" below.
+- **A `functools.partialmethod`.** What the tool calls is the callable the partialmethod
+  holds, and Python reads the tool's parameters from that callable without anything
+  reading what is under it: a single-dispatch function or a wrapper with a parameter of
+  its own there would run with a value no policy judged. So a function that is or
+  carries a partialmethod is refused, whatever it holds, a plain function too. That is
+  what you get when you read a partialmethod from the class (`Db.export`), and from an
+  object (`db.export`) when the callable it holds has no `__get__`: a class-based
+  decorator's instance, or a `functools.partial` up to Python 3.13. A partialmethod over
+  a plain function or method read from an object is a `functools.partial`, which the
+  SDK refuses itself (`function_tool` raises). Register a plain function that calls it;
+  the gate judges that function's parameters, and what its body calls is not read.
+- **A `weakref.proxy`**, as the tool's function or anywhere among the callables the gate
+  reads. A proxy shows the attributes of the object it stands for and is not that
+  object, so the gate cannot tell which callables a call to it runs. Register the
+  function itself, or a plain function that calls it.
 - **A sub-agent behind `agent.as_tool(...)` whose own tools are not gated.** Gate the
   sub-agent first, `gated_agent(sub, policy).as_tool(...)`, and the parent accepts it.
 - **An agent tool whose `parameters` type is not a data-only Pydantic model.** The gate
@@ -274,7 +295,11 @@ Refused call by call, before the policy runs, with a reason the model reads:
   record cannot fingerprint it;
 - arguments given to a tool that takes none;
 - a call to a tool whose function was changed after the tool was gated into one the
-  list above refuses (the guardrail asks the same questions again on every call);
+  list above refuses. The guardrail asks the same questions again on every call, and
+  the SDK runs every guardrail of a model turn before any tool body of that turn. So a
+  change made before a run, or between runs, is seen by the next call; a change a tool
+  body makes during a run is seen from the next model turn, and not by the other calls
+  of the turn it was made in (see "What the gate does not see");
 - arguments that hold a value more than 64 levels below the arguments object. The limit
   is the gate's own and fixed: it is the same with and without an audit log, and does not
   move with the interpreter's recursion limit.
@@ -292,7 +317,22 @@ What the gate does not see:
   wrapper the gate never read. A parameter that wrapper takes or adds is not judged.
   The same holds for a single-dispatch function: a wrapper that names a plain function
   as `__wrapped__` and calls a dispatcher it holds in a closure or a global is gated,
-  and an implementation registered on that dispatcher runs with its own defaults.
+  and an implementation registered on that dispatcher runs with its own defaults. So is
+  a plain function whose body calls a dispatcher.
+- **A change a tool body makes to another tool's function, for the calls of the same
+  model turn.** The SDK runs the guardrail of every call of a turn before any tool body
+  of that turn. A tool body that re-wraps the function of another tool (sets its
+  `__wrapped__` to a wrapper with a parameter of its own, say) is not seen by a call to
+  that tool in the same turn, which runs the new wrapper unjudged. A call in the next
+  model turn is refused.
+- **Code of your callables that runs while a tool is checked.** To find the callables a
+  call reaches, the gate reads `__wrapped__` the ordinary way, as Python and
+  `inspect.signature` do, so a `__wrapped__` property or a `__getattr__` of a callable
+  object runs when the tool is gated and again on every call. The tests that recognise a
+  single-dispatch function, a partialmethod and a weak proxy read the object's type, its
+  closure cells and its attributes with `inspect.getattr_static`, which runs no property
+  and no `__getattr__` of the object; the `isinstance` tests among them read an object's
+  `__class__`.
 - **Model settings given to a run.** Only the agent's own `model_settings` are read when
   it is gated. `RunConfig(model_settings=...)` is merged in when a run starts, and an
   `extra_body` there is not seen.
@@ -343,6 +383,13 @@ unjudged for a later call of that turn; a dispatcher that is a callable object's
 `__call__` was not found under a `functools.wraps` wrapper; and a dispatcher was
 recognised by one code object read at import. The three are closed after 0.2.0: every
 single-dispatch function is refused as a tool (see the bullet on single dispatch above).
+Round six, on those fixes, found one more gap, which the 0.2.0 release has too: a
+`functools.partialmethod` hid the callable it holds, so a single-dispatch function or a
+wrapper with a parameter of its own under it ran with a value no policy judged. It also
+found that a `weakref.proxy` of a single-dispatch function was accepted, and that an
+ordinary event bus was refused as a single-dispatch function. These are closed after
+0.2.0 as well (see the bullets on `functools.partialmethod` and `weakref.proxy` above),
+and no review round has been run on that change yet.
 What is still not found is listed under "What the gate does not see".
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell

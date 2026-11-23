@@ -387,11 +387,12 @@ setup was found.
 **Where it stands.** `recusal-openai-agents` 0.2.0 is released (tag
 `recusal-openai-agents-v0.2.0`, 2026-11-22), with the fixes of the rounds below, merged in
 [#297](https://github.com/philpaz/recusal/pull/297). The review continues: the findings
-of round five are closed in the source after 0.2.0 and are not in a release yet.
+of rounds five and six are closed in the source after 0.2.0 and are not in a release yet.
 [Package](../adapters/openai-agents/README.md).
 
 **The rounds.** `review-history/openai-agents` holds a first commit and the commits of
-rounds two to four. A fifth round found what the last entry below closes.
+rounds two to four. A fifth and a sixth round found what the last two entries below
+close.
 
 - **The first commit** (`bfc41e5`). For one kind of tool the gate named every argument
   one parameter off, so the policy saw the SQL under the wrong name and it ran. The gate
@@ -428,17 +429,48 @@ rounds two to four. A fifth round found what the last entry below closes.
     field, a list of nested models, a model with a validator. Two sentences of the
     README overstated what is found.
 
+- **Round six**, on the changes that close round five, found seven things. The same
+  changelog entry closes them, and they are pinned by `TestSixthReview` in the same
+  file.
+  - The most serious, and in 0.2.0 too. A `functools.partialmethod` hid the callable it
+    holds. Read from a class, or from an object when the held callable has no `__get__`,
+    it showed the gate the held callable's parameters, and nothing read what was under
+    that callable. A single-dispatch function or a wrapper with a parameter of its own
+    there ran with a value no policy judged. A callable that is or carries a
+    partialmethod is now refused, whatever it holds.
+  - A `weakref.proxy` of a single-dispatch function was accepted: the walk read
+    `__wrapped__` through the proxy and stepped past the dispatcher. A weak proxy is now
+    refused.
+  - An ordinary event bus, a function that closes over a `dispatch` function over a
+    `registry` dict, was refused as a single-dispatch function. The closure test now
+    also asks for the two other names `functools` uses.
+  - The README said a change to a tool's function is refused on every call. A change a
+    tool body makes is seen from the next model turn, not by the other calls of the
+    same turn. The README says so now.
+  - Two sentences were not true: that the gate's walk takes every step the kernel's
+    walk takes, and that no code of the object runs. Both now say exactly what is read
+    and how.
+  - The refusal's advice, "dispatch inside its body", could be read as "call the
+    dispatcher from a plain function", which is not read. It now says to branch on the
+    type.
+  - Five mutations of the gate passed the suite. Each is now killed by a test.
+
 **Open items.**
 
-- No review round has been run on the changes that close round five.
+- No review round has been run on the changes that close round six.
 - A single-dispatch function that a wrapper calls from a closure, a global or an
-  attribute, and not through `__wrapped__`, is not found. The README lists it under what
-  the gate does not see.
+  attribute, and not through `__wrapped__`, is not found, and neither is one a plain
+  function's body calls. The README lists it under what the gate does not see.
+- A change a tool body makes to another tool's function is not seen by the other calls
+  of the same model turn. The README lists it there too.
+- The reasons given for a later kernel's refusals (`DispatchedAtCallTime`,
+  `HiddenWrapper`, `PartialMethodSignature`) are tested with stand-in classes of those
+  names, not with that kernel, which is not merged.
 
 **Where you can help.**
 
-- Read `_reached_callables`, `_dispatch_function`, `_dispatch_method` and
-  `_agent_tool_parameters_reason` in
+- Read `_steps`, `_reached_callables`, `_held_partialmethod`, `_dispatch_function`,
+  `_dispatch_method` and `_agent_tool_parameters_reason` in
   [`_gate.py`](../adapters/openai-agents/src/recusal_openai_agents/_gate.py).
 - Run the adapter's tests against an `openai-agents` release newer than the one in
   [`adapters/openai-agents/tested-with.txt`](../adapters/openai-agents/tested-with.txt).

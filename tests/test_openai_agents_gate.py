@@ -2761,7 +2761,8 @@ class TestFifthReview:
             "implementation that runs is chosen at call time by the type of an argument, one "
             "can be registered at any moment, and each has its own parameters and defaults, "
             "so the gate cannot tie a call to the function that will run. Register one plain "
-            "function as the tool and dispatch inside its body."
+            "function as the tool and branch on the type inside its body; a single-dispatch "
+            "function called from it is not read."
         )
 
     def test_the_guardrail_asks_again_on_every_call(self, example):
@@ -2876,9 +2877,10 @@ class TestFifthReview:
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
         assert str(refusal.value) == (
-            "Recusal cannot gate 'run_sql': the gate could not tell whether a callable it "
-            "reaches is a `functools.singledispatch` function (RuntimeError), and one is "
-            "refused. Register one plain function as the tool."
+            "Recusal cannot gate 'run_sql': the gate could not read a callable the call "
+            "reaches (RuntimeError), so it cannot tell whether that is one it refuses (a "
+            "`functools.singledispatch` function, a `functools.partialmethod`, a weak proxy). "
+            "Register one plain function as the tool."
         )
 
     def test_a_kernel_that_refuses_a_dispatcher_itself_gets_the_same_reason(
@@ -3345,3 +3347,680 @@ class TestFifthReview:
         )
         nested = {"type": "default", "schema": {"type": "nullable", "schema": {"type": "set"}}}
         assert cause(nested) == "pydantic core type `set`"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestSixthReview:
+    """The sixth review of 2026-11-23. A ``functools.partialmethod`` hid what it calls: a
+    single-dispatch function or a wrapper with a parameter of its own under it ran with a
+    value no policy saw. A ``weakref.proxy`` of a dispatcher was gated. An ordinary event
+    bus was taken for a dispatcher. Two sentences said more than is true, the refusal's
+    advice could be read as "call the dispatcher from a plain function", and five
+    mutations of the gate passed the suite."""
+
+    example = TestJudgedIsWhatRuns.example
+    Recording = TestEffectiveArguments.Recording
+    DISPATCH = TestFifthReview.REFUSED
+    PARTIALMETHOD = "it runs a `functools.partialmethod`"
+    PROXY = "a callable the call reaches is a `weakref.proxy`"
+
+    # --- functools.partialmethod ------------------------------------------------------------------
+
+    @staticmethod
+    def database(events, functools_module=None):
+        """The reviewer's shapes and the ones found while closing them: a partialmethod
+        over a class-based decorator, over a ``functools.partial`` and over a plain
+        function, each over a single-dispatch function or a wrapper that adds
+        ``dry_run``."""
+        import functools
+
+        made_by = functools if functools_module is None else functools_module
+
+        class Logged:
+            """A class-based decorator: forwards everything, keeps the function's metadata."""
+
+            def __init__(self, inner):
+                functools.update_wrapper(self, inner)
+                self.inner = inner
+
+            def __call__(self, *args, **kwargs):
+                return self.inner(*args, **kwargs)
+
+        @functools.singledispatch
+        def export(conn, sql: str = "", force: bool = False) -> str:
+            """Record an export; contacts nothing."""
+            events.append(("base", sql, force))
+            return "base"
+
+        def run_on(conn, sql: str = "", force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            events.append(("ran", sql, force))
+            return "recorded"
+
+        def with_option(inner):
+            @functools.wraps(inner)
+            def wrapper(*args, dry_run="unjudged", **kwargs):
+                events.append(("wrapper", dry_run))
+                return inner(*args, **kwargs)
+
+            return wrapper
+
+        class Db:
+            object_over_dispatcher = made_by.partialmethod(Logged(export))
+            partial_over_dispatcher = made_by.partialmethod(functools.partial(export))
+            object_over_wrapper = made_by.partialmethod(Logged(with_option(run_on)))
+            object_over_wrapper_bound = made_by.partialmethod(
+                Logged(with_option(run_on)), force=True
+            )
+            partial_over_wrapper = made_by.partialmethod(functools.partial(with_option(run_on)))
+            object_over_function = made_by.partialmethod(Logged(run_on))
+            dispatcher = made_by.partialmethod(export)
+            wrapper = made_by.partialmethod(with_option(run_on))
+            function = made_by.partialmethod(run_on)
+            function_bound = made_by.partialmethod(run_on, force=True)
+
+        def registered(conn, sql="", force=False, dry_run="unjudged"):
+            events.append(("registered", sql, force, dry_run))
+            return "registered"
+
+        export.register(Db)(registered)
+        export.register(str)(registered)
+        return Db
+
+    #: name -> (where it is read from, the attribute, the reason it is refused with)
+    PARTIALMETHODS = {
+        "object-over-dispatcher": ("object", "object_over_dispatcher", "DISPATCH"),
+        "partial-over-dispatcher": ("object", "partial_over_dispatcher", "DISPATCH"),
+        "object-over-wrapper": ("object", "object_over_wrapper", "PARTIALMETHOD"),
+        "object-over-wrapper-bound": ("object", "object_over_wrapper_bound", "PARTIALMETHOD"),
+        "partial-over-wrapper": ("object", "partial_over_wrapper", "PARTIALMETHOD"),
+        "object-over-function": ("object", "object_over_function", "PARTIALMETHOD"),
+        "class-read-object-over-dispatcher": ("class", "object_over_dispatcher", "DISPATCH"),
+        "class-read-dispatcher": ("class", "dispatcher", "DISPATCH"),
+        "class-read-wrapper": ("class", "wrapper", "PARTIALMETHOD"),
+        "class-read-function": ("class", "function", "PARTIALMETHOD"),
+        "class-read-function-bound": ("class", "function_bound", "PARTIALMETHOD"),
+    }
+
+    def refused(self, example, func, reason):
+        """``func`` is refused when it is gated, with ``reason``. Where Python hands out a
+        ``functools.partial`` for the partialmethod (over a ``partial`` from 3.14), the
+        SDK refuses to build a tool from it, which is the same end."""
+        import functools
+
+        if isinstance(func, functools.partial):
+            with pytest.raises(Exception, match="functools.partial"):
+                example.function_tool(func, name_override="handle", strict_mode=False)
+            return
+        tool = example.function_tool(func, name_override="handle", strict_mode=False)
+        policy = self.Recording(lambda name, args: [])
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], policy)
+        assert str(refusal.value).startswith(f"Recusal cannot gate 'handle': {reason}")
+        with pytest.raises(TypeError) as refusal:
+            example.gated_agent(example.Agent(name="a", tools=[tool]), policy)
+        assert str(refusal.value).startswith(f"Recusal cannot gate 'handle': {reason}")
+        assert policy.seen == []
+
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["the-tool", "under-a-wrapper"])
+    @pytest.mark.parametrize("how", sorted(PARTIALMETHODS))
+    def test_a_partialmethod_is_refused_wherever_it_is_read_from(self, example, how, wrapped):
+        events: list = []
+        where, name, reason = self.PARTIALMETHODS[how]
+        db = self.database(events)
+        func = getattr(db() if where == "object" else db, name)
+        if wrapped:
+            func = TestFourthReview.forwarding(func)
+        self.refused(example, func, getattr(self, reason))
+        assert events == []
+
+    @pytest.mark.parametrize(
+        "how, arguments",
+        [
+            ("object-over-dispatcher", {"sql": "x"}),
+            ("class-read-dispatcher", {"conn": "c", "sql": "x"}),
+        ],
+    )
+    def test_negative_control_ungated_a_dispatcher_under_a_partialmethod_runs_its_own(
+        self, example, how, arguments
+    ):
+        """Why it is refused: the tool's schema is the base function's, and the registered
+        implementation runs with ``dry_run`` at its own default."""
+        events: list = []
+        where, name, _ = self.PARTIALMETHODS[how]
+        db = self.database(events)
+        func = getattr(db() if where == "object" else db, name)
+        tool = example.function_tool(func, name_override="handle", strict_mode=False)
+        assert "dry_run" not in tool.params_json_schema["properties"]
+        outputs, _ = example.run_calls([("handle", arguments, "c1")], gated=False, tools=[tool])
+        assert outputs == {"c1": "registered"}
+        assert events == [("registered", "x", False, "unjudged")]
+
+    def test_negative_control_ungated_a_wrapper_under_a_partialmethod_runs_its_own(self, example):
+        events: list = []
+        func = self.database(events)().object_over_wrapper
+        tool = example.function_tool(func, name_override="handle", strict_mode=False)
+        assert "dry_run" not in tool.params_json_schema["properties"]
+        example.run_calls([("handle", {"sql": "x"}, "c1")], gated=False, tools=[tool])
+        assert events == [("wrapper", "unjudged"), ("ran", "x", False)]
+
+    def test_a_partialmethod_over_a_plain_method_read_from_an_object_is_the_sdks_to_refuse(
+        self, example
+    ):
+        """Read from an object, a partialmethod over a plain function is a
+        ``functools.partial``, and the SDK builds no tool from one. The README says so."""
+        import functools
+
+        func = self.database([])().function_bound
+        assert isinstance(func, functools.partial)
+        with pytest.raises(Exception, match="functools.partial"):
+            example.function_tool(func, name_override="handle", strict_mode=False)
+
+    def test_the_partialmethod_refusal_says_the_cause_and_what_to_do(self, example):
+        tool = example.function_tool(
+            self.database([])().object_over_wrapper, name_override="handle", strict_mode=False
+        )
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value) == (
+            "Recusal cannot gate 'handle': it runs a `functools.partialmethod`: the call "
+            "goes to the callable the partialmethod holds, and the tool's parameters are "
+            "read from that callable without the gate reading what is under it, so a "
+            "wrapper or a single-dispatch function there could run with a value no policy "
+            "judged. Register a plain function that calls it; the gate judges that "
+            "function's parameters, and what its body calls is not read."
+        )
+
+    def test_how_a_partialmethod_is_known(self, example, monkeypatch):
+        """By its class (a subclass too) as it was at import and as ``functools`` has it
+        now, or by the class's name; on the function ``functools`` hands out, under the
+        name each Python gives it. The walk steps to the callable it holds."""
+        import functools
+
+        adapter = _adapter()
+        events: list = []
+        db = self.database(events)
+        held = db.__dict__["object_over_wrapper"]
+        assert adapter._is_partialmethod(held) is True
+        assert adapter._held_partialmethod(held) is held
+        bound = db().object_over_wrapper
+        assert adapter._held_partialmethod(bound) is None  # the method object carries none
+        assert adapter._held_partialmethod(bound.__func__) is held
+        assert adapter._held_partialmethod(db.function) is db.__dict__["function"]
+        carried = [name for name in adapter._PARTIALMETHOD_NAMES if name in vars(bound.__func__)]
+        assert carried == ["_partialmethod" if sys.version_info < (3, 13) else "__partialmethod__"]
+        reached, complete = adapter._reached_callables(bound)
+        assert complete and any(link is held.func for link in reached)
+        assert adapter._steps(held) == [held.func]
+
+        class Renamed(functools.partialmethod):
+            pass
+
+        class partialmethod:  # noqa: N801, the name is the point
+            func = None
+
+        def plain():
+            return None
+
+        for name in ("_partialmethod", "__partialmethod__", "partialmethod"):
+            carrier = TestFifthReview.plain_function()
+            setattr(carrier, name, Renamed(plain))
+            assert adapter._held_partialmethod(carrier) is getattr(carrier, name)
+            setattr(carrier, name, plain)  # under the name, something that is not one
+            assert adapter._held_partialmethod(carrier) is None
+        for not_one in (plain, None, "text", functools.partial(plain), db, db()):
+            assert adapter._is_partialmethod(not_one) is False
+            assert adapter._held_partialmethod(not_one) is None
+
+        renamed = Renamed(plain)
+        assert adapter._is_partialmethod(renamed) is True
+        assert adapter._is_partialmethod(partialmethod()) is True  # by the name alone
+        with monkeypatch.context() as patch:  # the class as it was at import, alone
+            patch.setattr(functools, "partialmethod", None)
+            assert adapter._is_partialmethod(renamed) is True
+        with monkeypatch.context() as patch:  # the class as functools has it now, alone
+            patch.setattr(adapter, "_PARTIALMETHOD", None)
+            assert adapter._is_partialmethod(renamed) is True
+            patch.setattr(functools, "partialmethod", None)
+            assert adapter._is_partialmethod(renamed) is False
+        assert events == []
+
+    def test_a_partialmethod_built_by_another_copy_of_functools_is_refused(self, example):
+        """What ``importlib.reload(functools)`` leaves behind: a partialmethod of another
+        class. ``inspect`` does not read through that one, so the SDK shows the tool the
+        ``*args`` of the function ``functools`` hands out and the gate refuses it as
+        variadic; asked on its own, the walk's check knows it by the class's name."""
+        import functools
+        import importlib.util
+
+        adapter = _adapter()
+        spec = importlib.util.find_spec("functools")
+        assert spec is not None and spec.loader is not None
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+        assert other.partialmethod is not functools.partialmethod
+        db = self.database([], functools_module=other)
+        assert not isinstance(db.__dict__["object_over_wrapper"], functools.partialmethod)
+        for func, reason in (
+            (db().object_over_wrapper, self.PARTIALMETHOD),
+            (db.function, self.PARTIALMETHOD),
+            (db().object_over_dispatcher, self.DISPATCH),
+        ):
+            tool = example.function_tool(func, name_override="handle", strict_mode=False)
+            with pytest.raises(
+                TypeError, match="cannot gate 'handle': its parameter .* is variadic"
+            ):
+                example.gate_tools([tool], example.sql_scope_policy)
+            assert adapter._wrapper_refusal(tool, adapter._sdk_schema(tool)).startswith(reason)
+
+    def test_asking_for_a_partialmethod_runs_no_code_of_the_object(self, example):
+        touched: list = []
+
+        class Lazy:
+            def __getattr__(self, name):
+                touched.append(name)
+                raise AttributeError(name)
+
+            @property
+            def _partialmethod(self):
+                touched.append("_partialmethod")
+                return None
+
+            @property
+            def __partialmethod__(self):
+                touched.append("__partialmethod__")
+                return None
+
+            @property
+            def partialmethod(self):
+                touched.append("partialmethod")
+                return None
+
+            @property
+            def func(self):
+                touched.append("func")
+                return None
+
+        assert _adapter()._held_partialmethod(Lazy()) is None
+        assert _adapter()._is_partialmethod(Lazy()) is False
+        assert touched == []
+
+        class Claims:
+            """Says it is a partialmethod through ``__class__``; its type is asked."""
+
+            @property
+            def __class__(self):
+                import functools
+
+                touched.append("__class__")
+                return functools.partialmethod
+
+        assert _adapter()._is_partialmethod(Claims()) is False
+        assert touched == []
+
+    def test_a_kernel_that_refuses_a_partialmethod_itself_gets_the_same_reason(
+        self, example, monkeypatch
+    ):
+        """A later kernel's walk raises ``PartialMethodSignature`` (a ``TypeError``) for a
+        callable read through a partialmethod. The released kernel has no such class, so
+        it is known by its name, and the refusal gives the remedy that holds here."""
+        adapter = _adapter()
+        tool = example.function_tool(TestFifthReview.plain_function())
+
+        class PartialMethodSignature(TypeError):
+            pass
+
+        def walk(func):
+            raise PartialMethodSignature("read through a functools.partialmethod")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", walk)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        reason = str(refusal.value)
+        assert reason.startswith(f"Recusal cannot gate 'run_sql': {self.PARTIALMETHOD}")
+        assert reason.endswith(
+            "Register a plain function that calls it; the gate judges that function's "
+            "parameters, and what its body calls is not read."
+        )
+        assert "cannot be inspected" not in reason
+
+        def other(func):
+            raise TypeError("something else")
+
+        monkeypatch.setattr(adapter, "_reached_parameters", other)
+        with pytest.raises(TypeError, match=r"cannot be inspected \(TypeError\)"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    # --- weakref.proxy ----------------------------------------------------------------------------
+
+    @staticmethod
+    def proxied(events):
+        import functools
+        import weakref
+
+        @functools.singledispatch
+        def export(sql: str = "", force: bool = False) -> str:
+            """Record an export; contacts nothing."""
+            events.append(("base", sql, force))
+            return "base"
+
+        @export.register(str)
+        def _(sql="", force=False, dry_run="unjudged"):
+            events.append(("registered", sql, force, dry_run))
+            return "registered"
+
+        def plain(sql: str = "", force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            events.append(("ran", sql, force))
+            return "recorded"
+
+        class Service:
+            def handle(self, sql: str = "", force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                return "recorded"
+
+        service = Service()
+        keep = [export, plain, service]  # a weak proxy keeps nothing alive
+        return keep, {
+            "a-dispatcher": weakref.proxy(export),
+            "a-plain-function": weakref.proxy(plain),
+            "under-a-wrapper": TestFourthReview.forwarding(weakref.proxy(plain)),
+            "as-a-methods-function": types_method(weakref.proxy(plain), service),
+        }
+
+    @pytest.mark.parametrize(
+        "how", ["a-dispatcher", "a-plain-function", "under-a-wrapper", "as-a-methods-function"]
+    )
+    def test_a_weak_proxy_is_refused_wherever_it_stands(self, example, how):
+        import weakref
+
+        events: list = []
+        keep, shapes = self.proxied(events)
+        func = shapes[how]
+        reached, _ = _adapter()._reached_callables(func)
+        assert any(type(link) in weakref.ProxyTypes for link in reached)
+        assert not any(_adapter()._is_dispatcher(link) for link in reached)
+        tool = example.function_tool(func, name_override="handle", strict_mode=False)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], example.sql_scope_policy)
+        assert str(refusal.value) == (
+            "Recusal cannot gate 'handle': a callable the call reaches is a `weakref.proxy`: "
+            "it shows the attributes of the object it stands for and is not that object, so "
+            "the gate cannot tell which callables a call to it runs. Register the function "
+            "itself, or a plain function that calls it."
+        )
+        with pytest.raises(TypeError, match=f"cannot gate 'handle': {self.PROXY}"):
+            example.gated_agent(example.Agent(name="a", tools=[tool]), example.sql_scope_policy)
+        assert events == [] and keep
+
+    def test_a_weak_proxy_that_is_not_callable_is_refused_too(self, example):
+        """Both proxy types are refused: a function whose ``__wrapped__`` is changed, after
+        the tool was gated, to a proxy of an object that is not callable."""
+        import weakref
+
+        class Holder:
+            pass
+
+        holder = Holder()
+        run_sql = TestFifthReview.plain_function()
+        tool = example.function_tool(run_sql)
+        assert example.gate_tools([tool], example.sql_scope_policy)
+        run_sql.__wrapped__ = weakref.proxy(holder)  # type: ignore[attr-defined]
+        assert type(run_sql.__wrapped__) is weakref.ProxyType  # type: ignore[attr-defined]
+        with pytest.raises(TypeError, match=f"cannot gate 'run_sql': {self.PROXY}"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    def test_negative_control_ungated_a_proxied_dispatcher_runs_its_own(self, example):
+        events: list = []
+        keep, shapes = self.proxied(events)
+        tool = example.function_tool(
+            shapes["a-dispatcher"], name_override="handle", strict_mode=False
+        )
+        assert "dry_run" not in tool.params_json_schema["properties"]
+        example.run_calls([("handle", {"sql": "x"}, "c1")], gated=False, tools=[tool])
+        assert events == [("registered", "x", False, "unjudged")] and keep
+
+    # --- the closure test: functools' own free variables -----------------------------------------
+
+    @staticmethod
+    def event_bus(ran):
+        """An ordinary event bus: a closure named ``dispatch`` over a dict named
+        ``registry``, and nothing of ``functools``."""
+        registry: dict = {}
+
+        def dispatch(event):
+            return registry.get(event)
+
+        def publish(event: str, payload: str = "") -> str:
+            """Record an event; contacts nothing."""
+            ran.append((event, payload))
+            handler = dispatch(event)
+            return "no handler" if handler is None else handler(payload)
+
+        return publish
+
+    def test_an_ordinary_event_bus_is_not_taken_for_a_dispatcher(self, example):
+        adapter = _adapter()
+        ran: list = []
+        publish = self.event_bus(ran)
+        dispatch = adapter._closure_value(publish, "dispatch")
+        assert type(adapter._closure_value(dispatch, "registry")) is dict
+        assert adapter._dispatch_function(publish) is False
+        policy = self.Recording(lambda name, args: [])
+        (gated,) = example.gate_tools([example.function_tool(publish)], policy)
+        outputs, _ = example.run_calls(
+            [("publish", {"event": "e"}, "c1")], gated=False, tools=[gated]
+        )
+        assert outputs == {"c1": "no handler"} and ran == [("e", "")]
+        assert policy.seen == [("publish", {"event": "e", "payload": ""})]
+
+    @pytest.mark.parametrize(
+        "case, expected",
+        [
+            ("as-functools-builds-it", True),
+            ("no-dispatch-cache", False),
+            ("no-cache-token", False),
+            ("a-registry-that-is-no-dict", False),
+        ],
+    )
+    def test_the_closure_test_asks_for_a_registry_dict_and_both_of_functools_names(
+        self, example, monkeypatch, case, expected
+    ):
+        """Asked with the code test and the attribute test out of the way: a function is a
+        dispatcher by its closure only when ``dispatch`` closes over a ``registry`` that
+        is a dict, a ``dispatch_cache`` and a ``cache_token``."""
+        import types
+
+        adapter = _adapter()
+        dispatch_cache: dict = {}
+        cache_token = None
+        registry: typing.Any = {}
+        if case == "a-registry-that-is-no-dict":
+            registry = types.MappingProxyType({})
+
+        if case == "no-dispatch-cache":
+
+            def dispatch(cls):
+                return registry, cache_token
+
+        elif case == "no-cache-token":
+
+            def dispatch(cls):
+                return registry, dispatch_cache
+
+        else:
+
+            def dispatch(cls):
+                return registry, dispatch_cache, cache_token
+
+        def wrapper(*args, **kwargs):
+            return dispatch(args[0].__class__)
+
+        monkeypatch.setattr(adapter, "_SINGLEDISPATCH_WRAPPER", None)
+        monkeypatch.setattr(adapter, "_singledispatch_wrapper_code", lambda: None)
+        assert adapter._dispatch_function(wrapper) is expected
+        # every dispatcher functools builds has the three, on the Python this runs on
+        real = adapter._closure_value(TestFifthReview.dispatcher(), "dispatch")
+        assert {"registry", "dispatch_cache", "cache_token"} <= set(real.__code__.co_freevars)
+        bare = TestFifthReview.dispatcher()
+        for name in ("registry", "dispatch", "register"):
+            delattr(bare, name)
+        assert adapter._dispatch_function(bare) is True
+
+    # --- checks the suite did not pin -------------------------------------------------------------
+
+    def test_call_is_read_from_the_type_as_python_reads_it(self, example):
+        """Python calls the ``__call__`` of an object's type and never one set on the
+        object, so the walk reads the type's: a dispatcher there is found whatever the
+        object's own ``__dict__`` holds under that name."""
+        import functools
+
+        adapter = _adapter()
+        ran: list = []
+
+        class Runner:
+            __call__ = functools.singledispatch(
+                lambda self, sql="", force=False: ran.append(("base", sql, force)) or "recorded"
+            )
+
+        def decoy(sql: str = "", force: bool = False) -> str:
+            return "decoy"
+
+        runner = Runner()
+        runner.__dict__["__call__"] = decoy
+        assert runner() == "recorded" and ran == [("base", "", False)]
+        steps = adapter._steps(runner)
+        assert any(link is Runner.__dict__["__call__"] for link in steps)
+        assert not any(link is decoy for link in steps)
+        tool = example.function_tool(
+            TestFourthReview.forwarding(runner), name_override="handle", strict_mode=False
+        )
+        with pytest.raises(TypeError, match=f"cannot gate 'handle': {self.DISPATCH}"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    def test_a_singledispatchmethod_is_known_by_either_class_alone(self, example, monkeypatch):
+        """The class as it was at import and the class as ``functools`` has it now are two
+        tests, and each is enough: an object of a subclass under another name, which the
+        name test does not know, is known by the one and by the other."""
+        import functools
+        import importlib.util
+
+        adapter = _adapter()
+        spec = importlib.util.find_spec("functools")
+        assert spec is not None and spec.loader is not None
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+        pristine = functools.singledispatchmethod
+        assert adapter._SINGLEDISPATCHMETHOD is pristine
+        assert other.singledispatchmethod is not pristine
+
+        class Early(pristine):  # of the class this package saw when it was imported
+            pass
+
+        class Late(other.singledispatchmethod):  # of the class functools has afterwards
+            pass
+
+        def lookup(self, key: str = "") -> str:
+            return key
+
+        early, late = Early(lookup), Late(lookup)
+        assert adapter._dispatch_method_descriptor(early) is True
+        assert adapter._dispatch_method_descriptor(late) is False
+        monkeypatch.setattr(functools, "singledispatchmethod", other.singledispatchmethod)
+        assert adapter._dispatch_method_descriptor(early) is True  # as it was at import
+        assert adapter._dispatch_method_descriptor(late) is True  # as functools has it now
+        assert adapter._is_dispatcher(early) and adapter._is_dispatcher(late)
+
+    def test_the_singledispatchmethod_object_itself_is_a_dispatcher(self, example):
+        """The walk reaches the descriptor itself when it is a callable object's
+        ``__call__`` as the class holds it."""
+        import functools
+
+        adapter = _adapter()
+
+        class Renamed(functools.singledispatchmethod):
+            pass
+
+        class Runner:
+            @Renamed
+            def __call__(self, sql: str = "", force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                return "recorded"
+
+        descriptor = Runner.__dict__["__call__"]
+        assert adapter._dispatch_method(descriptor) is True
+        assert adapter._is_dispatcher(descriptor) is True
+        reached, complete = adapter._reached_callables(Runner())
+        assert complete and any(link is descriptor for link in reached)
+        tool = example.function_tool(
+            TestFourthReview.forwarding(Runner()), name_override="handle", strict_mode=False
+        )
+        with pytest.raises(TypeError, match=f"cannot gate 'handle': {self.DISPATCH}"):
+            example.gate_tools([tool], example.sql_scope_policy)
+
+    # --- what the README says about a change made during a run -----------------------------------
+
+    def test_a_change_a_tool_body_makes_is_seen_from_the_next_model_turn(self, example):
+        """The guardrail asks its questions again on every call, and the SDK runs every
+        guardrail of a model turn before any tool body of that turn. So a tool body that
+        re-wraps another tool's function is not seen by a call of the same turn, which
+        runs the new wrapper unjudged, and is seen by the call of the next turn, which is
+        refused. The README states both halves."""
+        import functools
+
+        events: list = []
+
+        def base(sql: str, force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            events.append(("base", sql, force))
+            return "recorded"
+
+        @functools.wraps(base)
+        def run_sql(*args, **kwargs):
+            return run_sql.__wrapped__(*args, **kwargs)  # type: ignore[attr-defined]
+
+        def enable_tracing(level: str) -> str:
+            """Record a tracing level; contacts nothing."""
+            inner = run_sql.__wrapped__  # type: ignore[attr-defined]
+
+            @functools.wraps(inner)
+            def traced(*args, dry_run="unjudged", **kwargs):
+                events.append(("traced", dry_run))
+                return inner(*args, **kwargs)
+
+            run_sql.__wrapped__ = traced  # type: ignore[attr-defined]
+            return "tracing on"
+
+        model = example.ScriptedModel(
+            [
+                [
+                    example.function_call("enable_tracing", {"level": "x"}, call_id="c1"),
+                    example.function_call("run_sql", {"sql": "same turn"}, call_id="c2"),
+                ],
+                [example.function_call("run_sql", {"sql": "next turn"}, call_id="c3")],
+                [example.assistant_message("done")],
+            ]
+        )
+        policy = self.Recording(lambda name, args: [])
+        tools = [
+            example.function_tool(run_sql, name_override="run_sql"),
+            example.function_tool(enable_tracing),
+        ]
+        agent = example.gated_agent(example.Agent(name="a", model=model, tools=tools), policy)
+        asyncio.run(example.run_agent(agent))
+        outputs = example.tool_outputs(model)
+        assert outputs["c1"] == "tracing on" and outputs["c2"] == "recorded"
+        assert events == [("traced", "unjudged"), ("base", "same turn", False)]
+        assert outputs["c3"].startswith(
+            "Recusal refused `run_sql`: a function the call reaches takes `dry_run`"
+        )
+        assert [name for name, _ in policy.seen] == ["enable_tracing", "run_sql"]
+
+
+def types_method(func, obj):
+    """A bound method of ``func`` on ``obj``, built by hand."""
+    import types
+
+    return types.MethodType(func, obj)

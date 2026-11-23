@@ -152,7 +152,8 @@ takes other parameters than the function (one of its own, some of the function's
 function's in another order), which would run with a value no
 policy judged, a `functools.singledispatch` function or a `singledispatchmethod`, with
 or without an implementation registered (as the tool itself, as a method, as a callable
-object's `__call__`, or under a forwarding wrapper),
+object's `__call__`, or under a forwarding wrapper), a `functools.partialmethod` (read
+from its class, or over a callable without `__get__`) and a `weakref.proxy`,
 a decorator whose signature cannot be read (a class-based decorator that is also a
 descriptor, such as `cachetools.cached`), a function under more wrappers than the walk
 reads (more than 31), and an agent tool whose `parameters` type is not a data-only

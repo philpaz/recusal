@@ -57,8 +57,9 @@ All notable changes to this project are documented here. The format follows
 ### Security
 
 - **`recusal-openai-agents` 0.2.1: every `functools.singledispatch` function is refused
-  as a tool, registered or not.** Found by review round five and stated as open on the
-  0.2.0 package page; reproduced on `openai-agents` 0.24.0.
+  as a tool, registered or not, and so are a `functools.partialmethod` and a
+  `weakref.proxy`.** Found by review rounds five and six; round five's items were stated
+  as open on the 0.2.0 package page. Reproduced on `openai-agents` 0.24.0.
   - A single-dispatch tool with nothing registered was accepted, and the guardrail
     looked at its registry again on every call. The SDK checks every call of a model
     turn before any tool body runs, so an implementation registered during a turn, by
@@ -67,33 +68,71 @@ All notable changes to this project are documented here. The format follows
     `recursive=True`). A `functools.singledispatch` function and a
     `singledispatchmethod` are now refused when the agent is built, whether or not
     anything is registered, with a `TypeError` that names the cause and what to do:
-    register one plain function as the tool and dispatch inside its body. **This
-    refuses tools 0.2.0 accepted**: a single-dispatch function with nothing registered.
+    register one plain function as the tool and branch on the type inside its body (a
+    single-dispatch function called from that body is not read). **This refuses tools
+    0.2.0 accepted**: a single-dispatch function with nothing registered.
   - A dispatcher that is a callable object's `__call__` was not found under a
     `functools.wraps` wrapper, and its registered implementation ran with its own
     default. The question is now asked of every callable the gate's walk reaches (the
     function, a `functools.partial`'s function, a bound method's function, the function
-    under a `staticmethod` or a `classmethod`, what `__wrapped__` names and a callable
-    object's `__call__`), which takes every step the kernel's `reached_parameters` walk
-    takes. A walk that does not finish, and a callable the question cannot be asked of,
-    are refused.
+    under a `staticmethod` or a `classmethod`, what `__wrapped__` names, a callable
+    object's `__call__` and the callable a `functools.partialmethod` holds). Those are
+    the four steps the 0.15.0 kernel's walk takes from one callable to the next
+    (`recusal.invocation._next_callables`, which a test compares the gate's walk with)
+    and one that walk does not take, into a partialmethod. A walk that does not finish,
+    and a callable the question cannot be asked of, are refused.
+  - A `functools.partialmethod` hid the callable it holds (round six, and in 0.2.0).
+    Read from a class, or from an object when the callable it holds has no `__get__` (a
+    class-based decorator's instance; a `functools.partial` up to Python 3.13), a
+    partialmethod is a function of `functools`' own, and `inspect` reads the held
+    callable's parameters as that function's. Neither the gate nor the kernel's walk
+    read what is under the held callable: a single-dispatch function there ran its
+    registered implementation, and a wrapper there ran its own parameter, with a value
+    no policy saw (judged `{sql, force}`, ran with `dry_run` at its default). A callable
+    the call reaches that is or carries a partialmethod is now refused when the agent
+    is built, whatever the partialmethod holds, and a single-dispatch function under it
+    is named as that. **This refuses tools 0.2.0 accepted**: a partialmethod over a
+    plain function read from its class, and one over a class-based decorator. A
+    partialmethod over a plain method read from an object is a `functools.partial`,
+    which the SDK refuses itself. Register a plain function that calls it.
+  - A `weakref.proxy` of a single-dispatch function was accepted (round six): the walk
+    read `__wrapped__` through the proxy and stepped past the dispatcher. A weak proxy
+    anywhere among the callables the call reaches is now refused. **This refuses tools
+    0.2.0 accepted**: a weak proxy of a plain function.
   - A dispatcher was recognised by one code object read when the package was imported.
     After `importlib.reload(functools)` a new dispatcher was not recognised; with
     `functools.singledispatch` replaced before the import, an earlier dispatcher could
     pass, and a replacement with no `__code__` made the import raise. A dispatcher is
     now recognised in three ways, any one of which is enough: by that code object, as
     read at import and as `functools` stands at the check; by how `functools` builds
-    the function (its closure holds a `dispatch` function whose closure holds the
-    registry dict); and by a `registry` that is exactly a `types.MappingProxyType`
-    beside a callable `dispatch` and a callable `register`. All are read from closure
-    cells and with `inspect.getattr_static`, so no code of the object runs. The import
+    the function (its closure holds a `dispatch` function whose closure holds a
+    `registry` dict beside a `dispatch_cache` and a `cache_token`, which every
+    dispatcher has on Python 3.10 to 3.15); and by a `registry` that is exactly a
+    `types.MappingProxyType` beside a callable `dispatch` and a callable `register`.
+    These tests read the object's type, its closure cells and, with
+    `inspect.getattr_static`, its attributes, so they run no property and no
+    `__getattr__` of the object (an `isinstance` test among them reads `__class__`). The
+    walk that finds the callables is another matter: it reads `__wrapped__` the ordinary
+    way, as the kernel's walk and `inspect.signature` do, so a `__wrapped__` property or
+    a `__getattr__` of a callable object does run when a tool is checked. The import
     reads the code object without raising, whatever stands at
     `functools.singledispatch`. A `functools.wraps` wrapper over a dispatcher carries a
     copy of its attributes and is refused with it; a service object with a `dispatch`
-    method and a `registry` that is not a mapping proxy is still gated.
+    method and a `registry` that is not a mapping proxy is still gated, and so is an
+    event bus whose function closes over a `dispatch` function and a `registry` dict
+    (round six: the closure test without the two other names refused it as a
+    single-dispatch function).
   - Should the kernel's walk itself refuse a dispatcher (`DispatchedAtCallTime`, in a
     kernel later than 0.15.0), the tool is refused with the same reason, not as
-    "cannot be inspected".
+    "cannot be inspected". The same holds for a wrapper that holds a second wrapper
+    (`HiddenWrapper`) and for a callable read through a partialmethod
+    (`PartialMethodSignature`): each is known by its name and gets a reason that says
+    the cause and what to do.
+  - The README said a change to a tool's function after it was gated is refused on
+    every call. The guardrail does ask again on every call, but the SDK runs every
+    guardrail of a model turn before any tool body of that turn, so a change a tool
+    body makes is seen from the next model turn. The README now says so, and lists the
+    same-turn case under what the gate does not see.
   - The refusal of an agent tool's `parameters` type named a type the data-only set
     admits: a field with a pattern was reported as "pydantic core type `str`" and a
     list of nested models as "`list`", and a model with a `model_validator` as a type
