@@ -1062,6 +1062,424 @@ def test_a_held_wrapper_of_a_method_receives_the_receiver_the_method_does():
         reached_parameters(_holding(types.MethodType(cached(_keeping_method(fetch)), 0), fetch))
 
 
+def test_what_only_passes_for_a_partial_is_not_counted(monkeypatch):
+    """The walk takes for a ``functools.partial`` whatever ``isinstance`` says is one, as it
+    always did. The arguments bound are counted only for an instance of the standard
+    library's type, found at the first walk. Where another class was put in ``functools``
+    afterwards, an instance of it is walked as before and its bound arguments are not
+    known: what is held behind it is not judged, through a method too. A stated limit."""
+    import functools
+    import types
+
+    assert invocation._prepare()
+    real = functools.partial
+
+    class Lookalike:
+        def __init__(self, func, *args, **keywords):
+            self.func, self.args, self.keywords = func, args, keywords
+
+        def __call__(self, *args, **keywords):
+            return self.func(*self.args, *args, **dict(self.keywords, **keywords))
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def method(self, query: str, limit: int = 5) -> str:
+        return query
+
+    hidden = _calling(_with_timeout)(search)
+    kept = _calling_held(method, _wrapper_taking(method, "me, force=True, *args, **kwargs"))
+    for tool in (real(hidden), real(kept, object()), real(types.MethodType(kept, object()))):
+        with pytest.raises(HiddenWrapper):
+            reached_parameters(tool)
+    monkeypatch.setattr(functools, "partial", Lookalike)
+    reached_parameters(Lookalike(hidden))
+    reached_parameters(Lookalike(kept, object()))
+    reached_parameters(Lookalike(types.MethodType(kept, object())))
+
+
+def _wrapper_taking(function, text):
+    """A ``functools.wraps`` wrapper of ``function`` whose parameters are ``text``."""
+    import functools
+
+    scope: Dict[str, Any] = {}
+    exec("def inner(" + text + "):\n    return None\n", scope)
+    return functools.wraps(function)(scope["inner"])
+
+
+def _calling_held(function, held):
+    """A wrapper of ``function`` that passes everything on to ``held``, kept in its closure."""
+    import functools
+
+    @functools.wraps(function)
+    def outer(*args, **kwargs):
+        return held(*args, **kwargs)
+
+    return outer
+
+
+def _receiver_forms():
+    """Every way a held wrapper comes to receive two leading arguments bound, or one, as
+    (name, the number bound, a builder taking the held wrapper's parameters)."""
+    import functools
+    import types
+
+    def two(self, other, query: str, limit: int = 5) -> str:
+        return query
+
+    def one(self, query: str, limit: int = 5) -> str:
+        return query
+
+    def plain(query: str, limit: int = 5) -> str:
+        return query
+
+    def held_by(function, text):
+        return _calling_held(function, _wrapper_taking(function, text))
+
+    first, second = object(), object()
+    return [
+        (
+            "a method of a method",
+            2,
+            lambda text: types.MethodType(types.MethodType(held_by(two, text), first), second),
+        ),
+        (
+            "a partial of a bound method",
+            2,
+            lambda text: functools.partial(types.MethodType(held_by(two, text), first), 1),
+        ),
+        (
+            "a bound method of a partial",
+            2,
+            lambda text: types.MethodType(functools.partial(held_by(two, text), 1), first),
+        ),
+        (
+            "a partial with two arguments",
+            2,
+            lambda text: functools.partial(held_by(two, text), first, 1),
+        ),
+        (
+            "a held partial with two arguments",
+            2,
+            lambda text: _calling_held(
+                plain, functools.partial(_wrapper_taking(plain, text), 1, 2)
+            ),
+        ),
+        (
+            "a held partial of a held partial",
+            2,
+            lambda text: _calling_held(
+                plain,
+                functools.partial(functools.partial(_wrapper_taking(plain, text), 1), 2),
+            ),
+        ),
+        (
+            "a held bound method",
+            1,
+            lambda text: _calling_held(
+                plain, types.MethodType(_wrapper_taking(plain, text), first)
+            ),
+        ),
+        (
+            "a held bound method under a bound method",
+            2,
+            lambda text: types.MethodType(
+                _calling_held(one, types.MethodType(_wrapper_taking(one, text), first)), second
+            ),
+        ),
+        ("a bound method", 1, lambda text: types.MethodType(held_by(one, text), first)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "name, bound, build", _receiver_forms(), ids=lambda v: v if type(v) is str else ""
+)
+def test_a_held_wrapper_is_passed_every_argument_bound_on_the_way(name, bound, build):
+    """A held wrapper receives every leading argument bound before it: one for each method
+    the walk went through and each bound method that holds it, and each positional argument
+    of each ``functools.partial``, on the walk and held. Exactly that many of its leading
+    parameters are not its own, whatever they are called: one fewer and its next parameter
+    would be taken for a receiver and a wrapper with a default of its own accepted, one
+    more and a wrapper that only names its receivers refused."""
+    receivers = ", ".join(["me", "them"][:bound])
+    reached_parameters(build(receivers + ", *args, **kwargs"))
+    # the parameter right after the receivers is the wrapper's own
+    with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
+        reached_parameters(build(receivers + ", force=True, *args, **kwargs"))
+    with pytest.raises(HiddenWrapper, match="`query` is taken by a wrapper"):
+        reached_parameters(build(receivers + ", query, *args, **kwargs"))
+    # and so is a keyword-only one, wherever the receivers went
+    with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
+        reached_parameters(build("*args, force=True, **kwargs"))
+    # one receiver fewer named: what follows is still not the wrapper's own
+    if bound == 2:
+        reached_parameters(build("me, *args, **kwargs"))
+
+
+def _receiver_witnesses():
+    """Hand-written cases from an independent review, each with what really runs: (name,
+    whether it is accepted, a builder of the tool)."""
+    import functools
+    import types
+
+    def method(self, query: str, limit: int = 5) -> str:
+        return query
+
+    def two(self, other, query: str, limit: int = 5) -> str:
+        return query
+
+    def plain(query: str, limit: int = 5) -> str:
+        return query
+
+    def held_by(function, text):
+        return _calling_held(function, _wrapper_taking(function, text))
+
+    bind, part, this = types.MethodType, functools.partial, object()
+    return [
+        (
+            "a bound method; held (me, force=True, *a, **k): force is its own",
+            False,
+            lambda: bind(held_by(method, "me, force=True, *a, **k"), this),
+        ),
+        (
+            "partial(g, a, b); held (x, y, *a, **k): both are bound",
+            True,
+            lambda: part(held_by(two, "x, y, *a, **k"), this, 1),
+        ),
+        (
+            "partial(g) with no arguments; held (force=True, *a, **k)",
+            False,
+            lambda: part(held_by(plain, "force=True, *a, **k")),
+        ),
+        (
+            "partial(g, limit=3); held (force=True, *a, **k): a keyword binds no position",
+            False,
+            lambda: part(held_by(plain, "force=True, *a, **k"), limit=3),
+        ),
+        (
+            "a method of a method; held (x, y, *a, **k): two receivers",
+            True,
+            lambda: bind(bind(held_by(two, "x, y, *a, **k"), this), this),
+        ),
+        (
+            "a plain tool; held bound method of (me, force=True, *a, **k)",
+            False,
+            lambda: _calling_held(
+                plain, bind(_wrapper_taking(plain, "me, force=True, *a, **k"), this)
+            ),
+        ),
+        (
+            "partial(bound method, 1); held (x, y, *a, **k)",
+            True,
+            lambda: part(bind(held_by(two, "x, y, *a, **k"), this), 1),
+        ),
+        (
+            "a bound method of partial(g, 1); held (x, y, *a, **k)",
+            True,
+            lambda: bind(part(held_by(two, "x, y, *a, **k"), 1), this),
+        ),
+        (
+            "a plain tool; held partial((x, y, *a, **k), 1, 2)",
+            True,
+            lambda: _calling_held(plain, part(_wrapper_taking(plain, "x, y, *a, **k"), 1, 2)),
+        ),
+        (
+            "a plain tool; held partial((x, y, force=True, *a, **k), 1, 2)",
+            False,
+            lambda: _calling_held(
+                plain, part(_wrapper_taking(plain, "x, y, force=True, *a, **k"), 1, 2)
+            ),
+        ),
+        (
+            "a bound method; held partial((me, *a, **k)) with no arguments",
+            True,
+            lambda: bind(_calling_held(method, part(_wrapper_taking(method, "me, *a, **k"))), this),
+        ),
+        (
+            "a bound method; held (*a, force=True, **k): keyword-only is its own",
+            False,
+            lambda: bind(held_by(method, "*a, force=True, **k"), this),
+        ),
+        (
+            "a bound method; held (self, *a, **k)",
+            True,
+            lambda: bind(held_by(method, "self, *a, **k"), this),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "name, accepted, build", _receiver_witnesses(), ids=lambda v: v if type(v) is str else ""
+)
+def test_the_receivers_of_a_held_wrapper_are_counted_exactly(name, accepted, build):
+    """The bound arguments are counted exactly at every step: one for a method, the number
+    of positional arguments for a partial (none for its keywords), added to what was bound
+    before, on the walk and along what is held."""
+    if accepted:
+        reached_parameters(build())
+    else:
+        with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
+            reached_parameters(build())
+
+
+def test_the_arguments_of_a_partial_subclass_are_read_as_before():
+    """The arguments a ``functools.partial`` binds are counted through the C-level accessor
+    of the standard library's type, for a subclass too: that is what the partial really
+    passes, and no attribute of the object is looked up for it. So a subclass is read by
+    attribute exactly as the walk always read it, once for each callable behind it: a
+    property there is not called once more, what it answers need not have a length, and
+    it does not decide the count. What is held behind a subclass is judged as behind a
+    ``functools.partial``."""
+    import functools
+    import types
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def method(self, query: str, limit: int = 5) -> str:
+        return query
+
+    read = []
+
+    class Counting(functools.partial):
+        @property
+        def args(self):
+            read.append("args")
+            return iter(())
+
+    class Claiming(functools.partial):
+        args = ("one",)  # it binds nothing
+
+    class Plain(functools.partial):
+        pass
+
+    assert _levels(Counting(search)) == [["query", "limit"]]
+    assert read == ["args"]  # by ``inspect.signature``, for the partial's own parameters
+    del read[:]
+    assert _levels(Counting(_traced(search))) == [_FORWARD, ["query", "limit"]]
+    assert read == ["args", "args"]  # and once by the walk, for the function behind it
+
+    hidden = _calling(_with_timeout)(search)
+    kept = _calling_held(method, _wrapper_taking(method, "me, force=True, *args, **kwargs"))
+    passing = _calling_held(method, _wrapper_taking(method, "me, *args, **kwargs"))
+    for kind in (functools.partial, Plain, Counting):
+        del read[:]
+        with pytest.raises(HiddenWrapper, match="`timeout` is a parameter"):
+            reached_parameters(kind(hidden))
+        with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
+            reached_parameters(kind(kept, object()))
+        with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
+            reached_parameters(kind(types.MethodType(kept, object())))
+        reached_parameters(kind(types.MethodType(passing, object())))
+        assert len(read) == (12 if kind is Counting else 0)
+    # nothing is really bound, so the wrapper's first parameter is its own: what ``args``
+    # claims is not what is counted
+    with pytest.raises(HiddenWrapper, match="`me` is a parameter"):
+        reached_parameters(Claiming(kept))
+    reached_parameters(Plain(passing, object()))
+
+
+def test_a_held_wrapper_that_cannot_take_what_is_bound_is_a_stated_limit():
+    """A held wrapper with fewer positional parameters than the arguments bound on the way
+    cannot be called with them at all: the call fails when it is made. With no parameter of
+    its own it is accepted, as before the check."""
+    import types
+
+    def method(self, query: str, limit: int = 5) -> str:
+        return query
+
+    for text in ("", "**kwargs", "*, query=None, limit=5"):
+        tool = types.MethodType(_calling_held(method, _wrapper_taking(method, text)), object())
+        reached_parameters(tool)
+        with pytest.raises(TypeError):
+            tool("x")
+    with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
+        reached_parameters(
+            types.MethodType(
+                _calling_held(method, _wrapper_taking(method, "*, force=True")), object()
+            )
+        )
+
+
+def test_the_one_shape_judged_differently_held_and_read():
+    """Under a tool that is a ``functools.partial`` binding a keyword, a held wrapper that
+    takes that name and ``*args`` but no ``**kwargs`` is refused, and the same wrapper read
+    by the walk is accepted: ``inspect.signature`` of such a partial no longer shows the
+    ``*args``, so the walk does not see a wrapper that passes arguments on. The call fails
+    either way. Stated where the rule is stated; with ``**kwargs`` the two agree."""
+    import functools
+    import inspect
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    def tools(text):
+        wrapper = _wrapper_taking(search, text)
+        return (
+            functools.partial(wrapper, limit=3),
+            functools.partial(_calling_held(search, wrapper), limit=3),
+        )
+
+    def verdict(tool):
+        levels = reached_parameters(tool)
+        declared = set(inspect.signature(tool).parameters)
+        return invocation._argument_of_its_own(
+            [invocation._read_level(level) for level in levels], declared, ()
+        )
+
+    read, held = tools("limit, *args")
+    assert verdict(read) is None
+    with pytest.raises(HiddenWrapper, match="`limit` is taken by a wrapper"):
+        reached_parameters(held)
+    with pytest.raises(TypeError):
+        read("x")
+    with pytest.raises(TypeError):
+        held("x")
+    read, held = tools("limit, *args, **kwargs")
+    assert "`limit` is taken by a wrapper" in verdict(read)
+    with pytest.raises(HiddenWrapper, match="`limit` is taken by a wrapper"):
+        reached_parameters(held)
+
+
+def test_finding_a_held_wrapper_does_not_read_the_tool_again():
+    """To judge a held wrapper the check needs what the tool declares. ``unsupported_signature``
+    has read that already and hands it on, so finding a held wrapper costs no second reading
+    of the tool: a property of the tool runs as often with a held wrapper as without one.
+    ``reached_parameters`` called alone reads it once, and only when a held wrapper is
+    found."""
+
+    def search(query: str, limit: int = 5) -> str:
+        return query
+
+    read = []
+
+    class Decorator:
+        def __init__(self, function, held):
+            self._function, self.held = function, held
+            self.__annotations__ = dict(function.__annotations__)
+
+        @property
+        def __wrapped__(self):
+            read.append("__wrapped__")
+            return self._function
+
+        def __call__(self, *args, **kwargs):
+            return self.held(*args, **kwargs)
+
+    def reads(check, held):
+        del read[:]
+        check(Decorator(search, held))
+        return len(read)
+
+    passing = _wrapper_taking(search, "*args, **kwargs")
+    assert unsupported_signature(Decorator(search, passing)) is None
+    assert "`force` is a parameter" in unsupported_signature(
+        Decorator(search, _wrapper_taking(search, "*args, force=True, **kwargs"))
+    )
+    assert reads(unsupported_signature, passing) == reads(unsupported_signature, None) > 0
+    assert reads(reached_parameters, passing) > reads(reached_parameters, None) > 0
+
+
 def _copying_method(function):
     """A wrapper that copies a method's own parameters, receiver included."""
     import functools
@@ -1223,6 +1641,7 @@ def test_an_instance_dictionary_is_found_without_a_lookup_or_a_property():
     class, found by listing the class dictionaries: a key of a class is never compared, and
     a ``__dict__`` the class answers itself (a property) is never called. Pinned on the
     helper itself, since which objects it is used on differs by Python."""
+    assert invocation._prepare()
 
     class Key:
         """Hashes like ``"__dict__"`` and compares unequal to it: any lookup of that name
@@ -1545,7 +1964,9 @@ def test_the_verdict_is_the_same_with_and_without_the_c_extension_of_wrapt():
     import subprocess
 
     if importlib.util.find_spec("wrapt") is None:
-        pytest.skip("wrapt is not installed")
+        # the project's test environments do not install wrapt, so its own runs skip this;
+        # ``test_a_proxy_gets_the_same_verdict_however_it_is_built`` runs everywhere
+        pytest.skip("wrapt is not installed (never in the project's own test runs)")
     script = (
         "import functools, wrapt\n"
         "from recusal.invocation import reached_parameters\n"
@@ -1596,6 +2017,95 @@ def test_the_verdict_is_the_same_with_and_without_the_c_extension_of_wrapt():
     built, pure = verdicts(False), verdicts(True)
     assert built == pure
     assert len(built) == 6 and built[4] == "HiddenWrapper"
+
+
+def _proxies():
+    """Two ways to build the same transparent proxy decorator, as (name, the decorator): one
+    keeps what it wraps in its instance dictionary, the other in a slot that only its own
+    code answers from, with no instance dictionary at all, as an object a C extension
+    builds. Neither type is of the closed set."""
+
+    class Kept:
+        def __init__(self, wrapped):
+            self.__dict__["__wrapped__"] = wrapped
+
+        def __getattr__(self, name):
+            return getattr(self.__dict__["__wrapped__"], name)
+
+        def __get__(self, instance, owner=None):
+            return type(self)(self.__dict__["__wrapped__"].__get__(instance, owner))
+
+        def __call__(self, *args, **kwargs):
+            return self.__dict__["__wrapped__"](*args, **kwargs)
+
+    class Slotted:
+        __slots__ = ("_wrapped",)
+
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def __getattr__(self, name):
+            wrapped = object.__getattribute__(self, "_wrapped")
+            return wrapped if name == "__wrapped__" else getattr(wrapped, name)
+
+        def __get__(self, instance, owner=None):
+            return type(self)(self._wrapped.__get__(instance, owner))
+
+        def __call__(self, *args, **kwargs):
+            return self._wrapped(*args, **kwargs)
+
+    return [("kept in the instance dictionary", Kept), ("kept in a slot", Slotted)]
+
+
+def _proxy_verdicts(passing):
+    """The verdicts of the shapes a proxy decorator ``passing`` appears in: read by the
+    walk, held by a wrapper, holding a hidden wrapper, and on a method."""
+
+    def fetch(url: str, timeout: int = 5) -> int:
+        return timeout
+
+    class Holder:
+        @passing
+        def fetch(self, url: str, timeout: int = 5) -> int:
+            return timeout
+
+    shapes = [
+        passing(fetch),
+        _calling(passing)(fetch),
+        passing(_calling(passing)(fetch)),
+        _calling(lambda function: passing(_with_timeout(function)))(fetch),
+        passing(_calling(_with_timeout)(fetch)),
+        Holder().fetch,
+    ]
+    verdicts = []
+    for shape in shapes:
+        try:
+            verdicts.append(_levels(shape))
+        except Exception as error:  # noqa: BLE001, the verdict is the type of the refusal
+            verdicts.append(type(error).__name__)
+    return verdicts
+
+
+def test_a_proxy_gets_the_same_verdict_however_it_is_built():
+    """The test above needs wrapt and both of its builds, which the project's own test
+    environments do not install. This pins the same property everywhere: a wrapper of a
+    type outside the closed set is not read when held, so a proxy that keeps what it wraps
+    in its instance dictionary and one that keeps it where only its own code can reach
+    (a slot, as a C extension's object does) get the same verdict in every shape. A hidden
+    wrapper behind a proxy the walk reads is refused for both; one held inside a proxy is
+    the stated limit for both."""
+    (_, kept), (_, slotted) = _proxies()
+    own, called = ["url", "timeout"], ["args", "kwargs"]
+    expected = [
+        [own, called, own],
+        [_FORWARD, own],
+        [_FORWARD, called, _FORWARD, own],
+        [_FORWARD, own],  # the stated limit: a wrapper held inside a proxy is not read
+        "HiddenWrapper",
+        [["self"] + own, called, own],
+    ]
+    assert _proxy_verdicts(kept) == expected
+    assert _proxy_verdicts(slotted) == expected
 
 
 # --- a function chosen at call time --------------------------------------------------------
@@ -1934,14 +2444,18 @@ def test_the_registry_read_is_the_real_one_not_the_attribute():
 
 
 _IMPORTED_AFTER = """
-import functools, json, sys
-REAL, REAL_METHOD, RAN = functools.singledispatch, functools.singledispatchmethod, []
+import enum, functools, importlib.util, inspect, json, math, sys, types, typing, weakref
+REAL, REAL_METHOD, REAL_PARTIAL = functools.singledispatch, functools.singledispatchmethod, functools.partial
+REAL_MODULE, RAN, EVENTS, ARMED, SAVED = functools, [], [], [True], {}
 scenario = sys.argv[1]
+def note(what):
+    if ARMED[0]:
+        RAN.append(what)
 if scenario == "wrapped":
     def trace(function):
         @functools.wraps(function)
         def traced(*args, **kwargs):
-            RAN.append("traced")
+            note("traced")
             return function(*args, **kwargs)
         return traced
     functools.singledispatch = trace(REAL)
@@ -1949,32 +2463,17 @@ elif scenario == "object":
     class Odd:
         @property
         def __code__(self):
-            RAN.append("__code__")
+            note("__code__")
             raise RuntimeError("no code here")
         def __getattr__(self, name):
-            RAN.append(name)
+            note(name)
             raise RuntimeError(name)
         def __call__(self, function):
             return REAL(function)
     functools.singledispatch = Odd()
-elif scenario == "method":
-    class Recording(REAL_METHOD):
-        def __getattribute__(self, name):
-            RAN.append(name)
-            return super().__getattribute__(name)
-        def __get__(self, obj, cls=None):
-            RAN.append("__get__")
-            raise KeyboardInterrupt("no")
-    functools.singledispatchmethod = Recording
-elif scenario == "method-subclass":
-    class Inheriting(REAL_METHOD):
-        def __getattribute__(self, name):
-            RAN.append(name)
-            return super().__getattribute__(name)
-    functools.singledispatchmethod = Inheriting
 elif scenario == "reimplemented":
     def singledispatch(func):
-        RAN.append("singledispatch")
+        note("singledispatch")
         registry = {object: func}
         def dispatch(cls):
             return registry[object]
@@ -1988,8 +2487,125 @@ elif scenario == "reimplemented":
         wrapper.register, wrapper.dispatch, wrapper.registry = register, dispatch, registry
         return functools.update_wrapper(wrapper, func)
     functools.singledispatch = singledispatch
-from recusal import invocation
-ran_at_import = list(RAN)
+elif scenario == "total-ordering-missing":
+    del functools.total_ordering
+elif scenario == "method":
+    class Recording(REAL_METHOD):
+        def __getattribute__(self, name):
+            note(name)
+            return super().__getattribute__(name)
+        def __get__(self, obj, cls=None):
+            note("__get__")
+            raise KeyboardInterrupt("no")
+    functools.singledispatchmethod = Recording
+elif scenario == "method-subclass":
+    class Inheriting(REAL_METHOD):
+        def __getattribute__(self, name):
+            note(name)
+            return super().__getattribute__(name)
+    functools.singledispatchmethod = Inheriting
+elif scenario == "method-get-patched":
+    real_get = REAL_METHOD.__get__
+    def patched_get(self, obj, cls=None):
+        note("patched __get__")
+        return real_get(self, obj, cls)
+    REAL_METHOD.__get__ = patched_get
+elif scenario == "method-init-patched":
+    real_init = REAL_METHOD.__init__
+    def patched_init(self, func):
+        note("patched __init__")
+        real_init(self, func)
+    REAL_METHOD.__init__ = patched_init
+elif scenario == "handed-class-replaced" and hasattr(functools, "_singledispatchmethod_get"):
+    class Handed(functools._singledispatchmethod_get):
+        def __init__(self, *args, **kwargs):
+            note("handed __init__")
+            super().__init__(*args, **kwargs)
+    functools._singledispatchmethod_get = Handed
+elif scenario in ("handed-init-patched", "handed-call-patched") and hasattr(functools, "_singledispatchmethod_get"):
+    name = "__init__" if scenario == "handed-init-patched" else "__call__"
+    real_handed = getattr(functools._singledispatchmethod_get, name)
+    def patched_handed(self, *args, **kwargs):
+        note("patched " + name)
+        return real_handed(self, *args, **kwargs)
+    setattr(functools._singledispatchmethod_get, name, patched_handed)
+elif scenario == "partial-lookalike":
+    class Slotted:
+        __slots__ = ("func", "args", "keywords")
+        def __init__(self, func, *args, **keywords):
+            self.func, self.args, self.keywords = func, args, keywords
+        def __call__(self, *args, **keywords):
+            return self.func(*self.args, *args, **dict(self.keywords, **keywords))
+        def __getattribute__(self, name):
+            note("lookalike." + name)
+            return object.__getattribute__(self, name)
+    functools.partial = Slotted
+elif scenario == "cache-lookalike":
+    class Cached:
+        def __init__(self, function):
+            self.__wrapped__ = function
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+    functools.lru_cache = lambda maxsize=128, typed=False: Cached
+    functools._lru_cache_wrapper = Cached
+elif scenario == "cache-is-partial":
+    functools.lru_cache = lambda maxsize=128, typed=False: REAL_PARTIAL
+elif scenario == "module-getattr":
+    for name in ("total_ordering", "singledispatch", "singledispatchmethod", "_singledispatchmethod_get"):
+        if name in vars(functools):
+            SAVED[name] = vars(functools).pop(name)
+    def answering(name):
+        note("module __getattr__ " + name)
+        raise AttributeError(name)
+    functools.__getattr__ = answering
+elif scenario == "module-subclass":
+    class Module(types.ModuleType):
+        pass
+    replaced = Module("functools")
+    replaced.__dict__.update(vars(functools))
+    sys.modules["functools"] = replaced
+elif scenario == "partial-subclass":
+    class TracedPartial(REAL_PARTIAL):
+        pass
+    functools.partial = TracedPartial
+elif scenario == "partial-function":
+    def partial(func, *args, **kwargs):
+        note("partial factory")
+        return REAL_PARTIAL(func, *args, **kwargs)
+    functools.partial = partial
+elif scenario == "module-namespace":
+    sys.modules["functools"] = types.SimpleNamespace(**vars(functools))
+elif scenario == "module-proxy":
+    class Proxy:
+        def __getattr__(self, name):
+            note("proxy." + name)
+            return getattr(REAL_MODULE, name)
+    sys.modules["functools"] = Proxy()
+elif scenario == "weak-dictionary-replaced":
+    class Weak(weakref.WeakKeyDictionary):
+        def __init__(self, *args, **kwargs):
+            note("WeakKeyDictionary()")
+            super().__init__(*args, **kwargs)
+    weakref.WeakKeyDictionary = Weak
+elif scenario in ("audit-raises", "audit-observes"):
+    def audit(event, args):
+        if ARMED[0] and event.startswith("object.") and len(args) > 1:
+            EVENTS.append(event + ":" + str(args[1]))
+            if scenario == "audit-raises" and args[1] == "__code__":
+                raise RuntimeError("__code__ is not read here")
+    sys.addaudithook(audit)
+try:
+    spec = importlib.util.spec_from_file_location("invocation_alone", sys.argv[2])
+    invocation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(invocation)  # this module alone: what its own import does
+    imported = "ok"
+except BaseException as error:
+    imported = type(error).__name__
+ran_at_import, events_at_import = list(RAN), list(EVENTS)
+ready = invocation._prepare()
+ran_preparing = RAN[len(ran_at_import):]
+ARMED[0] = False
+vars(REAL_MODULE).update(SAVED)  # what a scenario took out of the module is put back
 def base(key: str, deep: bool = False) -> str:
     return "base"
 def verdict(func):
@@ -2010,59 +2626,131 @@ class Holder:
     @lookup.register(int)
     def lookup_int(self, key: int, deep: bool = False, skip_review: bool = True) -> str:
         return "int"
+def resilient(function):
+    @functools.wraps(function)
+    def guarded(*args, deep=True, **kwargs):
+        return function(*args, **kwargs)
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        return guarded(*args, **kwargs)
+    return wrapper
+def verdicts():
+    holder = Holder()
+    return {
+        "registered": verdict(registered),
+        "base_only": verdict(REAL(base)),
+        "method_registered": verdict(holder.lookup),
+        "method_base_only": verdict(holder.plain),
+        "hidden": verdict(resilient(base)),
+        "partial": verdict(REAL_PARTIAL(resilient(base))),
+    }
+found, method, real = invocation._WRAPPER_CODE is not None, invocation._METHOD_ACCESS is not None, verdicts()
+invocation._READY = False  # the walk as it was before the two checks
+invocation._WRAPPER_CODE = invocation._DISPATCH_CODE = invocation._METHOD_ACCESS = None
 print(json.dumps({
+    "imported": imported,
     "ran": ran_at_import,
-    "found": invocation._WRAPPER_CODE is not None,
-    "method": invocation._METHOD_ACCESS is not None,
-    "registered": verdict(registered),
-    "base_only": verdict(REAL(base)),
-    "method_registered": verdict(Holder().lookup),
-    "method_base_only": verdict(Holder().plain),
+    "events": events_at_import,
+    "ran_preparing": ran_preparing,
+    "ready": ready,
+    "found": found,
+    "method": method,
+    "real": real,
+    "before": verdicts(),
 }))
 """
 
+_IMPORT_SCENARIOS = {
+    # scenario: (checks on, dispatcher found, single-dispatch method found)
+    "none": (True, True, True),
+    "wrapped": (True, False, False),
+    "object": (True, False, False),
+    "reimplemented": (True, False, False),
+    "total-ordering-missing": (True, False, False),
+    "method": (True, True, False),
+    "method-subclass": (True, True, False),
+    "method-get-patched": (True, True, False),
+    "method-init-patched": (True, True, True),
+    # the class a single-dispatch method hands out, which exists from Python 3.14
+    "handed-class-replaced": (True, True, sys.version_info < (3, 14)),
+    "handed-init-patched": (True, True, sys.version_info < (3, 14)),
+    "handed-call-patched": (True, True, sys.version_info < (3, 14)),
+    "partial-lookalike": (False, False, False),
+    "cache-lookalike": (False, False, False),
+    "cache-is-partial": (False, False, False),
+    "module-getattr": (True, False, False),
+    "module-subclass": (False, False, False),
+    "partial-subclass": (False, False, False),
+    "partial-function": (False, False, False),
+    "module-namespace": (False, False, False),
+    "module-proxy": (False, False, False),
+    "weak-dictionary-replaced": (True, True, True),
+    "audit-raises": (False, False, False),
+    "audit-observes": (True, True, True),
+}
 
-@pytest.mark.parametrize(
-    "scenario", ["none", "wrapped", "object", "reimplemented", "method", "method-subclass"]
-)
+
+@pytest.mark.parametrize("scenario", sorted(_IMPORT_SCENARIOS))
 def test_importing_the_module_runs_nothing_whatever_stands_in_functools(scenario):
-    """A process can wrap or replace ``functools.singledispatch`` before this module is
-    imported. The import then runs none of that code and does not raise; the dispatcher's
-    code is not identified, and the dispatch check is off: it refuses nothing, so a
-    base-only single-dispatch method is walked as before, and a registered dispatcher is
-    not found (a stated limit). A replaced ``singledispatchmethod`` turns off only the
-    recognition of single-dispatch methods."""
+    """A process can wrap or replace what stands in ``functools`` or in ``sys.modules``, and
+    can install audit hooks, before this module is imported. Importing it then does what it
+    did before the two checks existed and nothing more: it does not raise, runs none of
+    that code, and reads no code object (an audit hook sees none read). What the checks
+    read with is found at the first walk, running none of that code either. Where a part is
+    not the standard library's own, the checks that need it are off and the walk is what it
+    was before them: nothing is refused because of them, so a base-only single-dispatch
+    function or method always gets the verdict it had."""
     import json
     import os
     import subprocess
 
+    on, found, method = _IMPORT_SCENARIOS[scenario]
     root = str(pathlib.Path(__file__).resolve().parent.parent)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    alone = os.path.join(root, "recusal", "invocation.py")
     done = subprocess.run(
-        [sys.executable, "-c", _IMPORTED_AFTER, scenario],
-        env=env,
+        [sys.executable, "-c", _IMPORTED_AFTER, scenario, alone],
         capture_output=True,
         text=True,
         timeout=120,
     )
     assert done.returncode == 0, done.stderr
     seen = json.loads(done.stdout)
-    assert seen["ran"] == []
-    assert seen["base_only"] == seen["method_base_only"] == "walked"
-    expected = {
-        "none": (True, True, "DispatchedAtCallTime", "DispatchedAtCallTime"),
-        "wrapped": (False, False, "walked", "walked"),
-        "object": (False, False, "walked", "walked"),
-        "reimplemented": (False, False, "walked", "walked"),
-        "method": (True, False, "DispatchedAtCallTime", "walked"),
-        "method-subclass": (True, False, "DispatchedAtCallTime", "walked"),
-    }[scenario]
-    assert (
-        seen["found"],
-        seen["method"],
-        seen["registered"],
-        seen["method_registered"],
-    ) == expected
+    assert seen["imported"] == "ok"
+    # the import machinery reads dunder names of what stands in ``sys.modules``, and the
+    # module always looked ``lru_cache`` up: nothing else of that object is touched
+    assert [name for name in seen["ran"] if not name.startswith("proxy.__")] == (
+        ["proxy.lru_cache"] if scenario == "module-proxy" else []
+    )
+    assert seen["ran_preparing"] == []
+    assert not [event for event in seen["events"] if event.endswith(":__code__")]
+    assert (seen["ready"], seen["found"], seen["method"]) == (on, found, method)
+    real, before = seen["real"], seen["before"]
+    expected = dict(before)
+    if on:
+        for case, refusal, applies in (
+            ("registered", "DispatchedAtCallTime", found),
+            ("method_registered", "DispatchedAtCallTime", method),
+            ("hidden", "HiddenWrapper", True),
+            ("partial", "HiddenWrapper", True),
+        ):
+            if applies and before[case] == "walked":
+                expected[case] = refusal
+    assert real == expected
+    # with the checks off the walk is what it was before them: everything here is walked,
+    # but for what that walk itself cannot read in the scenario
+    unread = set()
+    if scenario == "partial-function":  # ``isinstance`` with a function raises for every tool
+        unread = set(before)
+    elif scenario in ("partial-lookalike", "partial-subclass", "cache-is-partial"):
+        unread = {"partial"}  # a real partial is then read as a callable object, or a cache
+    elif scenario == "handed-class-replaced" and not method:  # the replaced class is read
+        unread = {"method_registered", "method_base_only"}
+    assert {case: verdict for case, verdict in before.items() if case not in unread} == {
+        case: "walked" for case in before if case not in unread
+    }
+    if scenario == "none":
+        assert real["registered"] == real["method_registered"] == "DispatchedAtCallTime"
+        assert real["hidden"] == real["partial"] == "HiddenWrapper"
 
 
 def test_the_single_dispatch_this_python_builds_is_recognised():
@@ -2071,6 +2759,8 @@ def test_the_single_dispatch_this_python_builds_is_recognised():
     ``dispatch``. If a Python builds it another way the check finds nothing there: this
     test fails first, loudly, so that is a decision and not a silence."""
     import functools
+
+    assert invocation._prepare()
 
     def search(query: str, limit: int = 5) -> str:
         return query
@@ -2094,11 +2784,14 @@ def test_the_single_dispatch_this_python_builds_is_recognised():
 
 
 def test_where_a_single_dispatch_method_keeps_its_registry_is_found():
-    """Found at import by looking at one built there. It differs by Python: a closure cell
+    """Read from the standard library's own code at the first walk, without building one,
+    and checked here against one really built. It differs by Python: a closure cell
     holding the descriptor (3.9 to 3.12) or the ``dispatch`` function (3.13), an instance
     attribute holding the descriptor (3.14, 3.15). Not finding it is a failure on every
     Python, never a skip: recognising a single-dispatch method would be lost silently."""
     import functools
+
+    assert invocation._prepare()
 
     assert invocation._METHOD_ACCESS is not None, "single-dispatch methods are no longer read"
     kind, code, name, is_descriptor = invocation._METHOD_ACCESS
@@ -2264,6 +2957,279 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
     del cells["dispatch"].cell_contents
     with pytest.raises(DispatchedAtCallTime):
         reached_parameters(emptied)
+
+
+_RELOADED = """
+import functools, importlib, json
+from recusal import invocation
+def verdict(build):
+    def base(key: str, deep: bool = False) -> str:
+        return "base"
+    built = build(base)
+    built.register(int, lambda key, deep=False, skip_review=True: "int")
+    try:
+        invocation.reached_parameters(built)
+        return "walked"
+    except Exception as error:
+        return type(error).__name__
+before = functools.singledispatch
+first = verdict(before)
+importlib.reload(functools)
+print(json.dumps([first, verdict(before), verdict(functools.singledispatch)]))
+"""
+
+
+def test_a_dispatcher_a_reloaded_functools_builds_is_a_stated_limit():
+    """The dispatcher is known by the code object of the standard library's function as it
+    stood at the first walk. ``importlib.reload(functools)`` compiles new code objects: a
+    dispatcher built by the reloaded module is not recognised and is walked as before the
+    check, registered implementations and all. One built by the function held from before
+    the reload still is."""
+    import json
+    import os
+    import subprocess
+
+    root = str(pathlib.Path(__file__).resolve().parent.parent)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    done = subprocess.run(
+        [sys.executable, "-c", _RELOADED], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == ["DispatchedAtCallTime", "DispatchedAtCallTime", "walked"]
+
+
+_FIRST_WALK = """
+import functools, json, sys, threading
+from recusal import invocation
+REAL = functools.singledispatch
+def base(key: str, deep: bool = False) -> str:
+    return "base"
+def resilient(function):
+    @functools.wraps(function)
+    def guarded(*args, deep=True, **kwargs):
+        return function(*args, **kwargs)
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        return guarded(*args, **kwargs)
+    return wrapper
+class Holder:
+    @functools.singledispatchmethod
+    def plain(self, key: str, deep: bool = False) -> str:
+        return "base"
+    @functools.singledispatchmethod
+    def lookup(self, key: str, deep: bool = False) -> str:
+        return "base"
+    @lookup.register(int)
+    def lookup_int(self, key: int, deep: bool = False, skip_review: bool = True) -> str:
+        return "int"
+registered = REAL(base)
+registered.register(int, lambda key, deep=False, skip_review=True: "int")
+holder = Holder()
+tools = [registered, REAL(base), resilient(base), functools.partial(resilient(base)), holder.lookup, holder.plain]
+def verdicts():
+    out = []
+    for tool in tools:
+        try:
+            invocation.reached_parameters(tool)
+            out.append("walked")
+        except Exception as error:
+            out.append(type(error).__name__)
+    return out
+assert invocation._READY is None and not invocation._DECIDED  # nothing was found at import
+if sys.argv[1] == "threads":
+    sys.setswitchinterval(1e-6)
+    count = 32
+    barrier, seen = threading.Barrier(count), [None] * count
+    def first_walk(index):
+        barrier.wait()
+        seen[index] = verdicts()
+    threads = [threading.Thread(target=first_walk, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    print(json.dumps({"seen": sorted(set(map(tuple, seen))), "ready": invocation._READY, "after": verdicts()}))
+elif sys.argv[1] == "decided":
+    invocation._DECIDED["found"] = (None,)  # as if another thread arrived first and found nothing
+    print(json.dumps({"seen": [verdicts()], "ready": invocation._READY, "after": verdicts()}))
+else:
+    functools.singledispatch = lambda function: REAL(function)  # patched for the first walk
+    first = verdicts()
+    functools.singledispatch = REAL
+    print(json.dumps({"seen": [first], "ready": invocation._READY, "after": verdicts()}))
+"""
+
+
+@pytest.mark.parametrize("run", range(4))
+def test_threads_that_make_their_first_walk_at_once_get_the_same_verdicts(run):
+    """What the checks read with is found at the first walk. When many threads make their
+    first walk at the same moment, each finds it for itself and the first to arrive decides
+    for the process in one step: every thread gets the right verdict on its very first
+    walk, and so does every walk after. A fresh interpreter each run, since a first walk
+    happens once."""
+    import json
+    import os
+    import subprocess
+
+    root = str(pathlib.Path(__file__).resolve().parent.parent)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    done = subprocess.run(
+        [sys.executable, "-c", _FIRST_WALK, "threads"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    right = ["DispatchedAtCallTime", "walked", "HiddenWrapper", "HiddenWrapper"]
+    right += ["DispatchedAtCallTime", "walked"]
+    assert json.loads(done.stdout) == {"seen": [right], "ready": True, "after": right}
+
+
+def test_what_the_first_walk_finds_stands_for_the_process():
+    """A ``functools.singledispatch`` that is patched when the first walk is made is not
+    the standard library's function, so the dispatch check is off; it stays off when the
+    function is put back, because what the first walk finds is not looked for again. The
+    hidden-wrapper check, which does not depend on it, is on throughout. Stated as it is."""
+    import json
+    import os
+    import subprocess
+
+    root = str(pathlib.Path(__file__).resolve().parent.parent)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.environ.get("PYTHONPATH", "")]))
+    done = subprocess.run(
+        [sys.executable, "-c", _FIRST_WALK, "patched"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    off = ["walked", "walked", "HiddenWrapper", "HiddenWrapper", "walked", "walked"]
+    assert json.loads(done.stdout) == {"seen": [off], "ready": True, "after": off}
+    # and a thread that arrives after another has decided takes that decision, whatever it
+    # would have found itself: no walk sees a part of one finding beside a part of another
+    done = subprocess.run(
+        [sys.executable, "-c", _FIRST_WALK, "decided"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {
+        "seen": [["walked"] * 6],
+        "ready": False,
+        "after": ["walked"] * 6,
+    }
+
+
+def test_where_a_single_dispatch_method_keeps_its_registry_is_read_from_its_code():
+    """Where the callable a single-dispatch method hands out keeps the way to its registry
+    is read from the code of ``singledispatchmethod.__get__``, without building or calling
+    anything. Every way a Python from 3.9 to 3.15 does it is pinned here on a stand-in for
+    the ``functools`` namespace, whichever Python runs this: a ``_method`` closing over the
+    descriptor (``self``) or over ``dispatch``, or an object of the class ``functools``
+    names, which keeps the descriptor as ``_unbound``. Anything else, and code that is not
+    from the file the namespace's own functions are from, gives None: the method half of
+    the check is then off, never guessed."""
+    import functools
+    import types
+
+    assert invocation._prepare()
+
+    def total_ordering(cls):  # the function whose file says what is the namespace's own
+        return cls
+
+    def closes_self(self, obj, cls=None):
+        def _method(*args, **kwargs):
+            return self
+
+        return _method
+
+    def closes_dispatch(self, obj, cls=None):
+        dispatch = None
+
+        def _method(*args, **kwargs):
+            return dispatch
+
+        return _method
+
+    def closes_another(self, obj, cls=None):
+        another = None
+
+        def _method(*args, **kwargs):
+            return another
+
+        return _method
+
+    def hands_an_object(self, obj, cls=None):
+        return None
+
+    class Handed:
+        def __init__(self, unbound):
+            self._unbound = unbound
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+    class KeptElsewhere:
+        def __init__(self, unbound):
+            self._kept = unbound
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+    class NeverCalled:
+        def __init__(self, unbound):
+            self._unbound = unbound
+
+    class BuiltElsewhere:
+        __init__ = functools.partialmethod.__init__  # code from another file
+
+        def __call__(self, *args, **kwargs):
+            return self._unbound
+
+    class CalledElsewhere:
+        def __init__(self, unbound):
+            self._unbound = unbound
+
+        __call__ = functools.partialmethod.__get__  # code from another file
+
+    def access(get, handed=None, anchor=total_ordering):
+        names = {
+            "total_ordering": anchor,
+            "singledispatchmethod": type("singledispatchmethod", (), {"__get__": get}),
+        }
+        if handed is not None:
+            names["_singledispatchmethod_get"] = handed
+        return invocation._method_access(names)
+
+    inner = closes_self(None, None).__code__
+    assert access(closes_self) == (types.FunctionType, inner, "self", True)
+    inner = closes_dispatch(None, None).__code__
+    assert access(closes_dispatch) == (types.FunctionType, inner, "dispatch", False)
+    assert access(closes_another) is None
+    assert access(closes_another, Handed) is None
+    assert access(hands_an_object, Handed) == (Handed, None, "_unbound", True)
+    assert access(hands_an_object) is None
+    assert access(hands_an_object, KeptElsewhere) is None
+    assert access(hands_an_object, NeverCalled) is None
+    assert access(hands_an_object, BuiltElsewhere) is None
+    assert access(hands_an_object, CalledElsewhere) is None
+    # a ``__get__`` that is not the namespace's own is not read, whatever it defines
+    assert access(functools.partialmethod.__get__, Handed) is None
+    assert access(closes_self, anchor=functools.total_ordering) is None
+    assert access(closes_self, anchor=None) is None
+    # and neither is anything but a class under the names read
+    names = {"total_ordering": total_ordering, "singledispatchmethod": closes_self}
+    assert invocation._method_access(names) is None
+    names = {
+        "total_ordering": total_ordering,
+        "singledispatchmethod": type("singledispatchmethod", (), {"__get__": hands_an_object}),
+        "_singledispatchmethod_get": Handed(None),
+    }
+    assert invocation._method_access(names) is None
 
 
 def test_a_dispatcher_a_wrapper_calls_in_place_of_its_base_is_refused():

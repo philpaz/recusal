@@ -565,6 +565,45 @@ class TestGoogleAdkGate:
         # to write them all
         assert adapter._none_defaults_to_write(tool, ["region"]) == ["region"]
 
+    def test_the_walk_is_called_as_the_installed_kernel_takes_it(self, example, monkeypatch):
+        """The package allows ``recusal`` 0.15.0, whose ``reached_parameters`` takes the
+        callable alone. Handing it ``skip`` raised ``TypeError`` on every tool, and the
+        conservative answer to a walk that fails wrote every ``None`` default: a plain
+        tool with ``region: str = None`` was then refused under the ADK's own argument
+        validation. Whether the kernel takes ``skip`` is read once from its signature."""
+        from recusal.invocation import reached_parameters
+
+        def plain(topic: str, region: str = None) -> str:  # type: ignore[assignment]
+            return topic
+
+        def released(func):  # the walk as 0.15.0 declares it
+            calls.append(func)
+            return reached_parameters(func)
+
+        def current(func, skip=()):
+            calls.append((func, skip))
+            return reached_parameters(func, skip)
+
+        adapter, calls = _adapter(), []
+        assert adapter._takes_skip(reached_parameters) and adapter._WALK_TAKES_SKIP
+        assert not adapter._takes_skip(released) and adapter._takes_skip(current)
+        assert not adapter._takes_skip(len.__call__) and not adapter._takes_skip(None)
+
+        monkeypatch.setattr(adapter, "_reached_parameters", released)
+        monkeypatch.setattr(adapter, "_WALK_TAKES_SKIP", False)
+        assert adapter._none_defaults_to_write(plain, ["region"], ("tool_context",)) == []
+        assert calls == [plain]
+
+        del calls[:]
+        monkeypatch.setattr(adapter, "_reached_parameters", current)
+        monkeypatch.setattr(adapter, "_WALK_TAKES_SKIP", True)
+        assert adapter._none_defaults_to_write(plain, ["region"], ("tool_context",)) == []
+        assert calls == [(plain, ("tool_context",))]
+
+        # the defect itself: ``skip`` handed to the walk that does not take it
+        monkeypatch.setattr(adapter, "_reached_parameters", released)
+        assert adapter._none_defaults_to_write(plain, ["region"], ("tool_context",)) == ["region"]
+
     def test_arguments_the_validation_would_change_again_are_refused(self, example, monkeypatch):
         """``run_async`` validates the dict the gate writes once more. If that validation is
         not a fixed point the function would get a value the policy never saw; the gate

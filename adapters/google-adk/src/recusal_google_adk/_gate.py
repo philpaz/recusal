@@ -201,6 +201,23 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     return judged, None
 
 
+def _takes_skip(walk: Any) -> bool:
+    """True if the kernel's ``reached_parameters`` takes the names a framework injects.
+
+    ``recusal`` 0.15.0, the oldest this package allows, takes the callable alone; a later
+    kernel also takes ``skip``. Handing ``skip`` to the former raises ``TypeError`` on
+    every tool, which :func:`_none_defaults_to_write` would answer by writing every
+    ``None`` default."""
+    try:
+        return "skip" in inspect.signature(walk).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+#: Decided once, at import, from the kernel that is installed.
+_WALK_TAKES_SKIP = _takes_skip(_reached_parameters)
+
+
 def _none_defaults_to_write(func: Any, names: list[str], skip: tuple = ()) -> list[str]:
     """Of the parameters left at a ``None`` default, the ones that must be written as
     ``None``: those some callable the call reaches names with another default (or none),
@@ -208,8 +225,11 @@ def _none_defaults_to_write(func: Any, names: list[str], skip: tuple = ()) -> li
     ``None`` on every level."""
     if not names:
         return []
+    # called as the installed kernel takes it; typed loosely so that the call checks
+    # beside a kernel of either signature
+    walk: Callable[..., Any] = _reached_parameters
     try:
-        levels = _reached_parameters(func, skip)
+        levels = walk(func, skip) if _WALK_TAKES_SKIP else walk(func)
     except Exception:  # noqa: BLE001, read before by unsupported_signature; write them all
         return list(names)
     write = []

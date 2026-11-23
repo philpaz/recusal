@@ -166,9 +166,17 @@ All notable changes to this project are documented here. The format follows
     not a parameter of its own: when the tool is a bound method (or a `classmethod`, or a
     `functools.partial` that binds positional arguments), a wrapper its decorator holds is
     passed the same receiver, so its first positional parameter is left out, whatever it is
-    called, exactly as it is for the level the walk reads. So the parameters of a wrapper
+    called, exactly as it is for the level the walk reads. Every argument bound on the way
+    is counted: one for each method, and each positional argument of each
+    `functools.partial`, on the walk and along what is held (for a subclass of
+    `functools.partial` on the walk too, through the accessor of the type itself, so a
+    property of the subclass is not read for it). So the parameters of a wrapper
     get the same verdict, for the same reason, held inside a decorator and applied
-    directly. Only its parameters: applied directly, a wrapper can also be refused for
+    directly, with one exception: under a tool that is a `functools.partial` binding a
+    keyword (`partial(tool, limit=3)`), a held wrapper that takes that name and `*args`
+    but no `**kwargs` is refused, while the same wrapper applied directly is accepted,
+    because `inspect.signature` of such a partial no longer shows the `*args` (the call
+    fails either way). Only its parameters: applied directly, a wrapper can also be refused for
     something a held one is not read for, a declared `__signature__` (a tracing decorator
     that declares one and takes an extra parameter is refused directly for the signature
     and, held, for the parameter). Two ways are refused as they stand, with the reason "a
@@ -206,7 +214,25 @@ All notable changes to this project are documented here. The format follows
     (`tool.aio`). A class-based decorator whose own method keeps the argument. A wrapper
     that names nothing as `__wrapped__` (one that copies the signature by hand). An
     argument taken in a body alone (`kwargs.pop`), which no signature shows. The arguments
-    a `functools.partial` binds.
+    a `functools.partial` binds. Anything held behind an object that passes for a
+    `functools.partial` only because another class was put in `functools` after the first
+    walk: its bound arguments are not known. A held wrapper that cannot take the bound arguments at all
+    (fewer positional parameters than the arguments bound on the way) and has no parameter
+    of its own: the call fails when it is made. And everything, in a process where
+    `functools` is not a plain module, or its `partial` or its `lru_cache` wrapper is not
+    the type C code defines, when the first walk is made: both checks are then off and the
+    walk is what it was in 0.15.0.
+  - *Nothing at import.* Importing `recusal.invocation` reads nothing of `functools` that
+    0.15.0 did not read, runs no code that stands there and raises nothing, whatever a
+    process put in `functools`, in `sys.modules` or in the audit hooks first. What the
+    checks read with is found at the first walk, from the standard library's own objects,
+    each identified before it is used (a plain module, types C code defines, functions
+    compiled from the standard library's own file) and none of them called. What the first
+    walk finds stands for the process: threads that make their first walk at once settle
+    on one finding, and a `functools` that is patched when the first walk is made and
+    restored afterwards leaves the checks as that walk found them. Reading the
+    names of a held function's closure cells reads its code object, which raises the
+    `object.__getattr__` audit event for `__code__`, as reading a signature does.
   - *New in the signature.* `reached_parameters(func, skip=())` takes the names the
     framework injects, as `unsupported_signature` does, so that a held wrapper is judged
     with them too.
@@ -228,7 +254,8 @@ All notable changes to this project are documented here. The format follows
     which replaces the base and leaves the one key. The callable a
     `functools.singledispatchmethod` hands out at each access is known the same exact way
     and held to the same rule. Where it keeps the way to its registry differs by Python
-    and is found at import: a closure cell holding the descriptor (3.9 to 3.12), a closure
+    and is read from the code of `singledispatchmethod.__get__` at the first walk, without
+    building or calling anything: a closure cell holding the descriptor (3.9 to 3.12), a closure
     cell holding the `dispatch` function (3.13), an instance attribute holding the
     descriptor (3.14 and 3.15, where what is handed out is an object). Run on 3.9 to 3.15,
     3.14 free-threaded included. A wrapper that names the base function and calls a
@@ -249,12 +276,15 @@ All notable changes to this project are documented here. The format follows
     a dispatcher whose closure was rewritten by hand. A registered single-dispatch method
     that a wrapper holds, on Python 3.14 and later, where what is handed out is an object
     outside the closed set. A process in which `functools.singledispatch` was wrapped or
-    replaced before `recusal.invocation` was imported: the import runs none of that code
-    and the dispatcher's code is then not identified, so this whole check is off there (it
-    refuses nothing, and a base-only single-dispatch method is walked as before); a
-    replaced `functools.singledispatchmethod` turns off the method half only. And a Python
-    that builds `functools.singledispatch` another way than 3.9 to 3.15 do (a test fails
-    there first).
+    replaced before the first walk: none of that code is run and the dispatcher's code is
+    then not identified, so this whole check is off there (it refuses nothing, and a
+    base-only single-dispatch method is walked as before); a `functools.singledispatchmethod`
+    that was replaced, or whose `__get__` was patched (on 3.14 and later also the class it
+    hands out, or that class's `__init__` or `__call__`), turns off the method half only.
+    A dispatcher built by a `functools` reloaded (`importlib.reload`) after the first walk:
+    the dispatcher is known by the code object of the standard library's function as it
+    stood then, and a reload compiles new ones. And a Python that builds
+    `functools.singledispatch` another way than 3.9 to 3.15 do (a test fails there first).
 
 ## [0.15.0] - 2026-11-21
 
