@@ -3458,7 +3458,15 @@ class TestPydanticAiGate:
                 ctx = self._ctx_for(function, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", {"limit": 5})
                 assert same == {"limit": 5}, function
-                assert cause in reason, (function, reason)
+                # a kernel later than 0.15.0 refuses a bound object a wrapper takes under
+                # another name before this gate's own rule is asked, in its own words
+                kernels = (
+                    adapter._BoundArgumentKept is not adapter._NotInThisKernel
+                    and cause.startswith(reaches.split("{}")[0])
+                    and "an argument bound on the way" in reason
+                    and "which has a default" in reason
+                )
+                assert cause in reason or kernels, (function, reason)
         past_a_wrapper = "by position past a wrapper"
         # not refused: no wrapper names anything, or the object's own rule holds
         for function in (

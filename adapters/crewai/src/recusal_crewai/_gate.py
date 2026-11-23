@@ -553,6 +553,12 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
     except (TypeError, ValueError):
         return "its callable cannot be inspected for its parameters"
     fields = tool.args_schema.model_fields
+    return _undeclared(levels, fields) or _kernel_refusal(func, fields)
+
+
+def _undeclared(levels: Any, fields: Any) -> Optional[str]:
+    """Why a callable among ``levels`` takes a parameter the schema ``fields`` cannot judge
+    by name, or None."""
     for parameters in levels:
         for name, parameter in parameters.items():
             if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
@@ -561,7 +567,7 @@ def _incomplete_callable(tool: Any) -> Optional[str]:
                 return f"its callable's parameter `{name}` is positional-only"
             if name not in fields:
                 return f"its callable's parameter `{name}` is absent from the argument schema"
-    return _kernel_refusal(func)
+    return None
 
 
 class _NotInThisKernel(Exception):
@@ -585,10 +591,21 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A bound argument is taken by a wrapper under another name than the parameter with a
+#: default it would fill on the function the wrapper names (the same kernels).
+_BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
 
 
-def _kernel_refusal(func: Any) -> Optional[str]:
-    """Why the kernel's walk refuses ``func`` by name, or None.
+def _kernel_refusal(func: Any, fields: Any = None) -> Optional[str]:
+    """Why the kernel's walk refuses ``func``, or None.
+
+    Beside a kernel later than 0.15.0 the kernel's walk is asked for everything it finds
+    that the walk above does not: the two refusals named below, a bound argument a wrapper
+    takes under another name (``BoundArgumentKept``), a ``functools.lru_cache`` wrapper
+    that names one function and calls another, what the ``__call__`` of a class-based
+    decorator holds, and the ``__wrapped__`` a ``functools.partial`` carries, whose levels
+    are held to the schema ``fields`` like this package's own. Any other failure of that
+    walk still changes nothing here. What follows was written for the first two.
 
     The walk above is this package's own, and it follows ``__wrapped__`` alone: it finds
     neither a decorator that holds a second ``functools.wraps`` wrapper of the same
@@ -604,7 +621,9 @@ def _kernel_refusal(func: Any) -> Optional[str]:
     if walk is None or _HiddenWrapper is _NotInThisKernel:
         return None
     try:
-        walk(func)
+        levels = walk(func)
+    except _BoundArgumentKept as refused:
+        return f"its callable cannot be read: {refused}"
     except _HiddenWrapper as refused:
         return (
             "a decorator on its callable holds a second wrapper of it (in its closure or "
@@ -620,7 +639,7 @@ def _kernel_refusal(func: Any) -> Optional[str]:
         )
     except Exception:  # noqa: BLE001, this package's own walk has read the callable
         return None
-    return None
+    return _undeclared(levels, fields) if fields is not None else None
 
 
 def _prepared(

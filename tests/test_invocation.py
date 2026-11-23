@@ -2896,7 +2896,8 @@ def test_what_only_looks_like_a_dispatcher_is_walked():
         *dispatch,
     ]
     assert _levels(_traced(Decorator(base_only))) == [_FORWARD, _FORWARD, _FORWARD, *dispatch]
-    assert _levels(_traced(bound)) == [_FORWARD, *dispatch]
+    # the partial, the dispatcher behind it, and the ``__wrapped__`` the partial carries
+    assert _levels(_traced(bound)) == [_FORWARD, ["args", "kw"], ["args", "kw"], own, own]
     assert _levels(_traced(Service().find)) == [_FORWARD, ["args", "kw"], ["limit"]]
     # and the same wrappers of one with an implementation registered are refused, when the
     # walk reaches the dispatcher itself
@@ -3503,9 +3504,11 @@ def test_a_partialmethod_over_a_plain_function_is_still_read_in_full():
         assert type(tool) is functools.partial, name
         assert not any(hasattr(tool, mark) for mark in invocation._PARTIALMETHOD_MARKS)
     assert _shows(repo.q1_function) == ["(limit=10, **extra)"]
-    # the wrapper that names the tenant, then the one that defaults the table, then the
-    # function: each level less what the partial and the method bind
-    assert _shows(repo.d1_function) == ["(*args, **kwargs)", "(*, limit=100)", "(*, limit=100)"]
+    # D1 over a plain function is a partial the walk reads, and it is the same defect: the
+    # bound "acme" is the wrapper's ``tenant``, and ``table`` runs at its default. Refused
+    # by the rule for a bound argument a wrapper takes under another name.
+    with pytest.raises(invocation.BoundArgumentKept, match="`tenant`.*`table`"):
+        reached_parameters(repo.d1_function)
     assert _shows(repo.as_static) == ["(limit=10, **extra)"]
     assert _shows(repo.as_class) == ["(limit=10, **extra)"]
     _RAN.clear()
@@ -3859,6 +3862,514 @@ def test_a_global_named_only_as_an_attribute_is_read_too():
     assert wrapper("u", timeout=5) == 5
     with pytest.raises(HiddenWrapper):
         reached_parameters(wrapper)
+
+
+# --- review round six ----------------------------------------------------------------------
+#
+# E: a ``__wrapped__`` a ``functools.partial`` carries. A: a ``functools.lru_cache`` wrapper
+# that names one function and calls another. B: what the ``__call__`` of a class-based
+# decorator holds. C: a bound argument a wrapper takes under another name. D: the
+# partialmethod check where ``functools.partialmethod`` is not the standard library's class.
+
+_SIX: List[Any] = []
+
+
+def _six_fetch(query: str, limit: int = 10) -> str:
+    _SIX.append(("fetch", query, limit))
+    return "rows"
+
+
+def _six_audited(function):
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, skip_review: bool = True, **kwargs):
+        _SIX.append(("audited", skip_review))
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _six_capped(function):
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, limit: int = 1000, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _six_call_with_retry(function, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
+def _six_retry(function):
+    """A decorator with no nested function: the helper is bound with ``functools.partial``,
+    which then carries the ``__wrapped__``."""
+    import functools
+
+    return functools.wraps(function)(functools.partial(_six_call_with_retry, function))
+
+
+_SIX_UNDECLARED = (
+    "`skip_review` is a parameter of a function the call reaches that the tool does not"
+)
+_SIX_KEPT = "`limit` is taken by a wrapper and by the function it wraps"
+
+
+def test_e_a_wrapped_carried_by_a_partial_is_followed():
+    """``functools.wraps(f)(functools.partial(helper, f))`` shows the signature of ``f``,
+    and the walk followed the partial's function (the helper) alone: the wrapper under it
+    was not read. Judged ``limit=5``, ran ``limit=10``; or ran ``skip_review=True``."""
+    import functools
+
+    hidden = _six_retry(_six_audited(_six_fetch))
+    _SIX.clear()
+    hidden(query="q", limit=5)
+    assert _SIX == [("audited", True), ("fetch", "q", 5)]
+    assert unsupported_signature(hidden).startswith(_SIX_UNDECLARED)
+    # the partial (the helper, less the function it binds), then what it names
+    assert _levels(hidden) == [_FORWARD, ["args", "skip_review", "kwargs"], ["query", "limit"]]
+
+    keeps = _six_retry(_six_capped(_six_fetch))
+    _SIX.clear()
+    keeps(query="q", limit=5)
+    assert _SIX == [("fetch", "q", 10)]
+    assert unsupported_signature(keeps).startswith(_SIX_KEPT)
+
+    # the decorator alone is read, and accepted: the partial, then the function it names
+    alone = _six_retry(_six_fetch)
+    assert _levels(alone) == [_FORWARD, ["query", "limit"]]
+    assert unsupported_signature(alone) is None
+    # so is a partial that carries nothing, as before
+    plain = functools.partial(_six_fetch)
+    assert _levels(plain) == [["query", "limit"]]
+    # and one behind a method, and under a forwarding wrapper
+    assert unsupported_signature(_traced(alone)) is None
+    assert unsupported_signature(_traced(hidden)).startswith(_SIX_UNDECLARED)
+
+    # what a partial that carries a ``__wrapped__`` holds is judged like any other holder's
+    def holding(function):
+        guarded = _with_timeout(function)
+        relay = functools.partial(_six_call_with_retry, function)
+        relay.guarded = guarded  # an instance attribute of the partial
+        return functools.wraps(function)(relay)
+
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(holding(_fetch()))
+
+
+def _six_cached(make_wrapper, **options):
+    import functools
+
+    def decorate(function):
+        wrapper = functools.lru_cache(**options)(make_wrapper(function))
+        return functools.update_wrapper(wrapper, function)
+
+    return decorate
+
+
+def test_a_an_lru_cache_wrapper_that_names_one_function_and_calls_another_is_refused():
+    """``@functools.wraps(f)`` over ``@functools.lru_cache`` over a wrapper overwrites the
+    cache's ``__wrapped__`` with ``f``; the wrapper the cache really calls is held in C
+    and was read by nothing. Refused when the named function is, provably, not the one the
+    cache refers to."""
+    for make in (_six_audited, _six_capped):
+        for options in ({"maxsize": 128}, {"maxsize": None}, {"maxsize": 0}):
+            tool = _six_cached(make, **options)(_six_fetch)
+            with pytest.raises(HiddenWrapper) as refused:
+                reached_parameters(tool)
+            assert str(refused.value) == invocation._REWRAPPED_CACHE
+            assert unsupported_signature(tool) == invocation._REWRAPPED_CACHE
+            with pytest.raises(HiddenWrapper):
+                invocation.own_parameters(tool)
+    ran = _six_cached(_six_capped, maxsize=128)(_six_fetch)
+    _SIX.clear()
+    ran(query="q", limit=5)
+    assert _SIX == [("fetch", "q", 10)]
+
+    class Service:
+        @_six_cached(_six_audited, maxsize=128)
+        def fetch(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        def __hash__(self):
+            return 1
+
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(Service().fetch)
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(_traced(_six_cached(_six_audited)(_six_fetch)))
+
+    # a cache held by a wrapper, named for the function and calling another: the way
+    # through it cannot be judged
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(_calling(_six_cached(lambda f: lambda *a, **k: f(*a, **k)))(_fetch()))
+
+
+def test_a_cache_that_calls_what_it_names_is_read_as_before():
+    """The ordinary uses: a cache on the function, used and full, bounded and not, on a
+    method, under a wrapper, and named again for the same function."""
+    import functools
+
+    own = ["query", "limit"]
+
+    def fetch(query: str, limit: int = 10) -> str:
+        return "rows"
+
+    for options in (
+        {"maxsize": 2},
+        {"maxsize": None},
+        {"maxsize": 0},
+        {"maxsize": 2, "typed": True},
+    ):
+        cached = functools.lru_cache(**options)(fetch)
+        for query in ("a", "b", "c", fetch):  # links, evictions, and the function as a key
+            cached(query)
+        assert _levels(cached) == [own, own]
+        assert unsupported_signature(cached) is None
+        assert _levels(_traced(cached)) == [_FORWARD, own, own]
+        assert _levels(functools.update_wrapper(cached, fetch)) == [own, own]
+
+    class Service:
+        @functools.lru_cache(maxsize=None)  # noqa: B019, the shape under test
+        def fetch(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+    assert _levels(Service().fetch) == [own, own]
+    assert invocation._calls_what_it_names(fetch) and invocation._calls_what_it_names(None)
+
+
+def test_a_what_the_cache_check_does_not_find_is_stated(monkeypatch):
+    """A bounded cache that holds the named function as a cached result lists it among
+    what it refers to: not found. And where the listing is not available, or raises, the
+    check proves nothing and the wrapper is read as 0.15.0 reads it."""
+    own = ["query", "limit"]
+    returning = _six_cached(lambda f: lambda *a, **k: _six_fetch, maxsize=8)(_six_fetch)
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(returning)
+    assert returning("q") is _six_fetch  # now a cached result
+    assert _levels(returning) == [own, own]
+
+    tool = _six_cached(_six_audited)(_six_fetch)
+    reached_parameters(_six_fetch)  # the first walk has been made
+    monkeypatch.setattr(invocation, "_referents", None)
+    assert _levels(tool) == [own, own]
+
+    def refusing(value):
+        raise RuntimeError("an audit hook refused the listing")
+
+    monkeypatch.setattr(invocation, "_referents", refusing)
+    assert _levels(tool) == [own, own]
+    monkeypatch.setattr(invocation, "_referents", lambda value: iter(()))
+    assert _levels(tool) == [own, own]
+    monkeypatch.undo()
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(tool)
+
+    import gc
+    import types
+
+    assert invocation._referents is gc.get_referents
+    assert invocation._collector() is gc.get_referents
+    monkeypatch.setattr(gc, "get_referents", lambda value: [])
+    assert invocation._collector() is None  # not the interpreter's own function
+    monkeypatch.undo()
+    stand_in = types.SimpleNamespace(get_referents=gc.get_referents)
+    monkeypatch.setattr(invocation, "gc", stand_in)
+    assert invocation._collector() is None  # not a module
+
+
+_SIX_GUARDED = _with_timeout(_six_fetch)
+
+
+def test_b_what_the_call_of_a_class_based_decorator_holds_is_read():
+    """A class written inside the decorator, whose ``__call__`` closes over a second
+    wrapper: the object's instance attributes were read and the cells of its ``__call__``
+    were not. Judged ``timeout`` never; ran ``timeout=30``. The same for a class at module
+    level whose ``__call__`` names the wrapper as a global."""
+    import functools
+    import logging
+
+    def tool_decorator(function, held):
+        class Tool:
+            def __init__(self):
+                functools.update_wrapper(self, function)
+
+            def __call__(self, *args, **kwargs):
+                return held(*args, **kwargs)
+
+        return Tool()
+
+    fetch = _fetch()
+    hidden = tool_decorator(fetch, _with_timeout(fetch))
+    assert hidden("u", timeout=5) == 999999
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(hidden)
+    assert str(refused.value).startswith("`timeout` is taken by a wrapper and by the function")
+
+    class ToolGlobal:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, *args, **kwargs):
+            return _SIX_GUARDED(*args, **kwargs)
+
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(ToolGlobal(_six_fetch))
+
+    class Base:
+        def __call__(self, *args, **kwargs):
+            return _SIX_GUARDED(*args, **kwargs)
+
+    class Inherits(Base):  # the ``__call__`` Python finds, on a base class
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(Inherits(_six_fetch))
+
+    # what an ordinary ``__call__`` closes over or names is not refused
+    log = logging.getLogger("recusal.tests.invocation")
+    for held in (fetch, _traced(fetch), lambda *a, **k: fetch(*a, **k), log.debug):
+        tool = tool_decorator(fetch, held)
+        assert _levels(tool) == [_FORWARD, _FORWARD, _FETCH]
+    assert _levels(ToolGlobal(_global_other)) == [_FORWARD, _FORWARD, _FETCH]
+    assert invocation._class_attribute(Inherits, "__call__") is Base.__dict__["__call__"]
+    assert invocation._class_attribute(Inherits, "no_such_name") is invocation._MISSING
+
+
+def _six_search(query: str = "*", limit: int = 10) -> str:
+    _SIX.append(("search", query, limit))
+    return "rows"
+
+
+def test_c_a_bound_argument_a_wrapper_takes_under_another_name_is_refused():
+    """A method that delegates to a free function and carries ``functools.wraps`` of it:
+    the walk bound the object to the free function's first parameter, as if the wrapper
+    handed it on. It keeps it: declared ``(limit=10)``, judged ``{'limit': 5}``, ran
+    ``query='*'``, a parameter no signature showed any more."""
+    import functools
+
+    class Tools:
+        @functools.wraps(_six_search)
+        def search(self, *args, **kwargs):
+            return _six_search(*args, **kwargs)
+
+        @classmethod
+        @functools.wraps(_six_search)
+        def search_cm(cls, *args, **kwargs):
+            return _six_search(*args, **kwargs)
+
+    class CallableTool:
+        @functools.wraps(_six_search)
+        def __call__(self, *args, **kwargs):
+            return _six_search(*args, **kwargs)
+
+    def with_session(function):
+        @functools.wraps(function)
+        def wrapper(session, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    method = Tools().search
+    _SIX.clear()
+    method(limit=5)
+    assert _SIX == [("search", "*", 5)] and list(inspect_signature(method)) == ["limit"]
+    cases = (
+        (method, "self"),
+        (Tools.search_cm, "cls"),
+        (CallableTool(), "self"),
+        (functools.partial(with_session(_six_search), object()), "session"),
+        (_traced(method), "self"),
+    )
+    for tool, taken in cases:
+        with pytest.raises(invocation.BoundArgumentKept) as refused:
+            reached_parameters(tool)
+        text = str(refused.value)
+        assert f"is taken by a wrapper as `{taken}`" in text and "it would fill `query`" in text
+        assert "register that one" in text and "*" not in text.replace("`*", "")
+        assert issubclass(invocation.BoundArgumentKept, ValueError)
+    assert unsupported_signature(method) == str(refused.value).replace("`self`", "`self`")
+
+    # the second of two bound arguments, where the first is handed on under its own name
+    def target(first, query: str = "*", limit: int = 10) -> str:
+        return query
+
+    @functools.wraps(target)
+    def keeps_the_second(first, session, *args, **kwargs):
+        return target(first, *args, **kwargs)
+
+    assert functools.partial(keeps_the_second, 1, object())() == "*"
+    with pytest.raises(invocation.BoundArgumentKept, match="`session`.*`query`"):
+        reached_parameters(functools.partial(keeps_the_second, 1, object()))
+    reached_parameters(functools.partial(keeps_the_second, 1))  # the first alone is its own
+
+
+def test_c_an_ordinary_bound_method_or_partial_is_not_refused():
+    """The commonest tool shapes: a method of a class, decorated or not, cached, a
+    ``classmethod``, a wrapper that names ``self``, a partial that binds a parameter with
+    a default through a forwarding wrapper or through one that restates it."""
+    import functools
+
+    def naming_self(function):
+        @functools.wraps(function)
+        def wrapper(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        return wrapper
+
+    def another_name(function):
+        @functools.wraps(function)
+        def wrapper(this, *args, **kwargs):
+            return function(this, *args, **kwargs)
+
+        return wrapper
+
+    def restating(function):
+        @functools.wraps(function)
+        def wrapper(table: str = "users", limit: int = 10) -> str:
+            return function(table, limit)
+
+        return wrapper
+
+    def required(query: str, limit: int = 10) -> str:
+        return "rows"
+
+    class Service:
+        def plain(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @_traced
+        def traced(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @naming_self
+        def named(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @another_name
+        def other(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @functools.lru_cache(maxsize=None)  # noqa: B019, the shape under test
+        def cached(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @classmethod
+        @_traced
+        def on_class(cls, query: str, limit: int = 10) -> str:
+            return "rows"
+
+        @functools.wraps(required)
+        def delegating(self, *args, **kwargs):  # the first parameter has no default
+            return required(*args, **kwargs)
+
+    service = Service()
+    for name in ("plain", "traced", "named", "other", "cached", "on_class", "delegating"):
+        tool = getattr(service, name)
+        reached_parameters(tool)
+        assert unsupported_signature(tool) is None or name == "delegating", name
+    assert _levels(service.plain) == [["query", "limit"]]
+
+    def table(table: str = "users", limit: int = 10) -> str:
+        return table
+
+    for tool in (
+        functools.partial(_traced(table), "orders"),
+        functools.partial(restating(table), "orders"),
+        functools.partial(table, "orders"),
+        functools.partial(_traced(table), limit=3),
+    ):
+        assert tool() == "orders" or tool() == "users"
+        reached_parameters(tool)
+
+    # a partial that binds nothing asks nothing of what its function names, which need
+    # not be a callable the walk reads unbound (a class, as the ``decorator`` library
+    # names one): read as before
+    class Manager:
+        def __init__(self, table: str = "users"):
+            self.table = table
+
+    def make(table: str = "users"):
+        return Manager(table)
+
+    make.__wrapped__ = Manager
+    before = _levels(functools.partial(make))
+    assert before == [["table"], ["table"]]
+
+
+def test_d_a_replaced_partialmethod_leaves_every_walk_as_it_was(monkeypatch):
+    """The partialmethod check asked ``isinstance(..., functools.partialmethod)`` of every
+    callable: with a tracing function, None, nothing, or a class with a metaclass of its
+    own under that name, every ordinary tool was refused, where 0.15.0 reads them. It asks
+    only once a mark is there, and only of a plain class."""
+    import functools
+
+    real = functools.partialmethod
+    asked: list = []
+
+    class Meta(type):
+        def __instancecheck__(cls, instance):
+            asked.append(instance)
+            raise RuntimeError("an instance check of the application's")
+
+    def tracing(func, *args, **kwargs):
+        return real(func, *args, **kwargs)
+
+    class Service:
+        def fetch(self, query: str, limit: int = 10) -> str:
+            return "rows"
+
+    class Repo:
+        marked = real(_Fetcher(), "customers")
+
+    marked = Repo().marked
+    tools = (_six_fetch, _traced(_six_fetch), Service().fetch, functools.lru_cache(_six_fetch))
+    expected = [_levels(tool) for tool in tools]
+    for stand_in in (tracing, None, object(), Meta("partialmethod", (), {}), "missing"):
+        if stand_in == "missing":
+            monkeypatch.delattr(functools, "partialmethod")
+        else:
+            monkeypatch.setattr(functools, "partialmethod", stand_in)
+        assert [_levels(tool) for tool in tools] == expected
+        assert unsupported_signature(_six_fetch) is None
+        # a callable with a mark is left to ``inspect.signature``, which raises there as
+        # it did in 0.15.0, or reads the mark: either way this check refuses nothing
+        try:
+            reached_parameters(marked)
+        except PartialMethodSignature:  # pragma: no cover, the defect
+            raise AssertionError("the check asked a stand-in") from None
+        except Exception:  # noqa: BLE001, S110, ``inspect.signature`` itself, as before
+            pass
+        monkeypatch.undo()
+    # ``inspect.signature`` asks the stand-in class about a marked callable, as it did in
+    # 0.15.0; this check asked nothing of it, and nothing at all for an unmarked callable
+    assert len(asked) == 1 and type(asked[0]) is real
+    with pytest.raises(PartialMethodSignature):
+        reached_parameters(marked)
+
+    # a stand-in class that answers quietly is asked once, by ``inspect.signature``, and
+    # never by this check
+    del asked[:]
+
+    class Quiet(type):
+        def __instancecheck__(cls, instance):
+            asked.append(instance)
+            return False
+
+    monkeypatch.setattr(functools, "partialmethod", Quiet("partialmethod", (), {}))
+    reached_parameters(marked)
+    assert len(asked) == 1
+    monkeypatch.undo()
+
+    class Sub(real):
+        pass
+
+    monkeypatch.setattr(functools, "partialmethod", Sub)  # still a plain class
+    assert _levels(_six_fetch) == [["query", "limit"]]
 
 
 # --- detached -----------------------------------------------------------------------------

@@ -3489,6 +3489,48 @@ class TestBothRoutes:
         else:
             assert seen == [("fetch", {"url": "u", "timeout": 9999})] and ran == [("u", 5)]
 
+        # the other shapes this package's own walk does not find, beside a later kernel:
+        # a wrapper under a partial that carries the ``__wrapped__``, and a method that
+        # keeps its object from the free function it names
+        def audited(function):
+            @functools.wraps(function)
+            def wrapper(*args, skip_review: bool = True, **kwargs):
+                return function(*args, **kwargs)
+
+            return wrapper
+
+        def relay(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        def retry(function):
+            return functools.wraps(function)(functools.partial(relay, function))
+
+        def free_search(url: str = "*", timeout: int = 5) -> str:
+            """Search."""
+            return url
+
+        class Tools:
+            @functools.wraps(free_search)
+            def search(self, *args, **kwargs):
+                return free_search(*args, **kwargs)
+
+        def swapped(func):
+            built = kit.tool("fetch")(free_search)
+            built.func = func
+            return gate._unsupported_tool(built.to_structured_tool())
+
+        under_a_partial = swapped(retry(audited(free_search)))
+        kept = swapped(Tools().search)
+        if later:
+            assert under_a_partial == (
+                "its callable's parameter `skip_review` is absent from the argument schema"
+            )
+            assert kept.startswith("its callable cannot be read: an argument bound on the way")
+            assert "taken by a wrapper as `self`" in kept and "would fill `url`" in kept
+        else:
+            assert under_a_partial is None and kept is None
+        assert swapped(retry(free_search)) is None  # the decorator alone, beside either kernel
+
         # a kernel without the walk, or without the two names, is not asked anything
         monkeypatch.setattr(gate, "_HiddenWrapper", gate._NotInThisKernel)
         assert gate._kernel_refusal(fetch) is None and gate._kernel_refusal(lookup) is None

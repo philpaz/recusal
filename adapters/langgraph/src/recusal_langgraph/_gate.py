@@ -102,6 +102,9 @@ _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
 #: A callable on the way is read by ``inspect.signature`` as a ``functools.partialmethod``
 #: (the same kernels).
 _PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
+#: A bound argument is taken by a wrapper under another name than the parameter with a
+#: default it would fill on the function the wrapper names (the same kernels).
+_BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
 
 
 class RecusalRefusal(ToolException):
@@ -461,6 +464,8 @@ def _reached(func) -> list:
             "binds, not its own, so what runs under it cannot be read; give the tool a "
             "plain function that calls it"
         ) from None
+    except _BoundArgumentKept as refused:
+        raise TypeError(f"the tool's callable cannot be read: {refused}") from None
     except _HiddenWrapper as refused:
         raise TypeError(
             "a decorator on the tool's function holds a second wrapper of that function (in "

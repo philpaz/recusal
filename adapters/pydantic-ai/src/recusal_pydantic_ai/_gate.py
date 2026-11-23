@@ -105,6 +105,9 @@ _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
 #: A callable on the way is read by ``inspect.signature`` as a ``functools.partialmethod``
 #: (the same kernels).
 _PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
+#: A bound argument is taken by a wrapper under another name than the parameter with a
+#: default it would fill on the function the wrapper names (the same kernels).
+_BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
 
 #: A deferred-call handler, as ``HandleDeferredToolCalls`` takes one: ``handler(ctx,
 #: requests)`` returns the results it has, or None. Sync or async.
@@ -977,6 +980,26 @@ def _dispatches(step: Any) -> bool:
 _CACHED = type(functools.lru_cache(maxsize=None)(len))
 
 
+def _without_its_own_wrapped(function: Any) -> Any:
+    """A tool that is a ``functools.partial`` carrying a ``__wrapped__`` of its own (it was
+    named with ``functools.update_wrapper`` or ``functools.wraps``), as the partial it is
+    without that name; anything else as it is.
+
+    A kernel later than 0.15.0 follows the name a partial carries, as one more level. This
+    gate has rules of its own for such a partial (``_bound_over_a_wrapper``,
+    ``_another_signature``: the signature Pydantic AI reads through that name is held
+    against the function the call reaches), and they are written against the levels of
+    the callables the call passes through. So the kernel is handed the same partial
+    without the name, and those rules judge the name. A partial that also declares a
+    ``__signature__`` is handed over as it is: the kernel refuses that first."""
+    if not isinstance(function, functools.partial):
+        return function
+    own = getattr(function, "__dict__", None)
+    if type(own) is not dict or "__wrapped__" not in own or "__signature__" in own:
+        return function
+    return functools.partial(function.func, *function.args, **function.keywords)
+
+
 def _next_callables(function: Any) -> list[Any]:
     """The callables ``function`` hands the call to, bound as it binds them, in the order
     the kernel's walk takes them: a method's and a partial's rebound, ``__wrapped__``, then a
@@ -1012,7 +1035,7 @@ def _view(function: Any, validated: bool) -> tuple[list[Any], list[Any]]:
     A class or a builtin wraps nothing and the kernel does not walk it: for a validated
     tool it is one level, the signature Pydantic AI validates against."""
     try:
-        levels = _reached_parameters(function)
+        levels = _reached_parameters(_without_its_own_wrapped(function))
     except _DeclaredSignature:
         raise
     except Exception:
@@ -1273,6 +1296,20 @@ _PARTIALMETHOD = (
 )
 
 
+def _bound_partial_cause(function: Any) -> Optional[str]:
+    """This gate's own reason for a ``functools.partial`` that binds by position somewhere
+    on the way (``_bound_over_a_wrapper``), for a call the kernel's walk has refused
+    already; None where there is none or the callables cannot be read that far."""
+    try:
+        for step in _steps(function):
+            cause = _bound_over_a_wrapper(step)
+            if cause is not None:
+                return cause
+    except Exception:  # noqa: BLE001, the kernel's refusal stands as it is
+        return None
+    return None
+
+
 def _walk_reason(refused: BaseException) -> str:
     """The reason a call is refused with when the kernel's walk raises one of the
     refusals it names (``HiddenWrapper``, ``DispatchedAtCallTime``,
@@ -1284,6 +1321,8 @@ def _walk_reason(refused: BaseException) -> str:
         return _DISPATCHED
     if isinstance(refused, _PartialMethodSignature):
         return _PARTIALMETHOD
+    if isinstance(refused, _BoundArgumentKept):
+        return f"the function this tool runs cannot be read: {refused}"
     return (
         "a decorator on the function this tool runs holds a second wrapper of that "
         "function (in its closure or on the decorator object), which is not reached "
@@ -1375,13 +1414,23 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
             "a function this tool runs declares a signature of its own (`__signature__`), so "
             "the parameters Python binds, and their defaults, cannot be read"
         )
+    except _BoundArgumentKept as refused:
+        # this gate's own rule for a partial that binds by position says more about it
+        return args, _bound_partial_cause(function) or _walk_reason(refused)
     except (_HiddenWrapper, _DispatchedAtCallTime, _PartialMethodSignature) as refused:
         return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a callable the kernel does not walk
-        return args, unread
+        # a partial that binds by position and carries a name of its own, further in than
+        # the tool itself, is one this gate can say more about
+        return args, _bound_partial_cause(function) or unread
     try:
         unreadable = _unreadable_step(function, levels, callables, takes_ctx, validated)
-    except (_HiddenWrapper, _DispatchedAtCallTime, _PartialMethodSignature) as refused:
+    except (
+        _HiddenWrapper,
+        _DispatchedAtCallTime,
+        _PartialMethodSignature,
+        _BoundArgumentKept,
+    ) as refused:
         # the levels under a partial with keywords, walked without it
         return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a step that cannot be read is not let through

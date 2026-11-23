@@ -812,9 +812,11 @@ All notable changes to this project are documented here. The format follows
   - *Nothing held is run.* A function can hold anything (a lazy proxy that connects when
     touched, a remote stub that answers every attribute). A held value's type is read with
     `type()`. If it is not exactly one of the closed set, nothing else of it is read. If it
-    is, only that type's own built-in accessors are used. No attribute is looked up on a
-    held value, no descriptor its class declares is called, and values are compared by
-    identity only. A dictionary that is read (a function's `__dict__`, an instance's, a
+    is, it is read only through what that type itself defines in C: its accessors, and for
+    a plain function its `__code__`, its `__closure__` and the contents of its cells,
+    which no class can stand in for. No attribute an application could answer is looked
+    up on a held value, no descriptor its class declares is called, and values are
+    compared by identity only. A dictionary that is read (a function's `__dict__`, an instance's, a
     class's) is listed in one step, so another thread changing it cannot break the walk,
     and no key is looked up in it: a key is compared only when it is exactly a `str`, so
     no key's `__hash__` or `__eq__` runs.
@@ -823,11 +825,14 @@ All notable changes to this project are documented here. The format follows
     method of an object that holds the function. One that is, or is held by, an object of
     any type outside the closed set: a callable object, a proxy (lazy proxies, wrapt), a
     wrapper a C extension builds, a subclass of a type of the closed set. One held anywhere
-    but the closure cells, the named module globals or the instance attributes of a
-    callable on the way: a class attribute, a slot, a container (in a global too), a
-    function's own attribute (`tool.aio`), a global of another module reached through an
-    attribute (`helpers.guarded`), a global the `__call__` of a class-based decorator
-    names, a global of a function whose `__globals__` is not exactly a `dict`. A class-based decorator whose own method keeps the argument. A wrapper
+    but where a callable on the way that names a `__wrapped__` holds things (its closure
+    cells and named module globals if it is a plain function; its instance attributes and
+    the closure cells and named module globals of its class's `__call__` if it is any
+    other callable): one held by a callable on the way that names nothing as
+    `__wrapped__`, a class attribute, a slot, a container (in a global too), a function's
+    own attribute (`tool.aio`), a global of another module reached through an attribute
+    (`helpers.guarded`), a global of a function whose `__globals__` is not exactly a
+    `dict`. A class-based decorator whose own method keeps the argument. A wrapper
     that names nothing as `__wrapped__` (one that copies the signature by hand). An
     argument taken in a body alone (`kwargs.pop`), which no signature shows. The arguments
     a `functools.partial` binds. Anything held behind an object that passes for a
@@ -940,11 +945,75 @@ All notable changes to this project are documented here. The format follows
     two names that is not a `functools.partialmethod`: `inspect.signature` does not read
     it, and neither does the walk.
   - *Nothing is prepared and nothing is run.* The test is the one `inspect.signature`
-    makes, an attribute lookup on a callable of the walk and an `isinstance`. It needs
-    none of what the first walk prepares, and holds where the two checks above are off.
+    makes, an attribute lookup on a callable of the walk and an `isinstance`, made only
+    for a callable that shows something under one of the two names, and only while
+    `functools.partialmethod` is a plain class (its type is exactly `type`, as the
+    standard library's is). It needs none of what the first walk prepares, and holds
+    where the two checks above are off. Where something else stands in `functools` under
+    that name (a tracing function, a class with a metaclass of its own), or nothing does,
+    the check asks nothing and refuses nothing: a callable without a mark is read as
+    0.15.0 reads it, and one with a mark is left to `inspect.signature`, as in 0.15.0.
   - *Not found, by design.* A partial application written by hand, and a callable that
     reaches such a method through a helper that names nothing as `__wrapped__` and does
     not carry the mark.
+  - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
+- **Kernel: four more shapes the walk read wrongly are refused, found by review round
+  six.** Each was accepted by 0.15.0 too, and each ran a value no policy judged. Nothing
+  that 0.15.0 refused is now accepted.
+  - *A `__wrapped__` carried by a `functools.partial`.* A decorator written as
+    `functools.wraps(f)(functools.partial(helper, f))` shows the signature of `f`, and
+    the walk followed the partial's function (the helper) and never the name the partial
+    itself carries: a wrapper under it with a parameter of its own was not read (judged
+    `limit=5`, ran `limit=10`). The walk now follows that name like any other
+    `__wrapped__`, so what is under it gets the verdict it would get under a nested
+    function. The decorator alone, over a plain function, is read and accepted.
+  - *A `functools.lru_cache` wrapper that names one function and calls another.*
+    `@functools.wraps(f)` above `@functools.lru_cache` above a wrapper (or
+    `functools.update_wrapper(cached, f)`) overwrites the cache's `__wrapped__` with `f`;
+    the walk read the cache as `f`, and the wrapper the cache really calls is held only
+    in C. The function a cache calls is always among the objects it refers to, which
+    `gc.get_referents` lists from the wrapper's own C type without looking up an
+    attribute or calling anything the application wrote. A cache whose `__wrapped__` is
+    not, by identity, among them is refused as a `HiddenWrapper` ("a `functools.lru_cache`
+    wrapper names one function as `__wrapped__` and calls another, which the walk cannot
+    read"), on the walk and held by a wrapper. A cache on the function itself, used or
+    not, bounded or not, on a method, under a wrapper, is read as before. *Not found, by
+    design:* an overwritten wrapper of a bounded cache that holds the named function as a
+    cached key or result (it is listed among the same objects); and all of it where `gc`
+    is not the interpreter's own module at the first walk, where the listing raises (an
+    audit hook on `gc.get_referents`), or where the checks are off. The listing is as
+    long as a bounded cache is full, once per walk of such a tool.
+  - *What the `__call__` of a class-based decorator holds.* The instance attributes of a
+    callable object that names a `__wrapped__` were read; the closure cells of its
+    class's `__call__`, and the module globals that method names, were not. A class
+    written inside the decorator, whose `__call__` calls a second wrapper the decorator
+    built, is now refused like the same decorator written as a function, and so is a
+    class at module level whose `__call__` names the wrapper as a global (listed as not
+    found until now).
+  - *A bound argument a wrapper takes under another name.* The walk binds the object of
+    a method, and the positional arguments of a `functools.partial`, to what the function
+    names as `__wrapped__`, as if the wrapper handed them on. A method that delegates to
+    a free function under `functools.wraps` of it
+    (`def search(self, *args, **kwargs): return search(*args, **kwargs)`) keeps the
+    object: the free function ran with its first parameter at its default, which the
+    signature the tool shows no longer had. The walk now raises the new public
+    `recusal.invocation.BoundArgumentKept`, a subclass of `ValueError`, when a bound
+    argument is taken on the wrapper by a named parameter and would fill, on the
+    function it names, a parameter of ANOTHER name that has a default; the message names
+    both parameters and what to do, and `unsupported_signature` returns it. An ordinary
+    bound method, decorated or not, cached, a `classmethod`, a wrapper that takes
+    `(*args, **kwargs)`, one that takes the argument under the same name, and a wrapped
+    function whose parameter has no default (`self`) are read as before. *Not found, by
+    design:* a wrapper that takes the bound argument in `*args` and drops it in its body,
+    and one that takes it under the same name and does not hand it on.
+  - *Fixed in this change before release:* the `partialmethod` check asked
+    `isinstance(..., functools.partialmethod)` of every callable, so a process in which
+    another object stands under that name refused every tool. See the entry above.
+  - `recusal-pydantic-ai` had rules of its own for the first and the last of these and
+    keeps its reasons for them; it now refuses the other two through the kernel.
+    `recusal-crewai`, which reads a tool with a walk of its own, had all four: beside a
+    kernel later than 0.15.0 it asks the kernel's walk and holds every level it returns
+    to the schema. Beside 0.15.0 or older it has them still.
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
