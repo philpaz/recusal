@@ -510,6 +510,7 @@ jobs:
       - name: Type-check the installed package
         run: |
           cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
+
       # Reuse the exact wheels built above on the adapter's declared Python floor.
       # The hash-locked adapter environment includes the type checker and framework.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
