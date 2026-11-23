@@ -5708,7 +5708,7 @@ class TestTheFrameworksAnswerIsNeverSetAside:
         function whose annotations and globals are read: through ``__wrapped__`` and
         through a ``functools.partial``."""
         import functools
-        from typing import Annotated
+        from typing import Annotated, Optional
 
         from langchain_core.runnables import RunnableConfig
         from langchain_core.tools import InjectedToolArg
@@ -5723,7 +5723,11 @@ class TestTheFrameworksAnswerIsNeverSetAside:
 
         wrapper.__wrapped__ = inner  # type: ignore[attr-defined]
         for func in (inner, wrapper, functools.partial(wrapper), functools.partial(inner)):
-            assert adapter._hints(func) == {"cfg": RunnableConfig}
+            # Python 3.10 reads a ``= None`` default as Optional; later versions do not
+            assert adapter._hints(func) in (
+                {"cfg": RunnableConfig},
+                {"cfg": Optional[RunnableConfig]},
+            )
             assert adapter._namespace(func) is inner.__globals__
         assert adapter._hints(len) == {} and adapter._namespace(len) == {}
 

@@ -345,7 +345,7 @@ def _filled_type(annotation, namespace: dict[str, Any], _depth: int = 0) -> str 
         inside: tuple = (annotation.__value__,)
     elif isinstance(annotation, typing.TypeVar):
         inside = (annotation.__bound__, *annotation.__constraints__)
-    elif isinstance(annotation, type):
+    elif isinstance(annotation, type) and typing.get_origin(annotation) is None:
         if issubclass(annotation, (*_FILLED_TYPES, ToolRuntime)):
             return _RESOLVED
         inside = tuple(getattr(annotation, "__orig_bases__", ()))
