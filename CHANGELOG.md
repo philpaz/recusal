@@ -54,6 +54,33 @@ All notable changes to this project are documented here. The format follows
   which is the PyPI page, carries the website and OpenSSF Scorecard badges and a Status
   section that says what review the adapter has had.
 
+### Fixed
+
+- **An audit sink, or the caller of `append`, could change what another sink received
+  and what the log kept in memory.** `AuditLog.append` handed one entry dict to every
+  sink in turn, kept that same dict in `entries`, and returned it. A sink that changed
+  its argument without raising (one that uppercased `entry["action"]["tool"]` to format
+  it, say), a sink that kept its argument and changed it later, or a caller that changed
+  the returned entry therefore changed the entry the next sink was handed and the one in
+  `entries`: that sink's record and `verify(log.entries)` then failed verification, or
+  held a value nobody adjudicated, with no error raised. On a file-backed log a sink that
+  rewrote `entry["hash"]` also set that process's `last_hash` until the next append read
+  the head back from the file. Sinks have behaved this way since they were added in
+  0.6.0, and the returned entry has been the retained one since the audit log first
+  shipped in 0.1.0. Now each sink is handed a copy of its own, decoded from the line the
+  file stores, with the same `seq` and `hash`, and `append` returns another copy to its
+  caller, so nothing a sink or a caller does to its entry, at once or later, reaches
+  another sink, `entries`, the head, or the returned entry. Each copy is the stored form
+  and verifies on its own. **The file was never affected:** the line is written before
+  any sink is called and was never rewritten, so an on-disk chain verified throughout
+  and existing logs are unchanged. Order and failure handling are as they were: the file
+  is written first, sinks are called in order inside the append lock, and a sink that
+  raises fails the append. The cost is one decode of the entry per sink and one for the
+  returned entry when `entries` is kept (an in-memory log also encodes the entry once).
+  Code that relied on `append` returning the very object held in `entries`
+  (`log.append(...) is log.entries[-1]`) now gets an equal dict that is a different
+  object.
+
 ### Security
 
 - **`recusal-openai-agents` 0.2.1: every `functools.singledispatch` function is refused

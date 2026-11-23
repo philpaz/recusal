@@ -581,6 +581,10 @@ entry to any object with a `write(entry)` method (a WORM bucket, another host, a
 `recusal.AuditSink` is the protocol), and a sink failure surfaces as a failed append, so
 the hook fails closed to a deny rather than adjudicating off the record. Each entry
 carries its `seq` and `hash`, so a sink holds the head anchor `(seq + 1, hash)` directly.
+Each sink is handed a copy of its own, the entry as the file stores it, and `append`
+returns another to its caller: a sink that changes or keeps its copy, or a caller that
+changes the returned entry, changes nothing any other sink receives and nothing the log
+holds.
 Opening a log can then refuse instead of trusting: `AuditLog(path, verify_on_open=True)`
 raises `AuditIntegrityError` rather than extend a file that fails strict verification,
 and `AuditLog(path, expected_head=(count, hash))` also refuses truncation, a tail-suffix

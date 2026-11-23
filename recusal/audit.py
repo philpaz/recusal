@@ -36,6 +36,8 @@ What this does and does not guarantee (read before relying on it):
 - To keep such an anchor, or to mirror the record into a store the attacker cannot
   rewrite (WORM, another host), pass ``sinks=[...]``: every committed entry is handed to
   each :class:`AuditSink`, and a sink failure surfaces as a failed append (fail closed).
+  Each sink gets a copy of its own, and so does the caller of ``append``: nothing either
+  does to its copy reaches another sink, the ``entries`` mirror or the head.
 - **The log contains what you put in it.** ``tool_input`` is never embedded by the hook
   wiring (fingerprint only), but finding *messages*, verdict reasons, and exception text
   are stored in plaintext - a policy that writes a secret or a regulated value into a
@@ -146,6 +148,11 @@ class AuditSink(Protocol):
     - ``write(entry)`` receives the entry dict AFTER the local record is committed,
       in chain order (on a file-backed log it is called inside the append lock, so a
       shared sink sees one global order even under concurrent writers).
+    - The dict is the sink's own: a separate copy of the entry in its stored form, the
+      line of the file decoded, made for that sink alone. A sink may keep it and may
+      change it, during ``write`` or later; no other sink, the log's ``entries`` mirror,
+      its head, or the entry ``append`` returns sees the change. The copy verifies with
+      ``verify`` as received.
     - Each entry carries its own ``seq`` and ``hash``, so a sink can maintain the
       external head anchor directly: ``(entry["seq"] + 1, entry["hash"])`` is exactly
       the ``expected_head`` that ``verify``/``verify_file``/``verify_on_open`` accept.
@@ -327,6 +334,25 @@ def _stored_form(entry: Dict[str, Any]) -> Dict[str, Any]:
     return stored
 
 
+def _line(entry: Dict[str, Any]) -> str:
+    """The one line a file-backed log writes for an entry (without its terminator)."""
+    return json.dumps(entry, ensure_ascii=True, default=str)
+
+
+def _decoded(line: str) -> Dict[str, Any]:
+    """A separate copy of an entry, decoded from its line as a reader of the file does.
+
+    Every holder of an entry other than the log itself (each sink, the caller of
+    ``append``) gets one of these, so no two of them share a dict, a nested dict or a
+    list. An entry is in its stored form before its line is written, and the stored form
+    decodes back equal to itself, so the copy carries the same ``seq`` and ``hash`` and
+    verifies on its own. ``_stored_form`` has already made this same round trip on the
+    entry, so the decode here is one that has succeeded once.
+    """
+    copy: Dict[str, Any] = json.loads(line)
+    return copy
+
+
 def _summarize(verdict: Verdict) -> Dict[str, Any]:
     return {
         "decision": verdict.decision.value,
@@ -472,7 +498,9 @@ class AuditLog:
     ) -> Dict[str, Any]:
         """Record one verdict. ``action`` is any JSON-serializable description of what
         was adjudicated (e.g. ``{"tool": "Bash", "command": "..."}``); ``actor`` is an
-        optional agent/session id. Returns the written entry (including its hash).
+        optional agent/session id. Returns the written entry (including its hash) as
+        a dict the caller owns: it is a copy, so changing it changes neither the record
+        nor ``entries``.
 
         A file-backed append is one serialized transaction: an inter-process lock
         (``<path>.lock``) is held while the chain head is re-read from the END of the
@@ -487,7 +515,11 @@ class AuditLog:
         concurrent writers). A sink that raises makes this call raise - the caller must
         fail closed - while the local entry remains on record; the in-memory head/mirror
         is then stale until the next append re-derives it from the file, which is why
-        under concurrency you verify the FILE, not one process's mirror.
+        under concurrency you verify the FILE, not one process's mirror. (An in-memory
+        log has no file to re-derive from: its entry and head have already advanced
+        when a sink raises.) Each sink is handed a copy of its own, decoded from the
+        entry's stored line, so a sink that changes or keeps its argument cannot alter
+        what the next sink receives, what ``entries`` holds, or what this call returns.
 
         Within one process, concurrent threads (an agent runtime that runs the calls of
         one turn on a thread pool) are serialized by a process-level lock around the whole
@@ -517,27 +549,30 @@ class AuditLog:
                     elif fragment:
                         terminate_first = True  # whitespace with no newline: same boundary
                     entry = self._build(verdict, next_seq, last_hash, action, actor, ts)
+                    line = _line(entry)
                     with open(self.path, "a", encoding="utf-8") as fh:
                         if terminate_first:
                             fh.write("\n")
-                        fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
+                        fh.write(line + "\n")
                         fh.flush()
                         if self._fsync:
                             os.fsync(fh.fileno())
                     for sink in self._sinks:
-                        sink.write(entry)
+                        sink.write(_decoded(line))  # its own copy: see AuditSink
                 self._next_seq = next_seq + 1
                 self.last_hash = entry["hash"]
-                if self._retain:
-                    self.entries.append(entry)
-                return entry
+                if not self._retain:
+                    return entry  # nothing else holds it, so it is the caller's already
+                self.entries.append(entry)
+                return _decoded(line)
             entry = self._build(verdict, self._next_seq, self.last_hash, action, actor, ts)
+            line = _line(entry)
             self._next_seq += 1
             self.entries.append(entry)
             self.last_hash = entry["hash"]
             for sink in self._sinks:
-                sink.write(entry)
-            return entry
+                sink.write(_decoded(line))  # its own copy: see AuditSink
+            return _decoded(line)
 
 
 def _scan(path: str) -> Iterator[Dict[str, Any]]:
