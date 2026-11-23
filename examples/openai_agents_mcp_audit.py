@@ -19,7 +19,8 @@ own surface label:
 - ``openai_agents.mcp.call_tool``: a local MCP server's ``call_tool``. The SDK hands that
   method the server's own tool name and the arguments, and no call id, so these entries
   carry none. The server's name is recorded as ``control.mcp_server``, and the entry is
-  bound to the arguments the server receives;
+  bound to the arguments the server is sent: the call, completed with the defaults the
+  server's listed schema gives for what it leaves out;
 - ``openai_agents.hosted_mcp.approval``: a hosted MCP call OpenAI asked approval for, under
   the approval request's id, with the server label as ``control.mcp_server``, bound to the
   arguments in the request.

@@ -21,15 +21,16 @@ What each entry is bound to:
 - a call that is judged (allowed or refused by the policy): the invocation the SDK
   prepared, validated, defaults filled and types coerced, named by parameter and projected
   to JSON data, which is what the function receives;
-- a call refused before judgment (arguments that are not a JSON object, a schema whose
-  prepared arguments cannot be judged, a guardrail bound to another tool): the arguments
-  as the model proposed them.
+- a call refused before judgment (arguments that are not a JSON object or do not
+  validate, a non-finite number, a guardrail bound to another tool): the arguments as the
+  model proposed them.
 
 What is not on the log: a call to a tool the agent does not have (the SDK raises
 ``ModelBehaviorError`` before any guardrail runs, and the run stops), a call a human
-approval rejected (the guardrail runs after approval, when the tool is about to execute),
-and the tool calls of a sub-agent behind ``agent.as_tool(...)`` unless that sub-agent was
-built with ``audited_agent`` itself.
+approval rejected (the guardrail runs after approval, when the tool is about to execute;
+under the SDK's ``pre_approval_tool_input_guardrails=True`` it also runs before, and such
+a call then has an entry), and the tool calls of a sub-agent behind ``agent.as_tool(...)``
+unless that sub-agent was built with ``audited_agent`` itself.
 
 Requires Python 3.10+ and is tested with exactly openai-agents==0.24.0 and openai==3.49.0.
 Recusal itself remains Python 3.9+ and has no OpenAI dependency.

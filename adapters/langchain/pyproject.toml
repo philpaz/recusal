@@ -33,10 +33,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.14.0 is the first release where `decide` and `recusal.invocation` are public.
-    "recusal>=0.14.0,<1",
-    # The gate itself. This package wraps its public hooks and nothing private.
-    "recusal-langgraph>=0.2.0,<1",
+    # The floor of `recusal-langgraph`, whose gate needs the kernel's walk of every
+    # callable a call reaches (0.15.0).
+    "recusal>=0.15.0,<1",
+    # The gate itself. This package wraps its public hooks and nothing private. 0.3.0 is
+    # the first release whose gate refuses a call that names another tool than the one
+    # that runs, and withholds an answer that never passed its judging step.
+    "recusal-langgraph>=0.3.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "langchain>=1.4.10,<2",

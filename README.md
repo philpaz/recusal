@@ -28,6 +28,15 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 product. The adapters are at different stages of security review, and help is welcome:
 [project status](#project-status).
 
+**What it does not enforce:** Recusal judges the tool calls that reach a gate you have
+installed. It does not stop an agent that can reach a resource another way: a credential
+with wider rights, a shell or network path outside the governed session, a file it can
+write that configures the gate, or the Python environment the hook runs in. Use it as
+one layer of several: least-privilege credentials for the agent, a sandbox or container,
+limits on its network egress, Claude Code managed settings for the hook configuration,
+and an audit anchor the writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
+
 [![Website](https://img.shields.io/badge/website-recusal.io-2453c4)](https://recusal.io)
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -199,18 +208,18 @@ certified security product, and it is provided under Apache-2.0 without warranty
 [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) says what is stable and what may still change.
 
 The adapters are at different stages of security review. Of the 8 adapters,
-2 have completed the in-depth review and 6 are in it now:
+5 have completed the in-depth review and 3 are in it now:
 
 | Package | Security review | Where it stands |
 |---|---|---|
 | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | In-depth review complete | Its fixes are released in 0.2.1. |
 | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | In-depth review complete | Its fixes are released in 0.2.0. |
-| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review under way | Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. |
-| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review under way | Its fixes are in [#298](https://github.com/philpaz/recusal/pull/298) and are not released yet. |
-| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review under way | Its fixes are in [#296](https://github.com/philpaz/recusal/pull/296) and are not released yet. |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
-| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes are in [#297](https://github.com/philpaz/recusal/pull/297) and are not released yet. |
-| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes are in [#292](https://github.com/philpaz/recusal/pull/292) and are not released yet. |
+| [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review complete | Its fixes are released in 0.2.0. |
+| [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review complete | Its fixes are released in 0.3.0. |
+| [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review complete | Its fixes are released in 0.2.2. |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
+| [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
+| [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
 
 What the two reviews are:
 
@@ -225,6 +234,12 @@ What the two reviews are:
 Both are the project's own reviews, not a third-party audit, and a review finds what it
 looks for: a reviewed adapter can still have gaps. Each adapter's README says what its
 gate refuses and what it does not see.
+
+[What a review consisted of](https://github.com/philpaz/recusal/blob/main/docs/REVIEW.md)
+describes the in-depth review method by method (the threat model, the generated corpus,
+the keyword matrix, mutation testing) and gives the command that reproduces each number
+it states. A package has a section there once the scripts that produce its numbers are
+in this repository. Today that is `recusal-openai`.
 
 **Help make it better.** Read the code, test an adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
@@ -736,7 +751,7 @@ the policy runs and what its hook cannot see is in
 | OpenAI Agents SDK, MCP tools | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | `openai-agents==0.24.0` `openai==3.49.0` | [`openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py), [`openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-mcp-tools) |
 | OpenAI API, your own loop | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | `openai==3.49.0` | [`openai_responses_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_gate.py), [`openai_responses_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_responses_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-api-your-own-loop) |
 | Google ADK | [`recusal-google-adk`](https://github.com/philpaz/recusal/tree/main/adapters/google-adk) | `google-adk==2.14.0` `google-genai==2.34.0` | [`google_adk_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_gate.py), [`google_adk_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/google_adk_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#google-adk) |
-| CrewAI | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | `crewai==1.15.40` | [`crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py), [`crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#crewai) |
+| CrewAI | [`recusal-crewai`](https://github.com/philpaz/recusal/tree/main/adapters/crewai) | `crewai==1.15.44` | [`crewai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_gate.py), [`crewai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/crewai_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#crewai) |
 | Pydantic AI | [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | `pydantic-ai-slim==2.67.0` | [`pydantic_ai_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_gate.py), [`pydantic_ai_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/pydantic_ai_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#pydantic-ai) |
 <!-- framework-gates:end -->
 
@@ -882,6 +897,8 @@ Everything is indexed in [`docs/`](https://github.com/philpaz/recusal/blob/main/
 |  | [`docs/ENTERPRISE.md`](https://github.com/philpaz/recusal/blob/main/docs/ENTERPRISE.md) | A reference architecture for an isolated enterprise deployment. A position; nothing in it is built. |
 | **Check it yourself** | [`docs/PROVEN.md`](https://github.com/philpaz/recusal/blob/main/docs/PROVEN.md) | Recusal governing its own repository: a real hook refusing real destructive calls, verbatim. |
 |  | [`docs/VERIFY.md`](https://github.com/philpaz/recusal/blob/main/docs/VERIFY.md) | Verify a release's provenance, signatures and PyPI bytes, with the negative controls. |
+|  | [`docs/REVIEW.md`](https://github.com/philpaz/recusal/blob/main/docs/REVIEW.md) | What an in-depth review of a package consisted of, and the command that reproduces each number it states. |
+|  | [`docs/REVIEW-LOG.md`](https://github.com/philpaz/recusal/blob/main/docs/REVIEW-LOG.md) | The review of each package, round by round: what was found, what is fixed, what is open, and where to help. |
 |  | [`SECURITY.md`](https://github.com/philpaz/recusal/blob/main/SECURITY.md) | The threat model, what the gate does not defend against, and how to report a vulnerability. |
 |  | [`docs/REFERENCES.md`](https://github.com/philpaz/recusal/blob/main/docs/REFERENCES.md) | Primary sources for every empirical claim, with what each does and does not support. |
 | **Depend on it** | [`STABILITY.md`](https://github.com/philpaz/recusal/blob/main/STABILITY.md) | What is frozen, what each version number promises, and what 1.0 has to earn. |
@@ -965,8 +982,10 @@ Thank you to the people who have made Recusal better:
 - [@ZYZ666-RGB](https://github.com/ZYZ666-RGB) (yuzhou): Hypothesis property tests for
   the MCP name helpers, in [#183](https://github.com/philpaz/recusal/pull/183).
 - [@hananbahi527](https://github.com/hananbahi527): complete type annotations and strict
-  mypy checks for the `recusal-pydantic-ai` adapter, in
-  [#270](https://github.com/philpaz/recusal/pull/270).
+  mypy checks for three adapters, `recusal-pydantic-ai`, `recusal-google-adk` and
+  `recusal-crewai`, in [#270](https://github.com/philpaz/recusal/pull/270),
+  [#301](https://github.com/philpaz/recusal/pull/301) and
+  [#303](https://github.com/philpaz/recusal/pull/303).
 - [@noqt](https://github.com/noqt): the weekly lane that smoke-tests each installed adapter
   wheel against the newest framework release, in
   [#268](https://github.com/philpaz/recusal/pull/268).

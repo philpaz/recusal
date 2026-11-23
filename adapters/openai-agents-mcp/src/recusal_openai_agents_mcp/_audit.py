@@ -9,8 +9,18 @@ under its own surface label:
 - ``openai_agents.tool_input_guardrail``: function tools, under the SDK's tool call id;
 - ``openai_agents.mcp.call_tool``: a local MCP server's ``call_tool``. The SDK hands that
   method the server's own tool name and the arguments, and no call id, so these entries
-  carry none. The server's name is recorded as ``control.mcp_server``, and the entry is
-  bound to the arguments the server receives;
+  carry none. The server's name is recorded as ``control.mcp_server``, and the entry of a
+  judged call is bound to the arguments as judged: the call, completed with every default
+  the server's listed schema gives for what it leaves out. That is what the server is
+  sent, except for a listed default that cannot be sent (one its own property schema
+  does not allow, or text the server would read as another type), which is judged as
+  listed and not sent. A call refused before judgment (arguments that are not valid
+  against the listed schema, an object or a list the schema offers more than one form
+  for, a string a server may read as another value, arguments
+  too costly to check, a schema the gate cannot check, a tool the server does not
+  list, arguments that are not JSON data) is one entry too, bound to the arguments as the
+  SDK handed them, or, when those are not JSON data and so have no fingerprint, to the
+  text the gate writes them as, under the key ``input``;
 - ``openai_agents.hosted_mcp.approval``: a hosted MCP call OpenAI asked approval for, under
   the approval request's id, with the server label as ``control.mcp_server``, bound to the
   arguments in the request.

@@ -20,7 +20,9 @@ resolved from, and ``--check`` (and ``tests/test_requirement_locks.py``) compare
 with the sources, so a pin changed in one place and not relocked fails. A release less
 than seven days old is not taken into a committed lock, the cooling-off the Dependabot
 configuration uses: one that is pulled or found compromised in its first days never
-enters.
+enters. The one exception is ``COOLING_OFF_EXCEPTIONS``: named packages of one lock,
+taken early only to close a published advisory, each named with that advisory in the
+lock's own header.
 
 **``--resolve``** is for the newest-release lane, whose purpose is to find out what the
 newest releases do. It resolves the named packages with no upper pin and no cooling-off,
@@ -52,6 +54,21 @@ ADAPTERS = ROOT / "adapters"
 
 #: Days a release must have been public before a committed lock may take it.
 COOLING_OFF_DAYS = 7
+
+#: Releases a lock takes before their cooling-off is over, each only to close a published
+#: security advisory against what the lock held. Lock name -> (the packages, the date
+#: their own cutoff moves to, the advisories it closes). Every other package in that lock
+#: keeps the cooling-off. An exception the cooling-off has caught up with is stale, and a
+#: test asks for it to be removed.
+COOLING_OFF_EXCEPTIONS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    # crewai 1.15.42 made chromadb an optional extra; 1.15.40 required chromadb 1.5.9,
+    # which has four advisories and no fixed release. The three are one release of CrewAI.
+    "adapter-crewai": (
+        ("crewai", "crewai-cli", "crewai-core"),
+        "2026-11-20",
+        "GHSA-36p7-vc44-83pf GHSA-f4j7-r4q5-qw2c GHSA-2wm9-hf6c-p5cr GHSA-xph7-9rjv-w5fr",
+    ),
+}
 
 #: Locks with fixed roots: a tool a job installs on its own. The value is the roots and
 #: the oldest Python the job that installs it runs on.
@@ -164,14 +181,19 @@ def pins(body: str) -> list[tuple[str, str]]:
 
 
 def write(name: str, roots: list[str], python: str, cutoff: str) -> None:
-    body = resolve(
-        roots, ["--universal", "--python-version", python, "--exclude-newer", cutoff], name
-    )
+    options = ["--universal", "--python-version", python, "--exclude-newer", cutoff]
+    exception = ""
+    if name in COOLING_OFF_EXCEPTIONS:
+        packages, until, advisories = COOLING_OFF_EXCEPTIONS[name]
+        for package in packages:
+            options += ["--exclude-newer-package", f"{package}={until}T00:00:00Z"]
+        exception = f"# Except {', '.join(packages)}: releases to {until}, to close {advisories}.\n"
+    body = resolve(roots, options, name)
     note = (
         f"# Hash-locked by tools/lock.py; do not edit. Releases newer than {cutoff} were\n"
         f"# not considered. Install: python -m pip install --require-hashes -r "
         f"requirements/{name}.txt\n"
-    )
+    ) + exception
     LOCKS.mkdir(exist_ok=True)
     path = LOCKS / f"{name}.txt"
     path.write_text(header(name, roots, python) + note + body, encoding="utf-8", newline="\n")

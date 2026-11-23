@@ -124,37 +124,68 @@ async def _adrain(stream):
         pass
 
 
+async def _adrain_events(agent):
+    async for _ in agent.astream_events(INPUT, version="v2"):
+        pass
+
+
 def _routes():
-    """Every way to run an agent: (label, uses the async gate, runner)."""
+    """Every way to run an agent: (label, runner)."""
     return [
-        ("invoke", False, lambda a: a.invoke(INPUT)),
+        ("invoke", lambda a: a.invoke(INPUT)),
         *[
-            (f"stream {mode}", False, lambda a, m=mode: _drain(a.stream(INPUT, stream_mode=m)))
+            (f"stream {mode}", lambda a, m=mode: _drain(a.stream(INPUT, stream_mode=m)))
             for mode in ("values", "updates", "messages", "debug")
         ],
-        ("ainvoke, async gate", True, lambda a: asyncio.run(a.ainvoke(INPUT))),
-        (
-            "astream, async gate",
-            True,
-            lambda a: asyncio.run(_adrain(a.astream(INPUT, stream_mode="updates"))),
-        ),
+        ("batch", lambda a: a.batch([INPUT])),
+        ("ainvoke", lambda a: asyncio.run(a.ainvoke(INPUT))),
+        ("astream", lambda a: asyncio.run(_adrain(a.astream(INPUT, stream_mode="updates")))),
+        ("astream_events", lambda a: asyncio.run(_adrain_events(a))),
+        ("abatch", lambda a: asyncio.run(a.abatch([INPUT]))),
     ]
 
 
-def test_create_agent_still_takes_wrap_tool_call_middleware(lc):
+def test_create_agent_still_takes_tool_and_model_call_middleware(lc):
+    """The package's middleware is a subclass of ``AgentMiddleware`` overriding four of
+    its hooks; ``create_agent`` finds a hook by its being overridden on the class."""
     import inspect
 
     from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
 
     assert "middleware" in inspect.signature(create_agent).parameters
-    assert callable(_adapter().wrap_tool_call)
+    middleware = _adapter()._GateMiddleware
+    assert issubclass(middleware, AgentMiddleware)
+    for hook in ("wrap_tool_call", "awrap_tool_call", "wrap_model_call", "awrap_model_call"):
+        assert callable(getattr(AgentMiddleware, hook)), hook
+        assert getattr(middleware, hook) is not getattr(AgentMiddleware, hook), hook
 
 
+def test_a_model_call_is_still_handed_the_agents_tools_dicts_included(lc):
+    """The refusal of a provider-run tool reads ``request.tools`` in the model-call hook."""
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import wrap_model_call
+    from langchain_core.messages import AIMessage
+
+    handed = []
+
+    @wrap_model_call
+    def look(request, handler):
+        handed.extend(t if isinstance(t, dict) else t.name for t in request.tools)
+        return AIMessage(content="stop")
+
+    provider_tool = {"type": "web_search_20250305", "name": "web_search"}
+    model = lc.ScriptedChatModel(messages=iter([AIMessage(content="unused")]))
+    create_agent(model=model, tools=[lc.run_sql, provider_tool], middleware=[look]).invoke(INPUT)
+    assert handed == ["run_sql", provider_tool]
+
+
+@pytest.mark.parametrize("build", ["gate_middleware", "agate_middleware"])
 @pytest.mark.parametrize("route", _routes(), ids=lambda r: r[0])
-def test_every_route_passes_every_call_through_the_gate(lc, route):
-    label, use_async, run = route
+def test_every_route_passes_every_call_through_the_gate(lc, route, build):
+    label, run = route
     seen = Seen(lc.sql_scope_policy)
-    gate = lc.agate_middleware(seen) if use_async else lc.gate_middleware(seen)
+    gate = getattr(lc, build)(seen)
     lc.EXECUTED.clear()
     run(_agent(lc, CALLS, [gate]))
     assert sorted(seen.calls, key=str) == sorted(
@@ -166,11 +197,27 @@ def test_every_route_passes_every_call_through_the_gate(lc, route):
     ), f"{label}: an allowed call did not run"
 
 
-def test_ainvoke_with_only_the_sync_gate_runs_nothing(lc):
+def test_a_middleware_with_one_half_still_raises_on_the_other_route(lc):
+    """What the package's middleware would do with a half missing: LangChain raises rather
+    than run the tool with no hook. Both halves are implemented, so neither route raises
+    (``test_every_route_passes_every_call_through_the_gate``); this pins the framework
+    behavior that makes a missing half loud."""
+    from langchain.agents.middleware import wrap_tool_call
+
+    @wrap_tool_call
+    def sync_only(request, handler):
+        return handler(request)
+
+    @wrap_tool_call
+    async def async_only(request, handler):
+        return await handler(request)
+
     lc.EXECUTED.clear()
     with pytest.raises(NotImplementedError):
-        asyncio.run(_agent(lc, CALLS, [lc.gate_middleware()]).ainvoke(INPUT))
-    assert lc.EXECUTED == [], "the sync gate under ainvoke let a tool run"
+        asyncio.run(_agent(lc, CALLS, [sync_only]).ainvoke(INPUT))
+    with pytest.raises(NotImplementedError):
+        _agent(lc, CALLS, [async_only]).invoke(INPUT)
+    assert lc.EXECUTED == [], "a middleware with a missing half let a tool run"
 
 
 def test_negative_control_an_ungated_agent_runs_the_refused_call(lc):

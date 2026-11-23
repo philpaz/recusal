@@ -286,7 +286,7 @@ jobs:
           python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
           python -m pip install --no-deps -e .
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_review_tooling_openai.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
   openai-agents-example-py312:
     name: OpenAI Agents example (Python 3.12)
@@ -303,7 +303,7 @@ jobs:
           python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
           python -m pip install --no-deps -e .
       - name: Test OpenAI Agents SDK example and its surface probe
-        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
+        run: pytest -q tests/test_openai_agents_gate.py tests/test_openai_agents_audit.py tests/test_openai_agents_mcp_gate.py tests/test_openai_agents_mcp_audit.py tests/test_openai_responses_gate.py tests/test_openai_responses_audit.py tests/test_review_tooling_openai.py tests/test_compat_openai_agents.py tests/test_compat_openai_agents_mcp.py tests/test_adapter_conformance.py
 
   google-adk-example-py311:
     name: Google ADK example (Python 3.11)
@@ -509,7 +509,8 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
+
       # Reuse the exact wheels built above on the adapter's declared Python floor.
       # The hash-locked adapter environment includes the type checker and framework.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -526,7 +527,6 @@ jobs:
       - name: Type-check the installed package on Python 3.11
         run: |
           cd /tmp && /tmp/adapter-py311/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
-
   # The same proof for recusal-openai-agents.
   adapter-openai-agents-wheel:
     name: recusal-openai-agents wheel (build, install, smoke)
@@ -658,7 +658,7 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
+          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
 
   # The same proof for recusal-openai-agents-mcp.
   adapter-openai-agents-mcp-wheel:

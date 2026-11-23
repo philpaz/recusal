@@ -21,7 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "crewai_audit.py"
 SURFACE = "crewai.before_tool_call"
-PIN = "crewai==1.15.40"
+PIN = "crewai==1.15.44"
 
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"

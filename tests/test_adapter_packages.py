@@ -236,8 +236,6 @@ def test_google_adk_wheel_ci_smokes_and_type_checks_312_and_its_minimum():
     assert job.count(wheel_install) == 2
     assert (f"{minimum_environment}/bin/{wheel_install}") in job
     assert f"python -m venv {minimum_environment}" in job
-
-
 @pytest.mark.parametrize("directory", sorted(PACKAGES))
 def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(directory):
     """``py.typed`` is a claim to every user's type checker. It is made only where CI
@@ -260,6 +258,16 @@ def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(director
         ci_flags = (
             "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
             "--warn-unused-ignores --warn-redundant-casts"
+        )
+    elif directory == "crewai":
+        ci_flags = (
+            "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
+            "--warn-unused-ignores --warn-redundant-casts"
+        )
+    elif directory == "google-adk":
+        ci_flags = (
+            "--python-version 3.12 --check-untyped-defs --disallow-untyped-defs "
+            "--disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts"
         )
     # the checker is a root of the hash-locked file the job installs, at the kernel's pin
     lock = (ROOT / "requirements" / f"adapter-{directory}.txt").read_text(encoding="utf-8")

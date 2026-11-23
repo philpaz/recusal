@@ -8,13 +8,30 @@ names collide or a function tool already holds the name, and shortened when too 
 gate keyed on that public name judges a presentation of the capability, not the
 capability. The seam this gate uses is the one place the SDK hands the server the
 capability itself: ``server.call_tool(tool_name, arguments)``, invoked with the server's own
-tool name and the exact argument dict the server will run, after any approval a person
+tool name and the argument dict that is sent to the server, after any approval a person
 gave. ``gate_mcp_server(server, policy)`` wraps that method on the server, in place, because
 a server object is a connection and a copy would be a second one. A refusal returns an MCP
 error result carrying Recusal's reason, which the SDK surfaces to the model as the call's
 output, and the server's own ``call_tool`` is never reached. The policy therefore sees the
 name the server executes under, whatever the model called it, and a policy keyed by tool
 name must name the server's own tools.
+
+What is sent is not yet what the server runs: a server fills what the call leaves out
+from its defaults and converts a value of another type, after the gate. The server's
+listed input schema is the only statement of that, so the gate also wraps ``list_tools``,
+in place, to keep each tool's listed schema, and before the policy runs the arguments
+must be valid against the whole of that schema as they stand, and every default the
+schema lists for a property they leave out, at any depth, is written into them
+(``_schema.Listed.complete``). Arguments the gate cannot check or complete are refused,
+and so is what a schema cannot say the outcome of: an object or a list where the schema
+offers more than one form, and a string whose text a server would read as another type
+the schema also admits (the text of a number beside a number; JSON text for an argument,
+which the MCP Python SDK's server would decode and run as that value).
+The policy judges the completed arguments and the server is sent the completed arguments,
+with one exception: a listed default that cannot be sent (one that is not valid against
+its own property schema, or text the server would read as another type) is judged as
+listed and not sent. A parameter left out that has no listed default, and whatever a
+server does beyond what its schema says, is not seen.
 
 Hosted MCP (``HostedMCPTool``). Those calls run on OpenAI's servers, and the one local point
 is the SDK's approval callback, which runs only for a call OpenAI asks approval for.
@@ -24,12 +41,16 @@ and whose ``on_approval_request`` is ``recusal_approval(policy)``: a refusal ans
 so the hosted call is not made and the model reads the reason. An existing callback keeps
 running for the calls the gate allows. This is approval-gated, not execution-gated: a call
 OpenAI does not ask approval for is never seen, so a hosted tool whose ``require_approval``
-is anything but ``"always"`` is reported as ungated.
+is anything but ``"always"`` is reported as ungated. The policy sees the arguments as the
+model sent them; the hosted server's schema is not read here, so its defaults and its type
+conversion are not seen.
 
 ``gated_agent(agent, policy)`` gates all three at once: function tools (through the
 ``recusal-openai-agents`` package's ``gate_tools``), every server in ``mcp_servers`` in place, and every
 ``HostedMCPTool`` as a gated copy. It refuses, rather than skips, what no gate can see:
-handoffs, a sub-agent behind ``as_tool`` that is not itself gated, and ``Agent`` subclasses.
+handoffs, an agent with a ``prompt`` (a stored prompt can configure tools of its own), an
+agent whose ``model_settings`` put tools into the request, a sub-agent behind ``as_tool``
+that is not itself gated, and ``Agent`` subclasses.
 
 A server carries one policy. Because the gate is installed on the server object, every
 agent that lists that object shares it: gating it again with the same policy is a no-op,
@@ -42,19 +63,26 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import json
 from typing import Any, Callable, List, Optional
 
 from agents import Agent, HostedMCPTool, MCPToolApprovalRequest
 from agents.mcp import MCPServer
 from mcp.types import CallToolResult, TextContent
-from recusal_openai_agents import duplicate_names as _duplicate_names
 from recusal_openai_agents import gate_tools
-from recusal_openai_agents import is_gated as function_tools_gated
 from recusal_openai_agents import refusal as _refusal
+from recusal_openai_agents import settings_reason as _settings_reason
+from recusal_openai_agents import shared_name_reason as _shared_name_reason
+from recusal_openai_agents import too_deep as _too_deep
+from recusal_openai_agents import tools_gated as _tools_gated
 from recusal_openai_agents import unjudgeable as _unjudgeable
 
 from recusal import decide
 from recusal.claude_code import identity_getter
+from recusal.invocation import detached as _detached
+
+from ._schema import Listed as _Listed
+from ._schema import Refused as _Refused
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
@@ -67,32 +95,96 @@ Recording = Callable[[str, Any], dict]
 _FAILED_CLOSED = "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({name})"
 
 
-def _refusal_for_call(
-    tool_name: str, arguments: Any, policy: Policy, **record: Any
-) -> Optional[str]:
-    """Return the reason a server call is refused, or None to let it through.
+def _rendered(value: Any, ancestors: tuple = ()) -> str:
+    """Arguments that are not JSON data, written as text so that a refusal can be bound to
+    them: JSON, with a non-finite number as Python writes it (``nan``, ``inf``), an object
+    that is not data as its type's name, and nothing below the depth the gate reads."""
+    if len(ancestors) > 64 or id(value) in ancestors:
+        return "..."
+    inner = (*ancestors, id(value))
+    if type(value) is dict:
+        members = (f"{_rendered(k, inner)}:{_rendered(v, inner)}" for k, v in value.items())
+        return "{" + ",".join(members) + "}"
+    if type(value) is list:
+        return "[" + ",".join(_rendered(item, inner) for item in value) + "]"
+    if type(value) is float:
+        return repr(value)
+    if value is None or type(value) in (bool, int, str):
+        return json.dumps(value)
+    return f"<{type(value).__name__}>"
+
+
+def _as_handed(arguments: Any) -> Any:
+    """What a refusal before judgment is bound to: the arguments as the SDK handed them,
+    or, when they are not JSON data and so have no fingerprint, the text
+    :func:`_rendered` writes them as (which the record holds under the key ``input``)."""
+    if not _too_deep(arguments):
+        try:
+            _detached(arguments)
+            return arguments
+        except TypeError:
+            pass
+    return _rendered(arguments)
+
+
+#: The schema of a tool the server has not listed.
+_UNLISTED: Any = object()
+
+
+def _judged_call(
+    tool_name: str, arguments: Any, schema: Any, policy: Policy, **record: Any
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Judge a server call: ``(the arguments to send, None)``, or ``(None, reason)`` when it
+    is refused.
 
     ``arguments`` is the dict the SDK hands ``call_tool`` (``None`` for a call without
-    any), so the policy judges exactly what the server will receive. A non-mapping is
-    refused: the server would not accept it either, and the policy cannot read it.
-
-    The policy judges a deep copy of that dict (JSON data, so the copy is exact) and the
-    server receives the dict itself, so a policy that writes to what it was handed, after
-    gathering its evidence, changes its copy and not the call.
+    any) and ``schema`` the input schema the server listed for the tool. The arguments are
+    copied as JSON data, validated against the whole schema and completed with every
+    default it lists (``_schema.Listed.complete``); the policy judges a copy of the
+    completed arguments and the server is sent the completed arguments, so a policy that
+    writes to what it was handed changes its copy and not the call. A listed default
+    that cannot be sent (one that is not valid against its own property schema, or text
+    the server would read as another type) is judged as listed and not sent. Refused
+    before the policy runs: a non-mapping, arguments that are not JSON data or are nested
+    too deeply, a tool the server does not list, arguments that are not valid against the
+    schema as they stand, an object or a list the schema offers more than one form for, a
+    string a server may read as another type the schema admits, arguments that cost more
+    to check than the gate allows, and a schema the gate cannot check or complete them
+    against.
 
     ``record`` goes straight to ``decide``, which then writes the decision to an audit
-    log; the entry carries the fingerprint of the dict the server receives.
+    log; the entry of a judged call carries the fingerprint of the arguments as judged,
+    and a call refused before judgment is bound to the arguments as the SDK handed them
+    (:func:`_as_handed`).
     """
     args = {} if arguments is None else arguments
+
+    def refused(detail: str) -> tuple[None, str]:
+        return None, _unjudgeable(tool_name, detail, _as_handed(args), record)
+
     if not isinstance(args, dict):
-        return _unjudgeable(tool_name, "arguments are not a mapping", args, record)
+        return refused("arguments are not a mapping")
+    if _too_deep(args):
+        return refused("arguments are nested too deeply")
     try:
-        decision, reason = decide(
-            tool_name, copy.deepcopy(args), policy, safe_errors=True, **record
+        proposed = _detached(args)
+    except TypeError as exc:
+        return refused(f"arguments are not JSON data ({exc})")
+    if schema is _UNLISTED:
+        return refused(
+            "the server lists no tool of this name, or its tools could not be listed, so the "
+            "gate cannot read the schema its arguments would be checked against"
         )
+    try:
+        listed = schema if isinstance(schema, _Listed) else _Listed(schema)
+        judged, sent = listed.complete(proposed)
+    except _Refused as cause:
+        return refused(cause.reason)
+    try:
+        decision, reason = decide(tool_name, judged, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate
-        return f"Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
-    return reason if decision == "deny" else None
+        return None, _FAILED_CLOSED.format(name=type(exc).__name__)
+    return (None, reason) if decision == "deny" else (sent, None)
 
 
 def claude_named(server_name: str, policy: Policy) -> Policy:
@@ -157,13 +249,25 @@ def gate_mcp_server(
     server: MCPServer, policy: Policy, recording: Optional[Recording] = None
 ) -> MCPServer:
     """Wrap the server's ``call_tool`` so every call is judged by the server's own tool
-    name and the exact arguments it would run, in place; returns the same server.
+    name and the arguments that are sent to it, in place; returns the same server.
 
     The SDK invokes ``call_tool`` with the raw tool name whatever public name the model
     used, after any approval, so this is the point where the policy judges the capability
     that executes. A refusal is returned as an MCP error result carrying the reason, and
     the server's own ``call_tool`` is not reached. ``recording`` puts every decision on an
     audit log; like the policy, a connection carries one.
+
+    The server's ``list_tools`` is wrapped too, in place, and only to read: it returns what
+    the server listed and keeps each tool's input schema, which :func:`_judged_call`
+    checks and completes the arguments against. Each listing replaces the one before, so a
+    tool the server no longer lists is no longer known. Where the server object keeps its
+    listing as it was before any ``tool_filter`` (``cached_tools``, which the SDK's own
+    servers do), that whole listing is what the gate keeps, so agents that share the
+    server under different filters share one set of schemas; a server object that keeps
+    none leaves the gate with the tools of the latest listing as filtered. A call to a
+    tool that is not in
+    the most recent listing makes the gate call ``list_tools()`` itself, with no run
+    context and no agent, once for that call; a tool that is still not listed is refused.
     """
     if not isinstance(server, MCPServer):
         raise TypeError(f"Recusal cannot gate {type(server).__name__}: not an agents.mcp.MCPServer")
@@ -190,31 +294,82 @@ def gate_mcp_server(
             "server object for a different policy."
         )
     original = server.call_tool
+    original_list_tools = server.list_tools
+    #: tool name -> the input schema in the server's most recent listing
+    listed: dict[str, Any] = {}
+
+    def keep(tools: Any) -> None:
+        latest = {}
+        for tool in tools:
+            schema = getattr(tool, "input_schema", None)
+            if schema is None:
+                schema = getattr(tool, "inputSchema", None)
+            latest[tool.name] = _Listed(copy.deepcopy(schema))
+        listed.clear()  # a tool the server withdrew is no longer listed
+        listed.update(latest)
+
+    def whole_listing() -> Any:
+        """The server's most recent listing before any ``tool_filter``, where the server
+        object keeps one (the SDK's own servers do, as ``cached_tools``), or None."""
+        try:
+            return server.cached_tools
+        except Exception:  # noqa: BLE001, a server object without one keeps none
+            return None
+
+    async def gated_list_tools(*args: Any, **kwargs: Any) -> Any:
+        try:
+            tools = await original_list_tools(*args, **kwargs)
+        except Exception:
+            # the SDK fetches the listing and then filters it: a filter that raises (a
+            # dynamic one asked without an agent) leaves the fetched listing to read
+            whole = whole_listing()
+            if whole is not None:
+                keep(whole)
+            raise
+        whole = whole_listing()
+        # a ``tool_filter`` hides tools from one agent; the schemas are the server's, so
+        # the gate keeps the whole listing and two agents with two filters share it
+        keep(tools if whole is None else whole)
+        return tools
+
+    async def listed_schema(tool_name: str) -> Any:
+        """The schema the server listed for the tool: from the most recent listing made
+        through this server object, or from one the gate asks for when the tool is not
+        in it."""
+        if tool_name not in listed:
+            try:
+                await gated_list_tools()
+            except Exception:  # noqa: BLE001, a server that cannot list leaves the tool unlisted
+                pass
+        return listed.get(tool_name, _UNLISTED)
 
     async def gated_call_tool(
         tool_name: str, arguments: Optional[dict[str, Any]], meta: Any = None
     ) -> CallToolResult:
+        sent: Optional[dict[str, Any]] = None
         try:
             record = dict(recording("mcp_server", server)) if recording is not None else {}
         except Exception as exc:  # noqa: BLE001, a gate that cannot record must not run the call
             reason: Optional[str] = _FAILED_CLOSED.format(name=type(exc).__name__)
         else:
-            reason = _refusal_for_call(tool_name, arguments, policy, **record)
-        if reason is not None:
+            schema = await listed_schema(tool_name)
+            sent, reason = _judged_call(tool_name, arguments, schema, policy, **record)
+        if sent is None:
             # ``isError`` is the field's name on the wire, which MCP's model accepts as an
             # alias; a type checker knows only the Python name, ``is_error``
             return CallToolResult(
-                content=[TextContent(type="text", text=reason)],
+                content=[TextContent(type="text", text=str(reason))],
                 isError=True,  # type: ignore[call-arg]
             )
         if meta is None:
-            return await original(tool_name, arguments)
-        return await original(tool_name, arguments, meta=meta)
+            return await original(tool_name, sent)
+        return await original(tool_name, sent, meta=meta)
 
     gated_call_tool.recusal_gate = True  # type: ignore[attr-defined]
     gated_call_tool.recusal_policy = policy  # type: ignore[attr-defined]
     gated_call_tool.recusal_recording = recording  # type: ignore[attr-defined]
     server.call_tool = gated_call_tool  # type: ignore[method-assign]
+    server.list_tools = gated_list_tools  # type: ignore[method-assign]
     return server
 
 
@@ -295,18 +450,29 @@ def _ungateable_reason(agent: Any) -> Optional[str]:
         )
     if agent.handoffs:
         return "it has handoffs, which hand the conversation to another agent's tools"
-    duplicates = _duplicate_names(agent.tools)
-    if duplicates:
+    if agent.prompt is not None:
         return (
-            f"its function tools share a name {duplicates!r}; the SDK resolves a shared name "
-            "last-wins at execution, so a guardrail could judge one tool while another runs"
+            "it has a prompt, and a prompt stored on OpenAI's servers can configure tools "
+            "(hosted MCP among them) that are not in the agent's tools list, which no gate "
+            "sees. Put the instructions and the tools on the agent itself."
         )
+    settings = _settings_reason(agent)
+    if settings is not None:
+        return f"its {settings}"
+    shared = _shared_name_reason(agent.tools)
+    if shared is not None:
+        return f"its {shared}"
     return None
 
 
-def is_gated(agent: Any) -> bool:
+def is_gated(agent: Any, _seen: Optional[set[int]] = None) -> bool:
     """True if every call this agent can make, function tool, local MCP tool or hosted MCP
-    call OpenAI asks approval for, passes through a Recusal gate."""
+    call OpenAI asks approval for, passes through a Recusal gate. A sub-agent behind
+    ``as_tool`` is held to the same rule, its own MCP servers and hosted tools included."""
+    seen = set() if _seen is None else _seen
+    if id(agent) in seen:
+        return True
+    seen.add(id(agent))
     if _ungateable_reason(agent) is not None:
         return False
     hosted = [tool for tool in agent.tools if isinstance(tool, HostedMCPTool)]
@@ -315,7 +481,7 @@ def is_gated(agent: Any) -> bool:
         return False
     if not all(is_gated_mcp_server(server) for server in agent.mcp_servers):
         return False
-    return function_tools_gated(agent.clone(tools=others, mcp_servers=[]))
+    return _tools_gated(others, lambda sub: is_gated(sub, seen))
 
 
 def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = None) -> Agent:
@@ -323,8 +489,12 @@ def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = N
 
     Function tools and hosted MCP tools are replaced by gated copies; the servers in
     ``mcp_servers`` are gated in place and shared with the original. Raises ValueError if
-    the agent can run something no gate sees. ``recording`` puts every decision of all
-    three gates on an audit log.
+    the agent can run something no gate sees, and TypeError for a tool the function-tool
+    gate refuses. ``recording`` puts every decision of all three gates on an audit log.
+    The copy has its own ``tools``, ``mcp_servers`` and ``handoffs`` lists, so a later
+    change to the original agent's lists does not reach it. Build the agent completely,
+    then gate it: a tool or a server appended to the gated copy afterwards is not gated,
+    and ``is_gated`` then says so.
     """
     reason = _ungateable_reason(agent)
     if reason is not None:
@@ -340,6 +510,8 @@ def gated_agent(agent: Agent, policy: Policy, recording: Optional[Recording] = N
         if isinstance(tool, HostedMCPTool):
             tools.append(gate_hosted_mcp(tool, policy, recording))
         else:
-            tools.extend(gate_tools([tool], policy, for_function_tools))
+            # a sub-agent behind as_tool is gated when THIS package says so: it may hold
+            # MCP servers and hosted tools, which the function-tool package alone refuses
+            tools.extend(gate_tools([tool], policy, for_function_tools, agent_gated=is_gated))
     servers = [gate_mcp_server(server, policy, recording) for server in agent.mcp_servers]
-    return agent.clone(tools=tools, mcp_servers=servers)
+    return agent.clone(tools=tools, mcp_servers=servers, handoffs=list(agent.handoffs))

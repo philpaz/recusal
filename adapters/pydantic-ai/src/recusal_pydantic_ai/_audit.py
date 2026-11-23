@@ -5,13 +5,16 @@ log)`` call the plain gate's own ``_refusal`` with the recording arguments passe
 to ``recusal.decide``, which writes the entry before returning. There is no second decision
 path. If the log cannot be written the decision becomes a deny, so nothing runs unrecorded.
 
-Each entry carries the surface ``pydantic_ai.before_tool_execute`` and Pydantic AI's own
-tool call id, and a SHA-256 fingerprint of the arguments, never the arguments themselves.
+Each entry carries the surface, which is the hook that decided
+(``pydantic_ai.before_tool_execute`` for a tool call; ``RecusalAuditedGate`` also records
+on the other hooks the gate judges in), Pydantic AI's own tool call id, and a SHA-256
+fingerprint of the arguments, never the arguments themselves.
 
 What each entry is bound to:
 
 - a call that is judged (allowed or refused by the policy): the validated arguments the
-  tool is called with;
+  tool is called with; for a call handed to the application to run, the arguments as the
+  model sent them, which is what the application receives;
 - a call refused before judgment (arguments the gate cannot detach): the call as the model
   proposed it, since the validated arguments are not data a fingerprint can cover.
 
@@ -32,13 +35,13 @@ from pydantic_ai.tools import ToolDefinition
 
 from recusal.audit import AuditLog
 
-from ._gate import Policy, RecusalGate, _refusal
+from ._gate import Policy, RecusalGate, _refusal, _unjudgeable, _with_defaults
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from pydantic_ai.capabilities.hooks import BeforeToolExecuteHookFunc
 
-#: The surface label every entry carries: the runtime hook that adjudicated.
+#: The surface label of a tool call's entry: the runtime hook that adjudicated.
 SURFACE = "pydantic_ai.before_tool_execute"
 
 
@@ -88,13 +91,11 @@ def recusal_audited_before_tool_execute(
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        reason = _refusal(
-            call.tool_name,
-            args,
-            policy,
-            proposal=_proposal(call),
-            **_recording(call, actor, control, log),
-        )
+        record = _recording(call, actor, control, log)
+        args, unseen = _with_defaults(ctx, call.tool_name, args)
+        if unseen:
+            raise ToolFailed(_unjudgeable(call.tool_name, unseen, _proposal(call), record))
+        reason = _refusal(call.tool_name, args, policy, proposal=_proposal(call), **record)
         if reason is not None:
             raise ToolFailed(reason)
         return args
@@ -108,28 +109,26 @@ class RecusalAuditedGate(RecusalGate):
     """The audited gate as a capability: ``RecusalAuditedGate(policy, log=log)``.
 
     A ``RecusalGate`` (so ``is_gated`` sees it, and it keeps the ``innermost`` position)
-    whose every decision is one entry on ``log``.
+    whose every decision is one entry on ``log``: a tool call (surface
+    ``pydantic_ai.before_tool_execute``), an output function
+    or a ``Choices`` pick (``pydantic_ai.before_output_process``) and a call handed to
+    the application to run (``pydantic_ai.handle_deferred_tool_calls``). The plain gate's
+    hooks make each decision;
+    this class only says how to record it, so there is one decision path.
     """
 
     log: AuditLog
     actor: Optional[str] = None
     control: Optional[dict[str, Any]] = None
 
-    async def before_tool_execute(
-        self,
-        ctx: RunContext[Any],
-        *,
-        call: ToolCallPart,
-        tool_def: ToolDefinition,
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
-        reason = _refusal(
-            call.tool_name,
-            args,
-            self.policy,
-            proposal=_proposal(call),
-            **_recording(call, self.actor, self.control, self.log),
-        )
-        if reason is not None:
-            raise ToolFailed(reason)
-        return args
+    def _record(self, tool_call_id: Optional[str], surface: str) -> dict[str, Any]:
+        return {
+            "audit": self.log,
+            "surface": surface,
+            "tool_use_id": tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None,
+            "actor": self.actor,
+            "control": self.control,
+        }
+
+    def _proposal(self, call: Optional[ToolCallPart]) -> Any:
+        return _proposal(call) if call is not None else None

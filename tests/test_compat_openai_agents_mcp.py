@@ -313,3 +313,300 @@ def test_without_a_callback_an_approval_request_is_an_interruption_not_a_call(ex
 def test_negative_control_a_tool_that_approves_everything_approves_delete(ex):
     responses = ex.run_hosted([("run_sql", {"sql": DELETE}, "r1")], gated=False)
     assert responses["r1"]["approve"] is True
+
+
+# --- the listed schema (the 2026-11-21 review) -------------------------------------------------
+
+
+def test_the_sdk_lists_through_an_instance_level_list_tools_before_it_calls(ex):
+    """The gate keeps each tool's listed input schema by wrapping ``list_tools`` on the
+    server object, as it wraps ``call_tool``. The SDK must list through that attribute,
+    with the run context and the agent, before any call."""
+    from agents.mcp import MCPServer
+
+    params = inspect.signature(MCPServer.list_tools).parameters
+    assert list(params) == ["self", "run_context", "agent"]
+    server = ex.InProcessMCPServer()
+    original = server.list_tools
+    order = []
+
+    async def recorder(*args, **kwargs):
+        tools = await original(*args, **kwargs)
+        order.append(("list", [tool.name for tool in tools]))
+        return tools
+
+    server.list_tools = recorder
+    seen = _record_calls(server)
+    _run_server(ex, [("run_sql", {"sql": SELECT}, "c1")], [server])
+    assert order and order[0] == ("list", ["echo", "run_sql"])
+    assert [name for name, _, _ in seen] == ["run_sql"]
+
+
+def test_a_listed_tool_carries_its_input_schema_where_the_gate_reads_it(ex):
+    (echo, run_sql) = asyncio.run(ex.InProcessMCPServer().list_tools())
+    schema = getattr(run_sql, "input_schema", None)
+    if schema is None:
+        schema = run_sql.inputSchema
+    assert schema == {
+        "type": "object",
+        "properties": {"sql": {"type": "string"}},
+        "required": ["sql"],
+    }
+
+
+def test_the_sdk_sends_a_local_server_the_arguments_without_reading_its_schema(ex):
+    """Why the gate reads the schema itself: the SDK hands ``call_tool`` the model's
+    arguments as parsed, a string for a parameter the schema types otherwise included."""
+    server = ex.InProcessMCPServer()
+    seen = _record_calls(server)
+    _run_server(ex, [("run_sql", {"sql": 5, "limit": "10"}, "c1"), ("run_sql", {}, "c2")], [server])
+    assert [arguments for _, arguments, _ in seen] == [{"sql": 5, "limit": "10"}, {}]
+
+
+# --- the whole listed schema (the second review of 2026-11-21) --------------------------------
+
+
+def test_jsonschema_has_the_surface_the_gate_validates_with():
+    """The gate validates a call's arguments against the listed schema with ``jsonschema``:
+    a validator per draft, chosen by ``$schema``; validation that does not convert and does
+    not assert formats; a registry that fetches nothing; and ``descend``, which validates a
+    value against a subschema with references resolved against the whole schema."""
+    validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    from referencing import Registry
+
+    for name in ("Draft7Validator", "Draft201909Validator", "Draft202012Validator"):
+        draft = getattr(validators, name)
+        declared = {"$schema": draft.META_SCHEMA["$schema"]}
+        assert validators.validator_for(declared, default=None) is draft
+    unknown = {"$schema": "https://example.invalid/dialect"}
+    assert validators.validator_for(unknown, default=None) is None
+
+    latest = validators.Draft202012Validator
+    assert not latest({"type": "boolean"}).is_valid("false"), "validation does not convert"
+    assert not latest({"type": "integer"}).is_valid(True)
+    # the two places the gate is stricter than JSON Schema
+    assert latest({"type": "integer"}).is_valid(1.0)
+    assert latest({"enum": [1]}).is_valid(1.0)
+    assert latest({"type": "string", "format": "email"}).is_valid("not an address")
+
+    strict = validators.extend(
+        latest, type_checker=latest.TYPE_CHECKER.redefine("integer", lambda _, v: type(v) is int)
+    )
+    assert not strict({"type": "integer"}).is_valid(1.0) and strict({"type": "number"}).is_valid(1)
+
+    root = {"$defs": {"Flag": {"type": "boolean"}}}
+    validator = latest(root, registry=Registry())
+    assert list(validator.descend("true", {"$ref": "#/$defs/Flag"}))
+    assert not list(validator.descend(True, {"$ref": "#/$defs/Flag"}))
+    with pytest.raises(Exception, match="Unresolvable"):
+        list(validator.descend(1, {"$ref": "https://example.invalid/schema.json"}))
+    (error,) = latest({"properties": {"a": {"items": {"type": "integer"}}}}).iter_errors(
+        {"a": [1, "x"]}
+    )
+    assert list(error.absolute_path) == ["a", 1]
+    assert error.validator == "type" and error.validator_value == "integer"
+    assert error.instance == "x"
+
+
+# --- the third review of 2026-11-21 -------------------------------------------------------------
+
+
+def test_a_server_object_shows_its_whole_listing_as_cached_tools(ex):
+    """A ``tool_filter`` is applied to what ``list_tools`` returns, for one agent. The gate
+    keeps the listing before the filter where the server object shows it: ``cached_tools``,
+    a property every ``MCPServer`` has, ``None`` on the base class and the last fetched
+    listing on the SDK's own session servers
+    (``tests/test_openai_agents_mcp_gate.py`` runs two filtered agents on a real one)."""
+    from agents.mcp import MCPServer, MCPServerStdio
+
+    assert isinstance(inspect.getattr_static(MCPServer, "cached_tools"), property)
+    assert ex.InProcessMCPServer().cached_tools is None
+    held = inspect.getattr_static(MCPServerStdio, "cached_tools")
+    assert isinstance(held, property) and held is not MCPServer.__dict__["cached_tools"]
+    never_started = MCPServerStdio(params={"command": "never-started"})
+    assert never_started.cached_tools is None
+
+
+def test_jsonschema_has_the_surface_the_gate_counts_and_reads_patterns_with():
+    """What the third review added to the gate's use of ``jsonschema``: every keyword
+    function is replaced by one that counts, called as ``(validator, value, instance,
+    schema)``; a schema is checked with a format checker that leaves ``regex`` out, since
+    ``jsonschema`` refuses a ``pattern`` Python cannot compile as an invalid schema and
+    raises on one when it validates."""
+    jsonschema = pytest.importorskip("jsonschema", reason="jsonschema is not installed")
+    import re
+
+    from jsonschema import validators
+    from jsonschema.exceptions import SchemaError
+
+    for draft in (
+        validators.Draft7Validator,
+        validators.Draft201909Validator,
+        validators.Draft202012Validator,
+    ):
+        assert "regex" in draft.FORMAT_CHECKER.checkers
+        for keyword in ("anyOf", "oneOf", "pattern", "enum", "const", "$ref", "properties"):
+            assert callable(draft.VALIDATORS[keyword]), keyword
+        unreadable = {"properties": {"name": {"type": "string", "pattern": "^\\p{L}+$"}}}
+        with pytest.raises(SchemaError):
+            draft.check_schema(unreadable)
+        formats = jsonschema.FormatChecker(())
+        formats.checkers = {
+            name: check for name, check in draft.FORMAT_CHECKER.checkers.items() if name != "regex"
+        }
+        draft.check_schema(unreadable, format_checker=formats)
+        with pytest.raises(re.error):
+            list(draft(unreadable).iter_errors({"name": "x"}))
+
+    called = []
+
+    def counted(validator, value, instance, schema):
+        called.append((value, instance, schema))
+        return ()
+
+    latest = validators.Draft202012Validator
+    counting = validators.extend(latest, validators={"type": counted})
+    schema = {"type": "string"}
+    assert counting(schema).is_valid(5) and called == [("string", 5, schema)]
+    # ``descend`` hands a keyword the very subschema object, which the gate keys its work by
+    inner = {"type": "boolean"}
+    list(counting({"properties": {"a": inner}}).iter_errors({"a": 1}))
+    assert called[-1][2] is inner
+    referred = {"$defs": {"Flag": inner}, "properties": {"a": {"$ref": "#/$defs/Flag"}}}
+    list(counting(referred).iter_errors({"a": 1}))
+    assert called[-1][2] is inner, "a `$ref` resolves to the object in the schema, not a copy"
+
+
+def test_the_gates_reading_of_text_is_never_narrower_than_pydantics():
+    """The gate refuses a string where the schema names a number or a boolean beside
+    string and Pydantic's lax conversion would read the string as one. Its own reading
+    must hold every string Pydantic's does: checked against the installed Pydantic over
+    the forms a number and a boolean are written in."""
+    import importlib
+    import itertools
+
+    pydantic = pytest.importorskip("pydantic")
+    _adapter_module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    work = _adapter_module._Work(10**9)
+    adapters = {
+        "number": [pydantic.TypeAdapter(int), pydantic.TypeAdapter(float)],
+        "boolean": [pydantic.TypeAdapter(bool)],
+    }
+
+    def pydantic_reads(kind, text):
+        for adapter in adapters[kind]:
+            try:
+                adapter.validate_python(text)
+            except pydantic.ValidationError:
+                continue
+            return True
+        return False
+
+    pieces = [
+        "",
+        " ",
+        "\t",
+        "\n",
+        "\u00a0",
+        "\x0b",
+        "\x1c",
+        "+",
+        "-",
+        "0",
+        "1",
+        "5",
+        "07",
+        "9" * 30,
+    ]
+    pieces += [
+        ".",
+        "_",
+        "__",
+        "e",
+        "E",
+        "e3",
+        "E-3",
+        "inf",
+        "Infinity",
+        "nan",
+        "NaN",
+        "x",
+        ",",
+        "0x",
+    ]
+    pieces += ["true", "True", "FALSE", "yes", "No", "on", "OFF", "t", "F", "y", "N", "null", "2"]
+    texts = {
+        "".join(parts) for size in (1, 2, 3) for parts in itertools.product(pieces, repeat=size)
+    }
+    texts |= {"9" * 400, "9" * 5000, "1" + "0" * 400 + ".0", "1_0e1_0", "1._5", "1_.5", "1e_3"}
+    assert len(texts) > 60_000
+    read = {"number": 0, "boolean": 0}
+    for text in texts:
+        mine = _adapter_module._reads(work, text)
+        for kind in ("number", "boolean"):
+            if pydantic_reads(kind, text):
+                read[kind] += 1
+                assert kind in mine, (kind, text)
+    assert read["number"] > 1000 and read["boolean"] > 10, "the comparison saw both readings"
+    # and what it is wider by is small enough to say: white space around a boolean word,
+    # underscores Pydantic rejects, digits that are not ASCII
+    for text in (" true ", "1__0", "_1", "--5", "\u0663"):
+        assert _adapter_module._reads(work, text), text
+        assert not pydantic_reads("number", text) and not pydantic_reads("boolean", text)
+    for text in ("", "five", "tru", "0x10", "1,000", "5-5"):
+        assert _adapter_module._reads(work, text) == frozenset(), text
+
+
+def test_jsonschema_evaluates_a_schemas_patterns_where_the_gate_replaces_it():
+    """Why the gate replaces these keywords: ``jsonschema`` runs ``re.search`` with the
+    schema's pattern on the instance for ``pattern``, ``patternProperties``,
+    ``additionalProperties`` and ``unevaluatedProperties``. The gate's validators run it
+    for none of them, and each keyword it replaces is one every draft it reads has."""
+    import importlib
+    import re
+
+    validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+
+    module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    schemas = {
+        "pattern": ({"pattern": "^a"}, "abc"),
+        "patternProperties": ({"patternProperties": {"^a": {}}}, {"abc": 1}),
+        "additionalProperties": (
+            {"patternProperties": {"^a": {}}, "additionalProperties": False},
+            {"abc": 1},
+        ),
+        "unevaluatedProperties": (
+            {"patternProperties": {"^a": {}}, "unevaluatedProperties": False},
+            {"abc": 1},
+        ),
+    }
+    searched = []
+    original = re.search
+
+    def counting(pattern, string, *args, **kwargs):
+        searched.append(pattern)
+        return original(pattern, string, *args, **kwargs)
+
+    re.search = counting
+    try:
+        for keyword, (schema, instance) in schemas.items():
+            searched.clear()
+            assert validators.Draft202012Validator(schema).is_valid(instance)
+            assert "^a" in searched, keyword
+            if keyword == "unevaluatedProperties":
+                continue  # refused as a schema by the gate, beside `patternProperties`
+            searched.clear()
+            assert module._DRAFTS[validators.Draft202012Validator](schema).is_valid(instance)
+            assert searched == [], keyword
+    finally:
+        re.search = original
+    replaced = {"enum", "const", "uniqueItems", "pattern", "patternProperties"}
+    replaced |= {"additionalProperties", "anyOf", "oneOf"}
+    for base, strict in module._DRAFTS.items():
+        assert replaced <= set(base.VALIDATORS), base
+        assert set(strict.VALIDATORS) == set(base.VALIDATORS)
+    # an error raised under `anyOf` carries what the gate reads it by
+    strict = module._DRAFTS[validators.Draft202012Validator]
+    (error,) = strict({"anyOf": [{"type": "null"}]}).iter_errors(1)
+    assert error.validator == "anyOf" and error.validator_value == [{"type": "null"}]
+    assert error.instance == 1

@@ -471,8 +471,27 @@ USERS = {
         "reached_parameters",
         "unsupported_signature",
     },
-    "adapters/openai/src/recusal_openai/_gate.py": {"unsupported_signature"},
-    "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {"detached"},
+    "adapters/openai-agents-mcp/src/recusal_openai_agents_mcp/_gate.py": {"detached"},
+    "adapters/openai-agents-mcp/src/recusal_openai_agents_mcp/_schema.py": {"detached"},
+    "adapters/openai-agents/src/recusal_openai_agents/_gate.py": {
+        "detached",
+        "reached_parameters",
+    },
+    "adapters/langgraph/src/recusal_langgraph/_gate.py": {
+        "DeclaredSignature",
+        "reached_parameters",
+    },
+    "adapters/openai/src/recusal_openai/_gate.py": {
+        "detached",
+        "json_data",
+        "unsupported_signature",
+    },
+    "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {
+        "DeclaredSignature",
+        "detached",
+        "json_data",
+        "reached_parameters",
+    },
 }
 
 

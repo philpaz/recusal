@@ -210,7 +210,8 @@ def test_injected_arguments_reach_the_gate_but_not_the_tool(lg):
     ]
     _graph(node, calls).invoke({"messages": []})
     assert ("read_state", {"sql": SELECT}) in seen.calls
-    assert ("with_override", {"sql": SELECT}) in seen.calls
+    # nothing replaced the stripped override, so the function's default runs and is judged
+    assert ("with_override", {"sql": SELECT, "override": ""}) in seen.calls
     assert ("state", ["messages"]) in received, "the forged state reached the tool"
     assert ("override", "") in received, "the model-supplied override reached the tool"
 
@@ -975,8 +976,9 @@ def test_private_helper_get_all_injected_args_still_names_every_injected_argumen
     """``_host_keys`` passes the gate a tool and trusts ``all_injected_keys`` on what
     this helper returns to leave host-supplied arguments out of judgment. The tool
     with no injected arguments is the negative control: a helper that had stopped
-    observing anything and answered a key anyway would fail it, not pass. Only
-    ``all_injected_keys`` is pinned, because that is all the gate reads."""
+    observing anything and answered a key anyway would fail it, not pass.
+    ``all_injected_keys`` is pinned, and ``state``, ``store`` and ``runtime``, which
+    ``_node_fills`` reads; the gate reads nothing else."""
     pytest.importorskip("langgraph")
     from typing import Annotated
 
@@ -1013,7 +1015,17 @@ def test_private_helper_get_all_injected_args_still_names_every_injected_argumen
         f"argument no longer gives all of their names, got {injected.all_injected_keys!r}; "
         "an argument it misses would be judged as the model's"
     )
+    filled = {*injected.state, injected.store, injected.runtime}
+    assert filled == {"state", "store", "runtime"}, (
+        f"{where} changed: `state`, `store` and `runtime` no longer name the parameters "
+        f"ToolNode fills, got {filled!r}; `_node_fills` reads them to tell the host's "
+        "values from a generic injected argument, which ToolNode strips and never fills"
+    )
     plain = helper(without_injected)
+    assert {*plain.state, plain.store, plain.runtime} == {None}, (
+        f"{where} changed (negative control): a tool with no injected arguments names a "
+        "parameter ToolNode fills"
+    )
     assert hasattr(plain, "all_injected_keys"), (
         f"{where} changed: what it returns no longer has `all_injected_keys`, "
         "which is what `_host_keys` reads"
@@ -1023,3 +1035,156 @@ def test_private_helper_get_all_injected_args_still_names_every_injected_argumen
         f"longer gives the empty answer, got {plain.all_injected_keys!r}; a probe "
         "that stopped observing anything would fail here, not pass"
     )
+
+
+def test_private_attribute_injected_args_keys_still_names_the_functions_injected_parameters():
+    """``_host_keys`` also reads ``tool._injected_args_keys``, the injected parameters
+    LangChain finds on the tool's own function, and refuses the call when it cannot. The
+    tool with none is the negative control."""
+    pytest.importorskip("langgraph")
+    from typing import Annotated
+
+    from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
+    from langgraph.prebuilt import InjectedState, ToolRuntime
+
+    where = "langchain_core.tools.BaseTool._injected_args_keys"
+
+    @tool
+    def with_injected(
+        sql: str,
+        state: Annotated[dict, InjectedState],
+        runtime: ToolRuntime,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        override: Annotated[str, InjectedToolArg] = "",
+    ) -> str:
+        """Run SQL with state, runtime, the call id and a generic injected argument."""
+        return sql
+
+    @tool
+    def without_injected(sql: str) -> str:
+        """Run SQL with no host-injected arguments."""
+        return sql
+
+    assert hasattr(with_injected, "_injected_args_keys"), (
+        f"{where} changed: a tool no longer has it, so the gate refuses every call"
+    )
+    assert set(with_injected._injected_args_keys) == {
+        "state",
+        "runtime",
+        "tool_call_id",
+        "override",
+    }, f"{where} changed: got {with_injected._injected_args_keys!r}"
+    assert set(without_injected._injected_args_keys) == set(), (
+        f"{where} changed (negative control): a tool with no injected parameters no longer "
+        "gives the empty answer"
+    )
+
+
+def test_the_private_lifecycle_names_the_judging_copy_replaces_still_exist():
+    """The judging copy replaces ``_to_args_and_kwargs`` and guards ``_run``/``_arun`` on a
+    per-call copy of the tool. ``BaseTool.run`` must still parse through the first and call
+    the second, and a function-holding tool's ``_run`` must still take ``config`` and
+    ``run_manager`` for itself, which is why a function parameter of either name never
+    receives the judged value."""
+    pytest.importorskip("langgraph")
+    from langchain_core.tools import BaseTool, StructuredTool, Tool
+
+    for name in ("_to_args_and_kwargs", "_run", "_arun"):
+        assert callable(getattr(BaseTool, name, None)), f"BaseTool.{name} changed"
+    source = inspect.getsource(BaseTool.run) + inspect.getsource(BaseTool.arun)
+    assert "self._to_args_and_kwargs(" in source, "BaseTool.run no longer parses through it"
+    assert "self._run" in source and "self._arun" in source
+    for cls in (StructuredTool, Tool):
+        for body in ("_run", "_arun"):
+            taken = {
+                name
+                for name, p in inspect.signature(getattr(cls, body)).parameters.items()
+                if p.kind is p.KEYWORD_ONLY
+            }
+            assert taken == {"config", "run_manager"}, f"{cls.__name__}.{body} changed: {taken}"
+
+
+def test_a_call_id_parameter_is_still_filled_by_the_parse_step_not_by_toolnode(lg):
+    """The gate judges an ``InjectedToolCallId`` parameter because the value under it is the
+    call id the model wrote, filled by the tool's own parse step after ToolNode stripped
+    whatever the model sent there. If ToolNode started to supply it, the gate would count it
+    as the host's and stop judging it; this fails first."""
+    from typing import Annotated
+
+    from langchain_core.tools import InjectedToolCallId, tool
+
+    received = []
+
+    @tool
+    def note(text: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+        """Record a note under the call id."""
+        received.append(tool_call_id)
+        return "ok"
+
+    seen = Seen(lambda name, args: [])
+    node = lg.ToolNode([note], wrap_tool_call=lg.recusal_gate(seen))
+    _graph(node, [_call("note", {"text": "hi", "tool_call_id": "forged"}, "the-call-id")]).invoke(
+        {"messages": []}
+    )
+    assert received == ["the-call-id"]
+    assert seen.calls == [("note", {"text": "hi", "tool_call_id": "the-call-id"})]
+
+
+def test_a_tool_with_no_async_function_still_runs_through_run_in_executor(lg):
+    """The gate refuses a key named like a parameter of ``run_in_executor`` on the async
+    route of a tool that has no async function of its own, because ``BaseTool._arun`` runs
+    the sync callable through that function with the arguments as keywords. This pins that
+    it still does: ungated, such a key collides with the runner's own parameter."""
+    import asyncio
+    import inspect
+
+    from langchain_core.runnables.config import run_in_executor
+    from langchain_core.tools import BaseTool
+
+    named = {
+        name
+        for name, parameter in inspect.signature(run_in_executor).parameters.items()
+        if parameter.kind not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+    }
+    assert named == {"executor_or_config", "func"}, (
+        "langchain_core.runnables.config.run_in_executor changed its named parameters, "
+        f"got {named!r}; the gate refuses a model key of exactly these names"
+    )
+
+    class Loose(BaseTool):
+        name: str = "loose"
+        description: str = "No _arun of its own."
+
+        def _run(self, q: str, **extra) -> str:
+            return "ok"
+
+    for key in sorted(named):
+        with pytest.raises(TypeError, match=f"multiple values for argument '{key}'"):
+            asyncio.run(Loose().arun({"q": "x", key: "m"}))
+    assert asyncio.run(Loose().arun({"q": "x", "other": "m"})) == "ok"
+
+
+def test_toolnode_still_fills_a_parameter_named_runtime_whatever_its_annotation(lg):
+    """The gate's forwarder rule counts ``runtime`` among the reserved parameter names
+    (``_NODE_NAMES``) because ToolNode fills a parameter of that name by name alone. This
+    pins it: the private helper names ``runtime`` as the runtime parameter of a function
+    whose ``runtime`` has no annotation, and of one that annotates it ``str``."""
+    from langchain_core.tools import StructuredTool
+
+    helper = _private_helper("langgraph.prebuilt.tool_node", "_get_all_injected_args")
+
+    def untyped(q: str, runtime=None) -> str:
+        return q
+
+    def mistyped(q: str, runtime: str = "") -> str:
+        return q
+
+    def elsewhere(q: str, rt=None) -> str:
+        return q
+
+    def built(func):
+        return StructuredTool.from_function(func=func, name="t", description="d")
+
+    assert helper(built(untyped)).runtime == "runtime"
+    assert helper(built(mistyped)).runtime == "runtime"
+    assert helper(built(elsewhere)).runtime is None, "negative control: another name is not filled"
