@@ -243,7 +243,9 @@ def test_google_adk_wheel_ci_smokes_and_type_checks_312_and_its_minimum():
     assert f"python -m venv {minimum_environment}" in job
     assert job.count("/tmp/adapter/bin/pip check") == 1
     assert job.count(f"{minimum_environment}/bin/pip check") == 1
-    adapter_requirements = "pip install --quiet --require-hashes -r requirements/adapter-google-adk.txt"
+    adapter_requirements = (
+        "pip install --quiet --require-hashes -r requirements/adapter-google-adk.txt"
+    )
     assert job.count(adapter_requirements) == 2
 
 
