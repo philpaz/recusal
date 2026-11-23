@@ -459,9 +459,6 @@ Apache-2.0 without warranty.
   lands in its `**kwargs` and is not shown to the policy. It is the application's own
   constant, never the model's.
 
-The [review log](https://github.com/philpaz/recusal/blob/main/docs/REVIEW-LOG.md) records
-each round and what it found.
-
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
 [how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues).
