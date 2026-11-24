@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Every adapter's wheel is checked on its minimum Python.** For all eight adapter
+  packages, CI builds the wheel once and installs those same files on Python 3.12 and on
+  the package's declared minimum, read from `pyproject.toml`; both environments run the
+  smoke test, `pip check` and the installed-package type check, with the companion wheel
+  a package depends on. One test holds every adapter's job to that, and to a hash lock
+  resolved for its minimum. Thanks to @hananbahi527 for the work (#320, which completes
+  #262 after #310).
+
 ## [0.15.1] - 2026-11-23
 
 A PATCH release of the kernel under `STABILITY.md`: one correctness fix in the audit log,
