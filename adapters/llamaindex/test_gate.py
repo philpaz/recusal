@@ -108,3 +108,49 @@ def test_workflow_agent_tool_route_uses_the_gated_acall_surface():
     assert "blocked by policy" in output.content
     assert seen == [{"table": "orders", "mode": "hard"}]
     assert ran == []
+
+
+def test_policy_evidence_equals_what_the_function_receives():
+    """The central adapter contract: policy evidence and invocation match exactly."""
+    ran, seen = [], []
+
+    def scale(value: int, mode: str = "hard") -> str:
+        ran.append({"value": value, "mode": mode})
+        return "ok"
+
+    def policy(name, invocation):
+        seen.append(dict(invocation))
+        return []
+
+    tool = gated_tool(FunctionTool.from_defaults(fn=scale), policy)
+    tool.call(value="5")
+    # FunctionTool itself does not coerce this direct call: both policy and function see
+    # the same string. If a future LlamaIndex route validates/coerces first, this test must
+    # be extended at that route rather than assuming the direct surface did so.
+    assert seen == [{"value": "5", "mode": "hard"}]
+    assert ran == [{"value": "5", "mode": "hard"}]
+    assert type(seen[0]["value"]) is type(ran[0]["value"]) is str
+
+
+def test_workflow_route_overwrites_model_supplied_context_before_policy():
+    """The workflow supplies host Context and never exposes it to the policy."""
+    ran, seen = [], []
+
+    def write(table: str, ctx: Context = None) -> str:  # type: ignore[assignment]
+        ran.append({"table": table, "ctx": ctx})
+        return "ok"
+
+    def policy(name, invocation):
+        seen.append(dict(invocation))
+        return []
+
+    host_context = object()
+    tool = gated_tool(FunctionTool.from_defaults(fn=write), policy)
+    output = asyncio.run(
+        BaseWorkflowAgent._call_tool(
+            object(), host_context, tool, {"table": "orders", "ctx": "model-value"}
+        )
+    )
+    assert output.is_error is False
+    assert seen == [{"table": "orders"}]
+    assert ran == [{"table": "orders", "ctx": host_context}]
