@@ -1,4 +1,4 @@
-# roots: pytest>=8 ruff==0.17.4 mypy>=1.8,<2 hypothesis>=6 | python>=3.9
+# roots: pytest>=8 ruff==0.17.5 mypy>=1.8,<2 hypothesis>=6 | python>=3.9
 # Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-12T00:00:00Z were
 # not considered. Install: python -m pip install --require-hashes -r requirements/dev.txt
 attrs==26.1.0 ; python_full_version < '3.10' \
@@ -438,7 +438,7 @@ pytest==8.4.2 ; python_full_version < '3.10' \
 pytest==9.2.0 ; python_full_version >= '3.10' \
     --hash=sha256:07acdcf88ec174f907dc01af70bf52d49b014bbab03faeeade31c96b18c2e588 \
     --hash=sha256:97c4f3b1f3c7414aa36465e09b8220f1d03627993bd51b1282e193753c80557b
-ruff==0.17.4 \
+ruff==0.17.5 \
     --hash=sha256:0d1f4848fd2ec0499be4046db9b7dfcc952666885f00233cc7033515282556a8 \
     --hash=sha256:13e781c3c5f663e7fba737eaaeb70dd943dd55171daf316afb25cd5268cfe0c7 \
     --hash=sha256:181ae38a9a8fb94925bf7d0794327b48d7fd7f4b50cfd84c0e999cc09ef8d131 \
