@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from llama_index.core.tools import FunctionTool
 from llama_index.core.workflow.context import Context
+from llama_index.core.agent.workflow import FunctionAgent, ReActAgent
 from llama_index.core.agent.workflow.base_agent import BaseWorkflowAgent
 from recusal import Finding, Severity
 from recusal_llamaindex import gated_tool, is_gated
@@ -91,8 +92,13 @@ def test_async_call_is_gated_before_execution():
 
 
 def test_workflow_agent_tool_route_uses_the_gated_acall_surface():
-    """LlamaIndex's BaseWorkflowAgent invokes FunctionTool.acall, not fn/real_fn."""
+    """The pinned FunctionAgent/ReActAgent route invokes FunctionTool.acall."""
     ran, seen = [], []
+
+    # Version-pinned source contract: both public workflow agents inherit this route.
+    # If LlamaIndex changes either class to override it, the adapter must be re-audited.
+    assert FunctionAgent._call_tool is BaseWorkflowAgent._call_tool
+    assert ReActAgent._call_tool is BaseWorkflowAgent._call_tool
 
     def write(table: str, mode: str = "hard") -> str:
         ran.append((table, mode))
