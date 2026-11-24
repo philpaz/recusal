@@ -52,7 +52,8 @@ not know, refuses the schema.
 Whatever it cannot check or complete is refused, with a reason that carries no text of the
 model's: a schema that is not a JSON object or not a valid schema, a draft other than
 draft-07, 2019-09 and 2020-12, a subschema that declares a draft of its own, a ``$ref``
-that does not resolve inside the schema, a schema
+that does not resolve inside the schema (read by ``referencing``, as the validation
+reads it: :class:`_References`), a schema
 that refers to itself without a value in between, ``unevaluatedProperties`` together with
 ``patternProperties``, a default where the walk does not write one, a left-out property
 whose alternatives list different defaults, a listed default with a member its own schema
@@ -76,9 +77,20 @@ reads; never by what the value holds below it, since no keyword writes a value o
 an argument the schema does not name, which cost no step and which the gate still copies
 and counts. So the arguments of one call have a ceiling on their size too
 (:data:`SIZE_CEILING`, which an application can raise as well), checked before anything
-else reads them (:func:`too_large`). The two ceilings together are what bounds the time
+else reads them (:func:`measure`). The two ceilings together are what bounds the time
 one call can take: an ordinary schema spends between 4 and a few hundred steps on each
-value, so without them the time grows with whatever the model sends. The items
+value, so without them the time grows with whatever the model sends. The same reading
+refuses an integer of more than 4,300 digits (:data:`LONGEST_INTEGER`): writing one out
+as text is quadratic in its digits where the interpreter sets no limit on them, which
+no ceiling on the size bounds, so the gate writes no integer out and hands none of
+more digits on. What the gate itself reads of the arguments before and after the check
+(their size and depth, the copy, the count of their values, the keys they are compared
+by, the text of a refusal) it reads without recursion: on Python 3.11 and later the
+cost of a function that recurses moves with where in the interpreter's stack its
+deepest calls fall, and the depth of nesting is the sender's to choose
+(:func:`copied`). The validation and the walk recurse with the schema, as deep as the
+arguments nest under it, and are refused where the interpreter's recursion limit ends
+them. The items
 ``uniqueItems`` compares are gathered into a set by keys that hold no number, only text:
 the hash of a number is the sender's to choose, and the hash of a string is keyed by the
 interpreter (:func:`_key`).
@@ -95,21 +107,28 @@ more than one form refuses the call that leaves its property out.
 
 from __future__ import annotations
 
-import copy
 import json
+import math
 import operator
-import re
+from asyncio import CancelledError
+from bisect import bisect_right
 from contextvars import ContextVar
+from enum import Enum
 from fractions import Fraction
 from itertools import chain
+from json.encoder import encode_basestring as _as_json
 from typing import Any, Iterable, Iterator, Optional
-from urllib.parse import unquote
 
 from jsonschema import FormatChecker, validators  # type: ignore[import-untyped]
 from jsonschema.exceptions import SchemaError, ValidationError  # type: ignore[import-untyped]
 from referencing import Registry
+from referencing import jsonschema as _specifications
 
-from recusal.invocation import detached as _detached
+#: What is never turned into a refusal: the interpreter or the event loop stopping the
+#: work. Every other exception that reaches the gate, one that is not an ``Exception``
+#: among them (a panic in a compiled dependency arrives as a ``BaseException``), is a
+#: refusal of the call.
+PASSED_ON = (KeyboardInterrupt, SystemExit, GeneratorExit, CancelledError)
 
 #: The functions ``jsonschema`` gathers with what the other keywords of a schema
 #: evaluated (the positions of a list, the names of an object), for 2019-09 and for
@@ -252,7 +271,7 @@ def ceiling_of(value: Any) -> int:
 
 
 #: The most characters the arguments of one call may be, written as JSON text in its most
-#: compact form (:func:`too_large`), unless the application names another ceiling for a
+#: compact form (:func:`measure`), unless the application names another ceiling for a
 #: connection (``size_ceiling=`` on ``gate_mcp_server``, ``gated_agent`` and
 #: ``audited_agent``). The steps do not bound the size: a step that reads a string costs
 #: the string's length, and a value in an argument the schema does not name costs no
@@ -260,9 +279,33 @@ def ceiling_of(value: Any) -> int:
 #: and it is checked before anything else reads the arguments.
 SIZE_CEILING = 1_000_000
 
-#: The characters JSON text writes as an escape: two characters for these, six for the rest.
-_ESCAPED = re.compile(r'[\x00-\x1f"\\]')
-_SHORT_ESCAPES = frozenset('"\\\b\f\n\r\t')
+#: A string is counted as JSON text this many characters at a time: each part is written
+#: out once as JSON text (which is where an escape becomes two characters or six) and
+#: measured, so what is written at any one time is at most six times this, whatever the
+#: string and whatever the ceiling.
+_WINDOW = 65_536
+
+#: The most decimal digits an integer in the arguments of one call may have. It is the
+#: limit Python sets by default on writing an integer as text (3.11 and later, and 3.10
+#: from 3.10.7), which is quadratic in the digits before 3.12: an interpreter without the
+#: limit (an older one, or one where it is switched off) would write an integer of any
+#: length in the audit record's fingerprint and wherever a policy or a server writes it.
+#: The gate refuses a longer one on every interpreter, whatever its limit is set to, and
+#: writes none out itself (:func:`measure`).
+LONGEST_INTEGER = 4_300
+
+#: The least integer of more digits than that, and its bits: no integer of fewer bits has
+#: more digits, and every integer of more bits has.
+_TOO_LONG = 10**LONGEST_INTEGER
+_TOO_LONG_BITS = _TOO_LONG.bit_length()
+
+#: The powers of ten up to 10**18: an integer below the last has as many digits as there
+#: are powers here that are not above it, which one search finds.
+_POWERS = tuple(10**exponent for exponent in range(19))
+_BEYOND = _POWERS[-1]
+
+#: What :func:`measure` finds.
+FITS, OVER, LONG, DEEP = "", "size", "integer", "depth"
 
 
 def size_ceiling_of(value: Any) -> int:
@@ -277,48 +320,87 @@ def size_ceiling_of(value: Any) -> int:
     return value
 
 
-def too_large(value: Any, ceiling: int, deepest: int = 64) -> bool:
-    """Whether ``value`` is more than ``ceiling`` characters as JSON text in its most
-    compact form: no white space, and every character written as it is but for the ones
-    JSON has to escape (what ``json.dumps(value, separators=(",", ":"),
-    ensure_ascii=False)`` writes, counted in characters, of which one outside ASCII is
-    more than one byte).
+def measure(value: Any, ceiling: int, deepest: int = 64) -> str:
+    """How ``value`` stands against what the gate checks before anything else reads the
+    arguments of a call, in one reading that stops at the first of the two it refuses
+    unread:
 
-    Nothing is written and nothing is copied, and the reading stops at the ceiling: a
-    string longer than what is left is not read, and the members of a list or an object
-    that holds more of them than characters are left are not looked at, so this costs
-    in proportion to the ceiling whatever it is handed. Three things the gate refuses
-    next are not counted exactly. Whatever is not JSON data counts as one character.
-    What a list or an object more than ``deepest`` levels down holds is not read (the
-    gate reads no deeper, and data that holds itself has no end). And an integer of
-    more digits than the interpreter writes as text counts by its bits, which is its
-    digits or one more."""
+    * :data:`OVER`: it is more than ``ceiling`` characters as JSON text in its most
+      compact form: no white space, and every character written as it is but for the
+      ones JSON has to escape (what ``json.dumps(value, separators=(",", ":"),
+      ensure_ascii=False)`` writes, counted in characters, of which one outside ASCII is
+      more than one byte);
+    * :data:`LONG`: it holds an integer of more than :data:`LONGEST_INTEGER` digits;
+    * :data:`DEEP`: it is neither, and holds a value more than ``deepest`` levels down,
+      which the gate refuses next;
+    * :data:`FITS`: none of these.
+
+    Nothing recurses, and the reading stops at the ceiling: a string longer than what is
+    left is not read, and the members of a list or an object that holds more of them
+    than characters are left are not looked at, so this costs in proportion to the
+    ceiling whatever it is handed. A string that may fit is counted by writing it out
+    as JSON text, :data:`_WINDOW` characters at a time. Two things the gate refuses next
+    are not counted exactly. Whatever is not JSON data counts as one character. And
+    what a list or an object more than ``deepest`` levels down holds is not read (the
+    gate reads no deeper, and data that holds itself has no end).
+
+    An integer is never written out. One of up to 18 digits is looked up among the
+    powers of ten. The digits of a longer one are counted from its bits: an integer
+    of ``b`` bits is at least ``2**(b - 1)`` and less than ``2**b``, and the logarithm
+    of 2 lies between 0.30102 and 0.30103, so it has at least
+    ``(b - 1) * 30102 // 100000 + 1`` digits and at most ``b * 30103 // 100000 + 1``.
+    The second never undercounts, and for an integer of up to :data:`LONGEST_INTEGER`
+    digits the two differ by one at the most; where they differ the integer is
+    compared with the power of ten between them, so the count is exact. Whether an
+    integer has more digits than that is read from its bits too, and from one
+    comparison with ``10**LONGEST_INTEGER`` where its bits are that number's."""
     left = ceiling
+    deep = False
     levels: list[Iterator[Any]] = [iter((value,))]
     while levels:
         for each in levels[-1]:
             kind = type(each)
             if kind is str:
-                left -= len(each) + 2
+                size = len(each)
+                left -= size + 2
                 if left < 0:
-                    return True
-                for escaped in _ESCAPED.findall(each):
-                    left -= 1 if escaped in _SHORT_ESCAPES else 5
+                    return OVER
+                if size <= _WINDOW:
+                    left -= len(_as_json(each)) - size - 2
+                else:
+                    for start in range(0, size, _WINDOW):
+                        part = each[start : start + _WINDOW]
+                        left -= len(_as_json(part)) - len(part) - 2
+                        if left < 0:
+                            return OVER
             elif kind is dict or kind is list:
                 # the brackets, a comma between two members, a colon in each member of
                 # an object; and every member or item is one character at the least
                 count = len(each)
                 left -= 2 + max(count - 1, 0) + (count if kind is dict else 0)
                 if left < count:
-                    return True
-                if count and len(levels) <= deepest + 1:
-                    levels.append(chain(each, each.values()) if kind is dict else iter(each))
-                    break
+                    return OVER
+                if count:
+                    if len(levels) > deepest:
+                        deep = True  # its members are more than ``deepest`` levels down
+                    if len(levels) <= deepest + 1:
+                        levels.append(chain(each, each.values()) if kind is dict else iter(each))
+                        break
             elif kind is int:
-                try:
-                    left -= len(str(each))
-                except ValueError:  # more digits than the interpreter writes
-                    left -= each.bit_length() * 30103 // 100000 + 1 + (each < 0)
+                if -10 < each < 10:
+                    left -= 1 + (each < 0)
+                elif -_BEYOND < each < _BEYOND:
+                    left -= bisect_right(_POWERS, abs(each)) + (each < 0)
+                else:
+                    bits = each.bit_length()
+                    if bits >= _TOO_LONG_BITS and (each >= _TOO_LONG or each <= -_TOO_LONG):
+                        return LONG
+                    digits = bits * 30103 // 100000 + 1
+                    if digits != (bits - 1) * 30102 // 100000 + 1 and abs(each) < 10 ** (
+                        digits - 1
+                    ):
+                        digits -= 1
+                    left -= digits + (each < 0)
             elif kind is float:
                 left -= len(repr(each))
             elif each is None or each is True:
@@ -328,10 +410,18 @@ def too_large(value: Any, ceiling: int, deepest: int = 64) -> bool:
             else:
                 left -= 1
             if left < 0:
-                return True
+                return OVER
         else:
             levels.pop()
-    return False
+    return DEEP if deep else FITS
+
+
+def too_large(value: Any, ceiling: int, deepest: int = 64) -> bool:
+    """Whether ``value`` is more than ``ceiling`` characters as JSON text in its most
+    compact form (:func:`measure`, which says how that is counted). False where the
+    reading stopped before the ceiling at an integer of more than
+    :data:`LONGEST_INTEGER` digits, which the gate refuses for that."""
+    return measure(value, ceiling, deepest) == OVER
 
 
 def too_large_reason(ceiling: int) -> str:
@@ -343,6 +433,84 @@ def too_large_reason(ceiling: int) -> str:
         "call. Where calls of this size are expected, the application can raise the "
         "ceiling: `size_ceiling=` on `gate_mcp_server`, `gated_agent` or `audited_agent`."
     )
+
+
+def long_integer_reason() -> str:
+    """The reason for a call whose arguments hold an integer of more digits than the
+    gate reads."""
+    return (
+        f"the arguments hold an integer of more than {LONGEST_INTEGER:,} digits, the most "
+        "an integer in one call's arguments may have (the limit Python sets by default on "
+        "writing an integer as text, which the gate applies on every interpreter); the "
+        "gate has read no further. Send a number of fewer digits, or the digits as a "
+        "string where the server's schema takes a string."
+    )
+
+
+_STRINGS = {str}
+
+
+def copied(value: Any) -> Any:
+    """A copy of ``value`` that shares no list or object with it, or ``TypeError`` for a
+    value that is not JSON data: what ``recusal.invocation.detached`` returns and raises,
+    value for value and message for message, worked out without recursion.
+
+    The kernel's function calls itself once for every value, so on Python 3.11 and
+    later, which keep frames in blocks of 16 KB, what a copy costs depends on where in
+    such a block its deepest calls fall: up to several times more at one depth of
+    nesting than at the next, and the depth is the sender's to choose. This one keeps
+    its place in a list and calls no Python function for a value, so the nesting does
+    not move it. The data it accepts is the kernel's, and a test holds the two together.
+    """
+    made: Any = []
+    #: for each list or object being copied: what is left of it, its copy, whether its
+    #: members are named, and its identity (0 for the holder of the copy itself)
+    levels: list[tuple[Iterator[Any], Any, bool, int]] = [(iter((value,)), made, False, 0)]
+    above: set[int] = set()
+    while levels:
+        members, target, named, identity = levels[-1]
+        for each in members:
+            if named:
+                name, each = each
+            kind = type(each)
+            if kind is str or kind is int or kind is bool or each is None:
+                pass
+            elif kind is float:
+                if not math.isfinite(each):
+                    raise TypeError("non-finite numbers are not JSON data")
+            elif kind is list or kind is dict:
+                if id(each) in above:
+                    raise TypeError("cyclic arguments are not JSON data")
+                inner: Any
+                if kind is list:
+                    inner = []
+                    levels.append((iter(each), inner, False, id(each)))
+                else:
+                    if each and set(map(type, each)) != _STRINGS:
+                        raise TypeError("argument keys must be strings")
+                    inner = {}
+                    levels.append((iter(each.items()), inner, True, id(each)))
+                above.add(id(each))
+                if named:
+                    target[name] = inner
+                else:
+                    target.append(inner)
+                break
+            elif isinstance(each, Enum):
+                raise TypeError(
+                    "Enum arguments are unsupported; declare data-only parameters "
+                    "and resolve application types inside the tool body"
+                )
+            else:
+                raise TypeError("arguments must be data-only")
+            if named:
+                target[name] = each
+            else:
+                target.append(each)
+        else:
+            levels.pop()
+            above.discard(identity)
+    return made[0]
 
 
 def _too_costly(allowed: int, ceiling: int) -> str:
@@ -437,23 +605,45 @@ _WORK: ContextVar[Optional[_Work]] = ContextVar("recusal_openai_agents_mcp_work"
 
 
 def _count(value: Any) -> int:
-    """How many values ``value`` holds, itself included."""
-    if type(value) is dict:
-        return 1 + sum(_count(member) for member in value.values())
-    if type(value) is list:
-        return 1 + sum(_count(item) for item in value)
-    return 1
+    """How many values ``value`` holds, itself included. Without recursion, as every
+    reading of the arguments that is the gate's own is (:func:`copied`); the data must
+    not hold itself, which a copy never does."""
+    count = 1
+    held = [value]
+    while held:
+        each = held.pop()
+        kind = type(each)
+        if kind is dict:
+            each = each.values()
+        elif kind is not list:
+            continue
+        count += len(each)
+        for inner in each:
+            kind = type(inner)
+            if kind is dict or kind is list:
+                held.append(inner)
+    return count
 
 
 def _same(a: Any, b: Any) -> bool:
     """Equal, and of the same JSON type all the way down (``1`` is not ``True`` or ``1.0``)."""
-    if type(a) is not type(b):
-        return False
-    if type(a) is list:
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
-    if type(a) is dict:
-        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
-    return bool(a == b)
+    pairs = [(a, b)]
+    while pairs:
+        a, b = pairs.pop()
+        kind = type(a)
+        if kind is not type(b):
+            return False
+        if kind is list:
+            if len(a) != len(b):
+                return False
+            pairs.extend(zip(a, b))
+        elif kind is dict:
+            if a.keys() != b.keys():
+                return False
+            pairs.extend((a[name], b[name]) for name in a)
+        elif not a == b:
+            return False
+    return True
 
 
 def _number(value: Any) -> str:
@@ -484,26 +674,50 @@ def _key(work: Optional[_Work], value: Any, exact: bool) -> Any:
     therefore holds no number: a number is held as its text (:func:`_number`), and the
     hash of a string is keyed by the interpreter, as the hash of every member name is.
     An ``exact`` key is never gathered: it is looked up once among the values of the
-    schema's own ``enum``, or compared with its ``const``."""
-    if work is not None:
-        work.step()
-    kind = type(value)
-    if kind is not list and kind is not dict:
-        if exact or kind is str or value is None:
-            return (kind, value)
-        return (float, _number(value))
-    if work is not None:
-        known = work.keys.get((id(value), exact))
-        if known is not None and known[0] is value:
-            return known[1]
-    key: Any
-    if kind is list:
-        key = (list, tuple(_key(work, item, exact) for item in value))
-    else:
-        key = (dict, frozenset((name, _key(work, each, exact)) for name, each in value.items()))
-    if work is not None:
-        work.keys[(id(value), exact)] = (value, key)
-    return key
+    schema's own ``enum``, or compared with its ``const``.
+
+    A list or an object is read without recursion (:func:`copied` says why): the key of
+    each one inside it is finished before the one that holds it, as a recursion would."""
+    #: for each list or object being read: itself, what is left of it, the keys of its
+    #: members so far, and the name it has in the object that holds it
+    levels: list[tuple[Any, Iterator[Any], list, Any]] = []
+    members: Iterator[Any] = iter((value,))
+    parts: list = []
+    named = False
+    while True:
+        for each in members:
+            if named:
+                name, each = each
+            if work is not None:
+                work.step()
+            kind = type(each)
+            key: Any
+            if kind is not list and kind is not dict:
+                if exact or kind is str or each is None:
+                    key = (kind, each)
+                else:
+                    key = (float, _number(each))
+            else:
+                known = None if work is None else work.keys.get((id(each), exact))
+                if known is not None and known[0] is each:
+                    key = known[1]
+                else:
+                    levels.append((each, members, parts, name if named else None))
+                    named = kind is dict
+                    members = iter(each.items()) if named else iter(each)
+                    parts = []
+                    break
+            parts.append((name, key) if named else key)
+        else:
+            if not levels:
+                return parts[0]
+            source, members, above, name = levels.pop()
+            key = (dict, frozenset(parts)) if named else (list, tuple(parts))
+            if work is not None:
+                work.keys[(id(source), exact)] = (source, key)
+            parts = above
+            named = bool(levels) and type(levels[-1][0]) is dict
+            parts.append((name, key) if named else key)
 
 
 #: The message of every validation error the gate makes. ``jsonschema`` writes the value
@@ -633,7 +847,14 @@ def _required(validator: Any, required: Any, instance: Any, schema: Any) -> Iter
 
 
 def _property_names(validator: Any, names: Any, instance: Any, schema: Any) -> Iterable[Any]:
+    """``propertyNames``: every member's name meets the schema. Where that is ``false``
+    no name does, and the error is this keyword's: the name is not a value with a place
+    of its own in the arguments for the ``false`` schema's reason to name."""
     if validator.is_type(instance, "object"):
+        if names is False:
+            if instance:
+                yield _unmet()
+            return
         for name in instance:
             yield from validator.descend(instance=name, schema=names)
 
@@ -1030,7 +1251,13 @@ def _own(strict: Any) -> Any:
 
     def quiet_descend(self: Any, instance: Any, schema: Any, *args: Any, **kwargs: Any) -> Any:
         if schema is False:
-            return iter((_never(instance),))
+            error = _never(instance)
+            # `jsonschema` leaves this error at the list or the object that holds the
+            # value; the reason names the value the schema allows none for
+            path = args[0] if args else kwargs.get("path")
+            if path is not None:
+                error.path.appendleft(path)
+            return iter((error,))
         return descend(self, instance, schema, *args, **kwargs)
 
     def quiet_iter_errors(self: Any, instance: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1090,25 +1317,54 @@ def _draft(declared: Any) -> Any:
     return _DIALECTS.get(rest[:-1] if rest.endswith("#") else rest)
 
 
-def _resolve(root: Any, ref: Any) -> Any:
-    """The subschema a ``$ref`` names inside ``root``, or :class:`Refused`."""
-    node = root
-    if type(ref) is str and (ref == "#" or ref.startswith("#/")):
-        for token in ref[2:].split("/") if ref != "#" else ():
-            token = unquote(token).replace("~1", "/").replace("~0", "~")
-            if type(node) is dict and token in node:
-                node = node[token]
-            elif type(node) is list and token.isdigit() and int(token) < len(node):
-                node = node[int(token)]
-            else:
-                node = None
-                break
-        if type(node) in (dict, bool):
-            return node
-    raise Refused(
-        f"{_SCHEMA} has a `$ref` that does not resolve inside the schema itself, so the "
-        "gate cannot check the arguments against it"
-    )
+#: The specification ``referencing`` reads a schema of each draft by: what
+#: ``jsonschema`` resolves a ``$ref`` with for that draft.
+_SPECIFICATIONS = {
+    validators.Draft7Validator: _specifications.DRAFT7,
+    validators.Draft201909Validator: _specifications.DRAFT201909,
+    validators.Draft202012Validator: _specifications.DRAFT202012,
+}
+
+
+class _References:
+    """The subschema each ``$ref`` of one schema names, read by ``referencing``: the
+    library ``jsonschema`` resolves a ``$ref`` with when it validates, built the way
+    ``jsonschema`` builds it (the schema as the root resource of an empty registry).
+
+    One reading, so that what the gate reads from the schema a ``$ref`` names (its
+    types, its default, the forms of a union, where the walk goes) is read from the
+    subschema the validation is made against. A reading of the gate's own differed from
+    it: for a pointer with a percent-escape that decodes to ``/``, which the library
+    decodes before it splits the pointer, and for the position of an item of a list,
+    which the library reads with ``int`` (a sign, a digit that is not ASCII). Each
+    ``$ref`` is resolved once for a listing."""
+
+    def __init__(self, schema: Any, base: Any):
+        resource = _SPECIFICATIONS[base].create_resource(schema)
+        self._resolver = Registry().resolver_with_root(resource)
+        self._known: dict[str, Any] = {}
+
+    def __call__(self, ref: Any) -> Any:
+        """The subschema ``ref`` names, or :class:`Refused` for one that is not a
+        pointer into the schema itself or that the library does not resolve to a
+        schema."""
+        if type(ref) is str:
+            if ref in self._known:
+                return self._known[ref]
+            if ref == "#" or ref.startswith("#/"):
+                try:
+                    node = self._resolver.lookup(ref).contents
+                except RecursionError:
+                    raise  # the stack, not the reference: :meth:`Listed._prepared`
+                except Exception:  # noqa: BLE001, whatever the library gives up with
+                    node = None
+                if type(node) in (dict, bool):
+                    self._known[ref] = node
+                    return node
+        raise Refused(
+            f"{_SCHEMA} has a `$ref` that does not resolve inside the schema itself, so the "
+            "gate cannot check the arguments against it"
+        )
 
 
 def _holds_default(value: Any) -> bool:
@@ -1120,10 +1376,11 @@ def _holds_default(value: Any) -> bool:
     return False
 
 
-def _endless(node: Any, root: Any, state: dict[int, bool]) -> bool:
+def _endless(node: Any, resolve: Any, state: dict[int, bool]) -> bool:
     """Whether ``node`` leads back to itself through ``$ref`` and the keywords that apply
     a subschema to the same value: validating any value against it would never finish.
-    A ``$ref`` that does not resolve inside ``root`` is refused here (:func:`_resolve`)."""
+    A ``$ref`` that does not resolve inside the schema is refused here (``resolve``,
+    a :class:`_References`)."""
     if type(node) is not dict:
         return False
     if id(node) in state:
@@ -1131,7 +1388,7 @@ def _endless(node: Any, root: Any, state: dict[int, bool]) -> bool:
     state[id(node)] = True
     onward: list[Any] = []
     if "$ref" in node:
-        onward.append(_resolve(root, node["$ref"]))
+        onward.append(resolve(node["$ref"]))
     for keyword in (*_SAME_VALUE, "dependencies"):
         member = node.get(keyword)
         if type(member) is dict and keyword in ("dependentSchemas", "dependencies"):
@@ -1140,7 +1397,7 @@ def _endless(node: Any, root: Any, state: dict[int, bool]) -> bool:
             onward.extend(member)
         else:
             onward.append(member)
-    found = any(_endless(each, root, state) for each in onward)
+    found = any(_endless(each, resolve, state) for each in onward)
     state[id(node)] = found
     return found
 
@@ -1150,7 +1407,9 @@ class _Read:
     a refusal may quote), its subschemas, the keywords it uses, and which of its
     subschemas lead back to themselves."""
 
-    def __init__(self) -> None:
+    def __init__(self, resolve: Any) -> None:
+        #: the subschema a ``$ref`` names (:class:`_References`)
+        self.resolve = resolve
         self.names: set[str] = set()
         self.nodes: list[dict] = []
         self.keywords: set[str] = set()
@@ -1186,7 +1445,7 @@ def _scan(node: Any, root: Any, read: _Read, under: Optional[str] = None) -> Non
             f"{_SCHEMA} embeds a schema that declares a draft of its own (`$schema`), "
             "which the gate does not read"
         )
-    if _endless(node, root, read.state):
+    if _endless(node, read.resolve, read.state):
         raise Refused(f"{_SCHEMA} refers to itself without end")
     if under is not None and "default" in node:
         raise Refused(
@@ -1225,6 +1484,23 @@ def _declared(types: Any) -> list[str]:
     return [types] if type(types) is str else [name for name in types if type(name) is str]
 
 
+def _digits(text: str) -> int:
+    """What the decoder of :func:`_json_text` makes of the digits of an integer: nothing
+    of their value, which is not asked for. An integer of more digits than Python's
+    default limit is given up on, as the decoder itself gives up where that limit is
+    set; where it is not (an older Python, or the limit switched off) making the
+    integer takes time that grows with the square of its digits, so no integer is made
+    here on any interpreter."""
+    if len(text) - (text[0] == "-") > LONGEST_INTEGER:
+        raise ValueError("an integer of more digits than the gate reads")
+    return 0
+
+
+#: The decoder of :func:`_json_text`, made once: ``json.loads`` builds a decoder at every
+#: call that names a ``parse_int``.
+_DECODER = json.JSONDecoder(parse_int=_digits)
+
+
 def _json_text(text: str) -> bool:
     """Whether a string is JSON text for null, a list or an object: what the MCP Python
     SDK's server decodes and runs in the string's place when it is an argument. Text that
@@ -1233,13 +1509,13 @@ def _json_text(text: str) -> bool:
     The server decodes under its own interpreter, and this one has limits another does
     not share: how deep a list or an object may be nested (about 1,000 levels before
     Python 3.12, about 3,000 in 3.12 and 3.13, more after) and how many digits an
-    integer may have (4,300, or none where the limit is switched off or the Python is
-    older). Text this interpreter gives up on for such a limit is text a server may
-    still decode, so it is JSON text here when it opens a list or an object. Text that
-    opens neither could decode only to a number, which a server keeps a string: a long
-    run of digits is judged and sent as the string it is."""
+    integer may have (4,300 by default, which is what the gate reads on every
+    interpreter: :func:`_digits`). Text this interpreter gives up on for such a limit
+    is text a server may still decode, so it is JSON text here when it opens a list or
+    an object. Text that opens neither could decode only to a number, which a server
+    keeps a string: a long run of digits is judged and sent as the string it is."""
     try:
-        decoded = json.loads(text)
+        decoded = _DECODER.decode(text)
     except json.JSONDecodeError:
         return False  # not JSON, for any interpreter
     except (ValueError, RecursionError):
@@ -1316,6 +1592,8 @@ class Listed:
         self._ceiling = ceiling_of(ceiling)
         self._validator: Any = None
         self._failure: Optional[Refused] = None
+        #: the subschema each ``$ref`` names, once the draft is known (:meth:`_prepare`)
+        self._resolve: Any = None
         self._names: set[str] = set()
         #: what is read from the schema alone, each under the identity of its subschema
         #: (the schema is kept whole, so an identity is never given to another object)
@@ -1327,7 +1605,12 @@ class Listed:
 
     def _prepared(self) -> Any:
         """The validator for this schema, or :class:`Refused` when the gate cannot read it.
-        Worked out once for a listing."""
+        Worked out once for a listing.
+
+        What the schema itself is refused for is kept, and said again for every call.
+        A schema the interpreter's recursion limit stopped the reading of is refused
+        for this call alone: where the limit is reached depends on how deep in the
+        application's own stack the gate was called, so the next call may read it."""
         if self._failure is not None:
             raise self._failure
         if self._validator is None:
@@ -1336,6 +1619,11 @@ class Listed:
             except Refused as refused:
                 self._failure = refused
                 raise
+            except RecursionError:
+                raise Refused(
+                    f"{_SCHEMA} is nested too deeply to read within what is left of the "
+                    "interpreter's recursion limit where the gate was called"
+                ) from None
         return self._validator
 
     def _prepare(self) -> Any:
@@ -1343,8 +1631,8 @@ class Listed:
         if type(schema) is not dict:
             raise Refused(f"{_SCHEMA} is not a JSON object")
         try:
-            _detached(schema)
-        except (TypeError, RecursionError):
+            copied(schema)
+        except TypeError:
             raise Refused(f"{_SCHEMA} is not JSON data") from None
         base = _draft(schema["$schema"]) if "$schema" in schema else validators.Draft202012Validator
         if base not in _DRAFTS:
@@ -1352,10 +1640,16 @@ class Listed:
                 f"{_SCHEMA} declares a JSON Schema draft the gate does not read (it reads "
                 "draft-07, 2019-09 and 2020-12)"
             )
+        try:
+            self._resolve = _References(schema, base)
+        except RecursionError:
+            raise
+        except Exception:  # noqa: BLE001, an `$id` that is not text: no draft allows one
+            raise Refused(f"{_SCHEMA} is not a valid JSON Schema") from None
         self._modern = base is validators.Draft202012Validator
         # in draft-07 a `$ref` is read alone: the keywords beside it are not applied
         self._ref_alone = base is validators.Draft7Validator
-        read = _Read()
+        read = _Read(self._resolve)
         try:
             _scan(schema, schema, read)
             if {"unevaluatedProperties", "patternProperties"} <= read.keywords:
@@ -1383,8 +1677,6 @@ class Listed:
                         self._forms(node[keyword], "array")
         except SchemaError:
             raise Refused(f"{_SCHEMA} is not a valid JSON Schema") from None
-        except RecursionError:
-            raise Refused(f"{_SCHEMA} is nested too deeply to read") from None
         self._names = read.names
         # The validator is handed the schema without its `$schema`: the draft is chosen
         # above, and `jsonschema` chooses again, by that keyword, for every schema a
@@ -1418,7 +1710,7 @@ class Listed:
         named: frozenset[str] = frozenset()
         alone = False
         if "$ref" in schema:
-            admitted, named = self._types(_resolve(self.schema, schema["$ref"]))
+            admitted, named = self._types(self._resolve(schema["$ref"]))
             alone = self._ref_alone
         if not alone:
             said: list[frozenset[str]] = []
@@ -1471,7 +1763,7 @@ class Listed:
         else:
             inner: list[Any] = []
             if "$ref" in schema:
-                inner.append(_resolve(self.schema, schema["$ref"]))
+                inner.append(self._resolve(schema["$ref"]))
             for keyword in ("allOf", "anyOf", "oneOf"):
                 members = schema.get(keyword)
                 if type(members) is list:
@@ -1496,7 +1788,7 @@ class Listed:
         seen.add(id(schema))
         inner: list[Any] = []
         if "$ref" in schema:
-            inner.append(_resolve(self.schema, schema["$ref"]))
+            inner.append(self._resolve(schema["$ref"]))
         if not (inner and self._ref_alone):
             if "const" in schema:
                 return True, schema["const"]
@@ -1518,7 +1810,7 @@ class Listed:
             return
         seen.add(id(schema))
         if "$ref" in schema:
-            self._tags(_resolve(self.schema, schema["$ref"]), found, unfit, seen)
+            self._tags(self._resolve(schema["$ref"]), found, unfit, seen)
             if self._ref_alone:
                 return
         for member in schema.get("allOf") or ():
@@ -1620,6 +1912,12 @@ class Listed:
                 f"match{'' if plural else 'es'} "
                 f"{'none' if keyword == 'anyOf' else 'not exactly one'} of the alternatives "
                 "the server's schema lists there"
+            )
+        elif keyword is None:
+            # the `false` schema: no keyword failed, the schema allows no value at all
+            detail = (
+                f"{'stand' if plural else 'stands'} where the server's schema allows no "
+                "value (`false`)"
             )
         else:
             detail = f"do{'' if plural else 'es'} not meet `{keyword}` in the server's schema"
@@ -1791,7 +2089,7 @@ class Listed:
         work.walked[key] = (schema, value)
         onward: list[Any] = []
         if "$ref" in schema:
-            onward.append(_resolve(self.schema, schema["$ref"]))
+            onward.append(self._resolve(schema["$ref"]))
         onward.extend(schema.get("allOf") or ())
         for keyword in ("anyOf", "oneOf"):
             alternatives = schema.get(keyword)
@@ -1862,7 +2160,7 @@ class Listed:
             )
         if state == _NONE or (id(value), name) in held:
             return
-        default = _detached(default)  # a copy: the schema was checked to be JSON data
+        default = copied(default)  # the schema was checked to be JSON data
         try:
             errors = list(validator.descend(default, member))
             stray = self._stray(validator, errors)
@@ -1959,13 +2257,10 @@ class Listed:
     # --- the whole of it ------------------------------------------------------------------------
 
     def _complete(
-        self, validator: Any, work: _Work, arguments: dict[str, Any], owned: bool
+        self, validator: Any, work: _Work, sent: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """``(judged, sent)``: the arguments with every listed default, and with every
-        default that can be sent."""
-        # a copy in which no list or object stands in two places: the walk knows a place
-        # by the object that is there
-        sent = arguments if owned else _detached(arguments)
+        default that can be sent. ``sent`` is a copy, which is written to."""
         self._validate(validator, sent)
         held: dict[tuple, tuple] = {}
         for _ in range(_MAX_PASSES):
@@ -1986,7 +2281,7 @@ class Listed:
         # stands under another: each is put in for the copy and taken out again
         for parent, name, default in held.values():
             parent[name] = default
-        judged = copy.deepcopy(sent)
+        judged = copied(sent)
         for parent, name, _ in held.values():
             del parent[name]
         return judged, sent
@@ -2006,11 +2301,16 @@ class Listed:
         for a string a server may read as another type the schema admits, for arguments
         too costly to check, and for a schema the gate cannot check or complete them
         against."""
-        validator = self._prepared()
-        work = _Work(min(_STEPS + _STEPS_PER_VALUE * _count(arguments), self._ceiling))
-        token = _WORK.set(work)
+        work: Any = None
+        token: Any = None
         try:
-            return self._complete(validator, work, arguments, owned)
+            validator = self._prepared()
+            # a copy in which no list or object stands in two places: the walk knows a
+            # place by the object that is there
+            sent = arguments if owned else copied(arguments)
+            work = _Work(min(_STEPS + _STEPS_PER_VALUE * _count(sent), self._ceiling))
+            token = _WORK.set(work)
+            return self._complete(validator, work, sent)
         except Refused:
             raise
         except _TooCostly:
@@ -2018,7 +2318,8 @@ class Listed:
         except RecursionError:
             raise Refused(
                 f"the arguments are nested too deeply to check against {_SCHEMA} within "
-                "the interpreter's recursion limit"
+                "what is left of the interpreter's recursion limit where the gate was "
+                "called"
             ) from None
         except _NoFloat as cause:
             if cause.sent:
@@ -2032,9 +2333,12 @@ class Listed:
                 f"{_SCHEMA} lists a `multipleOf` too large to be a float, which the gate "
                 "cannot check a number that is not an integer against"
             ) from None
-        except Exception as exc:  # noqa: BLE001, what the gate cannot check is refused
+        except PASSED_ON:
+            raise
+        except BaseException as exc:  # noqa: BLE001, what the gate cannot check is refused
             raise Refused(
                 f"the arguments could not be checked against {_SCHEMA} ({type(exc).__name__})"
             ) from None
         finally:
-            _WORK.reset(token)
+            if token is not None:
+                _WORK.reset(token)

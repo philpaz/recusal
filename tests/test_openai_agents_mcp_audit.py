@@ -531,6 +531,71 @@ class TestOpenAIAgentsMcpAudit:
         assert entry["action"]["input_sha256"] != _sha(arguments)
         assert "MARKER" not in log_path.read_text(encoding="utf-8")
 
+    def test_a_long_integer_is_one_recorded_deny_that_writes_none_of_it(
+        self, example, gate, log, log_path
+    ):
+        """The eighth review. The fingerprint of the arguments would write the integer
+        out, which is quadratic in its digits where the interpreter sets no limit on
+        them, and under the default limit cannot be done at all: the entry is bound to
+        a statement, as for the size. With the limit switched off where this Python
+        has one, which is the interpreter the review found it on."""
+        seen = []
+
+        def policy(name, args):
+            seen.append(name)
+            return []
+
+        gate.CALLED.clear()
+        has_limit = hasattr(sys, "set_int_max_str_digits")
+        before = sys.get_int_max_str_digits() if has_limit else None
+        if has_limit:
+            sys.set_int_max_str_digits(0)
+        try:
+            server = _purge_server(gate)
+            gate.gate_mcp_server(server, policy, example.recording(log))
+            arguments = {"path": "/tmp", "recursive": False, "count": 1 << 3_000_000}
+            result = asyncio.run(server.call_tool("purge", arguments))
+        finally:
+            if has_limit:
+                sys.set_int_max_str_digits(before)
+        assert result.model_dump(by_alias=True).get("isError") is True
+        assert seen == [] and gate.CALLED == []
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny"
+        assert [f["check"] for f in entry["failures"]] == ["recusal_unjudgeable_input"]
+        assert entry["action"]["reason"] == result.content[0].text
+        assert entry["action"]["reason"].startswith(
+            "Recusal refused `purge` [FAIL]: the arguments hold an integer of more than 4,300 "
+            "digits, the most an integer in one call's arguments may have"
+        )
+        assert entry["action"]["input_sha256"] == _sha(
+            {"input": "<arguments that hold an integer of more than 4,300 digits>"}
+        )
+
+    def test_a_call_the_gate_could_not_judge_is_one_recorded_deny(
+        self, example, gate, log, monkeypatch
+    ):
+        """Whatever leaves the gate's own reading is a refusal, and it is on the record,
+        bound to a statement: the arguments are not read again by a gate that has just
+        failed to read them."""
+        adapter = _adapter()
+
+        def out_of_stack(*args):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(adapter, "_measure", out_of_stack)
+        record = example.recording(log)("mcp_server", gate.InProcessMCPServer())
+        sent, reason = adapter._judged_call("run_sql", {"sql": SELECT}, {}, lambda *_: [], **record)
+        assert sent is None and reason == (
+            "Recusal refused `run_sql` [FAIL]: the gate could not judge this call within what "
+            "is left of the interpreter's recursion limit where it was called"
+        )
+        (entry,) = log.entries
+        assert entry["action"]["decision"] == "deny" and entry["action"]["reason"] == reason
+        assert entry["action"]["input_sha256"] == _sha(
+            {"input": "<arguments the gate could not judge>"}
+        )
+
     def test_two_servers_are_told_apart_on_one_log(self, example, gate, log):
         first, second = gate.InProcessMCPServer(name="db"), gate.InProcessMCPServer(name="crm")
         record = example.recording(log)

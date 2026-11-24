@@ -23,11 +23,27 @@ call, before ``Listed.complete``. So the last part times the whole of that:
 calls of the first part and for the arguments that take longest at the ceiling on the
 size.
 
+On Python 3.11 and later one more thing moves the time of a call, which no best of
+three shows: where in the interpreter's stack the call is made. CPython keeps frames in
+blocks of 16 KB, and a Python function called where the block ends maps a new block and
+frees it again on return, at every call. So the same call takes longer from some depths
+of the application's own stack than from others, and a call whose check recurses (a
+recursive schema, the fingerprint of an audit entry) takes longer at some depths of its
+arguments' nesting. ``stack`` times four calls of the last part from each of 144
+depths of plain Python frames, once each, and prints the least, the median and the
+most: the range the page states. It ends with the other thing the place decides: the
+validation recurses with a recursive schema, so the deepest call such a schema admits
+completes only where the interpreter's recursion limit leaves room for it, and
+``stack`` prints from how many frames down that stops.
+
     python tools/measure_mcp_cost.py
     python tools/measure_mcp_cost.py size     (the last part alone)
+    python tools/measure_mcp_cost.py stack    (the range by where the call is made)
 
 It needs the package and its dependencies installed. Times differ from machine to
-machine and run to run; each is the best of three.
+machine and run to run; each is the best of three runs, made from three places in the
+stack, but for ``stack``, which says so.
+Run it on a machine that is doing nothing else: every figure is of one thread.
 """
 
 from __future__ import annotations
@@ -48,6 +64,7 @@ from pydantic import BaseModel, Field, TypeAdapter, create_model
 from recusal_openai_agents_mcp import (
     SIZE_CEILING,
     STEP_CEILING,
+    _gate,
     _schema,
     gate_mcp_server,
     recording,
@@ -127,13 +144,22 @@ class Server(MCPServer):
         return GetPromptResult(messages=[])
 
 
-def seam(label: str, schema: dict[str, Any], arguments: dict[str, Any], folder: str) -> None:
+def seam(
+    label: str,
+    schema: dict[str, Any],
+    arguments: dict[str, Any],
+    folder: str,
+    alone: bool = True,
+    places: int = 0,
+) -> None:
     """One call through ``call_tool`` on a gated server object, without and with an
-    audit log, beside ``Listed.complete`` alone: the best of three each."""
+    audit log, beside ``Listed.complete`` alone (unless ``alone`` is false: arguments
+    the gate refuses before the check): the best of three each, to ``places`` decimal
+    places."""
     arguments = decoded(arguments)
     size = len(json.dumps(arguments, separators=(",", ":"), ensure_ascii=False))
     line = f"{label}: {size:,} characters"
-    if size <= SIZE_CEILING:
+    if alone and size <= SIZE_CEILING:
         line += f": Listed.complete {gate(schema, arguments)[0]:,.0f} ms"
     for logged in (False, True):
         server = Server(schema)
@@ -151,7 +177,8 @@ def seam(label: str, schema: dict[str, Any], arguments: dict[str, Any], folder: 
 
         spent = best(run)
         told = "ran" if outcome == "ran" else "refused: " + outcome.split(": ", 1)[-1][:48]
-        line += f"; call_tool {'with an audit log' if logged else 'alone'} {spent:,.0f} ms ({told})"
+        how = "with an audit log" if logged else "alone"
+        line += f"; call_tool {how} {spent:,.{places}f} ms ({told})"
     print(line, flush=True)
 
 
@@ -176,16 +203,25 @@ def decoded(arguments: dict[str, Any]) -> dict[str, Any]:
     return dict(json.loads(json.dumps(arguments, ensure_ascii=False)))
 
 
+#: How many plain frames further down each of the three runs of ``best`` is made: three
+#: places in one of the interpreter's 16 KB blocks of frames (the module's own text).
+PLACES = (0, 48, 96)
+
+
 def best(run: Callable[[], Any]) -> float:
-    """The shortest of three runs, in milliseconds. The collector is run first, so that
-    one measurement does not pay for the garbage of the one before it."""
-    times = []
-    gc.collect()
-    for _ in range(3):
+    """The shortest of three runs, in milliseconds, each made from another place in the
+    stack (``PLACES``): on Python 3.11 and later the place moves the time, and the
+    shortest of three runs from one place is the time of that place. The collector is
+    run first, so that one measurement does not pay for the garbage of the one before
+    it."""
+
+    def timed() -> float:
         start = time.perf_counter()
         run()
-        times.append(time.perf_counter() - start)
-    return min(times) * 1000
+        return time.perf_counter() - start
+
+    gc.collect()
+    return min(_under(frames, timed) for frames in PLACES) * 1000
 
 
 def gate(
@@ -277,10 +313,13 @@ def largest(schema: dict[str, Any], make: Callable[[int], Any]) -> int:
     return low
 
 
-def main(only_size: bool = False) -> None:
+def main(only: str = "") -> None:
     print(f"Python {platform.python_version()} on {platform.system()} {platform.machine()}")
     print(f"the ceiling on the steps of one call: {STEP_CEILING:,}")
-    if not only_size:
+    if only == "stack":
+        stack()
+        return
+    if only != "size":
         steps()
     sizes()
 
@@ -493,6 +532,39 @@ def sizes() -> None:
         ("`0` under `list[int]`", under(list[int]), lambda count: {"p": [0] * count}),
         ("empty strings under `list[str]`", under(list[str]), lambda count: {"p": [""] * count}),
     ]
+    #: arguments the gate refuses before the check, at the ceiling: not JSON data (a
+    #: number too large for a float decodes to one that is not finite), and too deep
+    unread: list[tuple[str, Callable[[int], dict[str, Any]]]] = [
+        (
+            "`{}` 60 lists down, then a number that is not finite (not JSON data)",
+            lambda count: {"zz": nested(60, [{} for _ in range(count)]), "zzz": float("inf")},
+        ),
+        (
+            "`[]` 60 lists down, then a number that is not finite (not JSON data)",
+            lambda count: {"zz": nested(60, [[] for _ in range(count)]), "zzz": float("inf")},
+        ),
+        (
+            "a string of byte order marks, then a number that is not finite",
+            lambda count: {"p": "\ufeff" * count, "zzz": float("inf")},
+        ),
+        (
+            "`{}` 60 lists down, then a value 66 levels down (too deep)",
+            lambda count: {"zz": nested(60, [{} for _ in range(count)]), "zzz": nested(66, 0)},
+        ),
+    ]
+    #: a little over the ceiling, where that is known only once most of it is read
+    over: list[tuple[str, dict[str, Any]]] = [
+        ("a string of 999,000 NUL", {"p": "\x00" * 999_000}),
+        ("a string of 999,000 quotes", {"p": '"' * 999_000}),
+        ("a string of 500,001 backslashes", {"p": "\\" * 500_001}),
+        ("500,001 x `0`", {"zz": [0] * 500_001}),
+        ("250,001 x `1.5`", {"zz": [1.5] * 250_001}),
+        ("166,700 x `12345`", {"zz": [12345] * 166_700}),
+        ("333,400 x `{}`", {"zz": [{} for _ in range(333_400)]}),
+        ("333,400 x `{}` 30 lists down", {"zz": nested(30, [{} for _ in range(333_400)])}),
+        ("111,200 members `0`", {"zz": {f"k{number:05d}": 0 for number in range(111_200)}}),
+        ("233 integers of 4,300 digits", {"zz": [10**4299] * 233}),
+    ]
     with tempfile.TemporaryDirectory() as folder:
         for label, kind, make in cases[:6]:
             schema = under(kind)
@@ -500,10 +572,156 @@ def sizes() -> None:
             seam(f"  {label}, {count:,}", schema, {"p": make(count)}, folder)
         for label, schema, make in shapes:
             seam(f"  at the ceiling: {label}", schema, most(make), folder)
-        seam("  one character over the ceiling", text, {"p": "a" * SIZE_CEILING}, folder)
-        seam("  a string of 50,000,000 characters", text, {"p": "a" * 50_000_000}, folder)
-        seam("  2,000,000 x `{}`", anything, {"zz": [{} for _ in range(2_000_000)]}, folder)
+        for label, make in unread:
+            seam(f"  at the ceiling: {label}", anything, most(make), folder, alone=False)
+        label, schema, both = together()
+        seam(f"  the two ceilings together: {label}", schema, both, folder)
+        print("over the ceiling on the size (refused; to a tenth of a millisecond)")
+        seam("  one character over the ceiling", text, {"p": "a" * SIZE_CEILING}, folder, places=1)
+        seam("  a string of 50,000,000 characters", text, {"p": "a" * 50_000_000}, folder, places=1)
+        seam(
+            "  2,000,000 x `{}`",
+            anything,
+            {"zz": [{} for _ in range(2_000_000)]},
+            folder,
+            places=1,
+        )
+        for label, arguments in over:
+            seam(f"  a little over: {label}", anything, arguments, folder, places=1)
+
+
+def together() -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """The call that is at both ceilings: the largest list of short strings the step
+    ceiling completes for a union of five types, and, in an argument the schema does
+    not name, as many ``{}`` 60 lists down as the ceiling on the size has room left
+    for. The steps are spent on the first and the rest of the size on the second."""
+    label, kind, make = shapes_of_calls()[5]
+    schema = under(kind)
+    strings = make(largest(schema, make))
+    low, high = 0, SIZE_CEILING
+    while high - low > 1:
+        middle = (low + high) // 2
+        filled = {"p": strings, "zz": nested(60, [{} for _ in range(middle)])}
+        if _schema.too_large(filled, SIZE_CEILING):
+            high = middle
+        else:
+            low = middle
+    return (
+        f"{label}, {len(strings):,}, and {low:,} x `{{}}` 60 lists down in an argument "
+        "the schema does not name",
+        schema,
+        {"p": strings, "zz": nested(60, [{} for _ in range(low)])},
+    )
+
+
+#: How many depths of the stack ``stack`` times a call from: more than the plain frames
+#: of ``_under`` that fit one of the interpreter's 16 KB blocks, so every place in a
+#: block is met.
+DEPTHS = 144
+
+
+def _under(frames: int, run: Callable[[], float]) -> float:
+    """``run()``, from ``frames`` more plain Python frames down the stack."""
+    return _under(frames - 1, run) if frames else run()
+
+
+def stack() -> None:
+    """The time of one call by where in the stack it is made (the module's own text says
+    why it moves): four calls of ``sizes``, each from ``DEPTHS`` depths, once each."""
+    print(f"\nby where the call is made: from each of {DEPTHS} depths of plain Python frames,")
+    print("once each (not a best of three); the least, the median and the most")
+    cases = shapes_of_calls()
+
+    def most(make: Callable[[int], dict[str, Any]]) -> dict[str, Any]:
+        low, high = 0, SIZE_CEILING
+        while high - low > 1:
+            middle = (low + high) // 2
+            if _schema.too_large(make(middle), SIZE_CEILING):
+                high = middle
+            else:
+                low = middle
+        return make(low)
+
+    rows: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for label, kind, make in (cases[5], cases[6]):
+        schema = under(kind)
+        count = largest(schema, make)
+        rows.append((f"{label}, {count:,}", schema, {"p": make(count)}))
+    label, schema, both = together()
+    rows.append((f"the two ceilings together: {label}", schema, both))
+    rows.append(
+        (
+            "at the ceiling: the recursive Node, 60 deep and its last node not valid",
+            under(Node),
+            most(lambda count: {"p": chain(count)}),
+        )
+    )
+    with tempfile.TemporaryDirectory() as folder:
+        for label, schema, arguments in rows:
+            arguments = decoded(arguments)
+            line = f"  {label}:"
+            for logged in (False, True):
+                server = Server(schema)
+                if logged:
+                    log = AuditLog(path=str(Path(tempfile.mkdtemp(dir=folder)) / "log.jsonl"))
+                    gate_mcp_server(server, lambda *_: [], recording(log))
+                else:
+                    gate_mcp_server(server, lambda *_: [])
+                asyncio.run(server.list_tools())
+
+                def run() -> float:
+                    start = time.perf_counter()
+                    asyncio.run(server.call_tool("t", arguments))
+                    return (time.perf_counter() - start) * 1000
+
+                times = []
+                for frames in range(DEPTHS):
+                    gc.collect()
+                    times.append((_under(frames, run), frames))
+                ordered = sorted(times)
+                slowest = ", ".join(f"{ms:,.0f} ms from {at}" for ms, at in ordered[-3:][::-1])
+                line += (
+                    f" call_tool {'with an audit log' if logged else 'alone'}: least "
+                    f"{ordered[0][0]:,.0f}, median {ordered[len(ordered) // 2][0]:,.0f}, most "
+                    f"{ordered[-1][0]:,.0f} ms (the three longest: {slowest});"
+                )
+            print(line, flush=True)
+    room()
+
+
+def room() -> None:
+    """From how many plain frames down the stack the deepest call a recursive model
+    admits stops completing: a ``Node`` whose ``kid`` leads 63 nodes down, which puts
+    the last one 64 levels below the arguments, the deepest the gate reads."""
+    deepest: dict[str, Any] = {}
+    for _ in range(63):
+        deepest = {"kid": deepest}
+    arguments = {"p": deepest}
+    assert _schema.measure(arguments, SIZE_CEILING) == _schema.FITS
+    listed = Listed(under(Node))
+
+    def judge() -> float:
+        sent, _ = _gate._judged_call("t", arguments, listed, lambda *_: [])
+        if sent is not None:
+            return 1.0
+        return 0.0
+
+    assert _under(0, judge) == 1.0
+    low, high = 0, sys.getrecursionlimit()
+    while high - low > 1:
+        middle = (low + high) // 2
+        try:
+            completed = _under(middle, judge) == 1.0
+        except RecursionError:  # this script's own frames reached the limit
+            completed = False
+        low, high = (middle, high) if completed else (low, middle)
+    print(
+        f"\na recursive model nested to the 64 levels the gate reads (`kid` 63 deep), under "
+        f"the interpreter's recursion limit of {sys.getrecursionlimit():,}: completed when "
+        f"the gate is called from up to {low:,} plain frames below this script's own, and "
+        f"refused from {high:,}"
+    )
 
 
 if __name__ == "__main__":
-    main(only_size=sys.argv[1:] == ["size"])
+    main(only=sys.argv[1] if sys.argv[1:] in (["size"], ["stack"]) else "")

@@ -219,7 +219,12 @@ carries no argument text. Refused:
   other than draft-07, 2019-09 and 2020-12;
 - a `$ref` that does not resolve inside the listed schema itself. A remote reference is
   never fetched, and a reference to an `$anchor` is not resolved. `$dynamicRef`,
-  `$recursiveRef` and a subschema with an `$id` of its own are refused too;
+  `$recursiveRef` and a subschema with an `$id` of its own are refused too. A `$ref` is
+  read by `referencing`, the library the validation resolves it with, so what the gate
+  reads from the schema a `$ref` names (its types, its default, the forms of a union)
+  is read from the schema the arguments are validated against, whatever the pointer
+  holds (a percent-escape that decodes to `/`, a position in a list written with a
+  sign);
 - a `default` listed where the gate does not read one, because it cannot tell whether
   the server would apply it: under `if`, `then`, `else`, `not`, `patternProperties`,
   `additionalProperties` beside `patternProperties`, `dependentSchemas`, `dependencies`,
@@ -248,7 +253,19 @@ carries no argument text. Refused:
   lists a `multipleOf` that is a fraction, which is checked by dividing the two as
   floats. The reason says so, and to send a number a float can hold;
 - arguments that are not JSON data (a non-finite number such as `1e400`), or that hold a
-  value more than 64 levels below the arguments object.
+  value more than 64 levels below the arguments object;
+- arguments of more than 1,000,000 characters as JSON text, and arguments that hold an
+  integer of more than 4,300 digits (below);
+- a value where the schema allows none (a `false` subschema), which the reason names as
+  that.
+
+Nothing leaves the gate but its answer. An exception inside it (in the validation
+library, in the policy, in writing the record) is a refusal of the call, with a reason
+that names the kind of exception and nothing of the arguments, and is one deny entry on
+an audit log where the entry can be written. That holds for an exception that is not a
+Python `Exception` too: a panic in a compiled dependency arrives as a `BaseException`.
+Only what stops the interpreter or the event loop is passed on: `KeyboardInterrupt`,
+`SystemExit`, `GeneratorExit` and `asyncio.CancelledError`.
 
 An argument the schema neither names nor forbids is judged and sent as it is.
 
@@ -308,7 +325,24 @@ still copies and counts them. And the size does not bound the steps: 809 items o
 ten-model discriminated union are 11 KB and cost 200,000. The size is the length of the
 arguments written as JSON text in its most compact form (no white space; a character
 outside ASCII counts as one, and is more than one byte), and measuring it stops at the
-ceiling. The cost of the two is that a large ordinary call is refused. The largest
+ceiling.
+
+Beside the two ceilings stands one limit an application cannot raise: a call whose
+arguments hold an integer of more than 4,300 digits is refused in the same reading,
+before anything else reads them, and is one deny entry on an audit log. That is the
+limit Python sets by default on writing an integer as text (3.11 and later, and 3.10
+from 3.10.7), and under it the SDK never hands the gate a longer integer, because
+decoding the model's JSON refuses it first. On a Python without the limit (3.10.0 to
+3.10.6, or one where it is switched off with `PYTHONINTMAXSTRDIGITS=0` or
+`sys.set_int_max_str_digits(0)`) the SDK decodes an integer of any length, and writing
+one out takes time that grows with the square of its digits before Python 3.12, which
+the ceiling on the size does not bound. The gate reads the number of digits of a long
+integer from its bits and writes no integer out, so every interpreter refuses what the
+default one refuses, and nothing after the gate (the fingerprint of an audit entry, a
+policy, the server) is handed an integer of the call's arguments with more digits than
+that.
+
+The cost of the two ceilings is that a large ordinary call is refused. The largest
 calls the default step ceiling completes, measured, each under the ceiling on the size:
 
 | Arguments | Largest call completed | Size as JSON |
@@ -363,7 +397,12 @@ longer than the server's own validation, in proportion to the arguments up to th
 ceilings. Measured with
 [`tools/measure_mcp_cost.py`](https://github.com/philpaz/recusal/blob/main/tools/measure_mcp_cost.py)
 on one laptop (Windows 11, Python 3.12.5), the best of three runs, the arguments
-decoded from JSON text as the SDK hands them to the gate. The first two tables time the
+decoded from JSON text as the SDK hands them to the gate. The figures in the three
+tables are of the code as it stood before the eighth review round. That round changed
+how the gate reads the arguments outside the check (their measure, the copy and the
+count, which no longer recurse) and not what a step is, and it found that the place a
+call is made from moves these times (below the third table); the tables have not been
+measured again on this code. The first two tables time the
 check itself (`Listed.complete`: the validation, the two refusals and the defaults);
 what the rest of the gate and an audit log add is in the third. First the largest call
 of each shape that the default step ceiling completes (the table above), which is the
@@ -448,13 +487,38 @@ by default:
 | at the ceiling: a recursive model 60 deep whose last node is not valid, its children `{}` (refused) | 360 ms | 465 ms | 2,399 ms |
 | at the ceiling: a list of `0` for `list[int]` (refused at the step ceiling) | 54 ms | 125 ms | 392 ms |
 
-A call over the ceiling on the size is refused in under 3 ms, whatever it holds: a
-string of 50,000,000 characters and a list of 2,000,000 empty objects each took that
-long, where a 50,000,000-character string took 626 ms to check with the ceiling raised.
+A call over the ceiling on the size is refused as soon as the reading reaches the
+ceiling. Where one string, or the number of members of one list or object, is over it
+alone, nothing more is read: a string of 50,000,000 characters and a list of 2,000,000
+empty objects were each refused in under 3 ms, where a 50,000,000-character string took
+626 ms to check with the ceiling raised. A call a little over the ceiling is known to
+be over only once most of it is read (500,001 numbers, 333,400 empty objects), so
+refusing it costs about what measuring a call at the ceiling costs, which is part of
+every `call_tool` figure above. Arguments that are not JSON data (a number too large
+for a float decodes to one that is not finite) are read three times before they are
+refused: to measure them, to find that out, and to write the text the refusal is bound
+to. The tool times both (`a little over`, `not JSON data`).
+
 The two bounds add up: one call can spend 200,000 steps on an argument the schema names
 and carry what is left of 1,000,000 characters in one it does not, so the longest one
-call can take is about the longest row of the first table and the longest of this one
-together.
+call can take is of the order of the longest row of the first table and the longest of
+this one together, and longer from an unlucky place in the stack (next). The tool times
+that call (`the two ceilings together`).
+
+**The place a call is made from moves these times.** On Python 3.11 and later CPython
+keeps the frames of Python functions in blocks of 16 KB, and a function called where a
+block ends maps a new block and frees it again when it returns, at every call. The
+check is made of such calls, so the same arguments take longer when the gate is called
+from some depths of the application's own stack than from others, and each figure
+above is the time from the one place the tool measured it from.
+`python tools/measure_mcp_cost.py stack` makes four of these calls from each of 144
+depths of plain Python frames and prints the least, the median and the most; this
+page does not state that range yet. What the gate itself reads of the arguments (their
+measure, the copy, the count of their values, the text a refusal is bound to) it reads
+without recursion and without a Python call for each value, so the depth the sender
+nests the arguments at does not move those. The validation recurses with a recursive
+schema, as deep as the arguments nest under it, and so does the kernel's fingerprint
+of the arguments for an audit entry: there the sender's nesting moves the place too.
 
 **What the rules above mean for ordinary schemas:**
 
@@ -505,7 +569,16 @@ together.
 - OpenAPI's `nullable: true` is not JSON Schema: the gate reads the declared `type`, so
   `null` for `{"type": "string", "nullable": true}` is refused. A schema that means null
   lists it (`"type": ["string", "null"]`, or an `anyOf` with `{"type": "null"}`).
-- A recursive model nested as deep as the 64-level limit on the arguments is completed.
+- A recursive model nested as deep as the 64-level limit on the arguments is completed
+  where the interpreter's recursion limit leaves room for it: the validation recurses
+  with the schema, a number of Python frames for each level the arguments nest, on top
+  of the application's own stack. Under Python's default limit of 1,000 frames, a
+  model nested the full 64 levels was completed when the gate was called from up to
+  210 plain Python frames below the top of a script on Python 3.12.5, and from up to
+  79 on Python 3.10.22 (`python tools/measure_mcp_cost.py stack` prints it); from
+  deeper the call is refused, with a reason that names the recursion limit, and
+  arguments nested less deeply leave more room. An application that calls the gate
+  from deep in its own stack, or lowers the limit, meets that refusal sooner.
 
 To read the schema the gate also wraps the server's `list_tools`, in place. `list_tools`
 returns what the server listed, unchanged, and the gate keeps each tool's schema from the
@@ -581,7 +654,11 @@ call refused for the size of its arguments (above) is one deny entry too, and th
 does not read arguments it refuses for their size, so that entry holds no fingerprint
 of them: it is bound to the text
 `<arguments of more than 1,000,000 characters as JSON text>` (with the ceiling of the
-connection), under the key `input`. If the
+connection), under the key `input`. A call refused for an integer of more than 4,300
+digits is bound the same way, to
+`<arguments that hold an integer of more than 4,300 digits>`: a fingerprint would write
+the integer out. And a call refused because an exception left the gate's own reading
+of it is bound to `<arguments the gate could not judge>`. If the
 log cannot be written the call is refused. Check the log with
 `recusal audit verify decisions.jsonl`.
 

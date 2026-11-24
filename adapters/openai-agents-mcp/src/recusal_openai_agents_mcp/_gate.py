@@ -63,8 +63,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
-import json
-from typing import Any, Callable, List, Optional
+from json.encoder import encode_basestring_ascii as _as_ascii_json
+from typing import Any, Callable, Iterator, List, Optional
 
 from agents import Agent, HostedMCPTool, MCPToolApprovalRequest
 from agents.mcp import MCPServer
@@ -73,20 +73,25 @@ from recusal_openai_agents import gate_tools
 from recusal_openai_agents import refusal as _refusal
 from recusal_openai_agents import settings_reason as _settings_reason
 from recusal_openai_agents import shared_name_reason as _shared_name_reason
-from recusal_openai_agents import too_deep as _too_deep
 from recusal_openai_agents import tools_gated as _tools_gated
 from recusal_openai_agents import unjudgeable as _unjudgeable
 
 from recusal import decide
 from recusal.claude_code import identity_getter
-from recusal.invocation import detached as _detached
 
+from ._schema import DEEP as _DEEP
+from ._schema import LONG as _LONG
+from ._schema import LONGEST_INTEGER as _LONGEST_INTEGER
+from ._schema import OVER as _OVER
+from ._schema import PASSED_ON as _PASSED_ON
 from ._schema import SIZE_CEILING, STEP_CEILING
 from ._schema import Listed as _Listed
 from ._schema import Refused as _Refused
 from ._schema import ceiling_of as _ceiling_of
+from ._schema import copied as _copied
+from ._schema import long_integer_reason as _long_integer_reason
+from ._schema import measure as _measure
 from ._schema import size_ceiling_of as _size_ceiling_of
-from ._schema import too_large as _too_large
 from ._schema import too_large_reason as _too_large_reason
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
@@ -98,44 +103,91 @@ Policy = Callable[[str, dict], List[Any]]
 #: ``recusal_openai_agents_mcp.recording`` builds one.
 Recording = Callable[[str, Any], dict]
 _FAILED_CLOSED = "Recusal failed closed (policy error): RECUSAL_POLICY_ERROR ({name})"
+#: The refusal of a call the gate could neither judge nor put on the record.
+_UNJUDGED = "Recusal failed closed: the gate could not judge this call ({name})"
+#: The deepest a value may sit below the arguments object: the function-tool gate's
+#: limit (``recusal_openai_agents``), which nothing here reads below.
+_MAX_DEPTH = 64
 
 
-def _rendered(value: Any, ancestors: tuple = ()) -> str:
+def _rendered(value: Any) -> str:
     """Arguments that are not JSON data, written as text so that a refusal can be bound to
     them: JSON, with a non-finite number as Python writes it (``nan``, ``inf``), an object
-    that is not data as its type's name, and nothing below the depth the gate reads."""
-    if len(ancestors) > 64 or id(value) in ancestors:
-        return "..."
-    inner = (*ancestors, id(value))
-    if type(value) is dict:
-        members = (f"{_rendered(k, inner)}:{_rendered(v, inner)}" for k, v in value.items())
-        return "{" + ",".join(members) + "}"
-    if type(value) is list:
-        return "[" + ",".join(_rendered(item, inner) for item in value) + "]"
-    if type(value) is float:
-        return repr(value)
-    if value is None or type(value) in (bool, int, str):
-        return json.dumps(value)
-    return f"<{type(value).__name__}>"
+    that is not data as its type's name, and ``...`` for whatever sits below the depth
+    the gate reads and for a list or an object that holds itself.
 
-
-def _as_handed(arguments: Any) -> Any:
-    """What a refusal before judgment is bound to: the arguments as the SDK handed them,
-    or, when they are not JSON data and so have no fingerprint, the text
-    :func:`_rendered` writes them as (which the record holds under the key ``input``)."""
-    if not _too_deep(arguments):
-        try:
-            _detached(arguments)
-            return arguments
-        except TypeError:
-            pass
-    return _rendered(arguments)
+    Written without recursion (``_schema.copied`` says why). An integer is written out
+    here, and none has more digits than the gate reads: the arguments are measured
+    first (``_schema.measure``)."""
+    out: list[str] = []
+    write = out.append
+    above: set[int] = set()
+    #: for each list or object being written: what is left of it, whether its members
+    #: are named, the bracket that closes it, and its identity
+    levels: list[tuple[Iterator[Any], bool, str, int]] = [(iter((value,)), False, "", 0)]
+    first = True
+    while levels:
+        members, named, closing, identity = levels[-1]
+        shown = len(levels) <= _MAX_DEPTH + 1
+        for each in members:
+            if not first:
+                write(",")
+            first = False
+            if named:
+                name, each = each
+                if not shown:
+                    write("...")
+                elif type(name) is str:
+                    write(_as_ascii_json(name))
+                else:
+                    write(_rendered(name))  # a key that is not text is not JSON data
+                write(":")
+            if not shown:
+                write("...")
+                continue
+            kind = type(each)
+            if kind is str:
+                write(_as_ascii_json(each))
+            elif kind is dict or kind is list:
+                if id(each) in above:
+                    write("...")
+                    continue
+                above.add(id(each))
+                if kind is dict:
+                    write("{")
+                    levels.append((iter(each.items()), True, "}", id(each)))
+                else:
+                    write("[")
+                    levels.append((iter(each), False, "]", id(each)))
+                first = True
+                break
+            elif kind is float or kind is int:
+                write(repr(each))
+            elif each is None:
+                write("null")
+            elif kind is bool:
+                write("true" if each else "false")
+            else:
+                write(f"<{kind.__name__}>")
+        else:
+            levels.pop()
+            write(closing)
+            above.discard(identity)
+            first = False
+    return "".join(out)
 
 
 def _oversize(size_ceiling: int) -> str:
     """What the refusal of a call over the ceiling on its size is bound to (which the
     record holds under the key ``input``): the arguments themselves are not read."""
     return f"<arguments of more than {size_ceiling:,} characters as JSON text>"
+
+
+#: What the refusal of a call that holds an integer of more digits than the gate reads
+#: is bound to, the same way: a fingerprint of the arguments would write the integer out.
+_LONG_INTEGER = f"<arguments that hold an integer of more than {_LONGEST_INTEGER:,} digits>"
+#: What the refusal of a call the gate could not judge is bound to (:func:`_judged_call`).
+_NOT_JUDGED = "<arguments the gate could not judge>"
 
 
 #: The schema of a tool the server has not listed.
@@ -171,48 +223,93 @@ def _judged_call(
     gate cannot check or complete them against.
 
     Refused before all of that, and before anything else reads them: arguments of more
-    than ``size_ceiling`` characters as JSON text (``_schema.too_large``, which stops
-    reading at the ceiling). Everything after it (the copy, the check, the fingerprint
-    of an audit entry) takes time in proportion to the size of the arguments, so none
-    of it is done for a call over the ceiling.
+    than ``size_ceiling`` characters as JSON text, and arguments that hold an integer of
+    more than 4,300 digits (``_schema.measure``, one reading that stops at the ceiling
+    and writes no integer out). Everything after it (the copy, the check, the
+    fingerprint of an audit entry) takes time in proportion to the size of the
+    arguments, and writing a long integer as text takes time that grows with the square
+    of its digits where the interpreter sets no limit on it, so none of it is done for
+    such a call. The same reading says whether a value sits more than 64 levels down.
 
     ``record`` goes straight to ``decide``, which then writes the decision to an audit
     log; the entry of a judged call carries the fingerprint of the arguments as judged,
-    and a call refused before judgment is bound to the arguments as the SDK handed them
-    (:func:`_as_handed`). A call refused for its size is bound to a statement of that
-    (:func:`_oversize`) and not to its arguments, which are not read: its entry holds
-    no fingerprint of them.
+    and a call refused before judgment is bound to the arguments as the SDK handed them,
+    or, when they are not JSON data and so have no fingerprint, to the text
+    :func:`_rendered` writes them as (which the record holds under the key ``input``).
+    A call refused for its size or for a long integer is bound to a statement of that
+    (:func:`_oversize`, ``_LONG_INTEGER``) and not to its arguments, which are not
+    read: its entry holds no fingerprint of them.
+
+    Nothing leaves this function but its answer and what stops the interpreter or the
+    event loop (``_schema.PASSED_ON``). Any other exception, one that is not an
+    ``Exception`` among them, is a refusal of the call, on the record where the record
+    can be written: the gate's own reading does not recurse, but the validation, the
+    policy and the record do, and from deep in an application's stack the
+    interpreter's recursion limit can be reached anywhere in them.
     """
+    try:
+        return _judged(tool_name, arguments, schema, policy, size_ceiling, record)
+    except _PASSED_ON:
+        raise
+    except BaseException as exc:  # noqa: BLE001, nothing leaves the gate but a refusal
+        name = type(exc).__name__
+    if name == "RecursionError":
+        detail = (
+            "the gate could not judge this call within what is left of the interpreter's "
+            "recursion limit where it was called"
+        )
+    else:
+        detail = f"the gate could not judge this call ({name})"
+    try:
+        return None, _unjudgeable(tool_name, detail, _NOT_JUDGED, record)
+    except _PASSED_ON:
+        raise
+    except BaseException as exc:  # noqa: BLE001, the refusal stands without its record
+        return None, _UNJUDGED.format(name=type(exc).__name__)
+
+
+def _judged(
+    tool_name: str, arguments: Any, schema: Any, policy: Policy, size_ceiling: int, record: dict
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """:func:`_judged_call`, which turns whatever leaves this into a refusal."""
     args = {} if arguments is None else arguments
-    if _too_large(args, size_ceiling):
+    # one reading, before any other: the size, an integer too long to write, the depth
+    found = _measure(args, size_ceiling, _MAX_DEPTH)
+    if found == _OVER:
         detail = _too_large_reason(size_ceiling)
         return None, _unjudgeable(tool_name, detail, _oversize(size_ceiling), record)
+    if found == _LONG:
+        return None, _unjudgeable(tool_name, _long_integer_reason(), _LONG_INTEGER, record)
+    proposed: Any = None
+    fault: Optional[str] = "arguments are nested too deeply" if found == _DEEP else None
+    if fault is None:
+        try:
+            proposed = _copied(args)
+        except TypeError as exc:
+            fault = f"arguments are not JSON data ({exc})"
 
-    def refused(detail: str, known: bool = False) -> tuple[None, str]:
-        # ``known``: the arguments are JSON data the gate has copied, so they are what
-        # the refusal is bound to, and they are not read again to find that out
-        bound = args if known else _as_handed(args)
+    def refused(detail: str) -> tuple[None, str]:
+        # A refusal before judgment is bound to the arguments as the SDK handed them
+        # where they are JSON data, which the copy has settled, and they are not read
+        # again to find that out; otherwise to the text they are written as
+        # (:func:`_rendered`, which the record holds under the key ``input``).
+        bound = args if fault is None else _rendered(args)
         return None, _unjudgeable(tool_name, detail, bound, record)
 
     if not isinstance(args, dict):
         return refused("arguments are not a mapping")
-    if _too_deep(args):
-        return refused("arguments are nested too deeply")
-    try:
-        proposed = _detached(args)
-    except TypeError as exc:
-        return refused(f"arguments are not JSON data ({exc})")
+    if fault is not None:
+        return refused(fault)
     if schema is _UNLISTED:
         return refused(
             "the server lists no tool of this name, or its tools could not be listed, so the "
-            "gate cannot read the schema its arguments would be checked against",
-            known=True,
+            "gate cannot read the schema its arguments would be checked against"
         )
     try:
         listed = schema if isinstance(schema, _Listed) else _Listed(schema)
         judged, sent = listed.complete(proposed, owned=True)
     except _Refused as cause:
-        return refused(cause.reason, known=True)
+        return refused(cause.reason)
     try:
         decision, reason = decide(tool_name, judged, policy, safe_errors=True, **record)
     except Exception as exc:  # noqa: BLE001, a buggy policy must not silently disable the gate

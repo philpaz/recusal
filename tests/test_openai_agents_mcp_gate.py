@@ -3687,7 +3687,7 @@ class TestThirdReview:
 
     def test_the_arguments_of_the_deepest_legal_recursive_call_are_completed(self, example):
         arguments = _nested(31, {"args": []})
-        assert not _adapter()._too_deep(arguments)
+        assert self.schema_module().measure(arguments, 10**9) == ""
         seen, sent, reason = self.judged(arguments, EXPRESSION)
         assert reason is None and seen == sent
         level = seen["where"]
@@ -3766,7 +3766,8 @@ class TestThirdReview:
         """Refused at 43 levels as a schema that "refers to itself without end": the walk
         counted schema steps, about three for each level of the arguments."""
         deepest = self.chain(63)
-        assert not _adapter()._too_deep(deepest) and _adapter()._too_deep(self.chain(64))
+        measure = self.schema_module().measure
+        assert measure(deepest, 10**9) == "" and measure(self.chain(64), 10**9) == "depth"
         seen, sent, reason = self.judged(deepest, TREE)
         assert reason is None
         level, levels = seen["node"], 0
@@ -3829,7 +3830,8 @@ class TestThirdReview:
             None,
             None,
             "Recusal refused `purge`: the arguments are nested too deeply to check against "
-            f"{_SCHEMA} within the interpreter's recursion limit",
+            f"{_SCHEMA} within what is left of the interpreter's recursion limit where the "
+            "gate was called",
         )
 
     # --- a pattern Python cannot read -----------------------------------------------------------
@@ -6526,7 +6528,8 @@ class TestSeventhReview:
 
     def test_a_refusal_reads_as_it_did(self):
         """What the gate reads of an error is unchanged: the keyword, its value, the
-        JSON type of the value and the place."""
+        JSON type of the value and the place. (The ``false`` schema, which has no
+        keyword, is named for what it is since the eighth review.)"""
         for inner, value, reason in (
             (
                 {"type": "integer"},
@@ -6564,7 +6567,7 @@ class TestSeventhReview:
             (
                 {"properties": {"x": False}},
                 {"x": 1},
-                "argument `p` does not meet `None` in the server's schema",
+                "argument `p.x` stands where the server's schema allows no value (`false`)",
             ),
             (
                 {"unevaluatedProperties": False},
@@ -6775,19 +6778,19 @@ class TestSeventhReview:
         assert module.too_large(value, 1)
 
     def test_the_size_is_read_no_further_than_the_ceiling(self, monkeypatch):
-        """Without a clock: a string longer than what is left is not scanned, and data
+        """Without a clock: a string longer than what is left is not read, and data
         that holds itself is given up at the ceiling or at the depth the gate reads."""
         module = self.schema_module()
-        scanned = []
+        read = []
+        as_json = module._as_json
 
-        class Scan:
-            def findall(self, text):
-                scanned.append(len(text))
-                return []
+        def counting(text):
+            read.append(len(text))
+            return as_json(text)
 
-        monkeypatch.setattr(module, "_ESCAPED", Scan())
+        monkeypatch.setattr(module, "_as_json", counting)
         assert module.too_large({"a": "x" * 50, "b": "y" * 5_000_000, "c": "z" * 50}, 1_000)
-        assert 5_000_000 not in scanned and scanned in ([], [1, 1, 1, 50], [1, 1, 1, 50, 50])
+        assert read == [1, 1, 1, 50]
         endless: list = []
         endless.append(endless)
         assert not module.too_large(endless, 1_000)
@@ -6954,13 +6957,15 @@ class TestSeventhReview:
     ):
         gate = _adapter()
         read = []
-        too_deep = gate._too_deep
-        monkeypatch.setattr(gate, "_too_deep", lambda value: read.append(1) or too_deep(value))
+        measure, copied = gate._measure, gate._copied
+        monkeypatch.setattr(gate, "_measure", lambda *a: read.append("measured") or measure(*a))
+        monkeypatch.setattr(gate, "_copied", lambda value: read.append("copied") or copied(value))
+        monkeypatch.setattr(gate, "_rendered", lambda value: read.append("written") or "")
         given = {"p": ["x"]}
         assert self.judged(given, self.INTEGERS)[2].startswith(
             "Recusal refused `purge`: argument `p[0]` is of JSON type string"
         )
-        assert read == [1]
+        assert read == ["measured", "copied"]
 
     # --- gated_agent gates every server or none -------------------------------------------------
 
@@ -7090,6 +7095,861 @@ class TestSeventhReview:
             assert stated in readme, stated
         for gone in ("The ceiling does bound it.", "is 12 steps and took 14 ms"):
             assert gone not in readme, gone
+
+
+_LONG_INTEGER = (
+    "the arguments hold an integer of more than 4,300 digits, the most an integer in one "
+    "call's arguments may have (the limit Python sets by default on writing an integer as "
+    "text, which the gate applies on every interpreter); the gate has read no further. Send "
+    "a number of fewer digits, or the digits as a string where the server's schema takes a "
+    "string."
+)
+
+
+class _Panic(BaseException):
+    """What a panic in a compiled dependency arrives as: not an ``Exception``."""
+
+
+class TestEighthReview:
+    """The eighth review (2026-11-23). On an interpreter without the limit on the digits
+    of an integer, the size check wrote every integer out as text, which is quadratic
+    before Python 3.12: one integer under the size ceiling held the event loop 11
+    seconds. The gate's own readings of the arguments recursed, so on Python 3.11 and
+    later their time moved up to four times with the depth the sender nested at. A call
+    a little over the size ceiling was refused only after most of it was read, and one
+    that is not JSON data was read three more times for its refusal. The gate read a
+    ``$ref`` its own way, which differed from the validator's for ``%2F``; three
+    exceptions left the gate uncaught; and a ``false`` subschema was reported as the
+    keyword ``None``."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    judged = TestTheWholeListedSchema.judged
+    schema_module = staticmethod(TestThirdReview.schema_module)
+    spent = TestThirdReview.spent
+
+    ANY = {"type": "object", "properties": {"p": {}}}
+
+    @staticmethod
+    def lists(depth, leaf):
+        """``leaf`` inside ``depth`` lists."""
+        for _ in range(depth):
+            leaf = [leaf]
+        return leaf
+
+    # --- an integer is never written out, and a long one is refused ------------------------------
+
+    @pytest.mark.parametrize("limit", [640, 4300, 0])
+    def test_the_digits_of_an_integer_are_counted_from_its_bits_exactly(self, limit):
+        """Under a limit of 640 digits Python refuses to write a longer integer as text
+        at all, so a count that wrote one would fail or fall back on a guess. The count
+        is exact for the least and the greatest integer of every length, where a guess
+        from the bits alone is one too many (``10**d - 1`` has the bits of ``10**d``)."""
+        module = self.schema_module()
+        with _digit_limit(limit):
+            for digits in [*range(1, 330), 640, 641, 1000, 2000, 4299, 4300]:
+                least, most = 10 ** (digits - 1), 10**digits - 1
+                for number in (least, most, least + 1, most - 1):
+                    if number < least:
+                        continue
+                    for value, size in ((number, digits), (-number, digits + 1)):
+                        assert module.too_large(value, size - 1), (digits, value < 0)
+                        assert not module.too_large(value, size), (digits, value < 0)
+                        assert module.measure([value], size + 2) == module.FITS
+                        assert module.measure([value], size + 1) == module.OVER
+            assert module.measure(0, 1) == module.FITS and module.measure(-0, 1) == module.FITS
+            assert module.measure({"a": [7, -7, 10, -10]}, len('{"a":[7,-7,10,-10]}')) == ""
+
+    def test_the_bounds_the_count_rests_on(self):
+        """An integer of ``b`` bits has at least ``(b - 1) * 30102 // 100000 + 1`` digits
+        and at most ``b * 30103 // 100000 + 1``, and they differ by one at the most for
+        every integer the gate reads. Checked against the digits themselves. (An
+        integer of up to 18 digits is looked up among the powers of ten instead.)"""
+        module = self.schema_module()
+        assert module._POWERS == tuple(10**n for n in range(19)) and module._BEYOND == 10**18
+        assert module.LONGEST_INTEGER == 4_300
+        # the limit Python sets by default, where this Python has one
+        assert getattr(sys.int_info, "default_max_str_digits", 4_300) == 4_300
+        assert module._TOO_LONG == 10**4300 and module._TOO_LONG_BITS == 14_285
+        power, digits = 1, 1
+        for bits in range(1, module._TOO_LONG_BITS + 2):
+            least, most = 1 << (bits - 1), (1 << bits) - 1
+            while power * 10 <= least:
+                power, digits = power * 10, digits + 1
+            fewest = digits  # of ``least``
+            greatest = digits + (most >= power * 10)
+            assert (bits - 1) * 30102 // 100000 + 1 <= fewest
+            assert greatest <= bits * 30103 // 100000 + 1 <= fewest + 1
+        # the bits of 10**4300: no integer of fewer bits has more than 4,300 digits
+        assert (10**4300 - 1).bit_length() == 14_285 == (10**4300).bit_length()
+        assert ((1 << 14_284) - 1) < 10**4300 <= (1 << 14_285) - 1
+
+    LONG = [10**4300, -(10**4300), 10**4300 + 1, 10**5000, 1 << 14_285, 1 << 3_000_000]
+    NOT_LONG = [10**4300 - 1, -(10**4300 - 1), 10**4299, (1 << 14_284) + 1, 0, -1]
+
+    @pytest.mark.parametrize("limit", [640, 4300, 0])
+    def test_an_integer_of_more_than_4300_digits_is_refused_on_every_interpreter(
+        self, example, limit
+    ):
+        """The reviewer's case: with no limit on the digits, ``json.loads`` hands the gate
+        an integer of any length, and 999,000 digits held the event loop 11 seconds
+        (23 with an audit log). Refused from its bits, whatever the limit is set to."""
+        module = self.schema_module()
+        told = f"Recusal refused `purge`: {_LONG_INTEGER}"
+        schemas = (
+            self.ANY,
+            {"type": "object", "properties": {"p": {"type": "integer"}}},
+            {"type": "object", "properties": {"q": {"type": "string"}}},
+        )
+        with _digit_limit(limit):
+            for number in self.LONG:
+                assert module.measure(number, 10**9) == module.LONG
+                assert not module.too_large(number, 10**9)
+                for arguments in (
+                    {"p": number},
+                    {"p": [1, {"deep": [number]}]},
+                    {"zz": number},
+                    {number: 1},
+                    [number],
+                    number,
+                ):
+                    for schema in schemas:
+                        assert self.judged(arguments, schema) == (None, None, told)
+            for number in self.NOT_LONG:
+                given = {"p": number}
+                assert self.judged(given, self.ANY) == (given, given, None)
+        for name in ("4,300 digits", "on every interpreter", "as a string"):
+            assert name in _LONG_INTEGER
+
+    def test_whichever_of_the_size_and_a_long_integer_is_reached_first_refuses(self, example):
+        module = self.schema_module()
+        long = 10**5000
+        assert module.measure(["a" * 100, long], 50) == module.OVER
+        assert module.measure([long, "a" * 100], 50) == module.LONG
+        assert self.judged({"p": long, "q": "a" * 2_000_000}, self.ANY)[2] == (
+            f"Recusal refused `purge`: {_LONG_INTEGER}"
+        )
+        assert self.judged({"q": "a" * 2_000_000, "p": long}, self.ANY)[2] == (
+            f"Recusal refused `purge`: {_TOO_LARGE}"
+        )
+        # below the depth the gate reads nothing is read, and the depth refuses the call
+        deep = self.lists(70, [long])
+        assert module.measure(deep, 10**9) == module.DEEP
+        assert self.judged({"p": deep}, self.ANY)[2] == (
+            "Recusal refused `purge`: arguments are nested too deeply"
+        )
+
+    def test_nothing_the_gate_does_with_an_integer_writes_it_out(self, example):
+        """Without a clock. Under a limit of 640 digits Python raises for every integer
+        of more digits that anything writes as text, so a call whose integers have 641
+        to 4,300 digits, checked against every keyword that reads a number, completes
+        only if the gate writes none of them (the policy here writes none either)."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "minimum": 0, "multipleOf": 3},
+                "e": {"enum": [3 * 10**3000, "x"]},
+                "c": {"const": 3 * 10**4000},
+                "u": {"type": "array", "uniqueItems": True},
+                "x": {"type": "number", "exclusiveMaximum": 10**4300},
+            },
+        }
+        big = 3 * 10**4000
+        given = {
+            "n": big,
+            "e": 3 * 10**3000,
+            "c": big,
+            "u": [big, big + 1, 3 * 10**700, 1.5, [big]],
+            "x": 10**4299,
+            "zz": {"unnamed": [10**641, -(10**4299)]},
+        }
+        with _digit_limit(640):
+            with pytest.raises(ValueError):
+                str(10**641)
+            assert self.judged(given, schema) == (given, given, None)
+            # and refused for what each is, the integer still not written
+            assert "does not meet `uniqueItems`" in self.judged({"u": [big, big]}, schema)[2]
+            assert "does not meet `multipleOf`" in self.judged({"n": big + 1}, schema)[2]
+            assert "is not the value" in self.judged({"c": big + 1}, schema)[2]
+            # arguments that are not JSON data are written as text for the record: the
+            # integers in them are the ones measured, of 640 digits here
+            assert _adapter()._rendered({"n": 10**639, "x": float("inf")}) == (
+                '{"n":1' + "0" * 639 + ',"x":inf}'
+            )
+
+    def test_json_text_is_read_without_making_an_integer_from_its_digits(self, monkeypatch):
+        """Where the interpreter has no limit, decoding a long run of digits is quadratic
+        too. The decoder is handed a function that makes no integer and gives up on more
+        than 4,300 digits, as the decoder itself does under the default limit."""
+        module = self.schema_module()
+        made = []
+        digits = module._digits
+        assert module._DECODER.parse_int is digits
+
+        def counting(text):
+            made.append(len(text))
+            return digits(text)
+
+        monkeypatch.setattr(module, "_DECODER", json.JSONDecoder(parse_int=counting))
+        for limit in (640, 4300, 0):
+            with _digit_limit(limit):
+                made.clear()
+                assert module._json_text("[" + "9" * 4300 + ", -" + "9" * 4300 + "]") is True
+                assert made == [4300, 4301]
+                assert module._json_text("[" + "9" * 4301 + "]") is True
+                assert module._json_text('{"a": -' + "9" * 300_000 + "}") is True
+                assert module._json_text("9" * 4301) is False
+                assert module._json_text("9" * 300_000) is False
+                assert module._json_text("[" + "9" * 4301 + " oops") is True
+                assert module._json_text("[" + "9" * 4300 + " oops") is False
+                assert module._json_text("[1, 2.5, -3e7, 12]") is True
+        assert module._digits("-" + "9" * 4300) == 0 == module._digits("9" * 4300)
+        with pytest.raises(ValueError):
+            module._digits("9" * 4301)
+        with pytest.raises(ValueError):
+            module._digits("-" + "9" * 4301)
+
+    # --- the gate's own readings do not recurse --------------------------------------------------
+
+    DATA = [
+        None,
+        True,
+        0,
+        -7,
+        10**30,
+        1.5,
+        -0.0,
+        "",
+        "text",
+        [],
+        {},
+        [1, [2, [3, {"a": [None, True, 1.5, "x"]}]]],
+        {"a": {"b": {"c": [1, 2, {"d": {}}]}}, "e": [[], [[]], {}]},
+        {"": "", "é": "ü", "list": [1.0, 1, True]},
+    ]
+
+    def test_the_copy_is_the_kernels_value_for_value_and_message_for_message(self):
+        """The gate copies the arguments with a function of its own, which does not
+        recurse. What is JSON data is the kernel's to say: this holds the two together."""
+        from enum import Enum, IntEnum
+
+        from recusal.invocation import detached
+
+        module = self.schema_module()
+
+        class Color(Enum):
+            RED = 1
+
+        class Level(IntEnum):
+            LOW = 1
+
+        class Text(str):
+            pass
+
+        class Items(list):
+            pass
+
+        def outcome(function, value):
+            try:
+                return function(value)
+            except TypeError as refused:
+                return ("TypeError", str(refused))
+
+        holds_itself: list = [1]
+        holds_itself.append({"again": holds_itself})
+        twice = [1, 2]
+        not_data = [
+            float("inf"),
+            float("nan"),
+            (1, 2),
+            b"bytes",
+            {1, 2},
+            object(),
+            Color.RED,
+            Level.LOW,
+            Text("x"),
+            Items(),
+            {1: "a"},
+            {None: "a"},
+            {"a": 1, 2: float("inf")},
+            {"a": [float("inf")], 1: 2},
+            holds_itself,
+        ]
+        for value in (*self.DATA, {"a": twice, "b": twice, "c": [twice]}):
+            copy = module.copied(value)
+            assert copy == detached(value) == value
+            assert json.dumps(copy) == json.dumps(value)
+        for bad in not_data:
+            for value in (bad, [bad], {"a": bad}, [1, {"a": [2, bad]}, float("nan")], {"z": [bad]}):
+                mine, theirs = outcome(module.copied, value), outcome(detached, value)
+                assert mine == theirs and mine[0] == "TypeError", (value, mine, theirs)
+        # nothing is shared with what was handed over, or within the copy
+        given = {"a": twice, "b": twice, "c": {"d": [twice]}}
+        copy = module.copied(given)
+        assert copy is not given and copy["a"] is not twice and copy["a"] is not copy["b"]
+        assert copy["c"] is not given["c"] and copy["c"]["d"][0] is not copy["a"]
+
+    def test_no_reading_of_the_arguments_that_is_the_gates_own_recurses(self):
+        """Without a clock: data nested 5,000 deep, five times the interpreter's recursion
+        limit, is measured, copied, counted, compared and written with no
+        ``RecursionError``. (The validation recurses with the schema, and is refused at
+        the limit; the gate itself reads no deeper than 64 levels.)"""
+        module, gate = self.schema_module(), _adapter()
+        assert sys.getrecursionlimit() < 5_000
+        for kind in ("list", "object"):
+            deep = 7
+            for _ in range(5_000):
+                deep = [deep, 1] if kind == "list" else {"k": deep, "n": 1}
+            assert module.measure(deep, 10**9) == module.DEEP
+            assert module.measure(deep, 30) == module.OVER
+            copy = module.copied(deep)
+            level, other, levels = deep, copy, 0
+            while type(level) in (list, dict):
+                assert type(other) is type(level) and other is not level
+                level, other = (level[0], other[0]) if kind == "list" else (level["k"], other["k"])
+                levels += 1
+            assert levels == 5_000 and other == 7
+            assert module._count(deep) == 10_001
+            assert module._same(deep, copy) is True
+            unlike = module.copied(deep)
+            inner = unlike
+            for _ in range(4_999):
+                inner = inner[0] if kind == "list" else inner["k"]
+            if kind == "list":
+                inner[1] = 1.0
+            else:
+                inner["n"] = 1.0
+            assert module._same(deep, unlike) is False
+            for exact in (True, False):
+                work = module._Work(10**9)
+                module._key(work, deep, exact)
+                assert work.steps == 10_001
+                module._key(work, deep, exact)
+                assert work.steps == 10_002  # read once while the arguments stand
+            text = gate._rendered(deep)
+            if kind == "list":
+                assert text == "[" * 65 + "...,...]" + ",1]" * 64
+            else:
+                assert text == '{"k":' * 64 + "{...:...,...:...}" + ',"n":1}' * 64
+
+    @pytest.mark.parametrize("value", DATA, ids=[str(n) for n in range(len(DATA))])
+    def test_what_the_readings_find_is_what_a_recursion_finds(self, value):
+        module = self.schema_module()
+
+        def count(each):
+            if type(each) is dict:
+                return 1 + sum(count(member) for member in each.values())
+            if type(each) is list:
+                return 1 + sum(count(item) for item in each)
+            return 1
+
+        def key(each, exact):
+            if type(each) is list:
+                return (list, tuple(key(item, exact) for item in each))
+            if type(each) is dict:
+                return (dict, frozenset((name, key(item, exact)) for name, item in each.items()))
+            if exact or type(each) is str or each is None:
+                return (type(each), each)
+            return (float, module._number(each))
+
+        assert module._count(value) == count(value)
+        for exact in (True, False):
+            work = module._Work(10**9)
+            assert (
+                module._key(work, value, exact)
+                == key(value, exact)
+                == module._key(None, value, exact)
+            )
+            assert work.steps == count(value)
+            # stopped where the allowance ends, as a step for every value read asks
+            for allowed in range(count(value)):
+                short = module._Work(allowed)
+                with pytest.raises(module._TooCostly):
+                    module._key(short, value, exact)
+                assert short.steps == allowed + 1
+        assert module._same(value, json.loads(json.dumps(value)))
+        for other in self.DATA:
+            assert module._same(value, other) is (value is other), (value, other)
+
+    def test_two_objects_are_the_same_only_under_the_same_names(self):
+        module = self.schema_module()
+        assert module._same({"a": 1, "b": [2]}, {"b": [2], "a": 1})
+        assert not module._same({"a": 1}, {"b": 1})
+        assert not module._same({"a": 1, "b": 2}, {"a": 1, "c": 2})
+        assert not module._same([{"a": 1}], [{"b": 1}])
+        assert not module._same({"a": 1}, {"a": 1, "b": 2})
+        assert not module._same([1, 2], [1, 2, 3]) and not module._same([1, 2, 3], [1, 2])
+
+    def test_a_ref_is_resolved_once_for_a_listing(self, example):
+        """The walk asks for the schema a ``$ref`` names at every value it visits: each
+        is asked of the library once, and read from what was kept after that."""
+        module = self.schema_module()
+        listed = module.Listed(TREE)
+        chain = {"node": {"child": {"child": {"child": {}}}}}
+        assert listed.complete(chain)[1]["node"]["child"]["child"]["child"] == {
+            "keep": True,
+            "child": None,
+        }
+        asked = []
+        resolver = listed._resolve._resolver
+
+        class Counting:
+            def lookup(self, ref):
+                asked.append(ref)
+                return resolver.lookup(ref)
+
+        listed._resolve._resolver = Counting()
+        listed.complete(chain)
+        assert asked == []
+        assert listed._resolve("#/$defs/Node") is TREE["$defs"]["Node"]
+        assert asked == []
+        assert listed._resolve("#/properties/node") is TREE["properties"]["node"]
+        assert asked == ["#/properties/node"]
+
+    def test_a_value_65_levels_down_is_too_deep_and_64_is_not(self, example):
+        module = self.schema_module()
+        for leaf in (0, "x", None, [], {}):
+            for kind in ("list", "object"):
+                value = leaf
+                for depth in range(1, 70):
+                    value = [value] if kind == "list" else {"k": value}
+                    found = module.measure(value, 10**9)
+                    assert found == (module.DEEP if depth > 64 else module.FITS), (depth, leaf)
+        # an empty list or object 64 levels down holds nothing deeper
+        assert module.measure(self.lists(64, []), 10**9) == module.FITS
+        assert module.measure(self.lists(64, [[]]), 10**9) == module.DEEP
+
+    def test_a_call_is_read_once_to_measure_it_and_once_to_copy_it(self, example, monkeypatch):
+        """And a refusal reads nothing again: one that is bound to the arguments knows
+        from the copy that they are JSON data, and one that is not writes them once."""
+        gate = _adapter()
+        read: list = []
+        measure, copied, rendered = gate._measure, gate._copied, gate._rendered
+        monkeypatch.setattr(gate, "_measure", lambda *a: read.append("measured") or measure(*a))
+        monkeypatch.setattr(gate, "_copied", lambda value: read.append("copied") or copied(value))
+        monkeypatch.setattr(
+            gate, "_rendered", lambda value: read.append("written") or rendered(value)
+        )
+        integers = TestSixthReview.INTEGERS
+        cases = [
+            ({"p": [1]}, None, ["measured", "copied"]),
+            ({"p": ["x"]}, "argument `p[0]` is of JSON type string", ["measured", "copied"]),
+            ([1, 2], "arguments are not a mapping", ["measured", "copied"]),
+            (
+                {"p": [1], "x": float("inf")},
+                "arguments are not JSON data (non-finite numbers are not JSON data)",
+                ["measured", "copied", "written"],
+            ),
+            ([object()], "arguments are not a mapping", ["measured", "copied", "written"]),
+            (
+                {"p": self.lists(70, 1)},
+                "arguments are nested too deeply",
+                ["measured", "written"],
+            ),
+            (self.lists(70, 1), "arguments are not a mapping", ["measured", "written"]),
+            ({"p": "a" * 1_000_001}, "the arguments are more than 1,000,000", ["measured"]),
+            ({"p": [10**4300]}, "the arguments hold an integer of more than", ["measured"]),
+        ]
+        for arguments, reason, readings in cases:
+            read.clear()
+            sent, told = gate._judged_call("purge", arguments, integers, lambda *_: [])
+            assert read == readings, arguments
+            if reason is None:
+                assert sent == arguments and told is None
+            else:
+                assert sent is None and told.startswith(f"Recusal refused `purge`: {reason}")
+
+    # --- the size is read no further than the ceiling, and cheaply -------------------------------
+
+    def test_a_string_is_counted_a_part_at_a_time_and_no_further_than_the_ceiling(
+        self, monkeypatch
+    ):
+        """Without a clock. A string of escapes a little over the ceiling was read to its
+        end, a Python step for each escape (999,000 of them: 70 ms). It is written out
+        as JSON text 65,536 characters at a time, and the reading stops at the part that
+        goes over."""
+        module = self.schema_module()
+        written: list = []
+        as_json = module._as_json
+
+        def counting(text):
+            written.append(len(text))
+            return as_json(text)
+
+        monkeypatch.setattr(module, "_as_json", counting)
+        window = module._WINDOW
+        assert window == 65_536
+        # longer than what is left: not read at all
+        assert module.too_large({"a": "x" * 50, "b": "y" * 5_000_000, "c": "z" * 50}, 1_000)
+        assert max(written) <= 50 and 5_000_000 not in written
+        for escape, each in (("\x00", 6), ('"', 2), ("\n", 2), ("\\", 2), ("\x1f", 6)):
+            text = escape * 999_000
+            written.clear()
+            assert module.too_large({"p": text}, 1_000_000)
+            assert written == [1, window], escape  # the name, and one part
+            size = len(json.dumps(text))
+            assert size == each * 999_000 + 2
+            written.clear()
+            assert not module.too_large(text, size) and module.too_large(text, size - 1)
+            assert set(written) <= {window, 999_000 % window} and sum(written) == 2 * 999_000
+        # the parts add up to the string, whatever falls on their edges
+        for text in (
+            'a"' * 100_000,
+            "\x00" * (window + 1),
+            "é\n" * window,
+            "\U0001f600\\" * 70_000,
+        ):
+            size = len(json.dumps(text, ensure_ascii=False))
+            assert not module.too_large(text, size) and module.too_large(text, size - 1)
+
+    def test_what_a_list_below_the_depth_holds_counts_one_character_each(self):
+        """What a list or an object more than 64 levels down holds is not read. Each
+        member is one character at the least, so one that holds more of them than
+        characters are left is over the ceiling all the same."""
+        module = self.schema_module()
+        below = self.lists(65, [0] * 1_000)
+        written = 2 * 65 + 2 + 999  # the brackets of each list, and the commas
+        assert not module.too_large(below, written + 1_000)
+        assert module.too_large(below, written + 999)
+        named = self.lists(65, {str(n): 0 for n in range(1_000)})
+        written += 1_000  # a colon in each member
+        assert not module.too_large(named, written + 1_000)
+        assert module.too_large(named, written + 999)
+        # one level higher the members are read, and counted for what they are
+        read = self.lists(64, [0] * 1_000)
+        size = len(json.dumps(read, separators=(",", ":")))
+        assert not module.too_large(read, size) and module.too_large(read, size - 1)
+        # and above it, a list of more members than characters are left is not read
+        assert module.too_large([[0] * 2_000_000], 1_000_000)
+
+    # --- one reading of a `$ref` ------------------------------------------------------------------
+
+    def test_a_ref_is_read_as_the_validator_reads_it(self, example):
+        """The reviewer's case: ``#/$defs/a%2Fb`` beside a definition named ``a/b`` and a
+        path ``a`` then ``b``. The validator checked against the path, while the types,
+        the default and the walk were read from the name."""
+        schema = {
+            "type": "object",
+            "properties": {"p": {"$ref": "#/$defs/a%2Fb"}, "q": {"$ref": "#/$defs/a~1b"}},
+            "$defs": {
+                "a/b": {"type": ["integer", "string"], "default": 7},
+                "a": {"b": {"type": "string"}},
+            },
+        }
+        # `p` is the string schema, by the validation and by everything else: a number in
+        # text is kept (the schema names no number there), and no default is written
+        # for it (the gate's own reading took the 7 of the other definition)
+        given = {"p": "5", "q": 5}
+        assert self.judged(given, schema) == (given, given, None)
+        assert self.judged({}, schema)[1] == {"q": 7}
+        assert self.judged({"p": 5}, schema)[2].startswith(
+            "Recusal refused `purge`: argument `p` is of JSON type integer where the server's "
+            "schema declares string"
+        )
+        # `q` is the definition named `a/b`, where the text of a number is refused
+        assert "holds the text of a number" in self.judged({"q": "5"}, schema)[2]
+
+    AT = "#/$defs/x/anyOf/"
+    REFS = [
+        AT + "0",
+        AT + "1",
+        AT + "-1",
+        AT + "+1",
+        AT + "01",
+        AT + " 1",
+        AT + "1_0",
+        AT + "\u0663",
+    ]
+    NOT_REFS = [AT + "\u00b2", AT + "9", AT + "a", AT, "#/y", "#x", "x", "", 5, None, ["#"]]
+
+    def test_the_position_of_an_item_is_read_as_the_validator_reads_it(self, example):
+        """``referencing`` reads a position with ``int``: a sign, zeros and a digit that is
+        not ASCII are positions. The value each definition takes says which one a
+        ``$ref`` names, for the validation and for the gate alike."""
+        from jsonschema import validators
+        from referencing import Registry
+
+        module = self.schema_module()
+        items = [{"const": f"item {n}", "default": f"item {n}"} for n in range(11)]
+        for ref in self.REFS:
+            schema = {"properties": {"p": {"$ref": ref}}, "$defs": {"x": {"anyOf": items}}}
+            stock = validators.Draft202012Validator(schema, registry=Registry())
+            taken = [n for n in range(11) if stock.is_valid({"p": f"item {n}"})]
+            assert len(taken) == 1, ref
+            listed = module.Listed(schema)
+            assert listed.complete({})[0] == {"p": f"item {taken[0]}"}, ref
+            assert listed._resolve(ref) is items[taken[0]]
+            for n in range(11):
+                given = {"p": f"item {n}"}
+                if n == taken[0]:
+                    assert self.judged(given, schema) == (given, given, None)
+                else:
+                    assert "is not the value" in self.judged(given, schema)[2]
+
+    @pytest.mark.parametrize("ref", NOT_REFS, ids=[str(n) for n in range(len(NOT_REFS))])
+    def test_a_ref_that_names_no_schema_is_refused_and_never_raised(self, example, ref):
+        """The reviewer's case: ``²`` is a digit to ``str.isdigit`` and no number to
+        ``int``, and the ``ValueError`` left the gate."""
+        told = (
+            f"Recusal refused `purge`: {_SCHEMA} has a `$ref` that does not resolve inside the "
+            "schema itself, so the gate cannot check the arguments against it"
+        )
+        two = {"x": {"anyOf": [{}, {}]}}
+        for schema in (
+            {"properties": {"p": {"$ref": ref}}, "$defs": two},
+            {"properties": {"p": {"anyOf": [{"type": "null"}, {"$ref": ref}]}}, "$defs": two},
+        ):
+            assert self.judged({"p": 1}, schema) == (None, None, told)
+            assert self.judged({}, schema) == (None, None, told)
+
+    def test_an_id_that_is_not_text_is_not_a_valid_schema(self, example):
+        for schema in ({"$id": 5}, {"$id": ["x"], "properties": {"p": {"$ref": "#"}}}):
+            assert self.judged({}, schema) == (
+                None,
+                None,
+                f"Recusal refused `purge`: {_SCHEMA} is not a valid JSON Schema",
+            )
+        # an `$id` that is text changes nothing a `$ref` into the schema names
+        schema = {
+            "$id": "https://example.com/schemas/purge",
+            "properties": {"p": {"$ref": "#/$defs/n"}},
+            "$defs": {"n": {"type": "integer", "default": 3}},
+        }
+        assert self.judged({}, schema)[1] == {"p": 3}
+
+    # --- nothing leaves the gate but a refusal ---------------------------------------------------
+
+    def test_an_exception_that_is_not_an_exception_is_a_refusal(self, example, monkeypatch):
+        """On Python 3.10 a panic in ``referencing``'s compiled map arrived as a
+        ``BaseException`` and left the gate."""
+        module = self.schema_module()
+
+        def panics(self, validator, instance):
+            raise _Panic("a panic in a compiled dependency")
+
+        monkeypatch.setattr(module.Listed, "_validate", panics)
+        assert self.judged({"p": 1}, self.ANY) == (
+            None,
+            None,
+            f"Recusal refused `purge`: the arguments could not be checked against {_SCHEMA} "
+            "(_Panic)",
+        )
+        with pytest.raises(module.Refused, match="could not be checked"):
+            module.Listed(self.ANY).complete({"p": 1})
+
+    @pytest.mark.parametrize(
+        "stops", [KeyboardInterrupt, SystemExit, GeneratorExit, asyncio.CancelledError]
+    )
+    def test_what_stops_the_interpreter_or_the_loop_is_passed_on(self, example, monkeypatch, stops):
+        module = self.schema_module()
+        assert module.PASSED_ON == (
+            KeyboardInterrupt,
+            SystemExit,
+            GeneratorExit,
+            asyncio.CancelledError,
+        )
+
+        def stopped(self, validator, instance):
+            raise stops()
+
+        monkeypatch.setattr(module.Listed, "_validate", stopped)
+        with pytest.raises(stops):
+            self.judged({"p": 1}, self.ANY)
+
+        def policy(name, arguments):
+            raise stops()
+
+        monkeypatch.undo()
+        with pytest.raises(stops):
+            _adapter()._judged_call("purge", {"p": 1}, self.ANY, policy)
+
+    def test_a_policy_that_raises_what_is_not_an_exception_fails_closed(self, example):
+        def policy(name, arguments):
+            raise _Panic
+
+        assert _adapter()._judged_call("purge", {"p": 1}, self.ANY, policy) == (
+            None,
+            "Recusal refused `purge`: the gate could not judge this call (_Panic)",
+        )
+
+    def test_whatever_leaves_the_gates_own_reading_is_a_refusal(self, example, monkeypatch):
+        gate = _adapter()
+
+        def no_room(*args):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(gate, "_measure", no_room)
+        assert gate._judged_call("purge", {"p": 1}, self.ANY, lambda *_: []) == (
+            None,
+            "Recusal refused `purge`: the gate could not judge this call within what is left "
+            "of the interpreter's recursion limit where it was called",
+        )
+
+        def broken(*args):
+            raise ZeroDivisionError
+
+        monkeypatch.setattr(gate, "_measure", broken)
+        assert gate._judged_call("purge", {"p": 1}, self.ANY, lambda *_: []) == (
+            None,
+            "Recusal refused `purge`: the gate could not judge this call (ZeroDivisionError)",
+        )
+        # and where the refusal cannot be put on the record either, it stands
+        monkeypatch.setattr(gate, "_unjudgeable", no_room)
+        assert gate._judged_call("purge", {"p": 1}, self.ANY, lambda *_: []) == (
+            None,
+            "Recusal failed closed: the gate could not judge this call (RecursionError)",
+        )
+
+        def panics(*args):
+            raise _Panic
+
+        monkeypatch.setattr(gate, "_unjudgeable", panics)
+        assert gate._judged_call("purge", {"p": 1}, self.ANY, lambda *_: []) == (
+            None,
+            "Recusal failed closed: the gate could not judge this call (_Panic)",
+        )
+
+    def test_a_schema_the_recursion_limit_stopped_the_reading_of_is_read_again(
+        self, example, monkeypatch
+    ):
+        """Where the limit is reached depends on how deep in the application's stack the
+        gate was called, so that refusal is of the call and is not kept for the listing."""
+        module = self.schema_module()
+        scan = module._scan
+        calls = []
+
+        def out_of_stack(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RecursionError("maximum recursion depth exceeded")
+            return scan(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_scan", out_of_stack)
+        listed = module.Listed(self.ANY)
+        told = (
+            f"{_SCHEMA} is nested too deeply to read within what is left of the interpreter's "
+            "recursion limit where the gate was called"
+        )
+        with pytest.raises(module.Refused) as refused:
+            listed.complete({"p": 1})
+        assert refused.value.reason == told
+        assert listed.complete({"p": 1}) == ({"p": 1}, {"p": 1})
+        # a schema that really is nested deeper than the interpreter reads says the same
+        monkeypatch.undo()
+        deep: dict = {"type": "integer"}
+        for _ in range(3 * sys.getrecursionlimit()):
+            deep = {"properties": {"k": deep}}
+        assert self.judged({"k": 1}, deep) == (None, None, f"Recusal refused `purge`: {told}")
+
+    def test_from_any_depth_of_the_applications_stack_the_gate_answers(self, example):
+        """The reviewer's probe: the gate called from every depth of the stack up to the
+        interpreter's recursion limit, with arguments a recursive schema recurses on.
+        Each call completes or is refused; none raises, a ``BaseException`` included."""
+        gate, module = _adapter(), self.schema_module()
+        listed = module.Listed(TREE)
+        chain: dict = {}
+        for _ in range(40):
+            chain = {"child": chain}
+        arguments = {"node": chain}
+        outcomes: dict = {}
+
+        def room():
+            return None
+
+        def judge():
+            try:
+                room()
+            except RecursionError:
+                return "no room to call the gate at all"
+            sent, reason = gate._judged_call("purge", arguments, listed, lambda *_: [])
+            if sent is not None:
+                return "completed"
+            return reason
+
+        def under(frames):
+            return under(frames - 1) if frames else judge()
+
+        for frames in range(0, sys.getrecursionlimit(), 3):
+            try:
+                outcome = under(frames)
+            except RecursionError:
+                outcome = "the test's own frames reached the limit"
+            outcomes.setdefault(outcome, []).append(frames)
+        limit = (
+            "Recusal refused `purge`: the arguments are nested too deeply to check against "
+            f"{_SCHEMA} within what is left of the interpreter's recursion limit where the "
+            "gate was called"
+        )
+        allowed = {
+            "completed",
+            limit,
+            "no room to call the gate at all",
+            "the test's own frames reached the limit",
+            "Recusal refused `purge`: the gate could not judge this call within what is left "
+            "of the interpreter's recursion limit where it was called",
+            "Recusal failed closed: the gate could not judge this call (RecursionError)",
+            f"Recusal refused `purge`: the arguments could not be checked against {_SCHEMA} "
+            "(PanicException)",
+        }
+        assert set(outcomes) <= allowed, sorted(set(outcomes) - allowed)
+        assert "completed" in outcomes and limit in outcomes
+        # the schema was read at the first call, so no later refusal is of the schema
+        assert listed._failure is None
+
+    # --- the `false` schema --------------------------------------------------------------------
+
+    FALSE = [
+        ({"properties": {"p": False}}, {"p": 1}, "argument `p`"),
+        ({"properties": {"o": {"properties": {"p": False}}}}, {"o": {"p": 1}}, "argument `o.p`"),
+        (
+            {"$schema": DRAFT_07, "properties": {"p": {"items": False}}},
+            {"p": [1, 2]},
+            "argument `p[0]`",
+        ),
+        (
+            {"properties": {"p": {"prefixItems": [{}, False]}}},
+            {"p": [1, 2]},
+            "argument `p[1]`",
+        ),
+        (
+            {
+                "properties": {"p": {"additionalProperties": {"$ref": "#/$defs/never"}}},
+                "$defs": {"never": False},
+            },
+            {"p": {"k": 1}},
+            "argument `p.*`",
+        ),
+        ({"properties": {"p": {"allOf": [False]}}}, {"p": 1}, "argument `p`"),
+        ({"properties": {"p": {"if": {}, "then": False}}}, {"p": 1}, "argument `p`"),
+        ({"$ref": "#/$defs/never", "$defs": {"never": False}}, {"p": 1}, "the arguments"),
+    ]
+
+    @pytest.mark.parametrize("schema, given, place", FALSE, ids=[str(n) for n in range(len(FALSE))])
+    def test_a_false_schema_is_named_for_what_it_is_at_the_value_it_refuses(
+        self, example, schema, given, place
+    ):
+        """It read "does not meet `None`", at the list or the object holding the value."""
+        verb = "stand" if place == "the arguments" else "stands"
+        assert self.judged(given, schema) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {place} {verb} where the server's schema allows no "
+            f"value (`false`); {_AS_THEY_STAND}",
+        )
+
+    def test_member_names_no_schema_allows_are_named_by_their_keyword(self, example):
+        schema = {"properties": {"p": {"propertyNames": False}}}
+        assert self.judged({"p": {}}, schema) == ({"p": {}}, {"p": {}}, None)
+        assert self.judged({"p": {"a": 1, "b": 2}}, schema) == (
+            None,
+            None,
+            "Recusal refused `purge`: argument `p` does not meet `propertyNames` in the "
+            f"server's schema; {_AS_THEY_STAND}",
+        )
+
+    def test_no_reason_names_a_keyword_none(self, example):
+        for schema, given, _ in self.FALSE:
+            assert "`None`" not in self.judged(given, schema)[2]
 
 
 class SimpleRequest:

@@ -239,7 +239,8 @@ steps than the gate allows for the size of its arguments, or more than a ceiling
 200,000 steps for one call that the application can raise (`step_ceiling=`), is
 refused. So is a call whose arguments are more than 1,000,000 characters as JSON text,
 a second ceiling the application can raise (`size_ceiling=`), before anything else
-reads them: the steps do not bound the size of a call. The policy
+reads them: the steps do not bound the size of a call. And so is one that holds an
+integer of more than 4,300 digits, on every Python. The policy
 judges a copy of the completed arguments and the server is sent the completed arguments,
 so a policy's write to what it judged changes its copy, not the call. The one exception
 is a listed default that cannot be sent: one that is not valid

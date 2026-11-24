@@ -483,7 +483,13 @@ and of a seventh round (a check that failed wrote out the whole value, at every 
 of a schema that nests, which no step counted; a subschema that declares a draft, and
 a `$ref` back to a root that declares one, were checked by none of the gate's own
 keywords; and the steps did not bound the size of a call, which a ceiling on the size
-of one call's arguments now does),
+of one call's arguments now does) and of an eighth round (on a Python without the
+limit on the digits of an integer, one long integer made the size check quadratic,
+so an integer of more than 4,300 digits is now refused from its bits on every Python;
+the gate's own readings of the arguments recursed, so their time moved with the depth
+the sender nested at; a call a little over the size ceiling was read almost to its
+end; the gate read a `$ref` its own way; and three exceptions left the gate
+uncaught),
 are in the changelog's Unreleased entry for 0.2.1, which is not released.
 
 - **The most serious.** In 0.2.0 a model can still stall the agent's process. Under

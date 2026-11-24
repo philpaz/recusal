@@ -199,7 +199,10 @@ def test_the_adapter_has_no_default_policy_and_no_demo_code(directory):
         text = path.read_text(encoding="utf-8")
         assert "sql_scope_policy" not in text, path.name
         assert "EXECUTED" not in text and "def main(" not in text, path.name
-        assert "sys.path" not in text and "SystemExit" not in text, path.name
+        # demo code edits the import path or exits the process; naming SystemExit to let
+        # it pass through untouched is neither
+        assert "sys.path" not in text, path.name
+        assert "raise SystemExit" not in text and "sys.exit(" not in text, path.name
 
 
 @pytest.mark.parametrize("directory", sorted(PACKAGES))

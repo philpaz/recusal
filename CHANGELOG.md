@@ -207,8 +207,10 @@ All notable changes to this project are documented here. The format follows
     ceiling. Every largest call of the measured shapes that the step ceiling completes
     is under it (the largest is 698 KB). At the ceiling, the arguments that took
     longest (333,000 empty objects, 60 lists deep) took 609 ms through
-    `call_tool` and 1,111 ms with an audit log, and a call that is refused took up to 2,399 ms with one; a call over it is refused in
-    about a millisecond, and is one deny entry on an audit log, bound to a statement of
+    `call_tool` and 1,111 ms with an audit log, and a call that is refused took up to 2,399 ms with one; a call over it is refused
+    (in about a millisecond where one string or the number of members alone is over
+    it; the eighth round, below, corrects this for a call a little over), and is one
+    deny entry on an audit log, bound to a statement of
     its size and not to the arguments, which the gate does not read. An application
     raises the ceiling for a connection with the new keyword `size_ceiling=` on
     `gate_mcp_server`, `gated_agent` and `audited_agent`. The cost: a call of more than
@@ -229,6 +231,95 @@ All notable changes to this project are documented here. The format follows
     only a whole number of days runs as a `date`; and the two entries on numbers name
     the floats `1.0` and `0.0` that run as booleans and the numbers that run as an
     `IPv4Address` or a `complex`.
+  - Eighth round: on a Python without the limit on the digits of an integer, one long
+    integer made the size check quadratic. The check wrote every integer out as text
+    to count its characters, which takes time that grows with the square of the digits
+    before Python 3.12. Python refuses to write more than 4,300 digits by default (3.11
+    and later, and 3.10 from 3.10.7), and under that limit the SDK never hands the
+    gate a longer integer; without it (3.10.0 to 3.10.6, `PYTHONINTMAXSTRDIGITS=0` or
+    `sys.set_int_max_str_digits(0)`) it does, and the review measured 11 seconds for
+    an integer of 999,000 digits, which is under the size ceiling, and 23 with an
+    audit log, on Python 3.10.22 with the limit switched off. The gate now writes no
+    integer out. It looks an integer of up to 18 digits up among the powers of ten,
+    and counts the digits of a longer one from its bits (an integer of `b` bits has
+    between `(b - 1) * 30102 // 100000 + 1` and `b * 30103 // 100000 + 1` digits, and
+    one comparison with a power of ten settles it where the two differ), and it
+    refuses a call that holds an integer of more than 4,300 digits anywhere in its
+    arguments, with a reason of its own, on every Python, whatever the limit is set
+    to: nothing after it (the copy, the check, the fingerprint of an audit entry, a
+    policy) is handed one. Such a refusal is one deny entry on an audit log, bound to
+    a statement of it and not to the arguments. JSON text in a string is decoded
+    without making an integer from its digits, for the same reason, and gives up at
+    4,300 as the decoder does under the default limit. The cost: an application that
+    builds a call itself with a longer integer, which a server on a Python without
+    the limit would run, is refused.
+  - Eighth round: the gate's own readings of the arguments recursed, and on Python
+    3.11 and later the time of a function that recurses moves with where in the
+    interpreter's stack its deepest calls fall (CPython keeps frames in blocks of
+    16 KB, and a call made where a block ends maps a new block and frees it again).
+    The depth of nesting is the sender's to choose, so the same 1,000,000 characters
+    took up to four times longer at one depth than at the next. The measure of the
+    size and the depth, the copy, the count of the values, the keys values are
+    compared by and the text of a refusal are now read without recursion, and call no
+    Python function for a value, so the nesting does not move them. The copy is the
+    gate's own for that (`recusal.invocation.detached` recurses); it accepts what the
+    kernel's accepts and refuses what it refuses with the same words, which a test
+    holds. Results and steps are unchanged. What still recurses is the validation and
+    the walk, with the schema, and the kernel's fingerprint of an audit entry.
+    `tools/measure_mcp_cost.py stack` times four calls from each of 144 depths of the
+    stack and prints the least, the median and the most. The page's time tables are
+    of the code before this round and say so: they are not measured again yet, and the
+    page does not state the range yet.
+  - Eighth round: a call a little over the size ceiling was refused only after most of
+    it was read, where the page and this entry said about a millisecond and under
+    3 ms; for a string of characters that JSON escapes that was a Python step for each
+    one (the review measured 68 to 74 ms for 999,000 of them). A string is now counted
+    by writing it out as JSON text 65,536 characters at a time, and the reading stops
+    at the part that goes over. A call that is a little over by its numbers or its
+    empty objects is still read up to the ceiling, which is what measuring a call at
+    the ceiling costs, and the page says so. And arguments that are not JSON data
+    (`1e999` decodes to a number that is not finite) were read three more times to
+    bind the refusal; they are read once to measure, once to find that out and once to
+    write the text the refusal is bound to. The measuring tool times both.
+  - Eighth round: the gate read a `$ref` its own way, and `referencing`, which the
+    validation resolves a `$ref` with, reads it another for a pointer with a
+    percent-escape that decodes to `/` (it decodes before it splits) and for a
+    position in a list (it reads one with `int`, so `-1` and `+1` are positions). For
+    `"$ref": "#/$defs/a%2Fb"` beside a definition named `a/b` and a path `a` then `b`
+    the arguments were validated against one schema while the types, the default and
+    the walk were read from the other. The gate now resolves every `$ref` with
+    `referencing`, once for a listing. A schema whose root `$id` is not text is
+    refused as not a valid JSON Schema, which it is not.
+  - Eighth round: three exceptions left the gate uncaught, none of them the model's to
+    cause. `"$ref": "#/anyOf/²"` raised `ValueError` out of the check (`²` is a digit
+    to `str.isdigit` and no number to `int`); a `RecursionError` left the gate when an
+    application called it from deep in its own stack; and on Python 3.10 a panic in
+    `referencing`'s compiled map, which is not a Python `Exception`, did the same.
+    Nothing leaves the gate now but its answer and what stops the interpreter or the
+    event loop (`KeyboardInterrupt`, `SystemExit`, `GeneratorExit`,
+    `asyncio.CancelledError`): any other exception, one that is not an `Exception`
+    among them and one a policy raises, is a refusal of the call, on the record where
+    the record can be written. A schema the recursion limit stopped the reading of is
+    refused for that call and read again at the next, since where the limit is
+    reached depends on the application's stack; it was kept as the schema's fault for
+    the whole listing. The page said that a recursive model nested to the 64-level
+    limit is completed; it says now where that holds: under the default limit of
+    1,000 frames, when the gate is called from up to 210 plain frames down on Python
+    3.12.5 and up to 79 on 3.10.22, and refused for the limit from deeper.
+  - Eighth round, smaller. A value where the schema allows none (a `false` subschema)
+    was refused as not meeting the keyword `None`, at the list or the object holding
+    it; the reason now says that the schema allows no value there, at the value, and
+    `propertyNames: false` is named as that keyword. Which calls are refused is
+    unchanged, and so is every other reason but those for the recursion limit, which
+    say now that the limit is what is left of it where the gate was called: compared
+    call by call with the commit before, with the review's own two comparisons:
+    865,722 hand-picked calls on Python 3.12 and again on 3.10, and 496,320 generated
+    ones over the three drafts (400,560 on 3.12, 95,760 on 3.10). No call differs in
+    whether it is valid, in the steps its validation spent or in what is judged and
+    sent, and the reason differs in 5,031 of the generated calls, every one a call
+    refused under a `false` subschema. Two checks no test held are
+    held now (a list below the depth the gate reads that holds more members than
+    characters are left, and the count of a long integer).
 
 - **The CrewAI test lock no longer installs `chromadb`, and `recusal-crewai` requires a
   CrewAI that does not either.** `crewai` 1.15.40 required `chromadb` 1.5.9, which has

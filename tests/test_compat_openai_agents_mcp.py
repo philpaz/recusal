@@ -624,7 +624,14 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
     errors, by keyword and by place, for every schema and value here, in every draft the
     gate reads. The reference is the validator of ``jsonschema`` with only what the gate
     makes stricter or does not evaluate on purpose: the comparisons, the patterns, the
-    alternatives, and an integer that is written as a float."""
+    alternatives, and an integer that is written as a float.
+
+    One error is placed and named differently on purpose, and asserted for the same
+    values: the one of the ``false`` schema, which has no keyword. ``jsonschema`` leaves
+    it at the list or the object that holds the value; the gate puts it at the value,
+    which is the place its reason names. And where ``propertyNames`` is ``false``,
+    ``jsonschema`` makes one such error for every member, at the object, and the gate
+    one error of ``propertyNames`` there (a name has no place of its own)."""
     import importlib
 
     validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
@@ -737,7 +744,11 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
         except Exception as exc:  # noqa: BLE001, what one raises the other must raise
             return type(exc).__name__
 
-    compared = 0
+    def split(found):
+        """The places of the errors of the ``false`` schema, in order."""
+        return sorted(place for keyword, place in found if keyword == "None")
+
+    compared = moved = 0
     for base, strict in module._DRAFTS.items():
         own = module._checks(base)
         reference = validators.extend(
@@ -748,8 +759,28 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
         for schema in schemas:
             ours, theirs = strict(schema), reference(schema)
             for instance in instances:
-                found = errors(ours, instance)
-                assert found == errors(theirs, instance), (base.__name__, schema, instance)
-                compared += bool(found)
+                found, wanted = errors(ours, instance), errors(theirs, instance)
+                case, failed = (base.__name__, schema, instance), bool(found)
+                if type(found) is list and type(wanted) is list:
+                    never, nowhere = split(found), split(wanted)
+                    if schema.get("propertyNames") is False:
+                        # one error of the keyword for theirs of every member's name
+                        assert not never and bool(nowhere) is bool(found), case
+                        assert all(place == () for place in nowhere), case
+                        assert found == [("propertyNames", ())] * bool(nowhere), case
+                        found = wanted = []
+                    else:
+                        # the same errors, each at the holder or one part further in
+                        assert len(never) == len(nowhere), case
+                        for mine, theirs_place in zip(never, nowhere):
+                            assert mine[: len(theirs_place)] == theirs_place, case
+                            assert len(mine) - len(theirs_place) in (0, 1), case
+                        moved += sum(len(a) != len(b) for a, b in zip(never, nowhere))
+                        found = [each for each in found if each[0] != "None"]
+                        wanted = [each for each in wanted if each[0] != "None"]
+                assert found == wanted, case
+                compared += failed
     # the comparison is not of nothing: most of these values fail
     assert compared > 2_500
+    # and the `false` schema's error was moved to the value in some of them
+    assert moved > 20
