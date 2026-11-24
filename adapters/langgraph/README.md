@@ -531,9 +531,9 @@ gate has decided nothing, and no entry is written.
   `functools.wraps(fn)` makes the outer wrapper point at `fn`, and the kernel's walk
   follows that pointer, not what the wrapper calls:
   `def resilient(fn): guarded = with_timeout(30)(fn)` with a `functools.wraps(fn)`
-  wrapper that calls `guarded`. Beside `recusal` 0.15.0 the inner wrapper is not read,
+  wrapper that calls `guarded`. Beside `recusal` 0.15.0 or 0.15.1 the inner wrapper is not read,
   and a keyword it adds, or keeps from the function, runs with a value the policy did
-  not see. A kernel later than 0.15.0 (0.15.0 is the newest release as this is
+  not see. A kernel later than 0.15.1 (0.15.1 is the newest release as this is
   written) refuses the call before the policy runs in one case: the inner wrapper
   is itself a `functools.wraps` wrapper of the same function,
   it is held in the outer wrapper's closure, in a module global the outer wrapper
@@ -546,20 +546,20 @@ gate has decided nothing, and no entry is written.
 - A `functools.singledispatch` function, or a `singledispatchmethod`, with an
   implementation registered beside its base one or in its place. The implementation
   that runs is chosen at call time by the type of an argument, and the walk reads the
-  base one only. Beside `recusal` 0.15.0 this is not detected. Called by keyword, as
+  base one only. Beside `recusal` 0.15.0 or 0.15.1 this is not detected. Called by keyword, as
   a tool's function is, the bare function fails in Python (a single-dispatch function
   takes its first argument by position); behind a wrapper that passes that argument by
   position, a registered implementation runs with defaults of its own that the policy
-  did not see. A kernel later than 0.15.0 refuses the call before the policy runs.
+  did not see. A kernel later than 0.15.1 refuses the call before the policy runs.
   Call the function from a plain function and give the tool that.
 - A `functools.partialmethod` over a callable object (a class-based decorator's
-  instance, for example) as a tool's function. Beside `recusal` 0.15.0 it is read one
+  instance, for example) as a tool's function. Beside `recusal` 0.15.0 or 0.15.1 it is read one
   level deep: what is under the object is not read, so a default there can run that
-  the policy did not see. A kernel later than 0.15.0 refuses it before the policy runs,
+  the policy did not see. A kernel later than 0.15.1 refuses it before the policy runs,
   with a reason that says it is a `partialmethod` over such a callable. Give the tool a
   plain function that calls it.
 - **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
-  0.15.0.** Each let a value run that the policy did not judge: a decorator written as
+  0.15.0 or 0.15.1.** Each let a value run that the policy did not judge: a decorator written as
   `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
   its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
   `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
@@ -571,7 +571,7 @@ gate has decided nothing, and no entry is written.
   default and was in no signature), with or without decorators on the free function
   that only pass their arguments on. The second is the same on a method as on a plain
   function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
-  object, a second cache). A kernel later than 0.15.0 reads the first three
+  object, a second cache). A kernel later than 0.15.1 reads the first three
   like the same decorator written with a nested function, so a wrapper with a parameter
   of its own is refused, naming the parameter, and one that only passes its arguments
   on is accepted; it refuses the fourth, naming both parameters. Not found by either

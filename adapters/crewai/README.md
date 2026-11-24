@@ -162,7 +162,7 @@ order of a turn's entries on the chain is not always the order the model propose
   the schema too. The gate holds a tool to CrewAI's and Pydantic's own machinery and
   refuses what it can tell is not stock; code written to show the gate one thing and do
   another is, like the tool's body, the tool's own code.
-- **Not seen beside `recusal` 0.15.0 or older, refused beside a later kernel:** a
+- **Not seen beside `recusal` 0.15.1 or older, refused beside a later kernel:** a
   decorator that applies another `functools.wraps` wrapper of the same function inside
   itself, holds it in its closure, in a module global it names or on a class-based decorator's instance and calls
   that one, where the inner wrapper takes a parameter of its own (that parameter runs
@@ -171,7 +171,7 @@ order of a turn's entries on the chain is not always the order the model propose
   first argument by position (the implementation that runs is chosen by the type of
   the argument and has defaults of its own; the bare function, called by keyword,
   fails in Python). The gate asks a
-  kernel later than 0.15.0 (0.15.0 is the newest release as this is written) for these two and refuses the call before the policy runs.
+  kernel later than 0.15.1 (0.15.1 is the newest release as this is written) for these two and refuses the call before the policy runs.
   An inner wrapper held any other way (a plain function or a lambda that names nothing
   as `__wrapped__`, a callable object, a container) is not found beside any kernel.
   A `functools.partialmethod` over a callable object is refused beside every kernel,
@@ -182,7 +182,7 @@ order of a turn's entries on the chain is not always the order the model propose
   (`def wrapper(*args, limit=1000, **kwargs)` around `def fetch(query, limit=10)`): the
   wrapper keeps the judged value and the function runs with its own default. Drop the
   name from the wrapper, or pass it on by name.
-- **Four more decorator shapes, not found beside `recusal` 0.15.0 or older.** This
+- **Four more decorator shapes, not found beside `recusal` 0.15.1 or older.** This
   package reads a tool with a walk of its own, which follows `__wrapped__` and nothing
   else, so each of these lets a value run that the policy did not judge: a decorator
   written as `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a
@@ -195,9 +195,9 @@ order of a turn's entries on the chain is not always the order the model propose
   delegates to a free function under `functools.wraps` of it and keeps its object,
   where the free function's first parameter has a default, with or without decorators
   on the free function that only pass their arguments on. Beside a kernel later than
-  0.15.0 the gate asks the kernel's walk as well, holds every level it returns to the
+  0.15.1 the gate asks the kernel's walk as well, holds every level it returns to the
   schema, and refuses all four with the cause. Until that kernel is this package's
-  floor, an install beside 0.15.0 or 0.14.x has these four. Not found beside any
+  floor, an install beside 0.15.1, 0.15.0 or 0.14.x has these four. Not found beside any
   kernel: a wrapper that takes the bound object under the same name as the first
   parameter of the function it wraps and does not hand it on. For each, call the
   function from a plain function and give the tool that.

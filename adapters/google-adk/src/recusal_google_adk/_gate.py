@@ -87,7 +87,7 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 
 
 #: A callable on the way holds a second wrapper the walk does not read (a kernel later
-#: than 0.15.0).
+#: than 0.15.1).
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
@@ -249,7 +249,7 @@ def _with_remedy(func: Any, why: str, skip: tuple = ()) -> str:
     about it where the reason is one of the two the kernel's walk raises by name: a
     decorator that holds a second wrapper with a parameter of its own (``HiddenWrapper``)
     and a single-dispatch function that can run more than its base implementation
-    (``DispatchedAtCallTime``). A kernel later than 0.15.0 raises them; beside 0.15.0
+    (``DispatchedAtCallTime``). A kernel later than 0.15.1 raises them; beside 0.15.0 or 0.15.1
     neither shape is found, no handler here runs and ``why`` is returned as it is. The
     walk is made a second time only for a call that is refused already, and the remedy is
     added only when what it raises is, word for word, the reason the kernel gave."""

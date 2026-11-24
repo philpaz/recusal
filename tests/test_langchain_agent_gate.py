@@ -676,7 +676,7 @@ class TestLangChainAgentGate:
 
     def test_the_kernels_named_refusals_are_reported_through_the_middleware(self, example):
         """The middleware gates through ``recusal-langgraph``, so the two refusals the
-        kernel's walk makes by name (a kernel later than 0.15.0) reach the model as what
+        kernel's walk makes by name (a kernel later than 0.15.1) reach the model as what
         they are: a decorator that holds a second wrapper with a parameter of its own, and
         a single-dispatch function that can run more than its base. Beside 0.15.0 neither
         is found, and both outcomes are held here."""

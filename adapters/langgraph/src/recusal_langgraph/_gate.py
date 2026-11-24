@@ -95,7 +95,7 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 
 
 #: A callable on the way holds a second wrapper the walk does not read (a kernel later
-#: than 0.15.0).
+#: than 0.15.1).
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
@@ -444,8 +444,8 @@ def _reached(func) -> list:
     takes for a builtin. A stack of ``functools.wraps`` decorators deeper than the walk
     follows is the other failure that has a cause the gate can state (:func:`_stacked`).
 
-    Three refusals the kernel's walk makes by name (a kernel later than 0.15.0; beside
-    0.15.0 none of the shapes is found) are reported as what they are: a decorator that
+    Three refusals the kernel's walk makes by name (a kernel later than 0.15.1; beside
+    0.15.0 or 0.15.1 none of the shapes is found) are reported as what they are: a decorator that
     holds a second wrapper with a parameter of its own (``HiddenWrapper``, whose text
     names the parameter and never a value), a single-dispatch function that can run more
     than its base implementation (``DispatchedAtCallTime``), and a callable that

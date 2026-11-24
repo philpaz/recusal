@@ -2627,7 +2627,7 @@ class TestWhatCannotBeTiedToWhatRuns:
         return tool
 
     def test_a_cache_whose_function_cannot_be_told_keeps_the_kernels_reason(self, ex, monkeypatch):
-        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.0). The kernel's
+        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.1). The kernel's
         reason for it says what it is and what to do, and the words for a decorator that
         holds a second wrapper are not added to it."""
         import importlib  # noqa: F401
@@ -2696,7 +2696,7 @@ class TestWhatCannotBeTiedToWhatRuns:
         less what is bound, and nothing under the object was read. With a parameter left
         the kernel refused such a tool before (the method ``functools`` builds carries no
         annotations); with every parameter bound, the object ran with defaults of its
-        wrappers that no policy saw. A kernel later than 0.15.0 refuses that one too."""
+        wrappers that no policy saw. A kernel later than 0.15.1 refuses that one too."""
         import functools
 
         from recusal import invocation

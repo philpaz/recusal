@@ -34,9 +34,14 @@ How to check this page:
 
 ## The kernel: `recusal`
 
-**Where it stands.** `recusal` 0.15.0 is released (tag `v0.15.0`, 2026-11-21). The
-changes after it are in review in [#299](https://github.com/philpaz/recusal/pull/299),
-on the commits named below. They are not merged and not released.
+**Where it stands.** `recusal` 0.15.1 is released (tag `v0.15.1`, 2026-11-23). It has
+none of the change below: it fixed the audit log, and its `recusal.invocation` is that
+of 0.15.0. The change is in review in
+[#299](https://github.com/philpaz/recusal/pull/299) as one commit, `322ee13`, which is
+the kernel change rebuilt on main after 0.15.1. It is not merged and not released. The
+commits named under the rounds below are the change as each round read it; they are
+kept on the branches `review-history/kernel-299-pre-rebuild` (`293f22f`) and
+`review-history/kernel-299-rounds-6-8` (all the others).
 
 The part of the kernel under review is `recusal.invocation`
 ([source](../recusal/invocation.py)), which adapters use to read the parameters of a
@@ -94,8 +99,8 @@ decorated tool. `recusal-crewai` still carries its own copy.
   cannot be told has a refusal of its own (`UnreadCache`); and what a cache calls is
   told once per cache (commit `e9b3dcb`).
 - **Kernel review round seven** (commit `e9b3dcb`). No category 1; round six's four
-  confirmed closed, and nothing 0.15.0 refused accepted in about 3.2 million generated
-  shapes. Two category 2. The fourth shape of round six came back when the free
+  confirmed closed, and nothing 0.15.0 refused accepted in the generated shapes, which
+  went to three decorators deep and to async and generator wrappers. Two category 2. The fourth shape of round six came back when the free
   function wore one decorator that only passes its arguments on (a forwarding wrapper,
   a class-based decorator, a caching decorator): the method was accepted, and the free
   function ran its first parameter at a default no signature showed. And over a method,
@@ -109,29 +114,64 @@ decorated tool. `recusal-crewai` still carries its own copy.
   the dictionary. Also: 41 clean shapes refused with a reason that did not help (a
   callable object that defines `__get__`), four surviving mutants, eight sentences that
   were untrue or incomplete, and a walk that cost 1.3 milliseconds for five stacked
-  decorators in a module of 5,000 globals.
+  decorators in a module of 5,000 globals. Closed in commit `7ab31c3`: the name a bound
+  argument was taken under goes with it through every layer that only passes arguments
+  on, so the delegating method is refused under any number of them. A method over a
+  cache named again is read as what the cache calls. The two imports 0.15.0 did not
+  make are guarded and never made at a walk; a listing a hook stops, whatever it raises
+  but an interrupt from the keyboard, and a replaced `gc.get_referents` leave the cache
+  read by its name; a listing a collection interrupts is made again. What is kept
+  between walks is a plain `dict` by `id()` beside a weak reference, in place of a
+  `weakref.WeakKeyDictionary`. The module globals a wrapper names are looked up by
+  name, with the names kept for each code object. The `ValueError` for a callable
+  object that defines `__get__` says the cause and what to do.
+- **Kernel review round eight** (commit `7ab31c3`, whose source is that of `322ee13`).
+  No category 1; round seven's two category 2 and four regressions confirmed closed,
+  and nothing 0.15.0 refused accepted in the generated shapes. Held on one category 2
+  that 0.15.0 has too: a wrapper that keeps one bound argument moves every argument
+  bound after it up one place, and the walk tested the parameter the kept argument
+  would fill where the one left without a value is the one the LAST bound argument
+  would fill. `functools.partial(tools.search, "acme")` over a method that delegates to
+  `def search(tenant, region="eu", limit=10)` declared `(limit=10)`, was judged
+  `{'limit': 5}` and ran `region='eu'`. The review's own generator had filed these rows
+  as a stated limit, by a name in the row. Category 3: a false refusal on Python 3.9
+  only (a decorator over the bound delegating method, which 3.9 shows with every
+  parameter of the free function); a refusal of a facade that runs correctly, because
+  it passes a field of its object where the other facade passes nothing; any built-in
+  type put under `weakref.ref` was used as the weak reference type, which raised from
+  the second walk; two costs not stated (the first walk of a new cache on a
+  free-threaded build, and the memory entries of dead objects hold until the next
+  sweep); seven surviving mutants of 28 (two test gaps, five lines that were not
+  needed); and nine sentences that were untrue or incomplete.
 
 **Open items.**
 
-- After round seven, a change is written and not committed. The name a bound argument
-  was taken under goes with it through every layer that only passes arguments on, so
-  the delegating method is refused under any number of them. A method over a cache
-  named again is read as what the cache calls. The two imports 0.15.0 did not make are
-  guarded and never made at a walk; a listing a hook stops, whatever it raises but an
-  interrupt from the keyboard, and a replaced `gc.get_referents` leave the cache read
-  by its name; a listing a collection interrupts is made again. What is kept between
-  walks is a plain `dict` by `id()` beside a weak reference, in place of a
-  `weakref.WeakKeyDictionary`. The module globals a wrapper names are looked up by
-  name, with the names kept for each code object. The `ValueError` for a callable
-  object that defines `__get__` says the cause and what to do. Each surviving mutant is
-  pinned by a test, and the sentences are corrected.
+- After round eight, a change is written on `322ee13` and not committed. The walk
+  refuses bound arguments under a doubt where the LAST parameter they would fill has a
+  default the tool does not declare, and the doubt stays with the arguments bound after
+  the doubted one and with the same arguments further in; one more shape of it than the
+  review found is closed (a wrapper between the facade and the function that hands the
+  next argument on, under one partial that binds both). A parameter the tool declares
+  is not refused, unless a wrapper on the way (one the walk reads or one a decorator holds) takes it by name itself, which ends the
+  false refusal on 3.9. Only the interpreter's own weak
+  reference type is used. A cache laid out in neither known way is refused outright.
+  Seven simplifications the review listed are applied. The two test gaps are pinned,
+  and the five lines that were not needed are gone. The sentences are corrected and
+  the two costs stated. This change has not been reviewed.
+- Refused although it runs correctly, by decision: a facade whose method passes a value
+  of its own in the place of the object
+  (`return search(self.tenant, *args, **kwargs)` under `functools.wraps(search)`, the
+  first parameter defaulted) has the signature of the facade that keeps the object, and
+  the walk reads parameters, not bodies. 0.15.0 accepts it. The changelog, the message
+  and the exception say so, with the remedy: register a plain function that names every
+  parameter the tool takes and calls the facade.
 - A wrapper that takes the object of a method under the same name as the first
   parameter of the function it wraps, and does not hand it on, is read as handing it
   on: the two cannot be told apart from signatures. Stated in the changelog; not fixed.
 - The changelog entries in #299 list what the walk does not find by design, under "Not
   found, by design". Those are stated limits, not fixed.
-- Not reviewed: stacks three decorators deep, async and generator wrappers, and the
-  `methodtools` shapes.
+- Not reviewed: stacks more than three decorators deep. Rounds seven and eight ran
+  generated shapes to three deep, with async and generator wrappers.
 
 **Where you can help.**
 
@@ -185,8 +225,8 @@ before the fifth are in one commit. All are in the changelog entry for 0.2.1.
 - The package still carries its own copy of the walk (`_reached_parameters` in
   [`_gate.py`](../adapters/crewai/src/recusal_crewai/_gate.py)). The changelog entry for
   0.15.0 says it moves to the kernel's walk in its next release. That release is not
-  made. Since commit `4650c71` the gate also asks a kernel later than 0.15.0 for what
-  that copy does not find; beside 0.15.0 or older, the four shapes of kernel review
+  made. Since commit `4650c71` the gate also asks a kernel later than 0.15.1 for what
+  that copy does not find; beside 0.15.1 or older, the four shapes of kernel review
   round six, a decorator that holds a second wrapper and a single-dispatch function are
   not found, and the package page says so.
 - An MCP tool with an `enum` parameter is refused on every call, because CrewAI builds
@@ -354,7 +394,7 @@ not, and the package page states the first two.
   a plain function the same `partialmethod` is read correctly. The gap is in the
   kernel's walk (`own_parameters`, `_next_callables`) and in the adapter's `_steps`.
   Fixed in the kernel's walk in commit `4650c71`, which is not released; the released
-  kernel, 0.15.0, has the gap.
+  kernels, 0.15.0 and 0.15.1, have the gap.
 - **Wrong advice, fixed in 0.2.0.** The README and two refusal reasons said to set
   `__name__` and `__doc__` on a partial. Pydantic AI needs `__name__` and
   `__qualname__`, which they now say.

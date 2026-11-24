@@ -98,7 +98,7 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 
 
 #: A callable on the way holds a second wrapper the walk does not read (a kernel later
-#: than 0.15.0).
+#: than 0.15.1).
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
@@ -988,7 +988,7 @@ def _without_its_own_wrapped(function: Any) -> Any:
     named with ``functools.update_wrapper`` or ``functools.wraps``), as the partial it is
     without that name; anything else as it is.
 
-    A kernel later than 0.15.0 follows the name a partial carries, as one more level. This
+    A kernel later than 0.15.1 follows the name a partial carries, as one more level. This
     gate has rules of its own for such a partial (``_bound_over_a_wrapper``,
     ``_another_signature``: the signature Pydantic AI reads through that name is held
     against the function the call reaches), and they are written against the levels of
@@ -1316,7 +1316,7 @@ def _bound_partial_cause(function: Any) -> Optional[str]:
 def _walk_reason(refused: BaseException) -> str:
     """The reason a call is refused with when the kernel's walk raises one of the
     refusals it names (``HiddenWrapper``, ``DispatchedAtCallTime``,
-    ``PartialMethodSignature``; a kernel later than 0.15.0 raises them). A
+    ``PartialMethodSignature``; a kernel later than 0.15.1 raises them). A
     single-dispatch function gets the reason this gate gives one it finds itself. A
     hidden wrapper gets the kernel's own words for it, which name a parameter and never a
     value, and what to do. A partialmethod gets its cause and what to do."""
@@ -1393,7 +1393,7 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     that can run another implementation than its base one, picked at call time (found
     here, ``_dispatches``, or by the kernel's walk); a decorator that holds a second
     wrapper with a parameter of its own, where the kernel's walk finds one (a kernel later
-    than 0.15.0, ``_walk_reason``); a
+    than 0.15.1, ``_walk_reason``); a
     positional argument bound past a naming wrapper where keeping it would not fail the
     call (``_bound_past_a_wrapper``); a keyword a partial binds that does not reach the
     parameter it names (``_keyword_past_a_parameter``); a value for the function's

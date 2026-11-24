@@ -3413,7 +3413,7 @@ class TestBothRoutes:
         """This package's own walk follows ``__wrapped__`` alone. A decorator that applies
         another wrapper inside itself kept the judged ``timeout`` and the function ran with
         its own ``5``; a single-dispatch function ran a registered implementation's own
-        default. A kernel later than 0.15.0 finds both, so it is asked, and the reason
+        default. A kernel later than 0.15.1 finds both, so it is asked, and the reason
         says what it found and what to do. Beside an older kernel neither is found: both
         outcomes are held here."""
         import functools
@@ -3526,7 +3526,9 @@ class TestBothRoutes:
                 "its callable's parameter `skip_review` is absent from the argument schema"
             )
             assert kept.startswith("its callable cannot be read: an argument bound on the way")
-            assert "taken by a wrapper as `self`" in kept and "would fill `url`" in kept
+            assert (
+                "taken by a wrapper as `self`" in kept and "`url`, the last they would fill" in kept
+            )
         else:
             assert under_a_partial is None and kept is None
         assert swapped(retry(free_search)) is None  # the decorator alone, beside either kernel

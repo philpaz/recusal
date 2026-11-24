@@ -3231,7 +3231,7 @@ class TestPydanticAiGate:
     def test_a_cache_whose_function_cannot_be_told_has_a_reason_of_its_own(
         self, example, adapter, monkeypatch
     ):
-        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.0), and was reported
+        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.1), and was reported
         as a decorator that holds a second wrapper, which is not what happened."""
         from recusal import invocation
 
@@ -3287,7 +3287,7 @@ class TestPydanticAiGate:
         no ``__wrapped__``; ``inspect.signature`` reads a mark on it and shows the object's
         parameters less what is bound, so one level was read and nothing under the object.
         Q1: judged ``table='orders'``, ran ``'customers'``. Q2: a default never judged.
-        D1: judged ``{'limit': 5}``, ran ``table='archive'``. A kernel later than 0.15.0
+        D1: judged ``{'limit': 5}``, ran ``table='archive'``. A kernel later than 0.15.1
         refuses the three as a function that cannot be inspected. Over a plain function
         the same ``partialmethod`` is a ``functools.partial`` of the bound function, read
         in full as before."""
@@ -3496,13 +3496,13 @@ class TestPydanticAiGate:
                 ctx = self._ctx_for(function, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", {"limit": 5})
                 assert same == {"limit": 5}, function
-                # a kernel later than 0.15.0 refuses a bound object a wrapper takes under
+                # a kernel later than 0.15.1 refuses a bound object a wrapper takes under
                 # another name before this gate's own rule is asked, in its own words
                 kernels = (
                     adapter._BoundArgumentKept is not adapter._NotInThisKernel
                     and cause.startswith(reaches.split("{}")[0])
                     and "an argument bound on the way" in reason
-                    and "which has a default" in reason
+                    and "runs at a default no policy judged" in reason
                 )
                 assert cause in reason or kernels, (function, reason)
         past_a_wrapper = "by position past a wrapper"

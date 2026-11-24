@@ -2901,7 +2901,7 @@ class TestWhatTheGateCannotReadIsRefused:
     def test_a_partialmethod_over_a_callable_object_is_refused(self, example, route):
         """``functools.partialmethod`` over a callable object shows the object's parameters
         less what is bound, and nothing under the object was read: the wrapper there ran
-        its own ``force=True``. A kernel later than 0.15.0 refuses it as a callable that
+        its own ``force=True``. A kernel later than 0.15.1 refuses it as a callable that
         cannot be inspected. (Over a plain function the same ``partialmethod`` is a
         ``functools.partial``, which the kernel reads in full; ``ToolNode`` itself cannot
         take one as a tool's function on this Python, so that half is the kernel's test.)"""
@@ -2984,7 +2984,7 @@ class TestWhatTheGateCannotReadIsRefused:
     def test_a_cache_whose_function_cannot_be_told_has_a_reason_of_its_own(
         self, example, monkeypatch
     ):
-        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.0), and was reported
+        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.1), and was reported
         as a decorator that holds a second wrapper, which is not what happened."""
         from recusal import invocation
 

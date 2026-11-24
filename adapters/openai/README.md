@@ -286,7 +286,7 @@ call id, and the gate always fails closed.
   A call with `dry_run=true` is judged with `dry_run` true and `delete_tree` runs with
   `dry_run` false. No check of a signature can see this. Give the gate the function
   itself, or a wrapper that passes on every parameter it names.
-- **Not seen beside `recusal` 0.15.0: a decorator applied inside another
+- **Not seen beside `recusal` 0.15.0 or 0.15.1: a decorator applied inside another
   decorator.** The kernel follows a wrapper to what it wraps through `__wrapped__`. A
   decorator that builds a second wrapper in its closure and calls that one hides it
   from the walk:
@@ -302,9 +302,9 @@ call id, and the gate always fails closed.
       return wrapper
   ```
 
-  Beside `recusal` 0.15.0, a tool decorated this way is judged and called, and a
+  Beside `recusal` 0.15.0 or 0.15.1, a tool decorated this way is judged and called, and a
   parameter the hidden wrapper keeps for itself reaches the function at the function's
-  default, not at the value the policy judged. A kernel later than 0.15.0 (0.15.0 is
+  default, not at the value the policy judged. A kernel later than 0.15.1 (0.15.1 is
   the newest release as this is written) detects one case and says so through its signature check, and the gate then refuses the call
   before the policy runs, with what to do: the hidden wrapper is itself a
   `functools.wraps` wrapper of the same function, it is held in the outer wrapper's
@@ -314,7 +314,7 @@ call id, and the gate always fails closed.
   `__wrapped__`, a callable object, a container), it is not found by either
   kernel. Apply each decorator at the top level, where the walk sees it, or give the
   gate the undecorated function.
-- **Not seen beside `recusal` 0.15.0: a single-dispatch function, and a
+- **Not seen beside `recusal` 0.15.0 or 0.15.1: a single-dispatch function, and a
   `partialmethod` with nothing left to judge.** A `functools.singledispatch` function
   with an implementation registered beside its base one, behind a wrapper that passes
   its first argument by position, runs that implementation, chosen by the type of the
@@ -322,12 +322,12 @@ call id, and the gate always fails closed.
   which the gate calls by keyword, fails in Python). A `functools.partialmethod` over
   a callable object that binds every parameter
   is judged as a call with no arguments, and what is under the object is not read (one
-  that leaves a parameter is refused beside 0.15.0 as not annotated, and beside a later
+  that leaves a parameter is refused beside 0.15.0 or 0.15.1 as not annotated, and beside a later
   kernel as the `partialmethod` it is). A kernel
-  later than 0.15.0 refuses a call to either before the policy runs. Call the function
+  later than 0.15.1 refuses a call to either before the policy runs. Call the function
   from a plain function and register that one.
 - **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
-  0.15.0.** Each let a value run that the policy did not judge: a decorator written as
+  0.15.0 or 0.15.1.** Each let a value run that the policy did not judge: a decorator written as
   `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
   its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
   `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
@@ -339,7 +339,7 @@ call id, and the gate always fails closed.
   default and was in no signature), with or without decorators on the free function
   that only pass their arguments on. The second is the same on a method as on a plain
   function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
-  object, a second cache). A kernel later than 0.15.0 reads the first three
+  object, a second cache). A kernel later than 0.15.1 reads the first three
   like the same decorator written with a nested function, so a wrapper with a parameter
   of its own is refused, naming the parameter, and one that only passes its arguments
   on is accepted; it refuses the fourth, naming both parameters. Not found by either

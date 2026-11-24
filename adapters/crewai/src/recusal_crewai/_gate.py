@@ -607,7 +607,7 @@ def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
 
 
 #: A callable on the way holds a second wrapper the walk does not read (a kernel later
-#: than 0.15.0).
+#: than 0.15.1).
 _HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
 #: A single-dispatch function on the way can run more than its base (the same kernels).
 _DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
@@ -622,7 +622,7 @@ _UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 def _kernel_refusal(func: Any, fields: Any = None) -> Optional[str]:
     """Why the kernel's walk refuses ``func``, or None.
 
-    Beside a kernel later than 0.15.0 the kernel's walk is asked for everything it finds
+    Beside a kernel later than 0.15.1 the kernel's walk is asked for everything it finds
     that the walk above does not: the two refusals named below, a bound argument a wrapper
     takes under another name (``BoundArgumentKept``), a ``functools.lru_cache`` wrapper
     that names one function and calls another, what the ``__call__`` of a class-based
@@ -635,7 +635,7 @@ def _kernel_refusal(func: Any, fields: Any = None) -> Optional[str]:
     function with a parameter of its own (the policy judges one value, the function runs
     with its default), nor a single-dispatch function with an implementation registered
     beside its base one (which runs with defaults no policy saw). A kernel later than
-    0.15.0 finds both (``recusal.invocation.HiddenWrapper``, ``DispatchedAtCallTime``),
+    0.15.1 finds both (``recusal.invocation.HiddenWrapper``, ``DispatchedAtCallTime``),
     so it is asked, for those two refusals only: anything else its walk does, a failure
     included, changes nothing here, where this package's own walk has decided. Beside an
     older kernel nothing is asked and neither shape is found. The text of a

@@ -115,7 +115,9 @@ All notable changes to this project are documented here. The format follows
     `__wrapped__`: a plain inner function, a lambda, a helper, a callable object, a bound
     method of an object that holds the function. One that is, or is held by, an object of
     any type outside the closed set: a callable object, a proxy (lazy proxies, wrapt), a
-    wrapper a C extension builds, a subclass of a type of the closed set. One held anywhere
+    wrapper a C extension builds, a subclass of a type of the closed set. One whose way
+    to the function it wraps passes THROUGH such an object: a second wrapper reached
+    through a proxy, as a method a `wrapt` decorator binds. One held anywhere
     but where a callable on the way that names a `__wrapped__` holds things (its closure
     cells and named module globals if it is a plain function; its instance attributes and
     the closure cells and named module globals of its class's `__call__` if it is any
@@ -135,8 +137,10 @@ All notable changes to this project are documented here. The format follows
     the type C code defines, when the first walk is made: both checks are then off and the
     walk is what it was in 0.15.0.
   - *Nothing at import.* Importing `recusal.invocation` reads nothing of `functools` that
-    0.15.0 did not read, runs no code that stands there and raises nothing, whatever a
-    process put in `functools`, in `sys.modules` or in the audit hooks first. It does
+    0.15.0 did not read, runs no code that stands there and raises nothing that
+    importing 0.15.0 does not raise, whatever a process put in `functools`, in
+    `sys.modules` or in the audit hooks first, with one exception: a `KeyboardInterrupt`
+    raised while one of the two modules below is imported is passed on. It does
     import two modules 0.15.0 did not, `gc` and `weakref`, as any import is made (a
     finder or an audit hook the process installed is asked, and `weakref` is run if
     nothing imported it before), each inside a guard: where the process refuses one
@@ -290,8 +294,9 @@ All notable changes to this project are documented here. The format follows
     callable object or a second cache named again (until review round seven it was read
     by the name unless the cache called a plain function). A cache on the function
     itself is read as before. Where the list is not laid out either
-    way, the name stands if the named function is listed, and the cache is refused
-    otherwise with the new public `recusal.invocation.UnreadCache`, a subclass of
+    way, the cache is refused, whatever is listed and a cache on the function itself
+    included (no supported interpreter lays it out another way, and a test holds each
+    to that), with the new public `recusal.invocation.UnreadCache`, a subclass of
     `HiddenWrapper` ("a `functools.lru_cache` wrapper names one function as
     `__wrapped__` and calls another, which cannot be told from what the cache refers to;
     apply the cache to the function itself, or call the cached function from a plain
@@ -311,7 +316,19 @@ All notable changes to this project are documented here. The format follows
     cache that tells it from a later object at the same address, and holds the function
     weakly too: neither lives longer for it, no code written in Python runs to read or
     write it (no `weakref.WeakKeyDictionary`, no callback), and where `weakref` could
-    not be imported or its `ref` is not the interpreter's own type nothing is kept. One reading is
+    not be imported or its `ref` is not the interpreter's own weak reference type
+    nothing is kept (that type is known as the one C code defines whose own dictionary
+    lays out `__callback__` as a member; a class written in Python, or another
+    built-in type under the name, is not used). Two costs remain, stated. The FIRST
+    walk of each cache lists it, and on a free-threaded build a listing stops every
+    thread: review round eight measured, on 3.14 free-threaded, 16 threads that each
+    walk a new cache named again at 570 walks a second where 0.15.0, which lists
+    nothing, made 103,061 (a cache walked before: 85,186 against 113,458). And an entry
+    whose object is gone is dropped only at the next sweep, when the dictionary has
+    reached twice the entries that were live at the last one (256 at least): the same
+    round measured, on 3.12, 100,000 such caches alive and walked at 35.6 MiB, and
+    dropped at once their entries at 29.3 MiB (about 300 bytes each) until 12,116 more
+    objects had been walked. One reading is
     kept as 0.15.0 made it, so that nothing it refused is now accepted: a method over a
     cache NAMED for something that is not a plain function (a cache of a cache) is read
     by the names alone, without the object bound, which refuses it for the method's
@@ -330,21 +347,50 @@ All notable changes to this project are documented here. The format follows
     a free function under `functools.wraps` of it
     (`def search(self, *args, **kwargs): return search(*args, **kwargs)`) keeps the
     object: the free function ran with its first parameter at its default, which the
-    signature the tool shows no longer had. The walk now raises the new public
+    signature the tool shows no longer had. And every argument bound after a kept one
+    fills the parameter before its own: under `functools.partial(tools.search, "acme")`
+    the bound `"acme"` filled the first parameter of the free function and its SECOND
+    ran at its default (review round eight: declared `(limit=10)`, judged
+    `{'limit': 5}`, ran `region='eu'`). The walk now raises the new public
     `recusal.invocation.BoundArgumentKept`, a subclass of `ValueError`, when a bound
-    argument is taken on the wrapper by a named parameter and would fill, on the
-    function it names, a parameter of ANOTHER name that has a default; the message names
+    argument is taken on a wrapper by a named parameter, would fill, on the function
+    that wrapper reaches, a parameter of ANOTHER name, and the LAST parameter the bound
+    arguments would fill there has a default and is not given by name (the tool does not
+    declare it, or a wrapper on the way that passes the call on, read by the walk or held
+    by a decorator, takes it by name itself and so keeps the keyword); the message names
     both parameters and what to do, and `unsupported_signature` returns it. The name
     goes with the argument down the walk, through every callable that takes it in
     `*args` and names nothing for it, so the free function is refused bare and under any
     number of layers that only pass arguments on: a `(*args, **kwargs)` wrapper, a
     class-based decorator, a caching decorator, a `functools.partial` (review round
     seven: with one such decorator on the free function the method was accepted again).
-    An ordinary bound method, decorated or not, cached, a `classmethod`, a wrapper that
+    The doubt goes with it: it goes to every argument bound after the
+    doubted one, and stays with the same arguments further in until a callable settles it
+    (the last parameter they fill there has no default and is not given by name, so a
+    call that had kept an argument fails there). A parameter that is given by name is
+    not refused for this: it is judged whatever the wrapper keeps. *Read as before:*
+    an ordinary bound method, decorated or not, cached, a `classmethod`, a wrapper that
     takes `(*args, **kwargs)`, one that takes the argument under the same name
     (`def wrapper(self, *args, **kwargs)` over a method), a facade that hands its
-    receiver on to a method, and a wrapped function whose parameter has no default
-    (`self`) are read as before. *Not found, by design:* a wrapper that takes the bound
+    receiver on to a method, a wrapped function whose parameter has no default
+    (`self`), and, on Python 3.9, a pass-through decorator over the BOUND delegating
+    method, which `inspect.signature` shows there with every parameter of the free
+    function. *Refused although it runs correctly, and accepted by 0.15.0:* a wrapper
+    with the signature of the one that keeps the argument cannot be told from it, because
+    the walk reads parameters and not bodies. So a tenant-scoped facade that passes a
+    value of its own in the argument's place
+    (`def search(self, *args, **kwargs): return search(self.tenant, *args, **kwargs)`
+    under `functools.wraps(search)`, where `tenant` has a default) is refused, and the
+    message says that a wrapper which runs correctly is refused too. So are a wrapper
+    that hands the argument on to a function that calls it otherwise
+    (`def wrapper(client, *args, **kwargs): return f(client, *args, **kwargs)` over
+    `def f(session=None, limit=10)`, bound by a `functools.partial`), a
+    `functools.partial` that binds a defaulted parameter of a method whose decorator
+    calls the receiver otherwise than the method does (`instance` over `self`), and
+    bound arguments under a doubt that are more than the function has parameters for,
+    where its last one has a default. The remedy for each: register a plain function
+    that names every parameter the tool takes and calls the facade.
+    *Not found, by design:* a wrapper that takes the bound
     argument in `*args` and drops it in its body, and one that takes it under the same
     name and does not hand it on (a method that takes `self` and wraps another class's
     method without passing its own object).
@@ -354,8 +400,8 @@ All notable changes to this project are documented here. The format follows
   - `recusal-pydantic-ai` had rules of its own for the first and the last of these and
     keeps its reasons for them; it now refuses the other two through the kernel.
     `recusal-crewai`, which reads a tool with a walk of its own, had all four: beside a
-    kernel later than 0.15.0 it asks the kernel's walk and holds every level it returns
-    to the schema. Beside 0.15.0 or older it has them still, and its page says so.
+    kernel later than 0.15.1 it asks the kernel's walk and holds every level it returns
+    to the schema. Beside 0.15.1 or older it has them still, and its page says so.
   - `recusal-crewai` also did not refuse a forwarding wrapper that names a parameter
     the function it wraps takes too (`def wrapper(*args, limit=1000, **kwargs)` around
     `def fetch(query, limit=10)`: judged `limit=5`, ran `limit=10`), which the kernel
@@ -374,7 +420,8 @@ All notable changes to this project are documented here. The format follows
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
 - **Kernel: what review round seven found in the change above, closed before release.**
   Nothing that 0.15.0 refused is now accepted, and the bound methods and partials of the
-  standard library and of 90 installed packages are read as 0.15.0 reads them.
+  standard library and of the third-party packages the review had installed are read as
+  0.15.0 reads them (on Python 3.12; run again after round eight, with the same result).
   - *A bound argument kept, under layers.* See "a bound argument a wrapper takes under
     another name" above: a delegating method was accepted again as soon as the free
     function wore one decorator that passes its arguments on (judged `{'limit': 5}`, ran
@@ -410,6 +457,54 @@ All notable changes to this project are documented here. The format follows
     `__get__`. No exception class is added for it, so a gate that names the class of
     what the walk raised goes on naming `ValueError`.
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
+- **Kernel: what review round eight found in the change above, closed before release.**
+  Nothing that 0.15.0 refused is now accepted.
+  - *A kept bound argument moves the ones bound after it.* See "a bound argument a
+    wrapper takes under another name" above. The walk tested the parameter the kept
+    argument would fill, which has no default in
+    `def search(tenant, region="eu", limit=10)`, while the parameter left without a
+    value is the one the LAST bound argument would fill: declared `(limit=10)`, judged
+    `{'limit': 5}`, ran `region='eu'`. Refused now for a `functools.partial` of the
+    delegating method, a `functools.partialmethod` of it, one partial that binds the
+    object and the argument, two partials merged, a `classmethod`, a callable object's
+    `__call__`, a method of a method, and a wrapper that keeps a context under a
+    partial. Found while closing it, and closed: with a wrapper between the facade and
+    the function that takes the next argument under the function's own name and hands
+    it on, one partial that binds both was still accepted.
+  - *A false refusal on Python 3.9 only.* A pass-through decorator over the bound
+    delegating method is shown by 3.9's `inspect.signature` with every parameter of the
+    free function, a call judged by those names runs with them, and 0.15.0 accepts it;
+    it was refused with a reason that was not true of it. A parameter the tool declares
+    is no longer refused for a kept argument, unless a wrapper on the way that passes
+    the call on takes that parameter by name itself: two delegating methods under a
+    wrapper that keeps `limit`, applied directly or held by a decorator, were accepted on 3.9 by the first form of this fix
+    (judged `limit=5`, ran the function's own default), because the walk had bound the
+    second receiver to the function's `limit` and the rule that refuses a kept name no
+    longer saw it. Found by the generated shapes on 3.9, and closed: it is asked at the end of the walk, where the wrappers held are known.
+  - *A refusal of code that runs correctly, kept and stated.* A facade that passes a
+    field of its object in the bound argument's place has the signature of the facade
+    that keeps the argument. The refusal stays, in the safe direction; the entry above,
+    the message and `BoundArgumentKept` now say so, with the remedy.
+  - *The weak reference type.* What stands under `weakref.ref` was used if it was any
+    type C code defines: with `type`, `str` or `bool` put there before the first walk,
+    the walk of every tool that wears a `functools.wraps` decorator raised `TypeError`
+    from the second time on. Only the interpreter's own weak reference type is used
+    now, and with another under the name nothing is kept and every tool is read as
+    0.15.0 reads it.
+  - *A cache laid out another way is refused outright.* Where what a cache refers to is
+    not laid out as either known way, the name stood if the named function was among
+    what is listed, which proves nothing about what the cache calls. No supported
+    interpreter lays it out another way; one that did would now get `UnreadCache`.
+  - *Two costs, stated* in the cache entry above: the first walk of a new cache on a
+    free-threaded build, and the memory dead entries hold until the next sweep.
+  - *Said more exactly:* what importing the module can raise, what a hidden wrapper
+    reached through a proxy is (not found), and the count of packages scanned, which
+    was given as 90 and was not verified to the number.
+  - *Simpler.* Seven simplifications the review listed are applied
+    (one reason for the refusals that say their own cause, one form for "no weak
+    reference type", the rebound callable built in one place) and behave as before,
+    but for the cache laid out another way.
+  - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
   each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor
@@ -435,7 +530,7 @@ All notable changes to this project are documented here. The format follows
     mark. That walk follows `__wrapped__` alone, so it also found neither a decorator
     that holds a second wrapper nor a single-dispatch function; the gate now asks a
     kernel that has the two refusals for exactly those, and refuses with the cause.
-    Beside `recusal` 0.15.0 or older, neither is found.
+    Beside `recusal` 0.15.1 or older, neither is found.
   - `recusal-openai-agents` and `recusal-openai-agents-mcp` are not changed here.
 
 ## [0.15.1] - 2026-11-23
@@ -608,7 +703,7 @@ package.
     (round six: the closure test without the two other names refused it as a
     single-dispatch function).
   - Should the kernel's walk itself refuse a dispatcher (`DispatchedAtCallTime`, in a
-    kernel later than 0.15.0), the tool is refused with the same reason, not as
+    kernel later than 0.15.1), the tool is refused with the same reason, not as
     "cannot be inspected". The same holds for a wrapper that holds a second wrapper
     (`HiddenWrapper`) and for a callable read through a partialmethod
     (`PartialMethodSignature`): each is known by its name and gets a reason that says
