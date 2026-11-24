@@ -4807,6 +4807,185 @@ def test_what_is_not_plain_data_is_refused(value):
         detached({"v": value})
 
 
+_NOT_FINITE = "non-finite numbers are not JSON data"
+_ENUM = (
+    "Enum arguments are unsupported; declare data-only parameters "
+    "and resolve application types inside the tool body"
+)
+_NOT_DATA = "arguments must be data-only"
+_CYCLIC = "cyclic arguments are not JSON data"
+_KEYS = "argument keys must be strings"
+
+
+def _cycle_in_a_list():
+    loop: List[Any] = [1]
+    loop.append(loop)
+    return loop
+
+
+def _cycle_below():
+    holder: Dict[str, Any] = {"a": [1, {"b": []}]}
+    holder["a"][1]["b"].append(holder["a"])  # not the outermost: a list inside itself
+    return holder
+
+
+@pytest.mark.parametrize(
+    ("make", "message"),
+    [
+        # each refusal, alone and at the top
+        (lambda: float("nan"), _NOT_FINITE),
+        (lambda: [float("-inf")], _NOT_FINITE),
+        (lambda: _Color.RED, _ENUM),
+        (lambda: {"k": _IntKind.ONE}, _ENUM),
+        (lambda: (1, 2), _NOT_DATA),
+        (lambda: [_StrSub("x")], _NOT_DATA),
+        (lambda: [type("FloatSub", (float,), {})(1.5)], _NOT_DATA),
+        (lambda: [type("IntSub", (int,), {})(3)], _NOT_DATA),
+        (lambda: {"k": _DictSub(a=1)}, _NOT_DATA),
+        (lambda: {1: "a"}, _KEYS),
+        (lambda: [{"a": 1, _StrSub("b"): 2}], _KEYS),
+        (_cycle_in_a_list, _CYCLIC),
+        (_cycle_below, _CYCLIC),
+        # the first one met, depth first, in the order of the members
+        (lambda: [float("nan"), _Color.RED], _NOT_FINITE),
+        (lambda: [_Color.RED, float("nan")], _ENUM),
+        (lambda: [[1, (1,)], float("nan")], _NOT_DATA),
+        (lambda: {"a": {"b": [_Color.RED]}, "c": (1,)}, _ENUM),
+        (lambda: [_cycle_in_a_list(), (1,)], _CYCLIC),
+        (lambda: [(1,), _cycle_in_a_list()], _NOT_DATA),
+        # every key of an object is looked at before any of its members is copied
+        (lambda: {"a": float("nan"), 1: 2}, _KEYS),
+        (lambda: {"a": [float("nan")], None: 1}, _KEYS),
+        # and the members of the objects before it come first
+        (lambda: [{"a": float("nan")}, {1: 2}], _NOT_FINITE),
+    ],
+)
+def test_detached_refuses_with_the_first_reason_it_meets(make, message):
+    with pytest.raises(TypeError) as refused:
+        detached(make())
+    assert str(refused.value) == message
+
+
+def test_detached_copies_every_container_once_for_each_place_it_stands_in():
+    """A list or object reachable twice is not a cycle: it is copied at each place, and
+    the copies share nothing. Only one that holds itself is refused."""
+    shared: List[Any] = [1, {"x": []}]
+    original = {"a": shared, "b": shared, "c": [shared, shared, {"d": shared}]}
+    copy = detached(original)
+    assert copy == original and list(copy) == ["a", "b", "c"]
+    copies = [copy["a"], copy["b"], copy["c"][0], copy["c"][1], copy["c"][2]["d"]]
+    assert len({id(one) for one in copies}) == 5 and all(one is not shared for one in copies)
+    assert (
+        len({id(one[1]) for one in copies}) == 5 and len({id(one[1]["x"]) for one in copies}) == 5
+    )
+    assert detached([[], [], {}, {}]) == [[], [], {}, {}]
+    # a scalar is handed back as it is, and a float with it
+    for scalar in ("text", 7, True, None, 1.5):
+        assert detached(scalar) is scalar
+    # ``ancestors``: the containers the value is to be taken as inside of
+    inner = [1]
+    assert detached(inner, (id(original),)) == [1]
+    with pytest.raises(TypeError, match=_CYCLIC):
+        detached(inner, (id(inner),))
+    with pytest.raises(TypeError, match=_CYCLIC):
+        detached({"a": [inner]}, (1, id(inner)))
+    assert detached(5, (id(inner),)) == 5  # nothing is asked of them for a scalar
+
+    # they are asked ``in`` at the first container and listed once there, as before: a
+    # collection of the caller's own that answers one way and lists another is read so
+    class Odd:
+        def __contains__(self, item):
+            return False
+
+        def __iter__(self):
+            return iter((id(inner),))
+
+    assert detached(inner, Odd()) == [1]
+    with pytest.raises(TypeError, match=_CYCLIC):
+        detached({"a": inner}, Odd())  # type: ignore[arg-type]
+
+
+def _nested(depth):
+    """Lists and objects in turn, ``depth`` of them, around ``"leaf"``: built in a loop."""
+    value: Any = "leaf"
+    for index in range(depth):
+        value = [0, value] if index % 2 else {"k": value, "n": None}
+    return value
+
+
+def _depth_of(value):
+    """How deep ``_nested`` data goes, and its innermost value: read in a loop."""
+    depth = 0
+    while type(value) in (list, dict):
+        value = value[1] if type(value) is list else value["k"]
+        depth += 1
+    return depth, value
+
+
+def _from_the_bottom_of_the_stack(call):
+    """Call ``call`` from as far down the stack as Python lets a function be called, and
+    return its result with how many frames had to be given back before it ran."""
+    given_back = [0]
+
+    def down():
+        try:
+            return down()
+        except RecursionError:
+            given_back[0] += 1
+            return call()
+
+    return down(), given_back[0]
+
+
+def test_detached_copies_data_nested_deeper_than_the_stack():
+    """The copy does not call itself, so the depth of the data is not a depth of the
+    stack: 100 times the recursion limit is copied (the version that called itself
+    raised ``RecursionError`` before the limit)."""
+    depth = 100 * sys.getrecursionlimit()
+    original = _nested(depth)
+    copy = detached(original)
+    assert copy is not original and _depth_of(copy) == (depth, "leaf")
+    # the copy shares no container with the original, at any depth
+    ours, theirs = copy, original
+    while type(ours) in (list, dict):
+        assert ours is not theirs and type(ours) is type(theirs) and len(ours) == 2
+        ours = ours[1] if type(ours) is list else ours["k"]
+        theirs = theirs[1] if type(theirs) is list else theirs["k"]
+    # a cycle and a value that is not data are still found at the bottom of it
+    for leaf, message in ((float("nan"), _NOT_FINITE), ((1,), _NOT_DATA), ({1: 2}, _KEYS)):
+        deep: Any = [leaf]
+        for _ in range(depth):
+            deep = [deep]
+        with pytest.raises(TypeError) as refused:
+            detached(deep)
+        assert str(refused.value) == message
+    inner: List[Any] = []
+    deep = inner
+    for _ in range(depth):
+        deep = {"k": deep}
+    inner.append(deep)
+    with pytest.raises(TypeError) as refused:
+        detached(deep)
+    assert str(refused.value) == _CYCLIC
+
+
+def test_detached_runs_from_the_bottom_of_the_stack():
+    """Called where almost no frame is left (a deep application stack), the copy needs
+    its own frame and no more, whatever the depth of the data. The version that called
+    itself needed one frame for every level and raised ``RecursionError`` here."""
+    for depth in (0, 3, 200, 20 * sys.getrecursionlimit()):
+        original = _nested(depth)
+        copy, given_back = _from_the_bottom_of_the_stack(lambda: detached(original))
+        assert _depth_of(copy) == (depth, "leaf") and (depth == 0 or copy is not original)
+        # a frame for ``call`` and one for ``detached``, with what Python keeps in reserve
+        assert given_back <= 8, (depth, given_back)
+    # the refusals are the same from there
+    for make, message in ((_cycle_below, _CYCLIC), (lambda: [_nested(50), (1,)], _NOT_DATA)):
+        with pytest.raises(TypeError) as refused:
+            _from_the_bottom_of_the_stack(lambda: detached(make()))
+        assert str(refused.value) == message
+
+
 # --- one definition -----------------------------------------------------------------------
 
 SHARED = {

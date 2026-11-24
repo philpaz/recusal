@@ -41,7 +41,7 @@ import math
 import types
 import typing
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 # ``gc`` and ``weakref`` are two modules 0.15.0 did not import, and one check reads with
 # each (:func:`_cache_calls`, :func:`_kept`). A process can refuse either import (None put
@@ -1753,25 +1753,68 @@ def detached(value: Any, ancestors: Tuple[int, ...] = ()) -> Any:
     attributes its class sets on it (an ``__init__`` that stores a dict, say) would be the
     same object at policy and at execution. Passing only ``.value`` would hide that state
     from the policy while the tool still used it, so that is no repair either.
+
+    It does not call itself: it keeps its place in each list and object it is copying,
+    and calls no function written in Python for a value. So data nested deeper than the
+    stack has room for is copied all the same (the version that called itself once for
+    every value raised ``RecursionError`` there, at a depth that moved with the caller's
+    own), and what a copy costs does not move with where it is called from (measured on
+    Python 3.12, which keeps frames in blocks, that version cost up to thirty times
+    more from some depths of the caller's stack than from the next; the changelog has
+    the figures). Every value is tested as before, in the same order, so the copy and
+    each ``TypeError`` are the same.
+    ``ancestors`` are the ``id()`` of containers ``value`` is to be taken as inside of:
+    meeting one of them again is a cycle.
     """
-    if type(value) in (str, int, bool, type(None)):
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise TypeError("non-finite numbers are not JSON data")
-        return value
-    if isinstance(value, Enum):
-        raise TypeError(
-            "Enum arguments are unsupported; declare data-only parameters "
-            "and resolve application types inside the tool body"
-        )
-    if type(value) not in (dict, list):
-        raise TypeError("arguments must be data-only")
-    if id(value) in ancestors:
-        raise TypeError("cyclic arguments are not JSON data")
-    ancestors = (*ancestors, id(value))
-    if type(value) is list:
-        return [detached(item, ancestors) for item in value]
-    if any(type(key) is not str for key in value):
-        raise TypeError("argument keys must be strings")
-    return {key: detached(item, ancestors) for key, item in value.items()}
+    made: List[Any] = []
+    # for each list or object being copied: what is left of it, its copy, whether its
+    # members are named, and its ``id()`` (0 for the holder of the copy itself)
+    levels: List[Tuple[Any, Any, bool, int]] = [(iter((value,)), made, False, 0)]
+    above: Set[int] = set()  # the ``id()`` of every list and object being copied
+    scalars, containers = (str, int, bool, type(None)), (dict, list)
+    while levels:
+        members, target, named, identity = levels[-1]
+        for each in members:
+            if named:
+                name, each = each
+            if type(each) in scalars:
+                pass
+            elif type(each) is float:
+                if not math.isfinite(each):
+                    raise TypeError("non-finite numbers are not JSON data")
+            elif isinstance(each, Enum):
+                raise TypeError(
+                    "Enum arguments are unsupported; declare data-only parameters "
+                    "and resolve application types inside the tool body"
+                )
+            elif type(each) not in containers:
+                raise TypeError("arguments must be data-only")
+            else:
+                if id(each) in ancestors or id(each) in above:
+                    raise TypeError("cyclic arguments are not JSON data")
+                if not above:
+                    ancestors = (*ancestors,)  # read once, as before, at the first of them
+                inner: Any
+                if type(each) is list:
+                    inner = []
+                    levels.append((iter(each), inner, False, id(each)))
+                else:
+                    for key in each:
+                        if type(key) is not str:
+                            raise TypeError("argument keys must be strings")
+                    inner = {}
+                    levels.append((iter(each.items()), inner, True, id(each)))
+                above.add(id(each))
+                if named:
+                    target[name] = inner
+                else:
+                    target.append(inner)
+                break  # its copy is in place: its own members are copied next
+            if named:
+                target[name] = each
+            else:
+                target.append(each)
+        else:
+            levels.pop()
+            above.discard(identity)
+    return made[0]

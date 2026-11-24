@@ -16,6 +16,40 @@ All notable changes to this project are documented here. The format follows
   resolved for its minimum. Thanks to @hananbahi527 for the work (#320, which completes
   #262 after #310).
 
+### Fixed
+
+- **Kernel: `recusal.invocation.detached` no longer calls itself.** It made the copy a
+  policy may write to by calling itself once for every value, and two things followed
+  from that. Data nested deeper than the stack had room for raised `RecursionError`,
+  which is not the `TypeError` a gate turns into a refusal, at a depth that moved with
+  the caller's own: a few hundred levels from the top of a stack, fewer from a deep
+  application stack, none at all from the bottom of one. And what a copy cost moved
+  with where it was called from. Measured on Python 3.12, one copy from each of 144
+  depths of the caller's stack: 300,000 integers in one list took 18 ms from most
+  depths and 558 ms from two of them; 60,000 small objects took 85 to 424 ms; a million
+  characters of empty objects 60 lists down took 303 to 956 ms. (Python 3.12 keeps
+  frames in blocks, and a function that calls itself for every value pays for a block
+  on each call that falls across the end of one. The same runs on 3.9 and 3.14 moved
+  by 1.1 to 1.3 times.) It now keeps its place in each list and object it is copying
+  and calls no function written in Python for a value. The same three copies take 12
+  to 24 ms, 79 to 102 ms and 146 to 165 ms, and a copy runs from the bottom of the
+  stack, whatever the depth of the data.
+  - *The same answers.* Every value is tested as before and in the same order, so the
+    copy is the same, each `TypeError` has the same message, and the first refusal met
+    is the same one: depth first, in the order of the members, with every key of an
+    object looked at before any of its members is copied. A list or object reachable
+    twice is copied at each place, a cycle is refused, and `ancestors` is read as it
+    was. Compared with the version that called itself on generated data (values and
+    keys that are not data, shared and cyclic containers, nesting to 400 levels) and
+    on the edges (the order of errors, every kind of thing a caller could hand as
+    `ancestors`, values whose class answers for another): no difference on Python 3.9
+    to 3.15, 3.14 free-threaded included.
+  - *The one difference.* Data nested deeper than the old version could follow is
+    copied, where `RecursionError` was raised. A caller that counted on that error to
+    stop deeply nested data has to bound the depth itself; `json_data` refuses beyond
+    64 levels. What is done with the copy afterwards can still run out of stack:
+    `recusal.authorization.fingerprint` calls itself for every value, as before.
+
 ### Security
 
 - **Kernel: `recusal.invocation` refuses a wrapper that holds a second `functools.wraps`
