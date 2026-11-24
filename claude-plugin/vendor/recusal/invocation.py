@@ -253,10 +253,14 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     signature it shows for something else.
 
     ``inspect.signature`` follows ``__wrapped__`` and honours a declared ``__signature__``,
-    on the callable or one level in (a callable object's ``__call__``, a
-    ``functools.partial``'s function; a method shows its function's attributes as its
-    own). The first is turned off; the second raises :class:`DeclaredSignature` wherever it
-    is found. Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
+    on the callable or on what it reads the callable through: the class of a callable
+    object and its ``__call__``, a ``functools.partial``'s function, and what a method
+    binds, which is its function or an object bound as one (by its own ``__get__``, by
+    ``types.MethodType``, by a ``classmethod``), with that object's class and
+    ``__call__`` in turn. The first is turned off; the second raises
+    :class:`DeclaredSignature` at each of those places, on every callable the walk
+    reads. It is not looked for on the receiver of a method, nor on a wrapper a callable
+    only holds (:func:`_refuse_hidden_wrapper`). Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
     ``staticmethod``, and ``lru_cache`` over a method) are looked through, a cache
     wrapper to what it calls, which need not be the function it names
     (:func:`_cache_target`, which raises :class:`UnreadCache`, a :class:`HiddenWrapper`,
@@ -541,7 +545,13 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
     if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
         raise DeclaredSignature
     _refuse_partialmethod(func)
-    if isinstance(func, functools.partial):
+    if inspect.ismethod(func):
+        # a method shows the attributes of what it binds as its own, but not what the
+        # CLASS of that declares: an object bound as a method (by its own ``__get__``,
+        # or under a cache) is read by ``inspect.signature`` as the object is. Not a
+        # wrapper more: a method cannot bind itself, so the same depth
+        _refuse_declared_signature(func.__func__, depth)
+    elif isinstance(func, functools.partial):
         _refuse_declared_signature(func.func, depth + 1)
     elif not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
         call = getattr(type(func), "__call__", None)

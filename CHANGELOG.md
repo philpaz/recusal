@@ -505,6 +505,50 @@ All notable changes to this project are documented here. The format follows
     reference type", the rebound callable built in one place) and behave as before,
     but for the cache laid out another way.
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
+- **Kernel: a signature declared on the class of what a method binds is refused.**
+  Accepted by 0.15.0 too, and found while a simplification of the change above was
+  tried (it was not kept: `docs/REVIEW-LOG.md`). `inspect.signature` reads a bound
+  method of a callable object as the object: the `__signature__` its class declares,
+  less the receiver. The walk refused a declared signature on a callable, on a
+  `functools.partial`'s function and on a callable object's `__call__`, and looked at a
+  method only through the attributes it shows, which are those of what it binds and
+  not those of that object's class. So a class-based decorator that declares a
+  signature on its class (a `__signature__` property) and is bound as a method was read
+  as the signature it declared: one that shows `(query, limit=10)` over a function with
+  `skip_review=True` was judged `{'query', 'limit'}` and ran `skip_review=True`. That
+  held for an object bound by its own `__get__` (`types.MethodType(self, obj)`), by
+  `types.MethodType` directly, by a `classmethod`, as a method of a method, and under
+  a `functools.wraps` wrapper used as a method. (A signature declared on the object's
+  `__call__` was refused already, when the walk reached that method.) The walk now
+  looks at what a method binds as it looks at the method itself (its own `__dict__`,
+  its class, a `functools.partial`'s function, a callable object's `__call__`, a
+  method of a method in turn) and raises
+  `DeclaredSignature`, or `PartialMethodSignature` for the mark of a
+  `functools.partialmethod` found there; `unsupported_signature` returns "it declares
+  a signature that is not its own". Nothing that 0.15.0 refused is now accepted.
+  - *Refused although it runs correctly, and accepted by 0.15.0:* the walk does not
+    compare a declared signature with the function behind it, so a bound object that
+    declares a signature is refused whatever the signature says, one that declares the
+    true parameters included. Among them: a `functools.wraps` wrapper, used as a
+    method, of a `toolz.curry` object (its class declares `__signature__`); and a
+    method over a `functools.lru_cache`
+    wrapper that is named for the method (`functools.wraps(method)` over the cache)
+    and calls such an object, where the tool shows every parameter of the method and a
+    call judged by them runs with them. The remedy for each: register a plain function
+    that names every parameter the tool takes and calls the object.
+  - *Read as before:* a plain bound method, a `classmethod`, a method under
+    `functools.wraps`, a method over a cache, a class-based decorator that declares
+    nothing, and a method whose RECEIVER's class declares a signature (a model class):
+    the receiver is not looked at. A method of a method is not counted as one wrapper
+    more, so no depth of them is refused for this.
+  - *A reason that changed.* A `functools.partial` of a `functools.partialmethod` read
+    from its class is refused as a `functools.partialmethod`. Under a decorator that is
+    itself a bound method (`functools.wraps` on a method of a holder object) it was
+    refused for a parameter that is not annotated or is variadic: what that method
+    binds is looked at now, and it gets the partialmethod reason there too.
+  - *Not found, by design:* a signature declared on a wrapper a callable only holds
+    (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
+  - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
   each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor

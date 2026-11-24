@@ -362,6 +362,177 @@ def test_a_declared_signature_anywhere_on_the_way_is_refused():
             reached_parameters(func)
 
 
+_DECLARED = "it declares a signature that is not its own"
+
+
+class _Shows:
+    """A class-based decorator that declares, on the CLASS, the signature of the function
+    it holds less ``skip_review``, and names nothing as ``__wrapped__``."""
+
+    def __init__(self, function):
+        self.function = function
+        self.__annotations__ = {"query": str, "limit": int}
+
+    @property
+    def __signature__(self):
+        import inspect
+
+        shown = inspect.signature(self.function)
+        kept = [p for p in shown.parameters.values() if p.name != "skip_review"]
+        return shown.replace(parameters=kept)
+
+    def __call__(self, *args, **kwargs):
+        return self.function(*args, **kwargs)
+
+
+class _ShowsBound(_Shows):
+    def __get__(self, obj, cls=None):
+        import types
+
+        return self if obj is None else types.MethodType(self, obj)
+
+
+def _service(attribute):
+    return type("Service", (), {"fetch": attribute, "__hash__": lambda self: 1})()
+
+
+def test_a_signature_declared_on_the_class_of_what_a_method_binds_is_refused():
+    """A bound method shows the attributes of what it binds as its own, but not what the
+    class of that declares, and ``inspect.signature`` reads a method of a callable
+    object as the object: its class's ``__signature__``, less the receiver. So an object
+    that declares a signature and is bound as a method (by its own ``__get__``, by
+    ``types.MethodType``, by a ``classmethod``, under a ``functools.wraps`` wrapper) was
+    read as the signature it declared: judged ``{'query', 'limit'}``, ran the
+    ``skip_review=True`` of the function it holds. 0.15.0 accepted these."""
+    import functools
+    import types
+
+    ran = []
+
+    def method(self, query: str, limit: int = 10, skip_review: bool = True) -> str:
+        ran.append(skip_review)
+        return "rows"
+
+    def twice(first, second, query: str, limit: int = 10, skip_review: bool = True) -> str:
+        ran.append(skip_review)
+        return "rows"
+
+    class OnCall:  # the signature is declared on its ``__call__``, not on the class
+        def __init__(self, function):
+            self.function = function
+            self.__annotations__ = {"query": str, "limit": int}
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    def shown(self, receiver, query: str, limit: int = 10) -> str:
+        return "rows"
+
+    OnCall.__call__.__signature__ = __import__("inspect").signature(shown)  # type: ignore[attr-defined]
+    wrapper = _traced(_Shows(method))
+    # ``functools.wraps`` copies ``__annotations__`` up to Python 3.13 and ``__annotate__``
+    # from 3.14, which an object has not: given here, so the reason is the same on all
+    wrapper.__annotations__ = {"query": str, "limit": int}
+    tools = {
+        "its own __get__": _service(_ShowsBound(method)).fetch,
+        "types.MethodType": types.MethodType(_Shows(method), _service(None)),
+        "a classmethod": _service(classmethod(_Shows(method))).fetch,
+        "under functools.wraps": _service(wrapper).fetch,
+        "a method of a method": types.MethodType(types.MethodType(_Shows(twice), "a"), "b"),
+    }
+    for name, tool in tools.items():
+        del ran[:]
+        assert list(inspect_signature(tool)) == ["query", "limit"], name
+        assert tool(query="q", limit=5) == "rows" and ran == [True], name  # no policy saw it
+        assert unsupported_signature(tool) == _DECLARED, name
+        with pytest.raises(DeclaredSignature):
+            reached_parameters(tool)
+    # behind a ``functools.partial``, where the walk refused the object itself before
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(functools.partial(tools["its own __get__"]))
+    # a signature declared on the object's ``__call__`` was refused before too, when the
+    # walk reached that method: it is refused at the object now
+    with pytest.raises(DeclaredSignature):
+        invocation.own_parameters(types.MethodType(OnCall(method), _service(None)))
+    # under a cache, which 0.15.0 refused when the cache is named for the object, and
+    # accepted when it is named for the function: that one runs clean, declares
+    # ``skip_review`` and is refused all the same, because the object it calls declares
+    # a signature that is not its own
+    cached = functools.lru_cache(maxsize=None)(_Shows(method))
+    cached.__annotations__ = {"query": str, "limit": int}
+    assert unsupported_signature(_service(cached).fetch) == _DECLARED
+    named_again = functools.update_wrapper(
+        functools.lru_cache(maxsize=None)(_Shows(method)), method
+    )
+    named_again.__annotations__ = dict(method.__annotations__)  # on every Python
+    clean = _service(named_again).fetch
+    assert list(inspect_signature(clean)) == ["query", "limit", "skip_review"]
+    assert unsupported_signature(clean) == _DECLARED
+
+
+def test_a_method_that_binds_nothing_which_declares_a_signature_is_read_as_before():
+    """The controls of the test above: what a method binds is looked at, and only for a
+    signature it declares. Not the receiver, and not a wrapper more on the way."""
+    import functools
+    import inspect
+    import types
+
+    def fetch(self, query: str, limit: int = 10) -> str:
+        return "rows"
+
+    def named(function):
+        @functools.wraps(function)
+        def wrapper(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        return wrapper
+
+    class Passing:  # a class-based decorator that declares nothing
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    # the RECEIVER's class declares a signature, as a model class does
+    Model = type(
+        "Model",
+        (),
+        {
+            "__signature__": inspect.Signature(),
+            "__hash__": lambda self: 1,
+            "fetch": fetch,
+            "traced": _traced(fetch),
+        },
+    )
+    own = ["query", "limit"]
+    for tool, levels in (
+        (_service(fetch).fetch, [own]),
+        (_service(_traced(fetch)).fetch, [_FORWARD, own]),
+        (_service(named(fetch)).fetch, [_FORWARD, own]),
+        (_service(classmethod(fetch)).fetch, [own]),
+        (_service(functools.lru_cache(maxsize=None)(fetch)).fetch, [own, own]),
+        (types.MethodType(Passing(fetch), _service(None)), [_FORWARD, own, _FORWARD]),
+        (Model().fetch, [own]),
+        (Model().traced, [_FORWARD, own]),
+    ):
+        assert tool("q") == "rows"
+        assert unsupported_signature(tool) is None, tool
+        assert sorted(_levels(tool)) == sorted(levels), tool
+    # a method of a method is not a wrapper more: ten deep is read as one is
+
+    def many(*receivers, query: str = "q") -> str:
+        return "rows"
+
+    deep = many
+    for _ in range(10):
+        deep = types.MethodType(deep, "receiver")
+    assert deep() == "rows"
+    assert list(invocation.own_parameters(deep)) == ["receivers", "query"]
+    assert _levels(deep) == [["receivers", "query"]]
+
+
 def test_a_call_that_is_not_a_plain_method_and_a_class_are_refused():
     import functools
 

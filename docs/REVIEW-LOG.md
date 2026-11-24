@@ -146,7 +146,8 @@ decorated tool. `recusal-crewai` still carries its own copy.
 
 **Open items.**
 
-- After round eight, a change is written on `322ee13` and not committed. The walk
+- After round eight, a change committed as `837047e` (on top of the rebuilt round-seven
+  change, `d4ff8da`) closes the review's findings. The walk
   refuses bound arguments under a doubt where the LAST parameter they would fill has a
   default the tool does not declare, and the doubt stays with the arguments bound after
   the doubted one and with the same arguments further in; one more shape of it than the
@@ -158,6 +159,18 @@ decorated tool. `recusal-crewai` still carries its own copy.
   Seven simplifications the review listed are applied. The two test gaps are pinned,
   and the five lines that were not needed are gone. The sentences are corrected and
   the two costs stated. This change has not been reviewed.
+- Simplification 8 was tried and not kept: removing the legacy reading of a method over
+  a cache named for a non-function lost the `DeclaredSignature` refusal of a class-level
+  `__signature__` and accepted stated-limit holders that run an unjudged default. The
+  legacy reading stays.
+- Found while trying it, present in 0.15.0, and closed in a change that has not been
+  reviewed: a callable object whose class declares `__signature__`, bound as a method
+  (by its own `__get__`, by `types.MethodType`, by a `classmethod`, or under a
+  `functools.wraps` wrapper used as a method), was read as the signature it declared,
+  and a parameter that signature left out ran at its default. The walk now looks at
+  what a method binds as it looks at the method. Refused although it runs correctly,
+  by decision: a bound object that declares a signature, whatever the signature says,
+  among them a method over a cache named for the method that calls such an object.
 - Refused although it runs correctly, by decision: a facade whose method passes a value
   of its own in the place of the object
   (`return search(self.tenant, *args, **kwargs)` under `functools.wraps(search)`, the
