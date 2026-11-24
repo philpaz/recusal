@@ -1,7 +1,7 @@
-# roots: zizmor==1.30.0 | python>=3.12
+# roots: zizmor==1.30.1 | python>=3.12
 # Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-12T00:00:00Z were
 # not considered. Install: python -m pip install --require-hashes -r requirements/zizmor.txt
-zizmor==1.30.0 \
+zizmor==1.30.1 \
     --hash=sha256:0148b61f6315ad363ae748f838e8ed81e1cfb3ade6bbe480e7516e4fba630b82 \
     --hash=sha256:0e69a86290dff4c41b51c381a27029b5dc2b748c0510a9a333b18f862ea1bc68 \
     --hash=sha256:1f15ed62ff34ad7875427384b03a2f72995d9ab8ddcb50dc141b25763de3aaa2 \

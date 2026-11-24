@@ -1,7 +1,7 @@
-# roots: uv==0.13.7 | python>=3.10
+# roots: uv==0.13.9 | python>=3.10
 # Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-12T00:00:00Z were
 # not considered. Install: python -m pip install --require-hashes -r requirements/uv.txt
-uv==0.13.7 \
+uv==0.13.9 \
     --hash=sha256:08f16fd463926786b702b497473511deae4b3e17a2fa6d22180950d6059a120d \
     --hash=sha256:158953b8669bee6f4bc2babdd997e34ff9f0d57170093cfe907f64448292b7c3 \
     --hash=sha256:1bc8543d930464bbb22ac01bb1a660a448235e558014914de1e1cd5b993361b8 \
