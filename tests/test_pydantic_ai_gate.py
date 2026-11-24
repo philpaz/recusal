@@ -49,7 +49,7 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
         .splitlines()[0]
         .split()
     )
-    assert ci.count("requirements/adapter-pydantic-ai.txt") == 3
+    assert ci.count("requirements/adapter-pydantic-ai.txt") == 4
 
 
 def test_the_package_requires_the_kernel_that_walks_every_callable():

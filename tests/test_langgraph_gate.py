@@ -63,8 +63,8 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         roots = (ROOT / "requirements" / f"{lock}.txt").read_text(encoding="utf-8").splitlines()[0]
         for pin in expected:
             assert pin in roots.split(), (lock, pin)
-    assert ci.count("requirements/adapter-langgraph.txt") == 1
-    assert ci.count("requirements/adapter-langchain.txt") == 3
+    assert ci.count("requirements/adapter-langgraph.txt") == 2
+    assert ci.count("requirements/adapter-langchain.txt") == 4
 
 
 def test_the_package_requires_the_kernel_that_walks_every_callable():

@@ -61,7 +61,7 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
         .splitlines()[0]
         .split()
     )
-    assert ci.count("requirements/adapter-crewai.txt") == 3
+    assert ci.count("requirements/adapter-crewai.txt") == 4
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="recusal-crewai requires Python 3.11+")

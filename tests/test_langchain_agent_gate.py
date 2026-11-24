@@ -45,7 +45,7 @@ def test_langchain_pins_are_documented_and_in_existing_ci_jobs():
         .splitlines()[0]
         .split()
     )
-    assert ci.count("requirements/adapter-langchain.txt") == 3
+    assert ci.count("requirements/adapter-langchain.txt") == 4
 
 
 def test_the_package_requires_the_langgraph_gate_it_wraps():

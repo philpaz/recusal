@@ -71,9 +71,9 @@ def test_pinned_versions_are_explicit_in_example_docs_and_ci():
         roots = (ROOT / "requirements" / f"{lock}.txt").read_text(encoding="utf-8").splitlines()[0]
         for pin in pins:
             assert pin in roots.split(), (lock, pin)
-    assert ci.count("requirements/adapter-openai-agents.txt") == 3
-    assert ci.count("requirements/adapter-openai-agents-mcp.txt") == 1
-    assert ci.count("requirements/adapter-openai.txt") == 1
+    assert ci.count("requirements/adapter-openai-agents.txt") == 4
+    assert ci.count("requirements/adapter-openai-agents-mcp.txt") == 2
+    assert ci.count("requirements/adapter-openai.txt") == 2
 
 
 @pytest.mark.skipif(
