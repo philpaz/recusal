@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from llama_index.core.tools import FunctionTool
 from llama_index.core.workflow.context import Context
+from llama_index.core.agent.workflow.base_agent import BaseWorkflowAgent
 from recusal import Finding, Severity
 from recusal_llamaindex import gated_tool, is_gated
 
@@ -27,6 +28,7 @@ def test_defaults_are_judged_before_the_function_runs():
     tool = gated_tool(FunctionTool.from_defaults(fn=write), policy)
     output = tool.call(table="orders")
     assert "hard mode needs approval" in output.content
+    assert output.is_error is True
     assert ran == []
     assert seen == [("write", {"table": "orders", "mode": "hard"})]
 
@@ -85,4 +87,24 @@ def test_async_call_is_gated_before_execution():
 
     output = asyncio.run(gated_tool(FunctionTool.from_defaults(async_fn=delete), policy).acall(path="/tmp/a"))
     assert "blocked" in output.content
+    assert ran == []
+
+
+def test_workflow_agent_tool_route_uses_the_gated_acall_surface():
+    """LlamaIndex's BaseWorkflowAgent invokes FunctionTool.acall, not fn/real_fn."""
+    ran, seen = [], []
+
+    def write(table: str, mode: str = "hard") -> str:
+        ran.append((table, mode))
+        return "ok"
+
+    def policy(name, invocation):
+        seen.append(dict(invocation))
+        return [Finding.fail("no_hard", severity=Severity.ERROR, message="blocked by policy")]
+
+    tool = gated_tool(FunctionTool.from_defaults(fn=write), policy)
+    output = asyncio.run(BaseWorkflowAgent._call_tool(object(), object(), tool, {"table": "orders"}))
+    assert output.is_error is True
+    assert "blocked by policy" in output.content
+    assert seen == [{"table": "orders", "mode": "hard"}]
     assert ran == []
