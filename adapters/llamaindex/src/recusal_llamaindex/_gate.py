@@ -56,6 +56,7 @@ class GatedFunctionTool(FunctionTool):
             tool_name=self.metadata.get_name(),
             raw_input={"args": args, "kwargs": kwargs},
             raw_output=None,
+            is_error=True,
         )
 
     def _prepare(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
