@@ -1,4 +1,4 @@
-# roots: pytest>=8 ruff==0.17.5 mypy>=1.8,<2 hypothesis>=6 openai-agents==0.24.0 openai==3.49.0 | python>=3.10
+# roots: pytest>=8 ruff==0.17.5 mypy>=1.8,<2 hypothesis>=6 openai-agents==0.25.0 openai==3.55.1 | python>=3.10
 # Hash-locked by tools/lock.py; do not edit. Releases newer than 2026-11-18T00:00:00Z were
 # not considered. Install: python -m pip install --require-hashes -r requirements/adapter-openai-agents.txt
 annotated-types==0.8.0 \
@@ -980,10 +980,10 @@ mypy==1.20.2 \
 mypy-extensions==1.2.0 \
     --hash=sha256:993e7a20aa5671eb41a7132cf555af30062da99729601601b9a8382b11cae768 \
     --hash=sha256:c6e275a07f1c2fc096b62940452d0eaa3f3af7de45d704787866240a7c6d5a51
-openai==3.49.0 \
+openai==3.55.1 \
     --hash=sha256:3977754792115027ba80ae16996ba3366478b5b228e1ab58e2660bd7ac8c3d78 \
     --hash=sha256:44badf2bea9bcd643dafa0bc4d5a109a14395889219fd68b8560322288196e96
-openai-agents==0.24.0 \
+openai-agents==0.25.0 \
     --hash=sha256:18d4ac34e84ed937333ec8ce46395ed3521ffcbb0a521780a4c2eaa451467f49 \
     --hash=sha256:4b4b285f4fed81fdf1b4ac426a9101658d9cd29b4fb1aaeee18f639b77e704e3
 opentelemetry-api==1.45.2 \
