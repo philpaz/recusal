@@ -16,7 +16,7 @@ from typing import Any, Callable, List, Sequence
 from llama_index.core.tools import FunctionTool
 from llama_index.core.tools.types import ToolOutput
 
-from recusal import Finding, decide
+from recusal import decide
 from recusal.invocation import detached, json_data, reached_parameters, unsupported_signature
 
 Policy = Callable[[str, dict], List[Any]]
