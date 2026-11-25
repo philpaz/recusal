@@ -18,3 +18,6 @@ same types on that surface.
 LlamaIndex creates a tool-call ID at its workflow dispatch layer, but does not pass that
 ID to `FunctionTool.call()` or `acall()` in this version. This draft therefore does not
 emit an audit record with a fabricated call ID.
+
+When a caller supplies a name also present in `partial_params`, LlamaIndex's direct
+per-call value wins. The gate judges that final merged value before execution.
