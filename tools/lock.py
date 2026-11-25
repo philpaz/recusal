@@ -73,10 +73,10 @@ COOLING_OFF_EXCEPTIONS: dict[str, tuple[tuple[str, ...], str, str]] = {
 #: Locks with fixed roots: a tool a job installs on its own. The value is the roots and
 #: the oldest Python the job that installs it runs on.
 TOOLS = {
-    "zizmor": (["zizmor==1.30.0"], "3.12"),
-    "sigstore": (["sigstore==4.4.0"], "3.12"),
+    "zizmor": (["zizmor==1.30.1"], "3.12"),
+    "sigstore": (["sigstore==4.5.1"], "3.12"),
     # the resolver --resolve runs, in the newest-release lane
-    "uv": (["uv==0.13.7"], "3.10"),
+    "uv": (["uv==0.13.9"], "3.10"),
     # the deliberately old release the GitHub Action's dogfood job preinstalls, to prove
     # the action replaces a conflicting package
     "recusal-0.3.0": (["recusal==0.3.0"], "3.12"),
