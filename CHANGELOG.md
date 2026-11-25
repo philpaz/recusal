@@ -15,6 +15,15 @@ All notable changes to this project are documented here. The format follows
   a package depends on. One test holds every adapter's job to that, and to a hash lock
   resolved for its minimum. Thanks to @hananbahi527 for the work (#320, which completes
   #262 after #310).
+- **A command line reference, [`docs/CLI.md`](docs/CLI.md).** One table per command,
+  built from what `--help` prints; four flags had been in no document (`init --dir`,
+  `init --writable-root`, `doctor --dir`, `verdict --lenient`). A test reads the parser
+  and fails if a flag has no row (#166).
+- **The README lists every input of the GitHub Action**, `lenient` among them, and a test
+  requires a row for each input `action.yml` declares (#167).
+- **The Python examples in `docs/EVIDENCE.md` and `docs/MCP.md` are checked** for
+  syntax and for imports that exist, as those in `EXTENDING.md` and `HOWTO.md` already
+  were (#165).
 
 ## [0.15.1] - 2026-11-23
 
