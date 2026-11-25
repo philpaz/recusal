@@ -821,6 +821,8 @@ recusal audit verify audit.jsonl --expect-head "42:<hash>"   # a missing log is 
 recusal doctor                         # "the gate silently isn't installed" fails CI, not prod
 ```
 
+Every command and flag of the command line is in [`docs/CLI.md`](https://github.com/philpaz/recusal/blob/main/docs/CLI.md).
+
 Or as a GitHub Action ([`action.yml`](https://github.com/philpaz/recusal/blob/main/action.yml), dogfooded by this repo's own CI,
 including the negative case: a tampered audit log must make the gate refuse):
 
@@ -910,6 +912,7 @@ Everything is indexed in [`docs/`](https://github.com/philpaz/recusal/blob/main/
 |  | [`docs/COOKBOOK.md`](https://github.com/philpaz/recusal/blob/main/docs/COOKBOOK.md) | Copy-paste policies for the actions people actually gate. |
 |  | [`docs/EXAMPLE.md`](https://github.com/philpaz/recusal/blob/main/docs/EXAMPLE.md) | One complete configuration for a real use case, end to end. |
 |  | [`docs/MCP.md`](https://github.com/philpaz/recusal/blob/main/docs/MCP.md) | MCP governance in full: pinning, verification, the call-time gate, every named residual. |
+|  | [`docs/CLI.md`](https://github.com/philpaz/recusal/blob/main/docs/CLI.md) | Every command and flag of the command line, kept complete by a test that reads the parser. |
 |  | [`docs/EXTENDING.md`](https://github.com/philpaz/recusal/blob/main/docs/EXTENDING.md) | Write your own checks, bundle policies, add a gate for another framework. |
 | **Understand the design** | [`CONSTITUTION.md`](https://github.com/philpaz/recusal/blob/main/CONSTITUTION.md) | The four rules, and why each one helps. |
 |  | [`docs/EVIDENCE.md`](https://github.com/philpaz/recusal/blob/main/docs/EVIDENCE.md) | The contract: `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`. |
