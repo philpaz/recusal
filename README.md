@@ -835,6 +835,19 @@ including the negative case: a tampered audit log must make the gate refuse):
     doctor-dir: "."
 ```
 
+Every input is optional. `findings`, `audit-log` and `doctor-dir` each run a check, and
+the action exits with the highest code any of them returns.
+
+| Input | What it does | Default |
+|---|---|---|
+| `findings` | A findings JSON file to adjudicate (an array, or an object with a `findings` array). PASS exits 0, RETRY 1, FAIL 2. | none |
+| `lenient` | With `findings`: `"true"` accepts findings that omit `status` or `passed` instead of failing closed. | `"false"` |
+| `audit-log` | A hash-chained JSONL audit log to verify: 0 intact, 1 broken, 2 missing or unreadable. | none |
+| `expect-head` | With `audit-log`: the head you recorded elsewhere, as `COUNT:HASH`, so truncation, a rewritten tail and a forged append are caught. | none |
+| `doctor-dir` | A project directory whose scaffolded Claude Code gate is health-checked: 0 healthy, 1 degraded, 2 not installed. | none |
+| `version` | Installs this recusal release from PyPI instead of the source bundled with the action ref. | none |
+| `use-installed` | `"true"` keeps a recusal that is already importable instead of the action ref's bundled source. | `"false"` |
+
 The action ref selects the implementation: the action force-installs the recusal bundled
 with the selected ref, replacing whatever happens to be on the runner, so pinning the
 action pins the code (proven in CI on a clean runner and against a deliberately
