@@ -7,12 +7,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from llama_index.core.tools import FunctionTool
-from llama_index.core.workflow.context import Context
 from llama_index.core.agent.workflow import FunctionAgent, ReActAgent
 from llama_index.core.agent.workflow.base_agent import BaseWorkflowAgent
-from recusal import Finding, Severity
+from llama_index.core.tools import FunctionTool
+from llama_index.core.workflow.context import Context
 from recusal_llamaindex import gated_tool, is_gated
+
+from recusal import Finding, Severity
 
 
 def test_defaults_are_judged_before_the_function_runs():
