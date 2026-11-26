@@ -599,7 +599,7 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
-- **Kernel: what review rounds nine, ten and eleven found in the changes above, closed
+- **Kernel: what review rounds nine to twelve found in the changes above, closed
   before release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
   3.14 free-threaded included.
   - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
@@ -691,7 +691,11 @@ All notable changes to this project are documented here. The format follows
     answers for `__signature__` in a hook, or looks like a function, whatever the
     declaration says; and a facade that hands its argument on, by keyword or by
     position, to a wrapper, read or held, that takes the judged name in the bound
-    argument's place and does hand it on. The walk reads parameters, not bodies. The remedy for
+    argument's place and does hand it on, or whose leading parameter has a default
+    and does receive the bound argument by position
+    (`def wrapper(self=None, *args, **kwargs)` held by a method decorator, or
+    `def wrapper(session=None, *args, **kwargs)` under a `functools.partial` that
+    binds the session). The walk reads parameters, not bodies. The remedy for
     each: register a plain function that names every parameter the tool takes.
   - *Said more exactly.* `detached` "calls no function written in Python for a value"
     with one exception it has always had, now stated: telling a value's type compares
@@ -709,16 +713,33 @@ All notable changes to this project are documented here. The format follows
     that looks like a function) can hide a default the same way; they are refused
     because a declared signature is refused wherever it stands, not because defaults
     are compared.
+  - *The same, where no wrapper names the bound argument* (round twelve). A facade
+    that takes its receiver in `*args` (`self, rest = args[0], args[1:]`) and hands
+    the tenant on by keyword raises no name doubt, and the rule above acted only
+    under one. Over the keeping wrapper: judged `{'limit': 5}`, ran `limit=10`; over
+    `def wrapper(skip_review=True, *args, **kwargs)`: ran `skip_review=True`. A
+    wrapper the walk reads now gets the rule a held one gets: where it passes the
+    call on, and the last parameter the bound arguments would fill on it is one the
+    tool declares or has a default, it is refused with `BoundArgumentKept`, doubt or
+    no doubt.
   - *The family of the bound argument, in one sentence* (the reviewer's, round
     eleven): the walk knows the place of a bound argument only at the callable that
     binds it; at each callable further in that passes the call on, read or held, it
     takes the argument to arrive by position in the leading parameter, and a wrapper
     that hands it on by keyword, or keeps it, leaves that parameter to the judged
-    keyword or to its own default. Refused now wherever that leading parameter is
-    one the tool declares or has a default the tool does not show, on a callable the
-    walk reads under another name than the binder's, and on a held wrapper. *Still
-    not found, by design:* a wrapper that takes the bound argument under the
-    function's own name and does not hand it on.
+    keyword or to its own default. What is refused now: on a callable that passes
+    the call on, read or held, a leading parameter in a bound argument's place that
+    the tool declares or that has a default (on a held one, but for the places a
+    `functools.partial` or a method directly over it fills itself); and on a callable
+    that passes the call on to nothing, such a parameter with a default the tool does
+    not declare, where a wrapper above took the argument under another name.
+    *Still not found, by design:* a wrapper that takes the bound argument in `*args`,
+    or under the very name the function has for it, and keeps it or hands it on by
+    keyword, over a function that passes the call on to nothing and whose leading
+    parameter has a default. It has the signature of a `functools.partial` that binds
+    a defaulted parameter of a decorated function, which is ordinary and is read.
+    Refusing bound arguments wherever they would fill a defaulted parameter was tried
+    and not kept for that reason (`docs/REVIEW-LOG.md`).
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
   each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor

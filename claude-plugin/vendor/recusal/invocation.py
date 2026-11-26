@@ -1152,7 +1152,8 @@ def _held_level(function: Any, bound: int) -> Tuple[Tuple[str, ...], bool]:
 
 _HELD_IN_BOUND_PLACE = (
     "`{name}` is the leading parameter of a wrapper a decorator holds, which passes the "
-    "call on, in the place of an argument bound on the way (the object of a method): "
+    "call on, in the place of an argument bound on the way (the object of a method, a "
+    "positional argument of a `functools.partial`): "
     "where that argument is handed on by keyword the wrapper takes the judged `{name}` "
     "itself, and the function can then run with a value no policy judged; register a "
     "plain function that names every parameter the tool takes"
@@ -1161,8 +1162,8 @@ _HELD_IN_BOUND_PLACE = (
 
 _HELD_DEFAULT_IN_BOUND_PLACE = (
     "`{name}` is the leading parameter of a wrapper a decorator holds, which passes the "
-    "call on, in the place of an argument bound on the way (the object of a method), "
-    "and has a default: where that argument is handed on by keyword the wrapper runs "
+    "call on, in the place of an argument bound on the way (the object of a method, a "
+    "positional argument of a `functools.partial`), and has a default: where that argument is handed on by keyword the wrapper runs "
     "with that default, a value the tool does not declare and no policy judged; "
     "register a plain function that names every parameter the tool takes"
 )
@@ -1271,7 +1272,7 @@ def _refuse_kept_by_name(walk: Any, levels: List[Any]) -> None:
     for taken, last in walk.given:
         kept = any(forwards and last.name in named for named, forwards in levels)
         if kept and last.default is not last.empty:
-            raise BoundArgumentKept(_UNHANDED.format(taken=taken, filled=last.name))
+            raise BoundArgumentKept(_unhanded(taken, last.name))
 
 
 def _hidden_levels(
@@ -1303,6 +1304,11 @@ def _hidden_levels(
     levels: List[Any] = []
     places: List[Tuple[str, bool]] = []
     dispatches = False
+    # the leading places of the next plain function that are filled for certain: by a
+    # ``functools.partial`` or a method directly over it, which hands its own arguments
+    # on by position, first. The places after them are the holder's, or those of a link
+    # further out with a wrapper in between, and those may be handed on by keyword
+    direct = 0
     for _ in range(_DEPTH):
         if any(value is seen for seen in read):
             if dispatches:
@@ -1317,7 +1323,8 @@ def _hidden_levels(
             return []
         if type(value) is types.FunctionType:
             levels.append(_held_level(value, bound))
-            places.extend(_held_in_bound_places(value, bound))
+            places.extend(_held_in_bound_places(value, bound)[direct:])
+            direct = 0
             dispatches = dispatches or _chosen_at_call_time(value)
         elif type(value) is _CACHE_WRAPPER:
             # a held cache that calls another function than the one it names: that
@@ -1330,14 +1337,16 @@ def _hidden_levels(
                 dispatches = True
             elif called is not inner:
                 levels.append(_held_level(called, bound))
-                places.extend(_held_in_bound_places(called, bound))
+                places.extend(_held_in_bound_places(called, bound)[direct:])
+                direct = 0
                 dispatches = dispatches or _chosen_at_call_time(called)
         links.append(value)
         if type(value) is _PARTIAL:
             args = _partial_args(value)
-            bound += len(args) if type(args) is tuple else 0
+            own = len(args) if type(args) is tuple else 0
+            bound, direct = bound + own, direct + own
         elif type(value) is types.MethodType or type(value) is classmethod:
-            bound += 1
+            bound, direct = bound + 1, direct + 1
         value = inner
     raise HiddenWrapper(_HIDDEN_WRAPPER)  # still going: what it reaches is not known
 
@@ -1635,6 +1644,29 @@ _UNHANDED = (
     "plain function that names every parameter the tool takes, and register that one"
 )
 
+#: In place of the name a wrapper took a bound argument under, where none did: every
+#: wrapper above took it in ``*args``, or under the name the function has for it.
+_BY_POSITION = "<by position>"
+
+_UNPLACED = (
+    "an argument bound on the way (the object of a method, a positional argument of a "
+    "`functools.partial`) would fill `{filled}`, by position, on a function a wrapper "
+    "reaches through `__wrapped__`. Whether the wrapper hands it on by position cannot "
+    "be read from a signature: if it hands it on by keyword, or keeps it, `{filled}` is "
+    "left to a keyword of that name or runs at a default no policy judged. A wrapper "
+    "that does hand it on by position has the same signature and is refused too, "
+    "although it runs correctly. Call it from a plain function that names every "
+    "parameter the tool takes, and register that one"
+)
+
+
+def _unhanded(taken: str, filled: str) -> str:
+    """The reason for a :class:`BoundArgumentKept`: with the name a wrapper took the
+    argument under, or without one."""
+    if taken == _BY_POSITION:
+        return _UNPLACED.format(filled=filled)
+    return _UNHANDED.format(taken=taken, filled=filled)
+
 
 def _leading(parameters: Any) -> List[Any]:
     """The parameters a positional argument can fill, in order: those before the first
@@ -1717,6 +1749,15 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     argument to the parameter and so reads ``inner`` as taking nothing by that name,
     which is why the rule at the end of the walk does not see it.
 
+    And refused WITHOUT a doubt, where ``inner`` passes the call on: bound arguments
+    whose last parameter on it is one the tool declares or has a default. A wrapper
+    above that names nothing for the argument (a facade that takes its receiver in
+    ``*args`` and hands the tenant on by keyword), or names it as ``inner`` does, raises
+    no doubt and can leave that parameter free just the same. This is the rule a held
+    wrapper gets (:func:`_refuse_hidden_wrapper`). It is not made where ``inner``
+    passes the call on to nothing: a ``functools.partial`` that binds a defaulted
+    parameter of a decorated function has that shape and is read.
+
     The doubt goes two ways. It goes to the arguments bound AFTER the doubted one (a
     ``functools.partial`` of the method): those are the ones a kept argument moves. And
     it stays with the same arguments on each callable further in, the ones bound after
@@ -1746,8 +1787,10 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     (``self``). So ``def wrapper(self, *args, **kwargs)`` over a method is read as
     before, and so is a facade that hands its receiver on to a method.
 
-    Not found, by design: a wrapper that takes the bound argument in ``*args`` and drops
-    it in its body, and one that takes it under the same name and does not hand it on."""
+    Not found, by design: a wrapper that takes the bound argument in ``*args``, or under
+    the very name the function has for it, and keeps it or hands it on by keyword, over
+    a function that passes the call on to nothing: where that function's leading
+    parameter has a default the tool does not declare, it runs at that default."""
     rebound: Any
     if inspect.ismethod(outer):
         level, count, rebound = outer.__func__, 1, types.MethodType(inner, outer.__self__)
@@ -1773,7 +1816,16 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     here = [name for name, to in zip(taken, filled) if name not in (None, to.name)]
     doubt = here[0] if here else ahead  # of these arguments, or of one bound ahead
     still = doubt or still
-    if still is not None and filled:
+    if still is None and filled and passes_on:
+        # no name doubt, and ``inner`` passes the call on: a wrapper above that takes
+        # the argument in ``*args``, or under the very name ``inner`` has for it, can
+        # hand it on by keyword or keep it just the same, and the leading parameter of
+        # ``inner`` is then left to a judged keyword of its name, or to its default.
+        # The rule a held wrapper gets (:func:`_refuse_hidden_wrapper`)
+        last, declared = filled[-1], _declared(walk)
+        if (declared is not None and last.name in declared) or (last.default is not last.empty):
+            raise BoundArgumentKept(_unhanded(_BY_POSITION, last.name))
+    elif still is not None and filled:
         last, declared = filled[-1], _declared(walk)
         if declared is not None and last.name in declared:
             if passes_on:
@@ -1781,10 +1833,10 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
                 # bound argument did not reach it by position (kept above, or handed
                 # on by keyword), the judged keyword stops here, and whether ``inner``
                 # hands it on cannot be read
-                raise BoundArgumentKept(_UNHANDED.format(taken=still, filled=last.name))
+                raise BoundArgumentKept(_unhanded(still, last.name))
             walk.given.append((still, last))  # given by name, unless a wrapper keeps it
         elif last.default is not last.empty:
-            raise BoundArgumentKept(_UNHANDED.format(taken=still, filled=last.name))
+            raise BoundArgumentKept(_unhanded(still, last.name))
         elif len(filled) == count:
             still = None  # settled: had one been kept, the call would fail here
     walk.taken.append((rebound, before + tuple(taken), doubt, still))

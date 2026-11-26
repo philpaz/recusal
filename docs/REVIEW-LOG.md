@@ -197,10 +197,48 @@ decorated tool. `recusal-crewai` still carries its own copy.
   that default when the call leaves the parameter out. Not covered: the two-deep
   generator modes, the kernel's test file and the keyword hand-on generator on this
   commit, hostile-environment scenarios, timing, mutation testing.
+- **Kernel review round twelve** (commit `47670de`, the change that closes round
+  eleven). No category 1. Round eleven's findings confirmed closed. On this commit
+  every generator mode was run to the end, 3,879,764 generated shapes in nine runs
+  (one, two and three wrappers deep, async and generator wrappers, third-party
+  decorators, Python 3.12 and one mode on 3.9): no verdict or outcome differs from
+  round nine's, and nothing 0.15.0 refused is accepted; the scans of the standard
+  library and the installed packages differ from 0.15.0 only in the single-dispatch
+  functions refused on purpose and two objects that are not tool shapes. Verdict:
+  release, after two small things. One defect of the change itself: the held rule
+  counted the places a held `functools.partial` binds itself as places a holder could
+  hand on by keyword, and refused a decorator that holds
+  `functools.partial(retrying(function), 5)` with a reason untrue of it. And one more
+  member of the bound-argument family, present in 0.15.0: a facade that takes its
+  receiver in `*args` raises no name doubt, so the rule for a wrapper the walk reads,
+  made only under a doubt, did not act, where the rule for a held wrapper did. The
+  review tried the rule without the doubt on every callable; see the open items.
 
 **Open items.**
 
-- After round eleven, a change that has not been reviewed closes what it found: a held
+- After round twelve, a change that has not been reviewed closes what it found: the
+  places a held `functools.partial` or method fills itself are not in doubt; and a
+  wrapper the walk reads that passes the call on is refused, doubt or no doubt, where
+  the last parameter the bound arguments would fill on it is one the tool declares or
+  has a default, which is the rule a held wrapper gets.
+- Tried and not kept: refusing bound arguments wherever the last parameter they would
+  fill has a default, on every callable and without a name doubt. It refused no clean
+  generated shape, and closed the stated limit below as well. It also refused four
+  shapes the kernel's own tests pin as ordinary, among them
+  `functools.partial(traced(table), "orders")` over `def table(table="users", ...)`,
+  a `functools.partial` of a decorated method that binds a defaulted parameter, and a
+  facade that hands its receiver on to a function that takes it as a defaulted
+  parameter. Those have the signature of the stated limit and run correctly. (The
+  review reported the kernel's tests as passing under its trial; they had been run
+  against the unpatched tree.)
+- Stated limit, by design: a wrapper that takes a bound argument in `*args`, or under
+  the very name the function has for it, and keeps it or hands it on by keyword, over
+  a function that passes the call on to nothing and whose leading parameter has a
+  default the tool does not declare: the function runs at that default.
+  `functools.partial(dropping(table), "orders")`, where `dropping` calls
+  `function(*args[1:], **kwargs)`, is read as the partial over a pass-through
+  decorator is, and ran `table="users"`.
+- After round eleven, a change reviewed in round twelve closes what it found: a held
   wrapper's leading parameter in the place of a bound argument is refused where it has
   a default, as where the tool declares it; a lookalike whose `__wrapped__` is None is
   refused; the limit on defaults is stated in the changelog.

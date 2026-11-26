@@ -6992,3 +6992,159 @@ def test_m_a_lookalike_whose_wrapped_is_none_names_nothing():
 
     with pytest.raises(DeclaredSignature):
         reached_parameters(Lookalike())
+
+
+# --- review round twelve: a held partial fills the places it binds for certain ------------
+
+
+def test_h_a_place_a_held_partial_binds_itself_is_filled_for_certain():
+    """Round twelve's P1, in the round-eleven rule and never released. A decorator on a
+    plain function holds ``functools.partial(retrying(function), 5)``, and the wrapper
+    takes its configuration as a defaulted leading parameter. The partial hands ``5`` on
+    by position, always, so that place is not one a holder could hand on by keyword;
+    the rule counted every bound place as in doubt and refused it, naming a method that
+    is not there. Read now, as 0.15.0 reads it. The place AFTER the partial's own is
+    the holder's, and is refused as before."""
+    import functools
+
+    ran: list = []
+
+    def retrying(function):
+        @functools.wraps(function)
+        def wrapper(attempts=3, *args, **kwargs):
+            ran.append(("retrying", attempts))
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def configured(function):
+        held = functools.partial(retrying(function), 5)
+
+        @functools.wraps(function)
+        def outer(*args, **kwargs):
+            return held(*args, **kwargs)
+
+        return outer
+
+    @configured
+    def fetch(query: str, limit: int = 10) -> str:
+        ran.append(("fetch", query, limit))
+        return query
+
+    assert unsupported_signature(fetch) is None
+    fetch(query="q", limit=5)
+    assert ran == [("retrying", 5), ("fetch", "q", 5)]
+
+    # under a method, the same partial over the keeping wrapper: the partial's place is
+    # certain, the receiver's place after it is not
+    def capped_after(function):
+        @functools.wraps(function)
+        def wrapper(attempts=3, limit: int = 100, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def scoped(function):
+        held = functools.partial(capped_after(function), 5)
+
+        @functools.wraps(function)
+        def method(self, *args, **kwargs):
+            return held(*args, tenant=self.tenant, **kwargs)
+
+        return method
+
+    class Tools:
+        tenant = "acme"
+        search = scoped(_nine_search)
+
+    _NINE.clear()
+    Tools().search(limit=5)
+    assert _NINE == [("search", "acme", 10)]
+    with pytest.raises(HiddenWrapper, match="`limit` is the leading parameter"):
+        reached_parameters(Tools().search)
+
+
+def _twelve_tools(inner):
+    """A facade that takes its receiver in ``*args`` and hands a tenant on by keyword."""
+    import functools
+
+    class Tools:
+        tenant = "acme"
+
+        @functools.wraps(inner)
+        def search(*args, **kwargs):
+            self, rest = args[0], args[1:]
+            return inner(*rest, tenant=self.tenant, **kwargs)
+
+    return Tools()
+
+
+def test_n_a_bound_argument_no_wrapper_names_handed_on_by_keyword():
+    """Round twelve's N2: round nine's K with a facade that takes its receiver in
+    ``*args`` (``self = args[0]``), so that no wrapper names the bound argument and
+    there is no name doubt for the rule to act on. The wrapper under it passes the call
+    on and keeps a leading parameter: the judged ``limit``, or its own defaulted
+    ``skip_review``. A held wrapper of the same shape was refused already; a wrapper
+    the walk reads gets the same rule now. 0.15.0 accepted both."""
+    import functools
+
+    tool = _twelve_tools(_NINE_CAPPED).search
+    assert list(inspect_signature(tool)) == ["limit"]
+    _NINE.clear()
+    tool(limit=5)
+    assert _NINE == [("search", "acme", 10)]  # what a call runs: not the judged value
+    with pytest.raises(invocation.BoundArgumentKept, match="would fill `limit`, by position"):
+        reached_parameters(tool)
+    assert "`limit`" in (unsupported_signature(tool) or "")
+
+    ran: list = []
+
+    def reviewed(function):
+        @functools.wraps(function)
+        def wrapper(skip_review: bool = True, *args, **kwargs):
+            ran.append(skip_review)
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    tool = _twelve_tools(reviewed(_nine_search)).search
+    assert list(inspect_signature(tool)) == ["limit"]
+    tool(limit=5)
+    assert ran == [True]  # a default the tool does not show
+    with pytest.raises(invocation.BoundArgumentKept, match="would fill `skip_review`"):
+        reached_parameters(tool)
+
+
+def test_n_what_passes_the_call_on_to_nothing_is_read_as_before():
+    """Not refused by that rule: bound arguments that fill the parameters of a callable
+    that passes the call on to nothing (a ``functools.partial`` over a decorated
+    function, a decorated method), and a wrapper whose leading parameter has no default
+    and is not declared (``self``): had it not been handed on by position, the call
+    would fail."""
+    import functools
+
+    def table(table: str = "users", limit: int = 10) -> str:
+        return table
+
+    assert _levels(functools.partial(_traced(table), "orders")) == [["args", "kwargs"], ["limit"]]
+
+    tool = _twelve_tools(_nine_search).search  # the same facade over the plain function
+    assert _levels(tool) == [["args", "kwargs"], ["limit"]]
+    _NINE.clear()
+    tool(limit=5)
+    assert _NINE == [("search", "acme", 5)]
+
+    def with_self(function):
+        @functools.wraps(function)
+        def wrapper(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        return wrapper
+
+    class Service:
+        @_traced
+        @with_self
+        def search(self, query: str = "*", limit: int = 10) -> str:
+            return query
+
+    assert unsupported_signature(Service().search) is None
