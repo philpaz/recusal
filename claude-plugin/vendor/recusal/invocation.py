@@ -1739,21 +1739,22 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     at the end of the walk). The free function of the example is refused bare, under any
     number of such layers, and with more arguments bound after the object.
 
-    Refused with them, whatever its default: bound arguments under a doubt, where the
-    last parameter they would fill is one the tool declares and ``inner`` itself passes
-    the call on (``*args`` or ``**kwargs``). There ``inner`` is the wrapper that takes
-    the name. A facade that hands its argument on BY KEYWORD (``return
+    Refused with them, with a doubt or without one: bound arguments, where ``inner``
+    itself passes the call on (``*args`` or ``**kwargs``) and ANY parameter they would
+    fill on it is one the tool declares or has a default. There ``inner`` is the
+    wrapper that takes the name. A facade that hands its argument on BY KEYWORD (``return
     capped(*args, tenant=self.tenant, **kwargs)`` over ``def wrapper(limit=100, *args,
     **kwargs)``) leaves that parameter free, the judged keyword of that name stops at
     ``inner``, and whether ``inner`` hands it on cannot be read. The walk binds the
     argument to the parameter and so reads ``inner`` as taking nothing by that name,
     which is why the rule at the end of the walk does not see it.
 
-    And refused WITHOUT a doubt, where ``inner`` passes the call on: bound arguments
-    whose last parameter on it is one the tool declares or has a default. A wrapper
-    above that names nothing for the argument (a facade that takes its receiver in
-    ``*args`` and hands the tenant on by keyword), or names it as ``inner`` does, raises
-    no doubt and can leave that parameter free just the same. This is the rule a held
+    No doubt is needed for that: a wrapper above that names nothing for the argument (a
+    facade that takes its receiver in ``*args`` and hands the tenant on by keyword), or
+    names it as ``inner`` does, raises none and can leave the parameter free just the
+    same. And every place is tested, not the last: a wrapper that hands two bound
+    arguments on by keyword leaves both free, and the first can be the judged name
+    where the last is a required one of the wrapper's own. This is the rule a held
     wrapper gets (:func:`_refuse_hidden_wrapper`). It is not made where ``inner``
     passes the call on to nothing: a ``functools.partial`` that binds a defaulted
     parameter of a decorated function has that shape and is read.
@@ -1816,24 +1817,23 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     here = [name for name, to in zip(taken, filled) if name not in (None, to.name)]
     doubt = here[0] if here else ahead  # of these arguments, or of one bound ahead
     still = doubt or still
-    if still is None and filled and passes_on:
-        # no name doubt, and ``inner`` passes the call on: a wrapper above that takes
-        # the argument in ``*args``, or under the very name ``inner`` has for it, can
-        # hand it on by keyword or keep it just the same, and the leading parameter of
-        # ``inner`` is then left to a judged keyword of its name, or to its default.
-        # The rule a held wrapper gets (:func:`_refuse_hidden_wrapper`)
-        last, declared = filled[-1], _declared(walk)
-        if (declared is not None and last.name in declared) or (last.default is not last.empty):
-            raise BoundArgumentKept(_unhanded(_BY_POSITION, last.name))
-    elif still is not None and filled:
+    if filled and passes_on:
+        # ``inner`` passes the call on, doubt or no doubt: a wrapper above can hand
+        # the bound arguments on by keyword, or keep them, whatever it names them (in
+        # ``*args``, under the very names ``inner`` has, under others), and EACH
+        # leading parameter of ``inner`` they would fill is then left to a judged
+        # keyword of its name, which stops here, or to its default. Whether ``inner``
+        # hands a keyword on cannot be read. The rule a held wrapper gets
+        # (:func:`_refuse_hidden_wrapper`)
+        declared = _declared(walk)
+        for place in filled:
+            if (declared is not None and place.name in declared) or (
+                place.default is not place.empty
+            ):
+                raise BoundArgumentKept(_unhanded(still or _BY_POSITION, place.name))
+    if still is not None and filled:
         last, declared = filled[-1], _declared(walk)
         if declared is not None and last.name in declared:
-            if passes_on:
-                # ``inner`` takes the name itself and passes the call on: where the
-                # bound argument did not reach it by position (kept above, or handed
-                # on by keyword), the judged keyword stops here, and whether ``inner``
-                # hands it on cannot be read
-                raise BoundArgumentKept(_unhanded(still, last.name))
             walk.given.append((still, last))  # given by name, unless a wrapper keeps it
         elif last.default is not last.empty:
             raise BoundArgumentKept(_unhanded(still, last.name))

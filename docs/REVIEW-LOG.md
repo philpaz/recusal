@@ -214,9 +214,29 @@ decorated tool. `recusal-crewai` still carries its own copy.
   made only under a doubt, did not act, where the rule for a held wrapper did. The
   review tried the rule without the doubt on every callable; see the open items.
 
+- **Kernel review round thirteen** (commit `65370a2`, the change that closes round
+  twelve). No category 1. Round twelve's findings confirmed closed; the nine generator
+  runs and the scans as in round twelve, with no verdict or outcome changed; ten
+  ordinary shapes of decorated methods and partials read, eight of them on Python 3.9
+  (the other two, a decorator over a bound method, not compared with 0.15.0 there).
+  The reviewer corrected two of its own earlier counts: the kernel's tests it had
+  reported as passing under its trial fixes in rounds nine and twelve had been run
+  against the unpatched tree. Verdict: release, after one change. One more member of
+  the bound-argument family, constructed and present in 0.15.0: the rule for a
+  wrapper the walk reads tested the LAST place the bound arguments would fill, where
+  the rule for a held wrapper tests each; with two arguments bound by one
+  `functools.partial` and both handed on by keyword, the judged name in the first
+  place was not seen. Apart from that the review found nothing outside the stated
+  limit. Not covered: its trial of the fix on the two-deep modes and on 3.9, the
+  kernel's tests on five of the eight interpreters, hostile-environment scenarios,
+  timing, mutation testing.
+
 **Open items.**
 
-- After round twelve, a change that has not been reviewed closes what it found: the
+- After round thirteen, a change that has not been reviewed closes what it found: on
+  a wrapper the walk reads that passes the call on, every place the bound arguments
+  would fill is tested.
+- After round twelve, a change reviewed in round thirteen closes what it found: the
   places a held `functools.partial` or method fills itself are not in doubt; and a
   wrapper the walk reads that passes the call on is refused, doubt or no doubt, where
   the last parameter the bound arguments would fill on it is one the tool declares or

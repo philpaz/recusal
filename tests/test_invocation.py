@@ -7148,3 +7148,50 @@ def test_n_what_passes_the_call_on_to_nothing_is_read_as_before():
             return query
 
     assert unsupported_signature(Service().search) is None
+
+
+# --- review round thirteen: every bound place of a wrapper that passes the call on -------
+
+
+@pytest.mark.parametrize("names", [False, True], ids=["taken in *args", "taken by name"])
+def test_n_every_bound_place_of_a_wrapper_that_passes_the_call_on_is_tested(names):
+    """Round thirteen's N15 and N16. One ``functools.partial`` binds two arguments, the
+    facade hands both on by keyword, and the wrapper under it has the judged ``limit``
+    first and a required name of its own second. The rule tested the LAST place the
+    bound arguments would fill, which is required and not declared, so nothing was
+    refused, with a name doubt or without one. A held wrapper was tested place by
+    place already. Judged ``limit=5``; ran ``limit=10``. 0.15.0 accepted both."""
+    import functools
+
+    ran: list = []
+
+    def search(tenant: str, context: str, limit: int = 10) -> str:
+        ran.append((tenant, context, limit))
+        return "rows"
+
+    def capped(function):
+        @functools.wraps(function)
+        def wrapper(limit, context, *args, **kwargs):
+            return function(*args, context=context, **kwargs)
+
+        return wrapper
+
+    inner = capped(search)
+    if names:
+
+        @functools.wraps(inner)
+        def facade(tenant_of, context_of, *args, **kwargs):
+            return inner(*args, tenant=tenant_of, context=context_of, **kwargs)
+
+    else:
+
+        @functools.wraps(inner)
+        def facade(*args, **kwargs):
+            return inner(*args[2:], tenant=args[0], context=args[1], **kwargs)
+
+    tool = functools.partial(facade, "acme", "ctx")
+    assert list(inspect_signature(tool)) == ["limit"]
+    tool(limit=5)
+    assert ran == [("acme", "ctx", 10)]  # what a call runs: not the judged value
+    with pytest.raises(invocation.BoundArgumentKept, match="`limit`"):
+        reached_parameters(tool)

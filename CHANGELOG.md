@@ -599,7 +599,7 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
-- **Kernel: what review rounds nine to twelve found in the changes above, closed
+- **Kernel: what review rounds nine to thirteen found in the changes above, closed
   before release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
   3.14 free-threaded included.
   - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
@@ -719,9 +719,13 @@ All notable changes to this project are documented here. The format follows
     under one. Over the keeping wrapper: judged `{'limit': 5}`, ran `limit=10`; over
     `def wrapper(skip_review=True, *args, **kwargs)`: ran `skip_review=True`. A
     wrapper the walk reads now gets the rule a held one gets: where it passes the
-    call on, and the last parameter the bound arguments would fill on it is one the
-    tool declares or has a default, it is refused with `BoundArgumentKept`, doubt or
-    no doubt.
+    call on, and any parameter the bound arguments would fill on it is one the tool
+    declares or has a default, it is refused with `BoundArgumentKept`, doubt or no
+    doubt. Any parameter, not the last (round thirteen): with two arguments bound by
+    one `functools.partial` and both handed on by keyword, over
+    `def wrapper(limit, context, *args, **kwargs)`, the last place is a required name
+    of the wrapper's own and the first is the judged one. Judged `{'limit': 5}`, ran
+    `limit=10`.
   - *The family of the bound argument, in one sentence* (the reviewer's, round
     eleven): the walk knows the place of a bound argument only at the callable that
     binds it; at each callable further in that passes the call on, read or held, it
