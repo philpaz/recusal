@@ -599,9 +599,9 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
-- **Kernel: what review round nine found in the changes above, closed before release.**
-  Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15, 3.14
-  free-threaded included.
+- **Kernel: what review rounds nine and ten found in the changes above, closed before
+  release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
+  3.14 free-threaded included.
   - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
     under another name" above. A facade that hands its tenant on BY KEYWORD
     (`def search(self, *args, **kwargs): return capped(*args, tenant=self.tenant,
@@ -619,14 +619,29 @@ All notable changes to this project are documented here. The format follows
     pass-through decorators between or over them. *Read as before:* a facade that
     hands its argument on, by position or by keyword, to a function that passes the
     call on to nothing.
+  - *The same, with the keeping wrapper held* (round ten). A method decorator that
+    applies the keeping wrapper inside itself, hands its tenant on to it by keyword and
+    names the function as `__wrapped__`
+    (`held = capped(function)` ... `return held(*args, tenant=self.tenant, **kwargs)`):
+    the rule above is made where the walk binds an argument, which a held wrapper is
+    never reached by, and the held wrapper's leading `limit` was left out as the place
+    of the receiver. Declared `(limit=10)`, judged `{'limit': 5}`, ran `limit=10`.
+    Refused now with `HiddenWrapper`: a held wrapper that passes the call on, whose
+    leading parameter in the place of a bound argument is one the tool declares.
+    *Read as before:* a held wrapper whose leading parameter is the receiver's own
+    (`self`, which no tool declares).
   - *A signature only the lookup finds.* `inspect.signature` asks the callable for
     `__signature__`. The check looked in the callable's `__dict__` and on its class,
     so it did not see one a class answers for in `__getattr__` or `__getattribute__`:
     a forwarding proxy with a plain `__call__` over a function that declares one
     showed `(query, limit=10)` and ran `skip_review=True`. The check now makes the
-    lookup `inspect.signature` makes. Asking runs what the class defines for that
-    name; where it raises anything but `AttributeError`, `inspect.signature` raises
-    too, and the callable is refused as one that cannot be inspected.
+    lookup `inspect.signature` makes. Asking runs what the class of a callable on the
+    walk defines for the names asked: `__signature__`, and `__text_signature__` and
+    `__code__` for the two entries below. Where that raises anything but
+    `AttributeError`, the callable is refused as one that cannot be inspected.
+    `inspect.signature` raises there too for `__signature__`; for `__text_signature__`
+    it does from Python 3.13, and before that it does not ask an ordinary callable
+    object for it, so such an object, which 0.15.0 reads, is refused on 3.9 to 3.12.
   - *A text signature.* `inspect.signature` reads `__text_signature__`, the attribute
     the interpreter uses for callables written in C, wherever Python code sets one:
     on a plain function (Python 3.9 to 3.15), and so on a method, a
@@ -639,9 +654,20 @@ All notable changes to this project are documented here. The format follows
     `skip_review=True`. A text that is declared is refused now with
     `DeclaredSignature`, on every Python, also where that Python would not read it
     (which callables it reads so has changed between versions). The text of a
-    callable written in C is its own and is not refused: it is told by where the
-    lookup finds the name (the accessor the interpreter defines on the callable's
-    type, with nothing in the callable's own `__dict__`).
+    callable written in C is its own and is not refused, bare or bound as a method: it
+    is told by where the lookup finds the name (the accessor the interpreter defines
+    on the callable's type, with nothing in the callable's own `__dict__`; a method
+    is asked as what it binds).
+  - *An object that looks like a function* (round ten). `inspect.signature` reads a
+    callable object that shows a code object, a name and defaults (`__code__`,
+    `__name__`, `__defaults__`) as a function, from those, in place of its `__call__`.
+    The walk read the `__call__` as well, so no parameter could be hidden, but a
+    default could: shown `limit=10`, ran `limit=999999` when the call left it out. An
+    object called through a `__call__` written in Python that shows a code object and
+    names nothing as `__wrapped__` is refused now with `DeclaredSignature`. *Read as
+    before:* a transparent proxy, which shows the code of what it wraps and names it
+    as `__wrapped__` (`inspect.signature` follows that first, and so does the walk),
+    and a function a C extension builds.
   - *A signature declared on a wrapper the walk looks through.* `inspect.signature`
     stops at a `__signature__` set on a `functools.lru_cache` wrapper itself, or on a
     `staticmethod` object, and reads it in place of the function underneath. The walk
@@ -653,18 +679,22 @@ All notable changes to this project are documented here. The format follows
     `__signature__` shows none itself, and `inspect.signature` reads its `__call__`.
     It was refused with "it declares a signature that is not its own", and the entry
     above had extended that to such an object bound as a method. It is read now, by
-    the parameters of its `__call__`. This is the one shape 0.15.0 refused that is
-    accepted: every parameter its call takes is read and judged.
+    the parameters of its `__call__`. The same for a class whose `__signature__` is a
+    property that raises `AttributeError` for the instance: `inspect.signature` finds
+    none there either. These are the two shapes 0.15.0 refused that are accepted, and
+    every parameter their call takes is read and judged. (Each earlier entry's
+    "nothing that 0.15.0 refused is now accepted" is said of its own change.)
   - *Refused although it runs correctly:* a callable that declares a text signature,
-    or answers for `__signature__` in a hook, whatever the declaration says; and a
-    facade that hands its argument on by keyword over a wrapper that takes the judged
-    name and does hand it on. The walk reads parameters, not bodies. The remedy for
+    answers for `__signature__` in a hook, or looks like a function, whatever the
+    declaration says; and a facade that hands its argument on, by keyword or by
+    position, to a wrapper, read or held, that takes the judged name in the bound
+    argument's place and does hand it on. The walk reads parameters, not bodies. The remedy for
     each: register a plain function that names every parameter the tool takes.
   - *Said more exactly.* `detached` "calls no function written in Python for a value"
     with one exception it has always had, now stated: telling a value's type compares
     the type with each supported one, and a class whose metaclass defines `__eq__`
     answers that comparison. And a caller that counted on the `RecursionError` is
-    named below: `recusal-pydantic-ai`.
+    named in the `detached` entry above: `recusal-pydantic-ai`.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
   each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor

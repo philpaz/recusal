@@ -253,7 +253,8 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     signature it shows for something else.
 
     ``inspect.signature`` follows ``__wrapped__`` and honours a declared signature
-    (``__signature__``, or a ``__text_signature__`` that is not the interpreter's own),
+    (``__signature__``, a ``__text_signature__`` that is not the interpreter's own, or
+    the code object of an object that looks like a function),
     on the callable or on what it reads the callable through: the class of a callable
     object and its ``__call__``, a ``functools.partial``'s function, and what a method
     binds, which is its function or an object bound as one (by its own ``__get__``, by
@@ -558,8 +559,14 @@ def _declares_text(func: Any) -> bool:
     callable itself. That one is told by where the lookup finds the name: on the
     callable's type, as the accessor the interpreter defines there, with nothing in the
     callable's own ``__dict__``. Anything else that answers with a text is a
-    declaration: an attribute of the callable or of its class, a property, a hook, and
-    what a method shows of the function it binds."""
+    declaration: an attribute of the callable or of its class, a property, a hook. A
+    method shows the text of what it binds, so it is asked of that: a built-in bound as
+    a method (``types.MethodType(len, obj)``, a ``classmethod`` of one) declares
+    nothing."""
+    for _ in range(_DEPTH):
+        if not inspect.ismethod(func):
+            break
+        func = func.__func__
     if not getattr(func, "__text_signature__", None):
         return False
     if "__text_signature__" in getattr(func, "__dict__", {}):
@@ -584,12 +591,17 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
     A name present with the value None is refused too: ``inspect.signature`` reads
     through it, and stops following ``__wrapped__`` at it.
 
-    A second declaration is refused with it: a ``__text_signature__`` that is not the
-    interpreter's own (:func:`_declares_text`).
+    Two more declarations are refused with it: a ``__text_signature__`` that is not the
+    interpreter's own (:func:`_declares_text`), and a code object shown by an object
+    that is called through a ``__call__`` written in Python and names nothing as
+    ``__wrapped__``, which ``inspect.signature`` reads as a function where the object
+    shows a name and defaults too.
 
-    Asking runs what the class defines for the lookup. Where that raises anything but
-    ``AttributeError``, ``inspect.signature`` raises too, and this raises ``ValueError``:
-    the callable cannot be inspected."""
+    Asking runs what the class defines for the lookup of each of the three names.
+    Where that raises anything but ``AttributeError`` this raises ``ValueError``: the
+    callable cannot be inspected. ``inspect.signature`` raises there too for
+    ``__signature__``, and for ``__text_signature__`` from Python 3.13; before that it
+    does not ask an ordinary callable object for its text, and reads one this refuses."""
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
     _refuse_shown_signature(func)
@@ -605,6 +617,19 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
     elif not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
         call = getattr(type(func), "__call__", None)
         if call is not None and not isinstance(call, _C_CALL):
+            # an object called through a ``__call__`` written in Python that shows a
+            # code object: ``inspect.signature`` reads one that also shows a name and
+            # defaults as a function, from that code and those defaults, in place of
+            # its ``__call__``. Not one that names a ``__wrapped__`` (a transparent
+            # proxy): ``inspect.signature`` follows that first, and so does the walk
+            try:
+                shows_code = isinstance(
+                    getattr(func, "__code__", None), types.CodeType
+                ) and not hasattr(func, "__wrapped__")
+            except Exception as raised:  # noqa: BLE001, ``inspect.signature`` fails too
+                raise ValueError("a declared signature cannot be looked for") from raised
+            if shows_code:
+                raise DeclaredSignature
             _refuse_declared_signature(call, depth + 1)
 
 
@@ -1123,6 +1148,25 @@ def _held_level(function: Any, bound: int) -> Tuple[Tuple[str, ...], bool]:
     return tuple(named), bool(code.co_flags & _VARIADIC)
 
 
+_HELD_IN_BOUND_PLACE = (
+    "`{name}` is the leading parameter of a wrapper a decorator holds, which passes the "
+    "call on, in the place of an argument bound on the way (the object of a method): "
+    "where that argument is handed on by keyword the wrapper takes the judged `{name}` "
+    "itself, and the function can then run with a value no policy judged; register a "
+    "plain function that names every parameter the tool takes"
+)
+
+
+def _held_in_bound_places(function: Any, bound: int) -> Tuple[str, ...]:
+    """The leading names of a held plain function that the ``bound`` arguments are taken
+    to fill (:func:`_held_level` leaves them out), where the function passes the call on
+    (``*args`` or ``**kwargs``); none where it does not."""
+    code = function.__code__
+    if not code.co_flags & _VARIADIC:
+        return ()
+    return tuple(code.co_varnames[: min(bound, code.co_argcount)])
+
+
 def _argument_of_its_own(
     levels: List[Any], declared: Any, skip: Any, judged: Optional[Any] = None
 ) -> Optional[str]:
@@ -1213,7 +1257,9 @@ def _refuse_kept_by_name(walk: Any, levels: List[Any]) -> None:
             raise BoundArgumentKept(_UNHANDED.format(taken=taken, filled=last.name))
 
 
-def _hidden_levels(value: Any, read: List[Any], bound: int) -> List[Any]:
+def _hidden_levels(
+    value: Any, read: List[Any], bound: int, in_bound_places: Optional[List[str]] = None
+) -> List[Any]:
     """The levels of the wrappers the walk did not read between a held ``value`` and a
     callable it did read, or none when ``value`` reaches no such callable.
 
@@ -1224,17 +1270,25 @@ def _hidden_levels(value: Any, read: List[Any], bound: int) -> List[Any]:
     ``value`` receives bound (its receiver, when the walk reached it as a method): the
     held wrapper is passed them too, so they are not parameters of its own, exactly as
     they are not for the level the walk read. Each bound method, ``classmethod`` and bound
-    positional argument of a ``functools.partial`` on the way adds to it. Raises
+    positional argument of a ``functools.partial`` on the way adds to it. That holds
+    where the holder hands them on by position. Where it hands one on by keyword, the
+    leading name of a held wrapper that passes the call on is free, and takes a judged
+    keyword of that name: those names are added to ``in_bound_places``
+    (:func:`_held_in_bound_places`), for the caller to refuse the ones the tool
+    declares. Raises
     :class:`HiddenWrapper` when the way cannot be judged by parameters: it is still going
     after 32 links, or a link is a single-dispatch function or method that can run
     anything but its base."""
     links: List[Any] = []
     levels: List[Any] = []
+    places: List[str] = []
     dispatches = False
     for _ in range(_DEPTH):
         if any(value is seen for seen in read):
             if dispatches:
                 raise HiddenWrapper(_HIDDEN_WRAPPER)
+            if in_bound_places is not None:
+                in_bound_places.extend(places)
             return levels
         if any(value is link for link in links):
             return []  # a cycle: it reaches nothing the walk reads
@@ -1243,6 +1297,7 @@ def _hidden_levels(value: Any, read: List[Any], bound: int) -> List[Any]:
             return []
         if type(value) is types.FunctionType:
             levels.append(_held_level(value, bound))
+            places.extend(_held_in_bound_places(value, bound))
             dispatches = dispatches or _chosen_at_call_time(value)
         elif type(value) is _CACHE_WRAPPER:
             # a held cache that calls another function than the one it names: that
@@ -1255,6 +1310,7 @@ def _hidden_levels(value: Any, read: List[Any], bound: int) -> List[Any]:
                 dispatches = True
             elif called is not inner:
                 levels.append(_held_level(called, bound))
+                places.extend(_held_in_bound_places(called, bound))
                 dispatches = dispatches or _chosen_at_call_time(called)
         links.append(value)
         if type(value) is _PARTIAL:
@@ -1298,6 +1354,14 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
       through a single-dispatch function or method that can run more than its base, are
       refused as they stand.
 
+    Refused with it: a held wrapper that passes the call on and whose leading
+    parameter, in the place of an argument the holder receives bound, is one the tool
+    declares. The holder may hand that argument on by keyword (``held(*args,
+    tenant=self.tenant, **kwargs)`` over ``def wrapper(limit=100, *args, **kwargs)``):
+    the judged keyword of that name then stops at the held wrapper, and whether that
+    hands it on cannot be read. A held ``def wrapper(self, *args, **kwargs)`` is not
+    refused for this: no tool declares ``self``.
+
     Only parameters are judged: a held wrapper is not read for the other things the walk
     refuses a callable it reads for (a declared ``__signature__``). And what a callable
     object holds is judged whether or not its ``__call__`` uses it: an extra entry point
@@ -1331,13 +1395,20 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     no longer shows the ``*args``. The call fails either way.
     """
     hidden: List[Any] = []
+    in_bound_places: List[str] = []
     for value, bound in walk.held:
-        hidden.extend(_hidden_levels(value, walk.read, bound))
+        hidden.extend(_hidden_levels(value, walk.read, bound, in_bound_places))
     if not hidden:
         return hidden
     declared = _declared(walk)
     if declared is None:
         raise HiddenWrapper(_HIDDEN_WRAPPER)
+    for name in in_bound_places:
+        if name in declared and name not in skip:
+            # the holder may hand its bound argument on by keyword (``held(*args,
+            # tenant=self.tenant, **kwargs)``): the judged keyword of this name then
+            # stops at the held wrapper, and whether that hands it on cannot be read
+            raise HiddenWrapper(_HELD_IN_BOUND_PLACE.format(name=name))
     levels = [_read_level(parameters) for parameters in walk.found] + hidden
     why = _argument_of_its_own(levels, declared, skip, range(len(walk.found), len(levels)))
     if why is not None:

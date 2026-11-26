@@ -6775,3 +6775,150 @@ def test_d_a_signature_declared_on_a_wrapper_the_walk_looks_through_is_refused()
         return query
 
     assert _levels(functools.lru_cache(maxsize=None)(plain)) == [["query", "limit"]] * 2
+
+
+# --- review round ten: the keyword hand-on to a HELD wrapper, a built-in bound as a ------
+# --- method, and an object that looks like a function ------------------------------------
+
+
+def _ten_scoped(function):
+    """A method decorator that applies the keeping wrapper inside itself, hands its
+    tenant on to it by keyword, and names the function as ``__wrapped__``."""
+    import functools
+
+    held = _nine_capped(function)
+
+    @functools.wraps(function)
+    def method(self, *args, **kwargs):
+        return held(*args, tenant=self.tenant, **kwargs)
+
+    return method
+
+
+def _ten_scoped_global(function):
+    import functools
+
+    @functools.wraps(function)
+    def method(self, *args, **kwargs):
+        return _NINE_CAPPED(*args, tenant=self.tenant, **kwargs)
+
+    return method
+
+
+@pytest.mark.parametrize(
+    "decorator", [_ten_scoped, _ten_scoped_global], ids=["in its closure", "a module global"]
+)
+def test_h_a_bound_argument_handed_on_by_keyword_to_a_held_wrapper(decorator):
+    """Round ten's H: round nine's K, with the keeping wrapper HELD by the facade and the
+    function named as ``__wrapped__``. The held wrapper's leading ``limit`` was left out
+    as the place of the receiver, so no rule saw the wrapper keep the name. Judged
+    ``limit=5``, ran ``limit=10``; 0.15.0 accepted it as well."""
+
+    class Tools:
+        def __init__(self, tenant):
+            self.tenant = tenant
+
+        search = decorator(_nine_search)
+
+    tool = Tools("acme").search
+    assert list(inspect_signature(tool)) == ["limit"]
+    _NINE.clear()
+    tool(limit=5)
+    assert _NINE == [("search", "acme", 10)]  # what a call runs: not the judged value
+    with pytest.raises(HiddenWrapper, match="`limit` is the leading parameter of a wrapper"):
+        reached_parameters(tool)
+    assert "`limit`" in (unsupported_signature(tool) or "")
+
+
+def test_h_a_held_wrapper_that_takes_the_receiver_is_read_as_before():
+    """Not refused: a held wrapper whose leading parameter is the receiver's own
+    (``self``, which the tool does not declare), and one that passes the call on to
+    nothing."""
+    import functools
+
+    ran: list = []
+
+    def passing(function):
+        @functools.wraps(function)
+        def wrapper(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        return wrapper
+
+    def twice(function):
+        held = passing(function)
+
+        @functools.wraps(function)
+        def method(self, *args, **kwargs):
+            return held(self, *args, **kwargs)
+
+        return method
+
+    class Tools:
+        @twice
+        def search(self, query: str, limit: int = 10) -> str:
+            ran.append((query, limit))
+            return query
+
+    tool = Tools().search
+    assert unsupported_signature(tool) is None
+    tool(query="q", limit=5)
+    assert ran == [("q", 5)]
+
+
+def test_t_a_callable_written_in_c_bound_as_a_method_declares_nothing():
+    """Round ten's T1, in the first form of the text-signature rule and never released: a
+    method shows the ``__text_signature__`` of the built-in it binds, and the method type
+    has no accessor of its own for the name, so ``types.MethodType(len, obj)`` and a
+    ``classmethod`` of a built-in were refused as declaring one. The text is asked of
+    what the method binds."""
+    import math
+    import types
+
+    class Holder:
+        root = classmethod(math.sqrt)
+
+    for bound in (types.MethodType(len, []), Holder.root, types.MethodType(str.upper, "q")):
+        assert bound.__text_signature__
+        assert not invocation._declares_text(bound)
+        invocation._refuse_declared_signature(bound, 0)
+    assert not invocation._declares_text(len)
+
+    # and a method of a function that does declare one is refused still
+    assert invocation._declares_text(_nine_texted_method())
+
+
+def test_m_an_object_that_looks_like_a_function_is_refused():
+    """Round ten's M3. ``inspect.signature`` reads a callable object that shows a code
+    object, a name and defaults as a function, from those, in place of its ``__call__``.
+    The walk read the ``__call__`` as well, so no parameter could be hidden, but a
+    default could: shown ``limit=10``, ran ``limit=999999`` when the call left it out.
+    0.15.0 accepted it as well."""
+
+    def shown(query: str, limit: int = 10) -> str:
+        return query
+
+    class Lookalike:
+        def __init__(self):
+            self.__name__ = "search"
+            self.__code__ = shown.__code__
+            self.__defaults__ = shown.__defaults__
+            self.__kwdefaults__ = None
+            self.__annotations__ = dict(shown.__annotations__)
+
+        def __call__(self, query: str, limit: int = 999999) -> str:
+            _NINE.append(("lookalike", query, limit))
+            return query
+
+    tool = Lookalike()
+    assert inspect_signature(tool)["limit"].default == 10
+    _NINE.clear()
+    tool(query="q")
+    assert _NINE == [("lookalike", "q", 999999)]
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(tool)
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(_traced(tool))
+    assert unsupported_signature(tool) == _DECLARED
+    # a transparent proxy, which also shows the code of what it wraps, names it as
+    # ``__wrapped__``: read as before (the proxy tests above)

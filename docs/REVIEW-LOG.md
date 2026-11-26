@@ -165,11 +165,32 @@ decorated tool. `recusal-crewai` still carries its own copy.
   generator modes on the free-threaded build, pydantic-ai output functions with deep
   data, and the origin of exceptions that escape four framework runners at depth,
   which are the same beside 0.15.1.
+- **Kernel review round ten** (commit `5fba40c`, the change that closes round nine).
+  No category 1. Round nine's findings confirmed closed on Python 3.9 to 3.15, with no
+  clean row newly refused in 71,474 generated shapes of the keyword hand-on. Verdict:
+  release, after one defect of the change itself is fixed: the first form of the
+  text-signature rule refused every callable written in C once it was bound as a
+  method (`types.MethodType(len, obj)`, a `classmethod` of a built-in), with a reason
+  untrue of it, which changed 2,243 of 2,715 outcomes of a scan of the standard
+  library. One more member of the bound-argument family, present in 0.15.0: the
+  keyword hand-on where the keeping wrapper is HELD by the facade, which the rule made
+  where the walk binds never reaches. And, constructed and present in 0.15.0: an
+  object that shows a code object, a name and defaults is read by `inspect.signature`
+  as a function, which hides a default (no parameter: the walk read its `__call__`
+  too). Three sentences inexact. Not covered: the two-deep generator modes, the
+  hostile-environment scenarios and the probes of rounds one to five on this commit,
+  a real Cython function with an embedded text signature, timing, mutation testing.
 
 **Open items.**
 
-- After round nine, the maintainer chose to close its findings before release. A
-  change that has not been reviewed: bound arguments under a doubt are refused where
+- After round ten, a change that has not been reviewed closes what it found: a method
+  is asked for a text signature as what it binds; a held wrapper that passes the call
+  on and has a parameter the tool declares in the place of a bound argument is
+  refused; an object called through a `__call__` written in Python that shows a code
+  object and names nothing as `__wrapped__` is refused; the three sentences are
+  corrected.
+- After round nine, the maintainer chose to close its findings before release, in a
+  change reviewed in round ten: bound arguments under a doubt are refused where
   the last parameter they would fill is one the tool declares and the callable that
   has it passes the call on; the declared-signature check makes the lookup
   `inspect.signature` makes, so a proxy that answers for `__signature__` is refused
