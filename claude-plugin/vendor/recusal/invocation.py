@@ -1796,8 +1796,10 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
 
     Not found, by design: a wrapper that takes the bound argument in ``*args``, or under
     the very name the function has for it, and keeps it or hands it on by keyword, over
-    a function that passes the call on to nothing: where that function's leading
-    parameter has a default the tool does not declare, it runs at that default."""
+    a function that passes the call on to nothing: where a parameter the bound
+    arguments would fill on that function has a default the tool does not declare (the
+    first, or a later one, since a kept argument moves the ones bound after it), it
+    runs at that default."""
     rebound: Any
     if inspect.ismethod(outer):
         level, count, rebound = outer.__func__, 1, types.MethodType(inner, outer.__self__)

@@ -247,9 +247,32 @@ decorated tool. `recusal-crewai` still carries its own copy.
   stated limit. Not covered: a trial of the refusal, the kernel's tests on five of
   the eight interpreters, hostile-environment scenarios, timing, mutation testing.
 
+- **Kernel review round fifteen** (commit `e05977e`, the change that closes round
+  fourteen). No category 1, no category 2, and the reviewer would tag the commit.
+  Round fourteen's finding confirmed closed on Python 3.9 to 3.15. The rule for a
+  wrapper the walk reads and the rule for a held one are the same for a callable that
+  passes the call on; for one that passes the call on to nothing they differ in the
+  one stated way (a defaulted place the tool does not declare is refused on a held
+  wrapper always, and on one the walk reads only under a name doubt). The review
+  found no shape, on either path, that is neither refused nor the stated limit in
+  substance. In the nine generator runs no clean shape is newly refused and nothing
+  0.15.0 refused is accepted; in each of the three two-deep runs, two shapes that
+  were accepted while something unjudged ran are refused now. Of 56 method
+  decorators that hold a second wrapper (14 decorators, among them
+  `pydantic.validate_call`, `tenacity`, `wrapt` and `cachetools`, on four kinds of
+  tool) one differs from round fourteen: the stated twin. Removing the exception for
+  injected names changed no verdict found: only `recusal-google-adk` passes such
+  names to the kernel. One sentence was narrower than the limit it states (the
+  parameter left at its default need not be the leading one) and is widened. Not
+  covered: the kernel's tests on five of the eight interpreters on this commit,
+  hostile-environment scenarios, timing, mutation testing, and the 135 generated
+  shapes of the stated limit one by one (classified by the wrapper they contain).
+
 **Open items.**
 
-- After round fourteen, a change that has not been reviewed closes what it found: a
+- After round fifteen, only the sentence that states the limit was changed. No code
+  has changed since the commit round fifteen reviewed.
+- After round fourteen, a change reviewed in round fifteen closes what it found: a
   held wrapper's leading parameter in the place of a bound argument is refused where
   it has a default the tool does not declare, whether or not the wrapper passes the
   call on; and the held rule no longer excepts an injected name. Refused by it
@@ -276,9 +299,10 @@ decorated tool. `recusal-crewai` still carries its own copy.
   against the unpatched tree.)
 - Stated limit, by design: a wrapper the walk reads that takes a bound argument in
   `*args`, or under the very name the function has for it, and keeps it or hands it
-  on by keyword, over a function the walk reads that passes the call on to nothing
-  and whose leading parameter has a default the tool does not declare: the function
-  runs at that default.
+  on by keyword, over a function the walk reads that passes the call on to nothing,
+  where a parameter the bound arguments would fill there has a default the tool does
+  not declare (the first, or a later one, since a kept argument moves the ones bound
+  after it): the function runs at that default.
   `functools.partial(dropping(table), "orders")`, where `dropping` calls
   `function(*args[1:], **kwargs)`, is read as the partial over a pass-through
   decorator is, and ran `table="users"`.

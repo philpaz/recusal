@@ -599,7 +599,7 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
-- **Kernel: what review rounds nine to fourteen found in the changes above, closed
+- **Kernel: what review rounds nine to fifteen found in the changes above, closed
   before release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
   3.14 free-threaded included.
   - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
@@ -751,9 +751,10 @@ All notable changes to this project are documented here. The format follows
     *Still not found, by design:* a wrapper the walk reads that takes the bound
     argument in `*args`, or under the very name the function has for it, and keeps it
     or hands it on by keyword, over a function the walk reads that passes the call on
-    to nothing and whose leading parameter has a default. It has the signature of a
-    `functools.partial` that binds a defaulted parameter of a decorated function,
-    which is ordinary and is read.
+    to nothing, where a parameter the bound arguments would fill there has a default
+    the tool does not declare (the first, or a later one: a kept argument moves the
+    ones bound after it). It has the signature of a `functools.partial` that binds a
+    defaulted parameter of a decorated function, which is ordinary and is read.
     Refusing bound arguments wherever they would fill a defaulted parameter was tried
     and not kept for that reason (`docs/REVIEW-LOG.md`).
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
