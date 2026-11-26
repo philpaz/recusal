@@ -59,12 +59,21 @@ class GatedFunctionTool(FunctionTool):
             is_error=True,
         )
 
-    def _prepare(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    def _prepare(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, str | None]:
         if args:
-            return None, "positional arguments are unsupported; every argument must be judged by name"
+            return (
+                None,
+                "positional arguments are unsupported; every argument must be judged by name",
+            )
 
         context_name = self.ctx_param_name if self.requires_context else None
-        if context_name is not None and context_name not in kwargs and context_name not in self.partial_params:
+        if (
+            context_name is not None
+            and context_name not in kwargs
+            and context_name not in self.partial_params
+        ):
             return None, "Context is required for this tool"
 
         try:
@@ -107,7 +116,10 @@ class GatedFunctionTool(FunctionTool):
                 self.metadata.get_name(), detached(evidence), self._recusal_policy, safe_errors=True
             )
         except Exception as exc:
-            return None, f"failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})"
+            return (
+                None,
+                f"failed closed (policy error): RECUSAL_POLICY_ERROR ({type(exc).__name__})",
+            )
         if decision == "deny":
             return None, reason
         return merged, None
