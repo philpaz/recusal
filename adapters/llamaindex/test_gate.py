@@ -25,7 +25,9 @@ def test_defaults_are_judged_before_the_function_runs():
 
     def policy(name, invocation):
         seen.append((name, dict(invocation)))
-        return [Finding.fail("no_hard", severity=Severity.ERROR, message="hard mode needs approval")]
+        return [
+            Finding.fail("no_hard", severity=Severity.ERROR, message="hard mode needs approval")
+        ]
 
     tool = gated_tool(FunctionTool.from_defaults(fn=write), policy)
     output = tool.call(table="orders")
@@ -47,7 +49,9 @@ def test_context_is_not_policy_input_and_partial_can_be_overridden():
         return []
 
     marker = object()
-    tool = gated_tool(FunctionTool.from_defaults(fn=write, partial_params={"tenant": "partial"}), policy)
+    tool = gated_tool(
+        FunctionTool.from_defaults(fn=write, partial_params={"tenant": "partial"}), policy
+    )
     assert is_gated([tool]) and not is_gated([tool, FunctionTool.from_defaults(fn=write)])
     tool.call(table="orders", tenant="per-call", ctx=marker)
     assert seen == [{"table": "orders", "tenant": "per-call"}]
@@ -61,6 +65,7 @@ def test_decorated_shape_that_hides_a_second_default_is_refused():
         @functools.wraps(fn)
         def wrapper(*args, timeout: int = 30, **kwargs):
             return fn(*args, **kwargs)
+
         return wrapper
 
     @with_timeout
@@ -72,7 +77,9 @@ def test_decorated_shape_that_hides_a_second_default_is_refused():
         seen.append(invocation)
         return []
 
-    output = gated_tool(FunctionTool.from_defaults(fn=fetch), policy).call(url="https://example.test")
+    output = gated_tool(FunctionTool.from_defaults(fn=fetch), policy).call(
+        url="https://example.test"
+    )
     assert "signature cannot be judged" in output.content
     assert ran == [] and seen == []
 
@@ -87,7 +94,9 @@ def test_async_call_is_gated_before_execution():
     def policy(name, invocation):
         return [Finding.fail("no_delete", severity=Severity.CRITICAL, message="blocked")]
 
-    output = asyncio.run(gated_tool(FunctionTool.from_defaults(async_fn=delete), policy).acall(path="/tmp/a"))
+    output = asyncio.run(
+        gated_tool(FunctionTool.from_defaults(async_fn=delete), policy).acall(path="/tmp/a")
+    )
     assert "blocked" in output.content
     assert ran == []
 
@@ -110,7 +119,9 @@ def test_workflow_agent_tool_route_uses_the_gated_acall_surface():
         return [Finding.fail("no_hard", severity=Severity.ERROR, message="blocked by policy")]
 
     tool = gated_tool(FunctionTool.from_defaults(fn=write), policy)
-    output = asyncio.run(BaseWorkflowAgent._call_tool(object(), object(), tool, {"table": "orders"}))
+    output = asyncio.run(
+        BaseWorkflowAgent._call_tool(object(), object(), tool, {"table": "orders"})
+    )
     assert output.is_error is True
     assert "blocked by policy" in output.content
     assert seen == [{"table": "orders", "mode": "hard"}]
