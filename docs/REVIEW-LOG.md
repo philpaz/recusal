@@ -180,10 +180,31 @@ decorated tool. `recusal-crewai` still carries its own copy.
   too). Three sentences inexact. Not covered: the two-deep generator modes, the
   hostile-environment scenarios and the probes of rounds one to five on this commit,
   a real Cython function with an embedded text signature, timing, mutation testing.
+- **Kernel review round eleven** (commit `788d632`, the change that closes round ten).
+  No category 1. Round ten's findings confirmed closed on Python 3.9 to 3.15: no
+  outcome of a callable written in C differs from 0.15.0, bare or bound, in the
+  standard library or the scanned packages; the held keyword hand-on is refused held
+  through a cache, a `functools.partial`, a pass-through decorator and a cache named
+  again; six clean method decorators that hold a second wrapper are read. Verdict:
+  release, with the last member of the bound-argument family the review could find,
+  present in 0.15.0: a held wrapper whose leading parameter is its own, has a default
+  and is not declared by the tool, which runs with that default when the holder hands
+  the bound argument on by keyword. The review stated the family in one sentence (the
+  changelog quotes it) and the one shape of it that stays a stated limit. Also: the
+  lookalike rule left out an object whose `__wrapped__` is None; and a limit that was
+  nowhere stated, in ordinary code and in 0.15.0: the walk compares names, not
+  defaults, so a wrapper that declares a parameter again with another default runs
+  that default when the call leaves the parameter out. Not covered: the two-deep
+  generator modes, the kernel's test file and the keyword hand-on generator on this
+  commit, hostile-environment scenarios, timing, mutation testing.
 
 **Open items.**
 
-- After round ten, a change that has not been reviewed closes what it found: a method
+- After round eleven, a change that has not been reviewed closes what it found: a held
+  wrapper's leading parameter in the place of a bound argument is refused where it has
+  a default, as where the tool declares it; a lookalike whose `__wrapped__` is None is
+  refused; the limit on defaults is stated in the changelog.
+- After round ten, a change reviewed in round eleven closes what it found: a method
   is asked for a text signature as what it binds; a held wrapper that passes the call
   on and has a parameter the tool declares in the place of a bound argument is
   refused; an object called through a `__call__` written in Python that shows a code

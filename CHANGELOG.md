@@ -599,8 +599,8 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
-- **Kernel: what review rounds nine and ten found in the changes above, closed before
-  release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
+- **Kernel: what review rounds nine, ten and eleven found in the changes above, closed
+  before release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
   3.14 free-threaded included.
   - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
     under another name" above. A facade that hands its tenant on BY KEYWORD
@@ -627,9 +627,12 @@ All notable changes to this project are documented here. The format follows
     never reached by, and the held wrapper's leading `limit` was left out as the place
     of the receiver. Declared `(limit=10)`, judged `{'limit': 5}`, ran `limit=10`.
     Refused now with `HiddenWrapper`: a held wrapper that passes the call on, whose
-    leading parameter in the place of a bound argument is one the tool declares.
+    leading parameter in the place of a bound argument is one the tool declares, or
+    (round eleven) one of its own that has a default: with
+    `def wrapper(skip_review=True, *args, **kwargs)` held the same way, nothing fills
+    `skip_review`, and the wrapper ran with a default the tool does not show.
     *Read as before:* a held wrapper whose leading parameter is the receiver's own
-    (`self`, which no tool declares).
+    (`self`, which no tool declares and which has no default).
   - *A signature only the lookup finds.* `inspect.signature` asks the callable for
     `__signature__`. The check looked in the callable's `__dict__` and on its class,
     so it did not see one a class answers for in `__getattr__` or `__getattribute__`:
@@ -695,6 +698,27 @@ All notable changes to this project are documented here. The format follows
     the type with each supported one, and a class whose metaclass defines `__eq__`
     answers that comparison. And a caller that counted on the `RecursionError` is
     named in the `detached` entry above: `recusal-pydantic-ai`.
+  - *Not found, by design, and stated for the first time* (round eleven): the walk
+    compares the NAMES each callable takes, not their defaults. A wrapper that
+    declares the tool's parameters again with another default
+    (`@functools.wraps(f) def wrapper(query, limit=999999): return f(query, limit)`
+    over `def f(query, limit=10)`) shows `limit=10` and runs `limit=999999` when the
+    call leaves `limit` out. A caller that fills every default from the signature the
+    tool shows and passes each by name, as `recusal-openai` does, runs what it
+    judged. The declarations refused above (a `__signature__` on a cache, an object
+    that looks like a function) can hide a default the same way; they are refused
+    because a declared signature is refused wherever it stands, not because defaults
+    are compared.
+  - *The family of the bound argument, in one sentence* (the reviewer's, round
+    eleven): the walk knows the place of a bound argument only at the callable that
+    binds it; at each callable further in that passes the call on, read or held, it
+    takes the argument to arrive by position in the leading parameter, and a wrapper
+    that hands it on by keyword, or keeps it, leaves that parameter to the judged
+    keyword or to its own default. Refused now wherever that leading parameter is
+    one the tool declares or has a default the tool does not show, on a callable the
+    walk reads under another name than the binder's, and on a held wrapper. *Still
+    not found, by design:* a wrapper that takes the bound argument under the
+    function's own name and does not hand it on.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
   each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor

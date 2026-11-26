@@ -6922,3 +6922,73 @@ def test_m_an_object_that_looks_like_a_function_is_refused():
     assert unsupported_signature(tool) == _DECLARED
     # a transparent proxy, which also shows the code of what it wraps, names it as
     # ``__wrapped__``: read as before (the proxy tests above)
+
+
+# --- review round eleven: a held wrapper's own defaulted leading parameter, and a --------
+# --- lookalike whose ``__wrapped__`` is None ---------------------------------------------
+
+
+def test_h_a_held_wrappers_own_defaulted_parameter_in_a_bound_place_is_refused():
+    """Round eleven's H4. The held wrapper's leading parameter is one of its OWN, with a
+    default, that the tool does not declare; the holder hands its tenant on by keyword,
+    so nothing fills it. It was left out as the place of the receiver. Judged
+    ``limit=5``; ran the wrapper with ``skip_review=True``. The same wrapper read by the
+    walk is refused by the bound-argument rule; 0.15.0 accepted the held one as well."""
+    import functools
+
+    ran: list = []
+
+    def reviewed(function):
+        @functools.wraps(function)
+        def wrapper(skip_review: bool = True, *args, **kwargs):
+            ran.append(("reviewed", skip_review))
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def scoped(function):
+        held = reviewed(function)
+
+        @functools.wraps(function)
+        def method(self, *args, **kwargs):
+            return held(*args, tenant=self.tenant, **kwargs)
+
+        return method
+
+    class Tools:
+        tenant = "acme"
+        search = scoped(_nine_search)
+
+    tool = Tools().search
+    assert list(inspect_signature(tool)) == ["limit"]
+    _NINE.clear()
+    tool(limit=5)
+    assert ran == [("reviewed", True)] and _NINE == [("search", "acme", 5)]
+    with pytest.raises(HiddenWrapper, match="`skip_review` is the leading parameter.*default"):
+        reached_parameters(tool)
+    assert "`skip_review`" in (unsupported_signature(tool) or "")
+
+
+def test_m_a_lookalike_whose_wrapped_is_none_names_nothing():
+    """Round eleven's E2. The lookalike rule left out an object that shows a
+    ``__wrapped__``, by ``hasattr``, which is true of one set to None: nothing is
+    followed from that, by ``inspect.signature`` or by the walk."""
+
+    def shown(query: str, limit: int = 10) -> str:
+        return query
+
+    class Lookalike:
+        __wrapped__ = None
+
+        def __init__(self):
+            self.__name__ = "search"
+            self.__code__ = shown.__code__
+            self.__defaults__ = shown.__defaults__
+            self.__kwdefaults__ = None
+            self.__annotations__ = dict(shown.__annotations__)
+
+        def __call__(self, query: str, limit: int = 999999) -> str:
+            return query
+
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(Lookalike())
