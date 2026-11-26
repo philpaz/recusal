@@ -752,7 +752,7 @@ the policy runs and what its hook cannot see is in
 <!-- framework-gates:start -->
 | Framework | Package | Tested with | Offline examples | More |
 |---|---|---|---|---|
-| LangGraph | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | `langgraph==1.2.20` `langchain-core==1.7.7` | [`langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py), [`langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph) |
+| LangGraph | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | `langgraph==1.2.20` `langchain-core==1.7.7` `langgraph-prebuilt==1.1.1` | [`langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py), [`langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph) |
 | LangChain `create_agent` | [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | `langgraph==1.2.20` `langchain-core==1.7.7` `langchain==1.4.10` | [`langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py), [`langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langchain-create_agent) |
 | OpenAI Agents SDK, function tools | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | `openai-agents==0.24.0` `openai==3.49.0` | [`openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py), [`openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-function-tools) |
 | OpenAI Agents SDK, MCP tools | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | `openai-agents==0.24.0` `openai==3.49.0` | [`openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py), [`openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-mcp-tools) |
@@ -821,6 +821,8 @@ recusal audit verify audit.jsonl --expect-head "42:<hash>"   # a missing log is 
 recusal doctor                         # "the gate silently isn't installed" fails CI, not prod
 ```
 
+Every command and flag of the command line is in [`docs/CLI.md`](https://github.com/philpaz/recusal/blob/main/docs/CLI.md).
+
 Or as a GitHub Action ([`action.yml`](https://github.com/philpaz/recusal/blob/main/action.yml), dogfooded by this repo's own CI,
 including the negative case: a tampered audit log must make the gate refuse):
 
@@ -834,6 +836,19 @@ including the negative case: a tampered audit log must make the gate refuse):
     audit-log: reports/audit.jsonl
     doctor-dir: "."
 ```
+
+Every input is optional. `findings`, `audit-log` and `doctor-dir` each run a check, and
+the action exits with the highest code any of them returns.
+
+| Input | What it does | Default |
+|---|---|---|
+| `findings` | A findings JSON file to adjudicate (an array, or an object with a `findings` array). PASS exits 0, RETRY 1, FAIL 2. | none |
+| `lenient` | With `findings`: `"true"` accepts findings that omit `status` or `passed` instead of failing closed. | `"false"` |
+| `audit-log` | A hash-chained JSONL audit log to verify: 0 intact, 1 broken, 2 missing or unreadable. | none |
+| `expect-head` | With `audit-log`: the head you recorded elsewhere, as `COUNT:HASH`, so truncation, a rewritten tail and a forged append are caught. | none |
+| `doctor-dir` | A project directory whose scaffolded Claude Code gate is health-checked: 0 healthy, 1 degraded, 2 not installed. | none |
+| `version` | Installs this recusal release from PyPI instead of the source bundled with the action ref. | none |
+| `use-installed` | `"true"` keeps a recusal that is already importable instead of the action ref's bundled source. | `"false"` |
 
 The action ref selects the implementation: the action force-installs the recusal bundled
 with the selected ref, replacing whatever happens to be on the runner, so pinning the
@@ -897,6 +912,7 @@ Everything is indexed in [`docs/`](https://github.com/philpaz/recusal/blob/main/
 |  | [`docs/COOKBOOK.md`](https://github.com/philpaz/recusal/blob/main/docs/COOKBOOK.md) | Copy-paste policies for the actions people actually gate. |
 |  | [`docs/EXAMPLE.md`](https://github.com/philpaz/recusal/blob/main/docs/EXAMPLE.md) | One complete configuration for a real use case, end to end. |
 |  | [`docs/MCP.md`](https://github.com/philpaz/recusal/blob/main/docs/MCP.md) | MCP governance in full: pinning, verification, the call-time gate, every named residual. |
+|  | [`docs/CLI.md`](https://github.com/philpaz/recusal/blob/main/docs/CLI.md) | Every command and flag of the command line, kept complete by a test that reads the parser. |
 |  | [`docs/EXTENDING.md`](https://github.com/philpaz/recusal/blob/main/docs/EXTENDING.md) | Write your own checks, bundle policies, add a gate for another framework. |
 | **Understand the design** | [`CONSTITUTION.md`](https://github.com/philpaz/recusal/blob/main/CONSTITUTION.md) | The four rules, and why each one helps. |
 |  | [`docs/EVIDENCE.md`](https://github.com/philpaz/recusal/blob/main/docs/EVIDENCE.md) | The contract: `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`. |

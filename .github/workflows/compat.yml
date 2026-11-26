@@ -120,7 +120,7 @@ jobs:
           - directory: langchain
             packages: "langgraph langchain-core langchain"
           - directory: langgraph
-            packages: "langgraph langchain-core"
+            packages: "langgraph langchain-core langgraph-prebuilt"
           - directory: openai
             packages: "openai"
           - directory: openai-agents

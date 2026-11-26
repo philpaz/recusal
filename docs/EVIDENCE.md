@@ -62,7 +62,7 @@ A *passed* finding of any severity is fine, it held. Severity only matters on fa
 You don't have to build `Finding` objects. `compute_verdict` and `recusal.claude`
 coerce loose dicts, which is the convenient form when wiring up an agent:
 
-```python
+```text
 {"severity": "CRITICAL", "status": "fail", "message": "...", "check": "subject_match", ...context}
 ```
 
