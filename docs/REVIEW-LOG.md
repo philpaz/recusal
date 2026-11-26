@@ -143,8 +143,48 @@ decorated tool. `recusal-crewai` still carries its own copy.
   free-threaded build, and the memory entries of dead objects hold until the next
   sweep); seven surviving mutants of 28 (two test gaps, five lines that were not
   needed); and nine sentences that were untrue or incomplete.
+- **Kernel review round nine** (commit `f712d61`). No category 1. Round eight's
+  category 2 and its 3.9 false refusal confirmed closed; the change for a signature
+  declared on the class of what a method binds and the `detached` that no longer calls
+  itself confirmed (the second compared with the version that called itself: no
+  difference in 105,587 cases on Python 3.12, 3.9 and 3.14 free-threaded). Nothing
+  0.15.0 refused accepted in the generated shapes or the scans. Verdict: release, with
+  one more member of the bound-argument family reported for the maintainer's choice,
+  present in 0.15.0: a facade that hands its bound argument on BY KEYWORD over a
+  wrapper that keeps a leading named parameter (declared `(limit=10)`, judged
+  `{'limit': 5}`, ran `limit=10`; the same through `recusal_openai.judge_and_run`).
+  Also, each constructed and present in 0.15.0: a `__signature__` a class answers for
+  in `__getattr__` or `__getattribute__` (a forwarding proxy), and a
+  `__text_signature__` on an object whose class defines `__get__`, are honoured by
+  `inspect.signature` and were not seen by the check; a callable object whose
+  metaclass declares `__signature__` was refused with a reason untrue of it. To state:
+  `recusal-pydantic-ai`'s plain gate counted on the `RecursionError` that `detached`
+  no longer raises (no call ran without its policy being called); and a sentence on
+  `detached` was inexact (a value's metaclass `__eq__` runs when its type is told).
+  Not covered: the timing and memory figures in the changelog, mutation testing,
+  generator modes on the free-threaded build, pydantic-ai output functions with deep
+  data, and the origin of exceptions that escape four framework runners at depth,
+  which are the same beside 0.15.1.
 
 **Open items.**
+
+- After round nine, the maintainer chose to close its findings before release. A
+  change that has not been reviewed: bound arguments under a doubt are refused where
+  the last parameter they would fill is one the tool declares and the callable that
+  has it passes the call on; the declared-signature check makes the lookup
+  `inspect.signature` makes, so a proxy that answers for `__signature__` is refused
+  and a signature only the metaclass declares is not; a declared `__text_signature__`
+  is refused. Two more shapes than the review found are closed in it: a text signature
+  on a plain function, which `inspect.signature` reads on Python 3.9 to 3.15 (and on
+  any callable object from 3.13), and a `__signature__` set on a cache wrapper or a
+  `staticmethod` object, which the walk looked through without asking. The
+  `recusal-pydantic-ai` difference and the `detached` sentence are stated in the
+  changelog.
+- Not decided: whether `recusal-pydantic-ai`'s plain gate should bound the depth of
+  the arguments it hands to a policy, now that the kernel does not stop them.
+- Not decided: whether `detached` and `json_data` should tell a value's type without
+  the comparison a metaclass can answer (`type(value) in (...)`). A model's arguments
+  are parsed JSON and never of such a class.
 
 - After round eight, a change committed as `837047e` (on top of the rebuilt round-seven
   change, `d4ff8da`) closes the review's findings. The walk
@@ -158,13 +198,13 @@ decorated tool. `recusal-crewai` still carries its own copy.
   reference type is used. A cache laid out in neither known way is refused outright.
   Seven simplifications the review listed are applied. The two test gaps are pinned,
   and the five lines that were not needed are gone. The sentences are corrected and
-  the two costs stated. This change has not been reviewed.
+  the two costs stated. Reviewed in round nine.
 - Simplification 8 was tried and not kept: removing the legacy reading of a method over
   a cache named for a non-function lost the `DeclaredSignature` refusal of a class-level
   `__signature__` and accepted stated-limit holders that run an unjudged default. The
   legacy reading stays.
-- Found while trying it, present in 0.15.0, and closed in a change that has not been
-  reviewed: a callable object whose class declares `__signature__`, bound as a method
+- Found while trying it, present in 0.15.0, and closed in a change reviewed in round
+  nine: a callable object whose class declares `__signature__`, bound as a method
   (by its own `__get__`, by `types.MethodType`, by a `classmethod`, or under a
   `functools.wraps` wrapper used as a method), was read as the signature it declared,
   and a parameter that signature left out ran at its default. The walk now looks at

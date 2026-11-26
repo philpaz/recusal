@@ -6342,3 +6342,436 @@ def test_fr8_a_parameter_the_tool_declares_is_not_refused_for_a_kept_argument(mo
         reached_parameters(tool)
     with pytest.raises(HiddenWrapper):
         reached_parameters(_calling(_traced)(_six_fetch))
+
+
+# --- review round nine: a bound argument handed on by keyword, and signatures declared ----
+# --- where only the lookup ``inspect.signature`` makes finds them ------------------------
+
+_NINE: List[Any] = []
+
+
+def _nine_search(tenant: str, limit: int = 10) -> str:
+    _NINE.append(("search", tenant, limit))
+    return "rows"
+
+
+def _nine_capped(function):
+    """A wrapper with a leading parameter of its own, which it keeps."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(limit: int = 100, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+_NINE_CAPPED = _nine_capped(_nine_search)
+_NINE_TRACED = _traced(_NINE_CAPPED)
+
+
+def _nine_tools():
+    import functools
+
+    class Tools:
+        TENANT = "acme"
+
+        def __init__(self, tenant):
+            self.tenant = tenant
+
+        @functools.wraps(_NINE_CAPPED)
+        def search(self, *args, **kwargs):
+            return _NINE_CAPPED(*args, tenant=self.tenant, **kwargs)
+
+        @classmethod
+        @functools.wraps(_NINE_CAPPED)
+        def search_of_class(cls, *args, **kwargs):
+            return _NINE_CAPPED(*args, tenant=cls.TENANT, **kwargs)
+
+        @functools.wraps(_NINE_TRACED)
+        def search_traced(self, *args, **kwargs):
+            return _NINE_TRACED(*args, tenant=self.tenant, **kwargs)
+
+        @functools.wraps(_nine_search)
+        def search_plain(self, *args, **kwargs):
+            return _nine_search(self.tenant, *args, **kwargs)
+
+        @functools.wraps(_nine_search)
+        def search_plain_by_keyword(self, *args, **kwargs):
+            return _nine_search(*args, tenant=self.tenant, **kwargs)
+
+    return Tools
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda tools: tools("acme").search,
+        lambda tools: tools.search_of_class,
+        lambda tools: tools("acme").search_traced,
+        lambda tools: _traced(tools("acme").search),
+    ],
+    ids=["method", "classmethod", "a pass-through between", "a pass-through over"],
+)
+def test_k_a_bound_argument_handed_on_by_keyword_to_a_wrapper_that_keeps_a_name(build):
+    """Round nine's K. A facade hands its tenant on BY KEYWORD, so the receiver the walk
+    binds to the wrapper's leading ``limit`` never fills it: the judged ``limit`` goes to
+    the wrapper, which keeps it, and the function runs its own default. The walk read that
+    level as taking nothing, so no rule saw the wrapper keep the name. Judged ``limit=5``,
+    ran ``limit=10``; 0.15.0 accepted it as well. (For a decorator over the BOUND method,
+    Python 3.9 shows the free function's own parameters, ``tenant`` with them.)"""
+    tool = build(_nine_tools())
+    declared = list(inspect_signature(tool))
+    assert declared == ["limit"] or (sys.version_info < (3, 10) and declared == ["tenant", "limit"])
+    _NINE.clear()
+    tool(limit=5)
+    assert _NINE == [("search", "acme", 10)]  # what a call runs: not the judged value
+    with pytest.raises(invocation.BoundArgumentKept, match="`limit`"):
+        reached_parameters(tool)
+    assert "`limit`" in (unsupported_signature(tool) or "")
+
+
+def test_k_the_leading_parameter_the_wrapper_keeps_need_not_have_a_default():
+    """The same where the wrapper's leading parameter has no default: the judged value
+    fills it, and the function further in runs its own."""
+    import functools
+
+    ran: list = []
+
+    def search(tenant: str, region: str = "eu", limit: int = 10) -> str:
+        ran.append((tenant, region, limit))
+        return "rows"
+
+    def routed(function):
+        @functools.wraps(function)
+        def wrapper(region: str, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    inner = routed(search)
+
+    class Tools:
+        @functools.wraps(inner)
+        def search(self, *args, **kwargs):
+            return inner(*args, tenant="acme", **kwargs)
+
+    tool = Tools().search
+    assert list(inspect_signature(tool)) == ["region", "limit"]
+    tool(region="us", limit=5)
+    assert ran == [("acme", "eu", 5)]
+    with pytest.raises(invocation.BoundArgumentKept, match="`region`"):
+        reached_parameters(tool)
+
+
+def test_k_a_facade_over_a_function_that_passes_nothing_on_is_read_as_before():
+    """Not refused: the facade hands its tenant on to the plain function, by position or
+    by keyword. The function takes the judged name itself and passes the call on to
+    nothing, so the value it runs with is the one judged."""
+    tools = _nine_tools()
+    for tool in (tools("acme").search_plain, tools("acme").search_plain_by_keyword):
+        assert _levels(tool) == [["args", "kwargs"], ["limit"]]
+        assert unsupported_signature(tool) is None
+        _NINE.clear()
+        tool(limit=5)
+        assert _NINE == [("search", "acme", 5)]
+
+
+def _nine_real(query: str, limit: int = 10, skip_review: bool = True) -> str:
+    _NINE.append(("real", query, limit, skip_review))
+    return "rows"
+
+
+def _nine_shown(query: str, limit: int = 10) -> str:
+    return "rows"
+
+
+class _NineCarrier:
+    """A class-based decorator that names nothing as ``__wrapped__``."""
+
+    def __call__(self, *args, **kwargs):
+        return _nine_real(*args, **kwargs)
+
+
+def _nine_carriers():
+    import inspect
+    import types
+
+    shown = inspect.signature(_nine_shown)
+
+    class ByGetattr(_NineCarrier):
+        def __getattr__(self, name):
+            if name == "__signature__":
+                return shown
+            raise AttributeError(name)
+
+    class ByGetattribute(_NineCarrier):
+        def __getattribute__(self, name):
+            if name == "__signature__":
+                return shown
+            return object.__getattribute__(self, name)
+
+    class Proxy:
+        """A forwarding proxy over a function that declares a signature."""
+
+        def __init__(self, target):
+            object.__setattr__(self, "_target", target)
+
+        def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, "_target"), name)
+
+        def __call__(self, *args, **kwargs):
+            return object.__getattribute__(self, "_target")(*args, **kwargs)
+
+    def declaring(*args, **kwargs):
+        return _nine_real(*args, **kwargs)
+
+    declaring.__signature__ = shown  # type: ignore[attr-defined]
+
+    class TextOnClass(_NineCarrier):
+        __text_signature__ = "($self, query, limit=10)"
+
+        def __get__(self, obj, cls=None):
+            return self if obj is None else types.MethodType(self, obj)
+
+    class TextOnInstance(_NineCarrier):
+        def __init__(self):
+            self.__text_signature__ = "(query, limit=10)"
+
+        def __get__(self, obj, cls=None):
+            return self if obj is None else types.MethodType(self, obj)
+
+    return [
+        ("__getattr__", ByGetattr()),
+        ("__getattribute__", ByGetattribute()),
+        ("a proxy over a function that declares one", Proxy(declaring)),
+        ("__text_signature__ on the class", TextOnClass()),
+        ("__text_signature__ on the instance", TextOnInstance()),
+    ]
+
+
+@pytest.mark.parametrize(
+    "name, carrier", _nine_carriers(), ids=lambda v: v if type(v) is str else ""
+)
+def test_d_a_signature_only_the_lookup_finds_is_refused(name, carrier):
+    """Round nine's D1 and D2. ``inspect.signature`` asks the callable for
+    ``__signature__``, so a class that answers for the name in ``__getattr__`` or
+    ``__getattribute__`` (a forwarding proxy) declares one, and it reads an object whose
+    class defines ``__get__`` as a built-in, from ``__text_signature__`` (from Python
+    3.13, any callable object). The check looked in the callable's ``__dict__`` and on
+    its class, and saw neither. Shown ``(query, limit=10)``; ran ``skip_review=True``."""
+    import functools
+    import types
+
+    assert "skip_review" not in inspect_signature(carrier)
+    _NINE.clear()
+    carrier(query="q", limit=5)
+    assert _NINE == [("real", "q", 5, True)]
+    bound = types.MethodType(carrier, object())
+    for tool in (carrier, functools.partial(carrier), _traced(carrier), bound):
+        with pytest.raises(DeclaredSignature):
+            reached_parameters(tool)
+        assert unsupported_signature(tool) is not None
+
+
+def test_d_a_signature_the_metaclass_declares_is_not_the_instances():
+    """Round nine's D3. A ``__signature__`` on the METACLASS is the class's: an instance
+    shows none and ``inspect.signature`` reads its ``__call__``. Refused before with "it
+    declares a signature that is not its own", which was untrue of it."""
+    import inspect
+    import types
+
+    class Meta(type):
+        @property
+        def __signature__(cls):
+            return inspect.signature(_nine_shown)
+
+    class Carrier(metaclass=Meta):
+        def __call__(self, query: str, limit: int = 10, skip_review: bool = True) -> str:
+            return _nine_real(query, limit, skip_review)
+
+    tool = Carrier()
+    assert list(inspect_signature(tool)) == ["query", "limit", "skip_review"]
+    assert _levels(tool) == [["query", "limit", "skip_review"]] * 2  # it, and its call
+    assert _levels(types.MethodType(tool, "q")) == [["limit", "skip_review"]] * 2
+    _NINE.clear()
+    tool(query="q", limit=5, skip_review=False)
+    assert _NINE == [("real", "q", 5, False)]  # every parameter judged, and ran so
+
+
+def test_d_what_the_lookup_raises_and_a_text_that_is_the_callables_own():
+    """A lookup that raises anything but ``AttributeError`` fails ``inspect.signature``
+    too: the callable cannot be inspected, and is refused as that. A callable implemented
+    in C is not refused for its ``__text_signature__``, which is its own. One declared on
+    a callable object is refused on every Python, also where this one reads the
+    ``__call__`` (before 3.13, for a class without ``__get__``)."""
+
+    class Raises(_NineCarrier):
+        def __getattr__(self, name):
+            raise RuntimeError("no connection")
+
+    with pytest.raises(RuntimeError):
+        inspect_signature(Raises())
+    with pytest.raises(ValueError, match="cannot be looked for"):
+        reached_parameters(Raises())
+    assert unsupported_signature(Raises()) == "its signature cannot be inspected"
+
+    assert str.upper.__text_signature__
+    invocation._refuse_declared_signature(str.upper, 0)
+    invocation._refuse_declared_signature(len, 0)
+
+    class Texted:
+        __text_signature__ = "(query)"
+
+        def __call__(self, query: str, limit: int = 10) -> str:
+            return query
+
+    read_from_text = sys.version_info >= (3, 13)
+    shown = ["query"] if read_from_text else ["query", "limit"]
+    assert list(inspect_signature(Texted())) == shown
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(Texted())
+    assert not invocation._declares_text(_NineCarrier())
+
+
+def _nine_texted():
+    """A plain function that carries ``__text_signature__``: ``inspect.signature`` reads
+    its parameters from the text, on every Python."""
+
+    def real(query: str, limit: int = 10, skip_review: bool = True) -> str:
+        return _nine_real(query, limit, skip_review)
+
+    real.__text_signature__ = "(query, limit=10)"  # type: ignore[attr-defined]
+    return real
+
+
+def _nine_texted_method():
+    import types
+
+    def real(self, query: str, limit: int = 10, skip_review: bool = True) -> str:
+        return _nine_real(query, limit, skip_review)
+
+    real.__text_signature__ = "($self, query, limit=10)"  # type: ignore[attr-defined]
+    return types.MethodType(real, object())
+
+
+def _nine_texted_call():
+    class Carrier:
+        def __call__(self, query: str, limit: int = 10, skip_review: bool = True) -> str:
+            return _nine_real(query, limit, skip_review)
+
+        __call__.__text_signature__ = "($self, query, limit=10)"  # type: ignore[attr-defined]
+
+    return Carrier()
+
+
+def _nine_partial(function):
+    import functools
+
+    return functools.partial(function)
+
+
+def _nine_cached(function):
+    import functools
+
+    return functools.lru_cache(maxsize=None)(function)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        _nine_texted,
+        lambda: _traced(_nine_texted()),
+        lambda: _nine_partial(_nine_texted()),
+        lambda: _nine_cached(_nine_texted()),
+        lambda: staticmethod(_nine_texted()),
+        _nine_texted_method,
+        _nine_texted_call,
+    ],
+    ids=[
+        "the function",
+        "a wrapper of it",
+        "a partial of it",
+        "a cache over it",
+        "a staticmethod of it",
+        "a method of one",
+        "the __call__ of an object",
+    ],
+)
+def test_d_a_text_signature_declared_on_a_plain_function_is_refused(build):
+    """Found while fixing round nine's D2. ``inspect.signature`` reads a plain function
+    that carries ``__text_signature__`` from that text, on Python 3.9 to 3.15, and so
+    reads everything it reads through such a function. The check did not look for the
+    attribute at all. Shown ``(query, limit=10)``; ran ``skip_review=True``."""
+    tool = build()
+    if not (isinstance(tool, staticmethod) and sys.version_info < (3, 10)):
+        assert list(inspect_signature(tool)) == ["query", "limit"]
+        _NINE.clear()
+        tool(query="q", limit=5)
+        assert _NINE == [("real", "q", 5, True)]
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(tool)
+    if not isinstance(tool, staticmethod):
+        assert unsupported_signature(tool) is not None
+
+
+def _nine_cache_that_declares(shown):
+    import functools
+
+    def real(query: str, limit: int = 999999) -> str:
+        return _nine_real(query, limit, False)
+
+    cached = functools.lru_cache(maxsize=None)(real)
+    cached.__signature__ = shown  # type: ignore[attr-defined]
+    return cached
+
+
+def test_d_a_signature_declared_on_a_wrapper_the_walk_looks_through_is_refused():
+    """Found while fixing round nine's D1. ``inspect.signature`` stops at a
+    ``__signature__`` a cache wrapper carries and reads it, in place of the function
+    under the cache; the walk looked through the cache, a method over one and a
+    ``staticmethod`` object without asking them. Every parameter of the function was
+    still read, so none could be hidden, but a default could: shown ``limit=10``, ran
+    ``limit=999999`` when the call left it out."""
+    import functools
+    import inspect
+
+    shown = inspect.signature(_nine_shown)
+    cached = _nine_cache_that_declares(shown)
+    assert str(inspect.signature(cached)) == str(shown)
+    _NINE.clear()
+    cached(query="q")
+    assert _NINE == [("real", "q", 999999, False)]
+    for tool in (cached, functools.partial(cached), _traced(cached)):
+        with pytest.raises(DeclaredSignature):
+            reached_parameters(tool)
+    assert unsupported_signature(cached) == _DECLARED
+
+    def of_a_method(self, query: str, limit: int = 999999) -> str:
+        return query
+
+    over_a_method = functools.lru_cache(maxsize=None)(of_a_method)
+    over_a_method.__signature__ = inspect.signature(  # type: ignore[attr-defined]
+        lambda self, query, limit=10: None
+    )
+
+    class Holder:
+        search = over_a_method
+
+    assert list(inspect_signature(Holder().search)) == ["query", "limit"]
+    assert inspect_signature(Holder().search)["limit"].default == 10
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(Holder().search)
+
+    if sys.version_info >= (3, 10):  # a ``staticmethod`` object takes attributes from 3.10
+        static = staticmethod(lambda query, limit=999999: query)
+        static.__signature__ = shown  # type: ignore[attr-defined]
+        assert inspect_signature(static)["limit"].default == 10
+        with pytest.raises(DeclaredSignature):
+            reached_parameters(static)
+
+    # an ordinary cache, over a function and over a method, is read as before
+    def plain(query: str, limit: int = 10) -> str:
+        return query
+
+    assert _levels(functools.lru_cache(maxsize=None)(plain)) == [["query", "limit"]] * 2

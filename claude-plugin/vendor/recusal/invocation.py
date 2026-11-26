@@ -252,15 +252,18 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     """The parameters Python binds when ``func`` is called: the callable's own, never a
     signature it shows for something else.
 
-    ``inspect.signature`` follows ``__wrapped__`` and honours a declared ``__signature__``,
+    ``inspect.signature`` follows ``__wrapped__`` and honours a declared signature
+    (``__signature__``, or a ``__text_signature__`` that is not the interpreter's own),
     on the callable or on what it reads the callable through: the class of a callable
     object and its ``__call__``, a ``functools.partial``'s function, and what a method
     binds, which is its function or an object bound as one (by its own ``__get__``, by
     ``types.MethodType``, by a ``classmethod``), with that object's class and
     ``__call__`` in turn. The first is turned off; the second raises
     :class:`DeclaredSignature` at each of those places, on every callable the walk
-    reads. It is not looked for on the receiver of a method, nor on a wrapper a callable
-    only holds (:func:`_refuse_hidden_wrapper`). Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
+    reads, wherever the lookup ``inspect.signature`` makes finds one
+    (:func:`_refuse_declared_signature`, :func:`_declares_text`), the wrappers looked
+    through below included. It is not looked for on the receiver of a method, nor on a
+    wrapper a callable only holds (:func:`_refuse_hidden_wrapper`). Wrappers that only pass arguments through (``lru_cache``, ``cache``, a
     ``staticmethod``, and ``lru_cache`` over a method) are looked through, a cache
     wrapper to what it calls, which need not be the function it names
     (:func:`_cache_target`, which raises :class:`UnreadCache`, a :class:`HiddenWrapper`,
@@ -281,10 +284,13 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     if isinstance(func, type):
         raise TypeError("a class is not inspected as a callable")
     if isinstance(func, staticmethod):
+        _refuse_shown_signature(func)
         return own_parameters(func.__func__, _depth + 1)
     if isinstance(func, _PASS_THROUGH):
+        _refuse_shown_signature(func)
         return own_parameters(_cache_target(func), _depth + 1)
     if inspect.ismethod(func) and isinstance(func.__func__, _PASS_THROUGH):
+        _refuse_shown_signature(func)  # a method shows what its cache declares
         inner, named = _cache_target(func.__func__), func.__func__.__wrapped__
         if inspect.isfunction(named):
             # what the cache calls, with the object bound, whatever it is: the function
@@ -536,14 +542,57 @@ def _cache_target(cache: Any) -> Any:
     return called
 
 
+def _declares_text(func: Any) -> bool:
+    """Whether ``func`` shows a ``__text_signature__`` that something declared for it.
+
+    ``inspect.signature`` reads a signature from that text, in place of the parameters
+    the callable binds, for a plain function that carries the attribute (and so for a
+    method, a ``functools.partial``, a cache or a ``staticmethod`` over one, and for a
+    wrapper ``functools.wraps`` copied it onto), for an object whose class defines
+    ``__get__``, and, from Python 3.13, for any callable object. Which callables it reads
+    so has changed between versions, so the text is refused wherever it is declared,
+    on every Python, also where this one would not read it.
+
+    Not declared, and not refused: the text of a callable implemented in C (a built-in
+    function, a method of a built-in type), which the interpreter derives from the
+    callable itself. That one is told by where the lookup finds the name: on the
+    callable's type, as the accessor the interpreter defines there, with nothing in the
+    callable's own ``__dict__``. Anything else that answers with a text is a
+    declaration: an attribute of the callable or of its class, a property, a hook, and
+    what a method shows of the function it binds."""
+    if not getattr(func, "__text_signature__", None):
+        return False
+    if "__text_signature__" in getattr(func, "__dict__", {}):
+        return True
+    for owner in type(func).__mro__:
+        if "__text_signature__" in owner.__dict__:
+            return type(owner.__dict__["__text_signature__"]) is not types.GetSetDescriptorType
+    return True
+
+
 def _refuse_declared_signature(func: Any, depth: int) -> None:
     """Raise :class:`DeclaredSignature` if ``func``, or what ``inspect.signature`` would
     read in its place, declares ``__signature__``, and :class:`PartialMethodSignature` if
-    either would be read as a ``functools.partialmethod`` (:func:`_refuse_partialmethod`)."""
+    either would be read as a ``functools.partialmethod`` (:func:`_refuse_partialmethod`).
+
+    The test for ``__signature__`` is the lookup ``inspect.signature`` makes: the
+    attribute, asked of the callable. So it is found wherever that lookup finds it: in
+    the callable's ``__dict__`` or a slot, on its class (an attribute, a property), and
+    where the class answers for the name in ``__getattr__`` or ``__getattribute__`` (a
+    forwarding proxy over a function that declares one). One the METACLASS of its class
+    declares is not found, as ``inspect.signature`` does not find it on the instance.
+    A name present with the value None is refused too: ``inspect.signature`` reads
+    through it, and stops following ``__wrapped__`` at it.
+
+    A second declaration is refused with it: a ``__text_signature__`` that is not the
+    interpreter's own (:func:`_declares_text`).
+
+    Asking runs what the class defines for the lookup. Where that raises anything but
+    ``AttributeError``, ``inspect.signature`` raises too, and this raises ``ValueError``:
+    the callable cannot be inspected."""
     if depth > 8:
         raise ValueError("too many wrappers to inspect")
-    if "__signature__" in getattr(func, "__dict__", {}) or hasattr(type(func), "__signature__"):
-        raise DeclaredSignature
+    _refuse_shown_signature(func)
     _refuse_partialmethod(func)
     if inspect.ismethod(func):
         # a method shows the attributes of what it binds as its own, but not what the
@@ -557,6 +606,24 @@ def _refuse_declared_signature(func: Any, depth: int) -> None:
         call = getattr(type(func), "__call__", None)
         if call is not None and not isinstance(call, _C_CALL):
             _refuse_declared_signature(call, depth + 1)
+
+
+def _refuse_shown_signature(func: Any) -> None:
+    """Raise :class:`DeclaredSignature` if ``func`` itself shows a declared signature:
+    the test of :func:`_refuse_declared_signature`, for this one callable. Asked also of
+    the wrappers :func:`own_parameters` looks through (a cache, a method over one, a
+    ``staticmethod`` object): ``inspect.signature`` stops at a ``__signature__`` one of
+    them carries and reads it, in place of the function under it."""
+    try:
+        declares = (
+            hasattr(func, "__signature__")
+            or "__signature__" in getattr(func, "__dict__", {})
+            or _declares_text(func)
+        )
+    except Exception as raised:  # noqa: BLE001, ``inspect.signature`` fails on it as well
+        raise ValueError("a declared signature cannot be looked for") from raised
+    if declares:
+        raise DeclaredSignature
 
 
 #: The attribute under which ``functools.partialmethod`` leaves itself on the function it
@@ -1540,16 +1607,26 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     at the end of the walk). The free function of the example is refused bare, under any
     number of such layers, and with more arguments bound after the object.
 
+    Refused with them, whatever its default: bound arguments under a doubt, where the
+    last parameter they would fill is one the tool declares and ``inner`` itself passes
+    the call on (``*args`` or ``**kwargs``). There ``inner`` is the wrapper that takes
+    the name. A facade that hands its argument on BY KEYWORD (``return
+    capped(*args, tenant=self.tenant, **kwargs)`` over ``def wrapper(limit=100, *args,
+    **kwargs)``) leaves that parameter free, the judged keyword of that name stops at
+    ``inner``, and whether ``inner`` hands it on cannot be read. The walk binds the
+    argument to the parameter and so reads ``inner`` as taking nothing by that name,
+    which is why the rule at the end of the walk does not see it.
+
     The doubt goes two ways. It goes to the arguments bound AFTER the doubted one (a
     ``functools.partial`` of the method): those are the ones a kept argument moves. And
     it stays with the same arguments on each callable further in, the ones bound after
     included, until one settles it: a callable that has a parameter for each of them,
     the last of which has no default and is not declared by the tool, so a call that
     had kept an argument fails there for want of it, and a call that runs kept none. A
-    parameter the tool declares settles nothing: it is given by name, and judged
-    whatever the wrapper does with the bound arguments (Python 3.9 shows the free
-    function's own parameters for a decorator over the bound method, where 3.10 and
-    later show them less the first).
+    parameter the tool declares settles nothing: it is given by name, and, on a
+    callable that passes the call on to nothing, judged whatever a wrapper above did
+    with the bound arguments (Python 3.9 shows the free function's own parameters for a
+    decorator over the bound method, where 3.10 and later show them less the first).
 
     Refused although it runs correctly, because it has the very signature of the
     example and the walk reads parameters, not bodies: a wrapper that hands the argument
@@ -1579,8 +1656,11 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
         rebound = functools.partial(inner, *outer.args, **outer.keywords)
     names, _, still = _taken_under(walk, outer, count)
     taken = list(names)
+    passes_on = False
     try:
-        above, below = _leading(own_parameters(level)), _leading(own_parameters(inner))
+        inner_own = own_parameters(inner)
+        above, below = _leading(own_parameters(level)), _leading(inner_own)
+        passes_on = _read_level(inner_own)[1]
     except Exception:  # noqa: BLE001, what cannot be read here is read, or refused, bound
         above, below = [], []
     for index in range(min(count, len(above))):
@@ -1596,6 +1676,12 @@ def _rebound(outer: Any, inner: Any, walk: Any) -> Any:
     if still is not None and filled:
         last, declared = filled[-1], _declared(walk)
         if declared is not None and last.name in declared:
+            if passes_on:
+                # ``inner`` takes the name itself and passes the call on: where the
+                # bound argument did not reach it by position (kept above, or handed
+                # on by keyword), the judged keyword stops here, and whether ``inner``
+                # hands it on cannot be read
+                raise BoundArgumentKept(_UNHANDED.format(taken=still, filled=last.name))
             walk.given.append((still, last))  # given by name, unless a wrapper keeps it
         elif last.default is not last.empty:
             raise BoundArgumentKept(_UNHANDED.format(taken=still, filled=last.name))
@@ -1755,7 +1841,11 @@ def detached(value: Any, ancestors: Tuple[int, ...] = ()) -> Any:
     from the policy while the tool still used it, so that is no repair either.
 
     It does not call itself: it keeps its place in each list and object it is copying,
-    and calls no function written in Python for a value. So data nested deeper than the
+    and calls no function written in Python for a value, with one exception it has
+    always had: telling a value's type compares that type with each supported one, and
+    a class whose METACLASS defines ``__eq__`` answers that comparison itself (one that
+    answers True for ``str`` is handed back as it is, not copied; a model's arguments
+    are parsed JSON and are never of such a class). So data nested deeper than the
     stack has room for is copied all the same (the version that called itself once for
     every value raised ``RecursionError`` there, at a depth that moved with the caller's
     own), and what a copy costs does not move with where it is called from (measured on

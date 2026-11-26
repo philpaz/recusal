@@ -31,7 +31,8 @@ All notable changes to this project are documented here. The format follows
   frames in blocks, and a function that calls itself for every value pays for a block
   on each call that falls across the end of one. The same runs on 3.9 and 3.14 moved
   by 1.1 to 1.3 times.) It now keeps its place in each list and object it is copying
-  and calls no function written in Python for a value. The same three copies take 12
+  and calls no function written in Python for a value (but the comparison a value's
+  own metaclass defines, as before; see round nine below). The same three copies take 12
   to 24 ms, 79 to 102 ms and 146 to 165 ms, and a copy runs from the bottom of the
   stack, whatever the depth of the data.
   - *The same answers.* Every value is tested as before and in the same order, so the
@@ -49,6 +50,18 @@ All notable changes to this project are documented here. The format follows
     stop deeply nested data has to bound the depth itself; `json_data` refuses beyond
     64 levels. What is done with the copy afterwards can still run out of stack:
     `recusal.authorization.fingerprint` calls itself for every value, as before.
+    One adapter is such a caller (review round nine): `recusal-pydantic-ai`'s plain
+    `RecusalGate`, for a tool annotated `list`, `dict`, `Any` or `dict[str, Any]` whose
+    arguments reach the gate as a Python dict. Beside 0.15.1 it ran such arguments at
+    500 levels of nesting and refused them at 1,000 ("arguments cannot be detached
+    for judging (RecursionError)"). Beside this kernel, at 1,000, 10,000 and 100,000
+    levels, the policy is called with them, is shown data equal to what the tool
+    receives, and the tool runs if the policy allows; a policy that walks the data
+    fails closed if it runs out of stack. The audited gate runs them at 400 levels and
+    refuses at 500, beside both kernels, because the fingerprint cannot be made. No
+    call ran without its policy being called. Arguments that arrive as JSON text ran
+    at 150 levels and were stopped at 200 by that framework's own parser. Measured on
+    Python 3.12.
 
 ### Security
 
@@ -401,8 +414,10 @@ All notable changes to this project are documented here. The format follows
     The doubt goes with it: it goes to every argument bound after the
     doubted one, and stays with the same arguments further in until a callable settles it
     (the last parameter they fill there has no default and is not given by name, so a
-    call that had kept an argument fails there). A parameter that is given by name is
-    not refused for this: it is judged whatever the wrapper keeps. *Read as before:*
+    call that had kept an argument fails there). A parameter that is given by name, on
+    a callable that passes the call on to nothing, is not refused for this: it is
+    judged whatever a wrapper above keeps. (On a callable that passes the call on, it
+    is refused: review round nine, below.) *Read as before:*
     an ordinary bound method, decorated or not, cached, a `classmethod`, a wrapper that
     takes `(*args, **kwargs)`, one that takes the argument under the same name
     (`def wrapper(self, *args, **kwargs)` over a method), a facade that hands its
@@ -510,7 +525,8 @@ All notable changes to this project are documented here. The format follows
     free function, a call judged by those names runs with them, and 0.15.0 accepts it;
     it was refused with a reason that was not true of it. A parameter the tool declares
     is no longer refused for a kept argument, unless a wrapper on the way that passes
-    the call on takes that parameter by name itself: two delegating methods under a
+    the call on takes that parameter by name itself (or is the callable that has it:
+    round nine, below): two delegating methods under a
     wrapper that keeps `limit`, applied directly or held by a decorator, were accepted on 3.9 by the first form of this fix
     (judged `limit=5`, ran the function's own default), because the walk had bound the
     second receiver to the function's `limit` and the rule that refuses a kept name no
@@ -583,6 +599,72 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
+- **Kernel: what review round nine found in the changes above, closed before release.**
+  Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15, 3.14
+  free-threaded included.
+  - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
+    under another name" above. A facade that hands its tenant on BY KEYWORD
+    (`def search(self, *args, **kwargs): return capped(*args, tenant=self.tenant,
+    **kwargs)`, under `functools.wraps(capped)`) over a wrapper that has a leading
+    parameter of its own and keeps it (`def wrapper(limit=100, *args, **kwargs):
+    return function(*args, **kwargs)`): the walk binds the facade's receiver to that
+    leading `limit`, so it read the wrapper as taking nothing by that name, while in
+    the call the receiver never reaches it and the judged `limit` does. Declared
+    `(limit=10)`, judged `{'limit': 5}`, ran `limit=10`; through
+    `recusal_openai.judge_and_run` the same. With a leading parameter that has no
+    default: judged `region='us'`, ran `region='eu'`. Refused now with
+    `BoundArgumentKept`: bound arguments under a doubt, where the last parameter they
+    would fill is one the tool declares and the callable that has it passes the call
+    on (`*args` or `**kwargs`). Refused for a method, a `classmethod`, and with
+    pass-through decorators between or over them. *Read as before:* a facade that
+    hands its argument on, by position or by keyword, to a function that passes the
+    call on to nothing.
+  - *A signature only the lookup finds.* `inspect.signature` asks the callable for
+    `__signature__`. The check looked in the callable's `__dict__` and on its class,
+    so it did not see one a class answers for in `__getattr__` or `__getattribute__`:
+    a forwarding proxy with a plain `__call__` over a function that declares one
+    showed `(query, limit=10)` and ran `skip_review=True`. The check now makes the
+    lookup `inspect.signature` makes. Asking runs what the class defines for that
+    name; where it raises anything but `AttributeError`, `inspect.signature` raises
+    too, and the callable is refused as one that cannot be inspected.
+  - *A text signature.* `inspect.signature` reads `__text_signature__`, the attribute
+    the interpreter uses for callables written in C, wherever Python code sets one:
+    on a plain function (Python 3.9 to 3.15), and so on a method, a
+    `functools.partial`, a cache, a `staticmethod` and a `functools.wraps` wrapper of
+    one; on an object whose class defines `__get__`; and, from Python 3.13, on any
+    callable object. The check did not look for it. The review found the object whose
+    class defines `__get__`; the plain function and the rest were found while closing
+    that. `f.__text_signature__ = "(query, limit=10)"` on
+    `def f(query, limit=10, skip_review=True)` showed two parameters and ran
+    `skip_review=True`. A text that is declared is refused now with
+    `DeclaredSignature`, on every Python, also where that Python would not read it
+    (which callables it reads so has changed between versions). The text of a
+    callable written in C is its own and is not refused: it is told by where the
+    lookup finds the name (the accessor the interpreter defines on the callable's
+    type, with nothing in the callable's own `__dict__`).
+  - *A signature declared on a wrapper the walk looks through.* `inspect.signature`
+    stops at a `__signature__` set on a `functools.lru_cache` wrapper itself, or on a
+    `staticmethod` object, and reads it in place of the function underneath. The walk
+    looked through those wrappers without asking them. The function under them was
+    still read, so no parameter could be hidden, but a default could: shown
+    `limit=10`, ran `limit=999999` when the call left it out. Found while closing the
+    two above. They are asked now, a method over a cache included.
+  - *A refusal that was not true, ended.* A callable object whose METACLASS declares
+    `__signature__` shows none itself, and `inspect.signature` reads its `__call__`.
+    It was refused with "it declares a signature that is not its own", and the entry
+    above had extended that to such an object bound as a method. It is read now, by
+    the parameters of its `__call__`. This is the one shape 0.15.0 refused that is
+    accepted: every parameter its call takes is read and judged.
+  - *Refused although it runs correctly:* a callable that declares a text signature,
+    or answers for `__signature__` in a hook, whatever the declaration says; and a
+    facade that hands its argument on by keyword over a wrapper that takes the judged
+    name and does hand it on. The walk reads parameters, not bodies. The remedy for
+    each: register a plain function that names every parameter the tool takes.
+  - *Said more exactly.* `detached` "calls no function written in Python for a value"
+    with one exception it has always had, now stated: telling a value's type compares
+    the type with each supported one, and a class whose metaclass defines `__eq__`
+    answers that comparison. And a caller that counted on the `RecursionError` is
+    named below: `recusal-pydantic-ai`.
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they
   are, and the same `partialmethod` gap is closed in `recusal-crewai`.** Not released;
   each package changed still allows `recusal` 0.15.0, which has neither `HiddenWrapper` nor
