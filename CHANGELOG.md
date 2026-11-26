@@ -599,7 +599,7 @@ All notable changes to this project are documented here. The format follows
   - *Not found, by design:* a signature declared on a wrapper a callable only holds
     (see the hidden wrapper above: a held wrapper is judged by its parameters alone).
   - Run on Python 3.9 to 3.15, 3.14 free-threaded included.
-- **Kernel: what review rounds nine to thirteen found in the changes above, closed
+- **Kernel: what review rounds nine to fourteen found in the changes above, closed
   before release.** Each of these is accepted by 0.15.0 as well. Run on Python 3.9 to 3.15,
   3.14 free-threaded included.
   - *A bound argument handed on by keyword.* See "a bound argument a wrapper takes
@@ -631,8 +631,15 @@ All notable changes to this project are documented here. The format follows
     (round eleven) one of its own that has a default: with
     `def wrapper(skip_review=True, *args, **kwargs)` held the same way, nothing fills
     `skip_review`, and the wrapper ran with a default the tool does not show.
+    And (round fourteen) a held wrapper that passes the call on to NOTHING, where
+    such a parameter has a default the tool does not declare: a method decorator that
+    holds `def wrapper(tenant="public", limit=10): return function(tenant, limit)`
+    and keeps its receiver ran `tenant='public'`. A name the framework injects is not
+    excepted from this, as it is not for a wrapper the walk reads.
     *Read as before:* a held wrapper whose leading parameter is the receiver's own
-    (`self`, which no tool declares and which has no default).
+    (`self`, which no tool declares and which has no default), and one that passes
+    the call on to nothing and takes there a name the tool declares: it runs with the
+    judged keyword.
   - *A signature only the lookup finds.* `inspect.signature` asks the callable for
     `__signature__`. The check looked in the callable's `__dict__` and on its class,
     so it did not see one a class answers for in `__getattr__` or `__getattribute__`:
@@ -695,7 +702,10 @@ All notable changes to this project are documented here. The format follows
     and does receive the bound argument by position
     (`def wrapper(self=None, *args, **kwargs)` held by a method decorator, or
     `def wrapper(session=None, *args, **kwargs)` under a `functools.partial` that
-    binds the session). The walk reads parameters, not bodies. The remedy for
+    binds the session); and a `functools.partial` that binds, by position, the
+    defaulted first parameter of a function whose decorator HOLDS a wrapper that
+    names that parameter again (the same partial over a decorator the walk reads
+    through `__wrapped__` is read). The walk reads parameters, not bodies. The remedy for
     each: register a plain function that names every parameter the tool takes.
   - *Said more exactly.* `detached` "calls no function written in Python for a value"
     with one exception it has always had, now stated: telling a value's type compares
@@ -736,12 +746,14 @@ All notable changes to this project are documented here. The format follows
     the tool declares or that has a default (on a held one, but for the places a
     `functools.partial` or a method directly over it fills itself); and on a callable
     that passes the call on to nothing, such a parameter with a default the tool does
-    not declare, where a wrapper above took the argument under another name.
-    *Still not found, by design:* a wrapper that takes the bound argument in `*args`,
-    or under the very name the function has for it, and keeps it or hands it on by
-    keyword, over a function that passes the call on to nothing and whose leading
-    parameter has a default. It has the signature of a `functools.partial` that binds
-    a defaulted parameter of a decorated function, which is ordinary and is read.
+    not declare: on a held one always, and on one the walk reads where a wrapper
+    above took the argument under another name.
+    *Still not found, by design:* a wrapper the walk reads that takes the bound
+    argument in `*args`, or under the very name the function has for it, and keeps it
+    or hands it on by keyword, over a function the walk reads that passes the call on
+    to nothing and whose leading parameter has a default. It has the signature of a
+    `functools.partial` that binds a defaulted parameter of a decorated function,
+    which is ordinary and is read.
     Refusing bound arguments wherever they would fill a defaulted parameter was tried
     and not kept for that reason (`docs/REVIEW-LOG.md`).
 - **Adapters: the refusals the kernel's walk makes by name are reported as what they

@@ -7195,3 +7195,129 @@ def test_n_every_bound_place_of_a_wrapper_that_passes_the_call_on_is_tested(name
     assert ran == [("acme", "ctx", 10)]  # what a call runs: not the judged value
     with pytest.raises(invocation.BoundArgumentKept, match="`limit`"):
         reached_parameters(tool)
+
+
+# --- review round fourteen: a held wrapper that passes the call on to nothing ------------
+
+
+def _fourteen_restating(function):
+    """A wrapper that names every parameter again, with a default of its own for the
+    first, and passes the call on to nothing."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(tenant: str = "public", limit: int = 10):
+        return function(tenant, limit)
+
+    return wrapper
+
+
+@pytest.mark.parametrize("named", [True, False], ids=["as self", "in *args"])
+def test_h_a_held_wrapper_that_passes_nothing_on_with_a_defaulted_bound_place(named):
+    """Round fourteen's H8. A method decorator holds a wrapper that passes the call on to
+    nothing and has a default of its own for its first parameter; the holder keeps its
+    receiver. That parameter was left out as the receiver's place, and the held rule
+    looked only at wrappers that pass the call on. Judged ``limit=5``; ran
+    ``tenant='public'``, a default the tool does not show. The same wrapper read by the
+    walk under a holder that names its receiver was refused already; 0.15.0 accepted the
+    held one."""
+    import functools
+
+    def scoped(function):
+        held = _fourteen_restating(function)
+        if named:
+
+            @functools.wraps(function)
+            def method(self, *args, **kwargs):
+                return held(*args, **kwargs)
+
+        else:
+
+            @functools.wraps(function)
+            def method(*args, **kwargs):
+                return held(*args[1:], **kwargs)
+
+        return method
+
+    class Tools:
+        search = scoped(_nine_search)
+
+    tool = Tools().search
+    assert list(inspect_signature(tool)) == ["limit"]
+    _NINE.clear()
+    tool(limit=5)
+    assert _NINE == [("search", "public", 5)]
+    with pytest.raises(HiddenWrapper, match="`tenant` is the leading parameter.*has a default"):
+        reached_parameters(tool)
+    assert "`tenant`" in (unsupported_signature(tool) or "")
+
+
+def test_h_what_the_held_rule_reads_and_what_it_refuses_though_it_runs():
+    """Read: a held wrapper that passes nothing on whose leading parameter in the bound
+    place is the receiver's own (``self``, no default), and one the tool declares, which
+    takes the judged keyword and runs with it. Refused although it runs correctly: a
+    ``functools.partial`` that binds, by position, the defaulted first parameter of a
+    function whose decorator holds such a wrapper. And a name the framework injects is
+    not excepted: the rule for a wrapper the walk reads has no such exception either."""
+    import functools
+
+    def holding_method(function):
+        @functools.wraps(function)
+        def restating(self, query: str = "*", limit: int = 10):
+            return function(self, query, limit)
+
+        @functools.wraps(function)
+        def outer(self, *args, **kwargs):
+            return restating(self, *args, **kwargs)
+
+        return outer
+
+    class Service:
+        @holding_method
+        def find(self, query: str = "*", limit: int = 10) -> str:
+            return query
+
+    assert unsupported_signature(Service().find) is None
+    assert Service().find(query="q") == "q"
+
+    def holding(function):
+        held = _fourteen_restating(function)
+
+        @functools.wraps(function)
+        def outer(*args, **kwargs):
+            return held(*args, **kwargs)
+
+        return outer
+
+    plain = holding(_nine_search)
+    assert _levels(plain) == [["args", "kwargs"], ["tenant", "limit"]]  # nothing bound
+    bound = functools.partial(plain, "acme")
+    _NINE.clear()
+    bound(limit=5)
+    assert _NINE == [("search", "acme", 5)]  # clean
+    with pytest.raises(HiddenWrapper, match="`tenant`"):
+        reached_parameters(bound)
+
+    def injected(function):
+        @functools.wraps(function)
+        def wrapper(ctx=None, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def scoped(function):
+        held = injected(function)
+
+        @functools.wraps(function)
+        def method(self, *args, **kwargs):
+            return held(*args, tenant="acme", **kwargs)
+
+        return method
+
+    class Tools:
+        search = scoped(_nine_search)
+
+    declared = inspect_signature(Tools().search)
+    for skip in ((), ("ctx",)):
+        with pytest.raises(HiddenWrapper, match="`ctx`"):
+            invocation._reached(Tools().search, skip, declared)

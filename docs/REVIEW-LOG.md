@@ -231,9 +231,32 @@ decorated tool. `recusal-crewai` still carries its own copy.
   kernel's tests on five of the eight interpreters, hostile-environment scenarios,
   timing, mutation testing.
 
+- **Kernel review round fourteen** (commit `386e21b`, the change that closes round
+  thirteen). No category 1. Round thirteen's finding confirmed closed on Python 3.9
+  to 3.15; the nine generator runs and the scans unchanged; no clean shape newly
+  refused in 71,474 generated shapes of the keyword hand-on or in 27 ordinary shapes
+  of decorated methods and partials. The review compared the rule for a wrapper the
+  walk reads with the rule for a held one: the same for a wrapper that passes the
+  call on, with two differences left. One is a member of the bound-argument family,
+  constructed and present in 0.15.0: a held wrapper that passes the call on to
+  nothing, with a default of its own for its first parameter, under a holder that
+  keeps its receiver, ran with that default; the same wrapper read by the walk was
+  refused. The other: the held rule excepted the names a framework injects and the
+  read rule did not. Verdict: release, and tag once the first is refused or stated.
+  Apart from it the review found no shape that is neither refused nor inside the
+  stated limit. Not covered: a trial of the refusal, the kernel's tests on five of
+  the eight interpreters, hostile-environment scenarios, timing, mutation testing.
+
 **Open items.**
 
-- After round thirteen, a change that has not been reviewed closes what it found: on
+- After round fourteen, a change that has not been reviewed closes what it found: a
+  held wrapper's leading parameter in the place of a bound argument is refused where
+  it has a default the tool does not declare, whether or not the wrapper passes the
+  call on; and the held rule no longer excepts an injected name. Refused by it
+  although it runs correctly, and stated in the changelog: a `functools.partial`
+  that binds by position the defaulted first parameter of a function whose decorator
+  holds a wrapper that names the parameter again.
+- After round thirteen, a change reviewed in round fourteen closes what it found: on
   a wrapper the walk reads that passes the call on, every place the bound arguments
   would fill is tested.
 - After round twelve, a change reviewed in round thirteen closes what it found: the
@@ -251,10 +274,11 @@ decorated tool. `recusal-crewai` still carries its own copy.
   parameter. Those have the signature of the stated limit and run correctly. (The
   review reported the kernel's tests as passing under its trial; they had been run
   against the unpatched tree.)
-- Stated limit, by design: a wrapper that takes a bound argument in `*args`, or under
-  the very name the function has for it, and keeps it or hands it on by keyword, over
-  a function that passes the call on to nothing and whose leading parameter has a
-  default the tool does not declare: the function runs at that default.
+- Stated limit, by design: a wrapper the walk reads that takes a bound argument in
+  `*args`, or under the very name the function has for it, and keeps it or hands it
+  on by keyword, over a function the walk reads that passes the call on to nothing
+  and whose leading parameter has a default the tool does not declare: the function
+  runs at that default.
   `functools.partial(dropping(table), "orders")`, where `dropping` calls
   `function(*args[1:], **kwargs)`, is read as the partial over a pass-through
   decorator is, and ran `table="users"`.

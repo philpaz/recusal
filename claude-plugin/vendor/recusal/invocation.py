@@ -1161,26 +1161,26 @@ _HELD_IN_BOUND_PLACE = (
 
 
 _HELD_DEFAULT_IN_BOUND_PLACE = (
-    "`{name}` is the leading parameter of a wrapper a decorator holds, which passes the "
-    "call on, in the place of an argument bound on the way (the object of a method, a "
-    "positional argument of a `functools.partial`), and has a default: where that argument is handed on by keyword the wrapper runs "
-    "with that default, a value the tool does not declare and no policy judged; "
-    "register a plain function that names every parameter the tool takes"
+    "`{name}` is the leading parameter of a wrapper a decorator holds, in the place of "
+    "an argument bound on the way (the object of a method, a positional argument of a "
+    "`functools.partial`), and has a default: where that argument is not handed on to "
+    "it by position the wrapper runs with that default, a value the tool does not "
+    "declare and no policy judged; register a plain function that names every "
+    "parameter the tool takes"
 )
 
 
-def _held_in_bound_places(function: Any, bound: int) -> Tuple[Tuple[str, bool], ...]:
+def _held_in_bound_places(function: Any, bound: int) -> Tuple[Tuple[str, bool, bool], ...]:
     """The leading parameters of a held plain function that the ``bound`` arguments are
-    taken to fill (:func:`_held_level` leaves them out), each as its name and whether it
-    has a default, where the function passes the call on (``*args`` or ``**kwargs``);
-    none where it does not."""
+    taken to fill (:func:`_held_level` leaves them out), each as its name, whether it
+    has a default, and whether the function passes the call on (``*args`` or
+    ``**kwargs``)."""
     code = function.__code__
-    if not code.co_flags & _VARIADIC:
-        return ()
+    forwards = bool(code.co_flags & _VARIADIC)
     defaults = function.__defaults__
     first_defaulted = code.co_argcount - (len(defaults) if type(defaults) is tuple else 0)
     return tuple(
-        (code.co_varnames[index], index >= first_defaulted)
+        (code.co_varnames[index], index >= first_defaulted, forwards)
         for index in range(min(bound, code.co_argcount))
     )
 
@@ -1279,7 +1279,7 @@ def _hidden_levels(
     value: Any,
     read: List[Any],
     bound: int,
-    in_bound_places: Optional[List[Tuple[str, bool]]] = None,
+    in_bound_places: Optional[List[Tuple[str, bool, bool]]] = None,
 ) -> List[Any]:
     """The levels of the wrappers the walk did not read between a held ``value`` and a
     callable it did read, or none when ``value`` reaches no such callable.
@@ -1293,16 +1293,16 @@ def _hidden_levels(
     they are not for the level the walk read. Each bound method, ``classmethod`` and bound
     positional argument of a ``functools.partial`` on the way adds to it. That holds
     where the holder hands them on by position. Where it hands one on by keyword, the
-    leading parameter of a held wrapper that passes the call on is free: it takes a
-    judged keyword of its name, or runs with its own default. Those parameters are added
-    to ``in_bound_places`` (:func:`_held_in_bound_places`), for the caller to refuse
-    the ones the tool declares and the ones that have a default. Raises
+    leading parameter of a held wrapper is free: it takes a judged keyword of its
+    name, or runs with its own default. Those parameters are added to
+    ``in_bound_places`` (:func:`_held_in_bound_places`), for the caller to refuse
+    (:func:`_refuse_hidden_wrapper`). Raises
     :class:`HiddenWrapper` when the way cannot be judged by parameters: it is still going
     after 32 links, or a link is a single-dispatch function or method that can run
     anything but its base."""
     links: List[Any] = []
     levels: List[Any] = []
-    places: List[Tuple[str, bool]] = []
+    places: List[Tuple[str, bool, bool]] = []
     dispatches = False
     # the leading places of the next plain function that are filled for certain: by a
     # ``functools.partial`` or a method directly over it, which hands its own arguments
@@ -1383,16 +1383,21 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
       through a single-dispatch function or method that can run more than its base, are
       refused as they stand.
 
-    Refused with it: a held wrapper that passes the call on and whose leading
-    parameter, in the place of an argument the holder receives bound, is one the tool
-    declares or one that has a default. The holder may hand that argument on by keyword
+    Refused with it: a held wrapper whose leading parameter, in the place of an
+    argument the holder receives bound, has a default the tool does not declare; and
+    one that passes the call on, where that parameter is one the tool declares. (A
+    held wrapper that passes the call on to nothing and takes a declared name there
+    runs with the judged keyword, and is read.) The holder may hand that argument on by keyword
     (``held(*args, tenant=self.tenant, **kwargs)`` over ``def wrapper(limit=100, *args,
     **kwargs)``): the judged keyword of that name then stops at the held wrapper, and
     whether that hands it on cannot be read; and a leading parameter the tool does not
     declare (``def wrapper(skip_review=True, *args, **kwargs)``) then runs with its
     default, which no policy judged. A held ``def wrapper(self, *args, **kwargs)`` is
     not refused for this: no tool declares ``self``, and it has no default, so a call
-    that did not hand the receiver on by position fails.
+    that did not hand the receiver on by position fails. The places a
+    ``functools.partial`` or a method directly over the held wrapper fills itself are
+    filled for certain and are not tested. A name in ``skip`` is tested like any
+    other, as it is on a wrapper the walk reads.
 
     Only parameters are judged: a held wrapper is not read for the other things the walk
     refuses a callable it reads for (a declared ``__signature__``). And what a callable
@@ -1427,7 +1432,7 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     no longer shows the ``*args``. The call fails either way.
     """
     hidden: List[Any] = []
-    in_bound_places: List[Tuple[str, bool]] = []
+    in_bound_places: List[Tuple[str, bool, bool]] = []
     for value, bound in walk.held:
         hidden.extend(_hidden_levels(value, walk.read, bound, in_bound_places))
     if not hidden:
@@ -1435,16 +1440,17 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     declared = _declared(walk)
     if declared is None:
         raise HiddenWrapper(_HIDDEN_WRAPPER)
-    for name, defaulted in in_bound_places:
-        if name in skip:
-            continue
+    for name, defaulted, forwards in in_bound_places:
         # the holder may hand its bound argument on by keyword (``held(*args,
-        # tenant=self.tenant, **kwargs)``): this parameter is then free
+        # tenant=self.tenant, **kwargs)``), or keep it: this parameter is then free
         if name in declared:
-            # the judged keyword of this name stops at the held wrapper, and whether
-            # that hands it on cannot be read
-            raise HiddenWrapper(_HELD_IN_BOUND_PLACE.format(name=name))
-        if defaulted:
+            if forwards:
+                # the judged keyword of this name stops at the held wrapper, and
+                # whether that hands it on cannot be read
+                raise HiddenWrapper(_HELD_IN_BOUND_PLACE.format(name=name))
+            # a wrapper that passes the call on to nothing takes the judged keyword
+            # and runs with it
+        elif defaulted:
             # nothing fills it: the wrapper runs with a default the tool does not show
             raise HiddenWrapper(_HELD_DEFAULT_IN_BOUND_PLACE.format(name=name))
     levels = [_read_level(parameters) for parameters in walk.found] + hidden
