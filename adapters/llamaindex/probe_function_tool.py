@@ -15,7 +15,6 @@ from typing import Any
 from llama_index.core.tools import FunctionTool
 from llama_index.core.workflow.context import Context
 
-
 SYNC_EXECUTIONS: list[dict[str, Any]] = []
 ASYNC_EXECUTIONS: list[dict[str, Any]] = []
 CALLBACK_OBSERVATIONS: list[str] = []
