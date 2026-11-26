@@ -143,7 +143,9 @@ def test_a_readme_that_pypi_renders_has_no_relative_link_or_image():
     """PyPI shows a package's README as its project page and resolves nothing against the
     repository, so a relative path there is a dead link or a missing picture. The kernel's
     README and each adapter's are those pages: every link and image in them is absolute."""
-    pages = [ROOT / "README.md", *sorted((ROOT / "adapters").glob("*/README.md"))]
+    # adapters/drafts/README.md is a page of the repository, not of a package on PyPI
+    packages = [p for p in (ROOT / "adapters").glob("*/README.md") if p.parent.name != "drafts"]
+    pages = [ROOT / "README.md", *sorted(packages)]
     assert len(pages) == 9
     for page in pages:
         text = page.read_text(encoding="utf-8")
@@ -254,7 +256,7 @@ def test_every_adapter_page_carries_the_website_and_scorecard_badges():
         "(https://scorecard.dev/viewer/?uri=github.com/philpaz/recusal)"
     )
     assert README.count(website) == 1 and README.count(scorecard) == 1
-    pages = sorted((ROOT / "adapters").glob("*/README.md"))
+    pages = sorted(p for p in (ROOT / "adapters").glob("*/README.md") if p.parent.name != "drafts")
     assert len(pages) == 8
     for page in pages:
         text = page.read_text(encoding="utf-8")

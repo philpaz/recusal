@@ -9,6 +9,7 @@ whatever a package index serves that day. Do not edit them by hand.
 |---|---|---|
 | `dev.txt` | the `dev` extra in `pyproject.toml` | the test matrix, and the release gates |
 | `adapter-<directory>.txt` | the dev tools, plus that adapter's `tested-with.txt` | the adapter's pull request lanes, its wheel job and its release |
+| `draft-<directory>.txt` | the dev tools, plus that draft adapter's `tested-with.txt` | the draft's own job |
 | `cookbook-mcp.txt` | the dev tools, plus the pinned MCP SDK | the cookbook job |
 | `zizmor.txt`, `sigstore.txt` | the workflow auditor, the Sigstore client | the audit job, the two verify workflows |
 | `uv.txt` | the resolver | the newest-release lane, to resolve before it installs |

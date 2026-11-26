@@ -2,7 +2,7 @@
 
 Run with the pinned dependency from the repository root:
 
-    .venv/bin/python adapters/llamaindex/probe_function_tool.py
+    .venv/bin/python adapters/drafts/llamaindex/probe_function_tool.py
 
 The probe is deliberately offline.  It records the arguments that a local function
 actually receives, including Python defaults and FunctionTool partial parameters, and

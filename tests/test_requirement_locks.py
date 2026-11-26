@@ -46,9 +46,12 @@ def test_there_is_a_lock_for_the_dev_tools_each_tool_and_each_adapter():
     names = sorted(tool.definitions())
     adapters = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
     assert len(adapters) == 8
+    drafts = sorted(p.parent.name for p in (ROOT / "adapters" / "drafts").glob("*/pyproject.toml"))
+    assert drafts == ["llamaindex"]
     assert names == sorted(
         ["dev", "cookbook-mcp", "recusal-0.3.0", "sigstore", "uv", "zizmor"]
         + [f"adapter-{directory}" for directory in adapters]
+        + [f"draft-{directory}" for directory in drafts]
     )
     assert sorted(path.stem for path in _locks()) == names
 
@@ -104,7 +107,7 @@ def test_the_staleness_check_notices_a_changed_root(monkeypatch):
 
 def test_every_pin_in_every_lock_is_exact_and_carries_a_hash():
     locks = _locks()
-    assert len(locks) == 14
+    assert len(locks) == 15
     for path in locks:
         lines = path.read_text(encoding="utf-8").splitlines()
         assert re.fullmatch(r"# roots: .+ \| python>=3\.\d+", lines[0]), path.name

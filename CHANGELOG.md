@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **A draft adapter for LlamaIndex, in the tree and not released.**
+  [`adapters/drafts/llamaindex`](adapters/drafts/llamaindex/README.md) gates an explicit
+  local `FunctionTool`: `gated_tool` returns a wrapper whose `call` and `acall` judge the
+  named arguments, defaults included, before the function runs. Its README says what it
+  does not cover. Its tests run on every pull request with `llama-index-core==0.14.25`
+  installed from a hash lock, on Python 3.10 and 3.12. It is not on PyPI and no release
+  workflow offers it; [`adapters/drafts/README.md`](adapters/drafts/README.md) says what
+  a draft is and what takes one to a released adapter. Thanks to @Varma0604 for the
+  work (#311).
 - **Every adapter's wheel is checked on its minimum Python.** For all eight adapter
   packages, CI builds the wheel once and installs those same files on Python 3.12 and on
   the package's declared minimum, read from `pyproject.toml`; both environments run the

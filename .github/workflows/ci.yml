@@ -461,6 +461,46 @@ jobs:
         run: |
           cd /tmp && /tmp/adapter-py311/bin/python -m mypy --python-version 3.11 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
 
+  # A draft adapter (adapters/drafts/) is not released. Its own tests run here with its
+  # framework installed from its own lock, on its minimum Python and on 3.12.
+  draft-llamaindex-py310:
+    name: Draft LlamaIndex adapter (Python 3.10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install Recusal and the pinned LlamaIndex core
+        run: |
+          python -m pip install --require-hashes -r requirements/draft-llamaindex.txt
+          python -m pip install --no-deps -e .
+      - name: Test the draft adapter, and run its surface probe
+        run: |
+          pytest -q adapters/drafts/llamaindex/test_gate.py
+          python adapters/drafts/llamaindex/probe_function_tool.py
+
+  draft-llamaindex-py312:
+    name: Draft LlamaIndex adapter (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install Recusal and the pinned LlamaIndex core
+        run: |
+          python -m pip install --require-hashes -r requirements/draft-llamaindex.txt
+          python -m pip install --no-deps -e .
+      - name: Test the draft adapter, and run its surface probe
+        run: |
+          pytest -q adapters/drafts/llamaindex/test_gate.py
+          python adapters/drafts/llamaindex/probe_function_tool.py
+
   # The same proof for recusal-openai, the gate for a Responses or Chat Completions loop.
   adapter-openai-wheel:
     name: recusal-openai wheel (build, install, smoke)
