@@ -10,6 +10,8 @@ PyPI. The links in it are followed by ``tests/test_markdown_links.py``.
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
@@ -61,38 +63,51 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
     note = _callout()
     flat = " ".join(line.lstrip("> ") for line in note.splitlines())
     for claim, evidence in (
-        ("gives each sink a copy of its own", ROOT / "recusal" / "audit.py"),
-        ("all eight adapter packages", ROOT / "adapters" / "google-adk" / "README.md"),
+        ("refuses what its walk cannot follow to the end", ROOT / "recusal" / "invocation.py"),
+        ("This release is stricter", ROOT / "CHANGELOG.md"),
     ):
         assert claim in flat, claim
         assert evidence.is_file(), evidence
-    # the fix the note describes is in the tree: a sink's entry is not the one the log keeps
-    from recusal import Finding, compute_verdict
-    from recusal.audit import AuditLog
+    # the refusals the note names have a public class each in the tree
+    import functools
 
-    received: list = []
+    from recusal import invocation
 
-    class Sink:
-        def write(self, entry):
-            received.append(entry)
+    for name, base in (
+        ("HiddenWrapper", ValueError),
+        ("UnreadCache", invocation.HiddenWrapper),
+        ("DispatchedAtCallTime", ValueError),
+        ("PartialMethodSignature", TypeError),
+        ("BoundArgumentKept", ValueError),
+    ):
+        assert issubclass(getattr(invocation, name), base), name
 
-    log = AuditLog(sinks=[Sink()])
-    verdict = compute_verdict([Finding.ok("demo", message="observed")])
-    returned = log.append(verdict, action={"tool": "t"})
-    assert received[0] == log.entries[0] == returned
-    assert received[0] is not log.entries[0] and returned is not log.entries[0]
-    # the versions the note tells a reader to upgrade to are the ones in the tree, all eight
-    named = dict(re.findall(r"`recusal-([a-z-]+)`\s+to\s+(\d+\.\d+\.\d+)", flat))
-    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
-    assert sorted(named) == directories
-    for directory, version in named.items():
-        package = "recusal_" + directory.replace("-", "_")
-        init = (ROOT / "adapters" / directory / "src" / package / "__init__.py").read_text("utf-8")
-        current = re.search(r'^__version__ = "(\d+\.\d+\.\d+)"$', init, re.M).group(1)
-        newer = tuple(map(int, current.split("."))) >= tuple(map(int, version.split(".")))
-        assert newer, (directory, current, version)
+    # the first one the note names is refused: a decorator that holds a second wrapper,
+    # whose own `force=True` no policy would have judged
+    def holding(function):
+        @functools.wraps(function)
+        def held(*args, force: bool = True, **kwargs):
+            return function(*args, **kwargs)
+
+        @functools.wraps(function)
+        def shown(*args, **kwargs):
+            return held(*args, **kwargs)
+
+        return shown
+
+    @holding
+    def pay(amount: int) -> int:
+        return amount
+
+    with pytest.raises(invocation.HiddenWrapper):
+        invocation.reached_parameters(pay)
+    # what the note says the changelog lists is there, in the section it links
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    section = changelog.split(f"## [{_version()}]", 1)[1].split("\n## [", 1)[0]
+    assert "Refused although it runs correctly" in " ".join(section.split())
+    assert "Still not found, by design" in section
     # what the note says of the kernel diff is what the kernel diff is
-    assert "in `recusal.audit` and the version string" in flat
+    assert "in `recusal.invocation` and the version string" in flat
 
 
 def test_every_place_says_the_adapters_are_on_pypi_and_installs_them_by_name():

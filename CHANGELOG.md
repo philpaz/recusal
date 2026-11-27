@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-26
+
+A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation`, the module a
+gate uses to read the function a tool call runs, refuses what its walk cannot follow to
+the end, and has five new public exception classes for those refusals (`HiddenWrapper`,
+`UnreadCache`, `DispatchedAtCallTime`, `PartialMethodSignature` and `BoundArgumentKept`).
+Each is under Security below, with the shape that ran a value no policy judged, what is
+refused now, and what is still not found. `recusal.invocation.detached` no longer calls
+itself, under Fixed. No verdict, decision path, reason string of the frozen kernel or
+import path changed. Under `recusal/`, 0.16.0 differs from 0.15.1 in `recusal.invocation`
+and the version string.
+
+**This release is stricter.** Some tools that 0.15.1 read are refused by 0.16.0, a few of
+them although they run correctly; the entries mark those "Refused although it runs
+correctly".
+Two shapes that 0.15.0 and 0.15.1 refused with a reason that was not true are accepted.
+One limit is stated and not closed, under "Still not found, by design" in the entry for
+review rounds nine to fifteen.
+
+The adapter changes listed under Security are in the repository and are not released
+here: each adapter is a separate distribution on PyPI under its own version and tag, and
+none is part of the `recusal` wheel. The same holds for the draft LlamaIndex adapter and
+the documentation under Added.
+
 ### Added
 
 - **A draft adapter for LlamaIndex, in the tree and not released.**
