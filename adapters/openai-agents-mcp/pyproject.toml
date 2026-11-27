@@ -33,8 +33,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.15.0 is what recusal-openai-agents 0.2.0, required below, itself requires.
-    "recusal>=0.15.0,<1",
+    # 0.16.0 is the first release whose `recusal.invocation.detached` does not call
+    # itself. The gate copies a call's arguments with it, and what a copy that calls
+    # itself costs moves with the depth the sender nests the arguments at.
+    "recusal>=0.16.0,<1",
     # 0.2.0 is the first release with `shared_name_reason`, `tools_gated` and the
     # `agent_gated` argument of `gate_tools`, which this package uses.
     "recusal-openai-agents>=0.2.0,<1",

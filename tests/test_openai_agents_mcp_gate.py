@@ -6957,9 +6957,9 @@ class TestSeventhReview:
     ):
         gate = _adapter()
         read = []
-        measure, copied = gate._measure, gate._copied
+        measure, copied = gate._measure, gate._detached
         monkeypatch.setattr(gate, "_measure", lambda *a: read.append("measured") or measure(*a))
-        monkeypatch.setattr(gate, "_copied", lambda value: read.append("copied") or copied(value))
+        monkeypatch.setattr(gate, "_detached", lambda value: read.append("copied") or copied(value))
         monkeypatch.setattr(gate, "_rendered", lambda value: read.append("written") or "")
         given = {"p": ["x"]}
         assert self.judged(given, self.INTEGERS)[2].startswith(
@@ -7328,14 +7328,43 @@ class TestEighthReview:
         {"": "", "é": "ü", "list": [1.0, 1, True]},
     ]
 
-    def test_the_copy_is_the_kernels_value_for_value_and_message_for_message(self):
-        """The gate copies the arguments with a function of its own, which does not
-        recurse. What is JSON data is the kernel's to say: this holds the two together."""
+    #: What the copy says of arguments that are not JSON data, which a refusal quotes.
+    NOT_DATA = (
+        "non-finite numbers are not JSON data",
+        "Enum arguments are unsupported; declare data-only parameters "
+        "and resolve application types inside the tool body",
+        "arguments must be data-only",
+        "cyclic arguments are not JSON data",
+        "argument keys must be strings",
+    )
+
+    def test_the_copy_is_the_kernels_and_the_package_requires_the_kernel_that_has_it(self):
+        """The gate copies the arguments with the kernel's ``detached`` and has no copy of
+        its own: what is JSON data is said in one place. The kernel's does not call
+        itself from 0.16.0, which is therefore the oldest kernel the package installs
+        with (the test below copies data nested 5,000 deep), and the page says the same."""
+        import ast
         from enum import Enum, IntEnum
 
         from recusal.invocation import detached
 
-        module = self.schema_module()
+        module, gate = self.schema_module(), _adapter()
+        assert module.detached is detached and gate._detached is detached
+        assert not hasattr(module, "copied") and not hasattr(gate, "_copied")
+        # no function of the package but the kernel's builds the copy: none of its own
+        # modules defines one under the old name or under the kernel's
+        for source in sorted(Path(module.__file__).parent.glob("*.py")):
+            defined = {
+                node.name
+                for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            assert not defined & {"copied", "_copied", "detached", "_detached"}, source.name
+        package = ROOT / "adapters" / "openai-agents-mcp"
+        pyproject = (package / "pyproject.toml").read_text(encoding="utf-8")
+        readme = (package / "README.md").read_text(encoding="utf-8")
+        assert '"recusal>=0.16.0,<1"' in pyproject and "`recusal>=0.16.0`" in readme
+        assert "recusal>=0.15" not in pyproject and "recusal>=0.15" not in readme
 
         class Color(Enum):
             RED = 1
@@ -7376,16 +7405,17 @@ class TestEighthReview:
             holds_itself,
         ]
         for value in (*self.DATA, {"a": twice, "b": twice, "c": [twice]}):
-            copy = module.copied(value)
-            assert copy == detached(value) == value
+            copy = module.detached(value)
+            assert copy == value
             assert json.dumps(copy) == json.dumps(value)
         for bad in not_data:
             for value in (bad, [bad], {"a": bad}, [1, {"a": [2, bad]}, float("nan")], {"z": [bad]}):
-                mine, theirs = outcome(module.copied, value), outcome(detached, value)
-                assert mine == theirs and mine[0] == "TypeError", (value, mine, theirs)
+                refused = outcome(module.detached, value)
+                assert type(refused) is tuple and refused[0] == "TypeError", (value, refused)
+                assert refused[1] in self.NOT_DATA, (value, refused)
         # nothing is shared with what was handed over, or within the copy
         given = {"a": twice, "b": twice, "c": {"d": [twice]}}
-        copy = module.copied(given)
+        copy = module.detached(given)
         assert copy is not given and copy["a"] is not twice and copy["a"] is not copy["b"]
         assert copy["c"] is not given["c"] and copy["c"]["d"][0] is not copy["a"]
 
@@ -7402,7 +7432,7 @@ class TestEighthReview:
                 deep = [deep, 1] if kind == "list" else {"k": deep, "n": 1}
             assert module.measure(deep, 10**9) == module.DEEP
             assert module.measure(deep, 30) == module.OVER
-            copy = module.copied(deep)
+            copy = module.detached(deep)
             level, other, levels = deep, copy, 0
             while type(level) in (list, dict):
                 assert type(other) is type(level) and other is not level
@@ -7411,7 +7441,7 @@ class TestEighthReview:
             assert levels == 5_000 and other == 7
             assert module._count(deep) == 10_001
             assert module._same(deep, copy) is True
-            unlike = module.copied(deep)
+            unlike = module.detached(deep)
             inner = unlike
             for _ in range(4_999):
                 inner = inner[0] if kind == "list" else inner["k"]
@@ -7524,9 +7554,9 @@ class TestEighthReview:
         from the copy that they are JSON data, and one that is not writes them once."""
         gate = _adapter()
         read: list = []
-        measure, copied, rendered = gate._measure, gate._copied, gate._rendered
+        measure, copied, rendered = gate._measure, gate._detached, gate._rendered
         monkeypatch.setattr(gate, "_measure", lambda *a: read.append("measured") or measure(*a))
-        monkeypatch.setattr(gate, "_copied", lambda value: read.append("copied") or copied(value))
+        monkeypatch.setattr(gate, "_detached", lambda value: read.append("copied") or copied(value))
         monkeypatch.setattr(
             gate, "_rendered", lambda value: read.append("written") or rendered(value)
         )

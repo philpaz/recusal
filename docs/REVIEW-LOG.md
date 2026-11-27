@@ -851,7 +851,9 @@ the gate's own readings of the arguments recursed, so their time moved with the 
 the sender nested at; a call a little over the size ceiling was read almost to its
 end; the gate read a `$ref` its own way; and three exceptions left the gate
 uncaught),
-are in the changelog's Unreleased entry for 0.2.1, which is not released.
+are in the changelog's Unreleased entry for 0.2.1, which is not released. 0.2.1 copies
+a call's arguments with the kernel's `recusal.invocation.detached`, as 0.2.0 does, and
+requires `recusal` 0.16.0, the first whose copy does not recurse.
 
 - **The most serious.** In 0.2.0 a model can still stall the agent's process. Under
   `uniqueItems`, integers chosen to share one hash make the uniqueness check slow, and

@@ -87,10 +87,14 @@ more digits on. What the gate itself reads of the arguments before and after the
 (their size and depth, the copy, the count of their values, the keys they are compared
 by, the text of a refusal) it reads without recursion: on Python 3.11 and later the
 cost of a function that recurses moves with where in the interpreter's stack its
-deepest calls fall, and the depth of nesting is the sender's to choose
-(:func:`copied`). The validation and the walk recurse with the schema, as deep as the
-arguments nest under it, and are refused where the interpreter's recursion limit ends
-them. The items
+deepest calls fall, and the depth of nesting is the sender's to choose. The copy is the
+kernel's (``recusal.invocation.detached``, which does not call itself from ``recusal``
+0.16.0, the oldest this package installs with), so what is JSON data is said in one
+place, with the one exception that function states: it tells a value's type by
+comparing types, so a value of a class whose metaclass answers ``==`` for ``str`` is
+handed back as it is and not copied, which no JSON decoder builds. The validation and
+the walk recurse with the schema, as deep as the arguments nest under it, and are
+refused where the interpreter's recursion limit ends them. The items
 ``uniqueItems`` compares are gathered into a set by keys that hold no number, only text:
 the hash of a number is the sender's to choose, and the hash of a string is keyed by the
 interpreter (:func:`_key`).
@@ -108,12 +112,10 @@ more than one form refuses the call that leaves its property out.
 from __future__ import annotations
 
 import json
-import math
 import operator
 from asyncio import CancelledError
 from bisect import bisect_right
 from contextvars import ContextVar
-from enum import Enum
 from fractions import Fraction
 from itertools import chain
 from json.encoder import encode_basestring as _as_json
@@ -123,6 +125,8 @@ from jsonschema import FormatChecker, validators  # type: ignore[import-untyped]
 from jsonschema.exceptions import SchemaError, ValidationError  # type: ignore[import-untyped]
 from referencing import Registry
 from referencing import jsonschema as _specifications
+
+from recusal.invocation import detached
 
 #: What is never turned into a refusal: the interpreter or the event loop stopping the
 #: work. Every other exception that reaches the gate, one that is not an ``Exception``
@@ -447,72 +451,6 @@ def long_integer_reason() -> str:
     )
 
 
-_STRINGS = {str}
-
-
-def copied(value: Any) -> Any:
-    """A copy of ``value`` that shares no list or object with it, or ``TypeError`` for a
-    value that is not JSON data: what ``recusal.invocation.detached`` returns and raises,
-    value for value and message for message, worked out without recursion.
-
-    The kernel's function calls itself once for every value, so on Python 3.11 and
-    later, which keep frames in blocks of 16 KB, what a copy costs depends on where in
-    such a block its deepest calls fall: up to several times more at one depth of
-    nesting than at the next, and the depth is the sender's to choose. This one keeps
-    its place in a list and calls no Python function for a value, so the nesting does
-    not move it. The data it accepts is the kernel's, and a test holds the two together.
-    """
-    made: Any = []
-    #: for each list or object being copied: what is left of it, its copy, whether its
-    #: members are named, and its identity (0 for the holder of the copy itself)
-    levels: list[tuple[Iterator[Any], Any, bool, int]] = [(iter((value,)), made, False, 0)]
-    above: set[int] = set()
-    while levels:
-        members, target, named, identity = levels[-1]
-        for each in members:
-            if named:
-                name, each = each
-            kind = type(each)
-            if kind is str or kind is int or kind is bool or each is None:
-                pass
-            elif kind is float:
-                if not math.isfinite(each):
-                    raise TypeError("non-finite numbers are not JSON data")
-            elif kind is list or kind is dict:
-                if id(each) in above:
-                    raise TypeError("cyclic arguments are not JSON data")
-                inner: Any
-                if kind is list:
-                    inner = []
-                    levels.append((iter(each), inner, False, id(each)))
-                else:
-                    if each and set(map(type, each)) != _STRINGS:
-                        raise TypeError("argument keys must be strings")
-                    inner = {}
-                    levels.append((iter(each.items()), inner, True, id(each)))
-                above.add(id(each))
-                if named:
-                    target[name] = inner
-                else:
-                    target.append(inner)
-                break
-            elif isinstance(each, Enum):
-                raise TypeError(
-                    "Enum arguments are unsupported; declare data-only parameters "
-                    "and resolve application types inside the tool body"
-                )
-            else:
-                raise TypeError("arguments must be data-only")
-            if named:
-                target[name] = each
-            else:
-                target.append(each)
-        else:
-            levels.pop()
-            above.discard(identity)
-    return made[0]
-
-
 def _too_costly(allowed: int, ceiling: int) -> str:
     """The reason for a call whose check was stopped at ``allowed`` steps: which of the
     two limits stopped it, and what the application can do about that one. A call the
@@ -606,8 +544,8 @@ _WORK: ContextVar[Optional[_Work]] = ContextVar("recusal_openai_agents_mcp_work"
 
 def _count(value: Any) -> int:
     """How many values ``value`` holds, itself included. Without recursion, as every
-    reading of the arguments that is the gate's own is (:func:`copied`); the data must
-    not hold itself, which a copy never does."""
+    reading of the arguments that is the gate's own is (the module text says why); the
+    data must not hold itself, which a copy never does."""
     count = 1
     held = [value]
     while held:
@@ -676,7 +614,7 @@ def _key(work: Optional[_Work], value: Any, exact: bool) -> Any:
     An ``exact`` key is never gathered: it is looked up once among the values of the
     schema's own ``enum``, or compared with its ``const``.
 
-    A list or an object is read without recursion (:func:`copied` says why): the key of
+    A list or an object is read without recursion (the module text says why): the key of
     each one inside it is finished before the one that holds it, as a recursion would."""
     #: for each list or object being read: itself, what is left of it, the keys of its
     #: members so far, and the name it has in the object that holds it
@@ -1631,7 +1569,7 @@ class Listed:
         if type(schema) is not dict:
             raise Refused(f"{_SCHEMA} is not a JSON object")
         try:
-            copied(schema)
+            detached(schema)
         except TypeError:
             raise Refused(f"{_SCHEMA} is not JSON data") from None
         base = _draft(schema["$schema"]) if "$schema" in schema else validators.Draft202012Validator
@@ -2160,7 +2098,7 @@ class Listed:
             )
         if state == _NONE or (id(value), name) in held:
             return
-        default = copied(default)  # the schema was checked to be JSON data
+        default = detached(default)  # the schema was checked to be JSON data
         try:
             errors = list(validator.descend(default, member))
             stray = self._stray(validator, errors)
@@ -2281,7 +2219,7 @@ class Listed:
         # stands under another: each is put in for the copy and taken out again
         for parent, name, default in held.values():
             parent[name] = default
-        judged = copied(sent)
+        judged = detached(sent)
         for parent, name, _ in held.values():
             del parent[name]
         return judged, sent
@@ -2307,7 +2245,7 @@ class Listed:
             validator = self._prepared()
             # a copy in which no list or object stands in two places: the walk knows a
             # place by the object that is there
-            sent = arguments if owned else copied(arguments)
+            sent = arguments if owned else detached(arguments)
             work = _Work(min(_STEPS + _STEPS_PER_VALUE * _count(sent), self._ceiling))
             token = _WORK.set(work)
             return self._complete(validator, work, sent)

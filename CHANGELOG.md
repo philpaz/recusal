@@ -221,9 +221,10 @@ All notable changes to this project are documented here. The format follows
     size and the depth, the copy, the count of the values, the keys values are
     compared by and the text of a refusal are now read without recursion, and call no
     Python function for a value, so the nesting does not move them. The copy is the
-    gate's own for that (`recusal.invocation.detached` recurses); it accepts what the
-    kernel's accepts and refuses what it refuses with the same words, which a test
-    holds. Results and steps are unchanged. What still recurses is the validation and
+    kernel's `recusal.invocation.detached`, as in 0.2.0, which does not call itself
+    from `recusal` 0.16.0: the package now requires `recusal>=0.16.0` (0.2.0 required
+    0.15.0) and has no copy of its own, which a test holds. Results and steps are
+    unchanged. What still recurses is the validation and
     the walk, with the schema, and the kernel's fingerprint of an audit entry.
     `tools/measure_mcp_cost.py stack` times four calls from each of 144 depths of the
     stack and prints the least, the median and the most. The page's time tables are

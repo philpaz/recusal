@@ -78,6 +78,7 @@ from recusal_openai_agents import unjudgeable as _unjudgeable
 
 from recusal import decide
 from recusal.claude_code import identity_getter
+from recusal.invocation import detached as _detached
 
 from ._schema import DEEP as _DEEP
 from ._schema import LONG as _LONG
@@ -88,7 +89,6 @@ from ._schema import SIZE_CEILING, STEP_CEILING
 from ._schema import Listed as _Listed
 from ._schema import Refused as _Refused
 from ._schema import ceiling_of as _ceiling_of
-from ._schema import copied as _copied
 from ._schema import long_integer_reason as _long_integer_reason
 from ._schema import measure as _measure
 from ._schema import size_ceiling_of as _size_ceiling_of
@@ -116,8 +116,8 @@ def _rendered(value: Any) -> str:
     that is not data as its type's name, and ``...`` for whatever sits below the depth
     the gate reads and for a list or an object that holds itself.
 
-    Written without recursion (``_schema.copied`` says why). An integer is written out
-    here, and none has more digits than the gate reads: the arguments are measured
+    Written without recursion (the text of ``_schema`` says why). An integer is written
+    out here, and none has more digits than the gate reads: the arguments are measured
     first (``_schema.measure``)."""
     out: list[str] = []
     write = out.append
@@ -284,7 +284,7 @@ def _judged(
     fault: Optional[str] = "arguments are nested too deeply" if found == _DEEP else None
     if fault is None:
         try:
-            proposed = _copied(args)
+            proposed = _detached(args)
         except TypeError as exc:
             fault = f"arguments are not JSON data ({exc})"
 

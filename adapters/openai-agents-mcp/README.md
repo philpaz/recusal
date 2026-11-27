@@ -50,7 +50,7 @@ Install it from PyPI. `recusal-openai-agents`, which this package requires, come
 pip install recusal-openai-agents-mcp
 ```
 
-Requires Python 3.10+, `recusal>=0.15.0`, `recusal-openai-agents>=0.2.0`,
+Requires Python 3.10+, `recusal>=0.16.0`, `recusal-openai-agents>=0.2.0`,
 `openai-agents>=0.24.0`, `mcp>=2.3.0`, `jsonschema>=4.26.0` and `referencing>=0.37.0` (the
 MCP SDK requires `jsonschema` itself, and `referencing` comes with `jsonschema`). It is
 tested on every pull request against exactly `openai-agents==0.24.0` with
@@ -516,7 +516,9 @@ depths of plain Python frames and prints the least, the median and the most; thi
 page does not state that range yet. What the gate itself reads of the arguments (their
 measure, the copy, the count of their values, the text a refusal is bound to) it reads
 without recursion and without a Python call for each value, so the depth the sender
-nests the arguments at does not move those. The validation recurses with a recursive
+nests the arguments at does not move those. The copy is the kernel's
+(`recusal.invocation.detached`), which does not call itself from `recusal` 0.16.0, the
+oldest kernel this package installs with. The validation recurses with a recursive
 schema, as deep as the arguments nest under it, and so does the kernel's fingerprint
 of the arguments for an audit entry: there the sender's nesting moves the place too.
 
