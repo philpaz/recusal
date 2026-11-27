@@ -42,7 +42,8 @@ commits named under the rounds below are the change as each round read it; they 
 kept on the branches `review-history/kernel-299-pre-rebuild` (`293f22f`) and
 `review-history/kernel-299-rounds-6-8` (all the others). A further change, which
 answers what two adapter reviews found open in the walk of 0.16.0, is on the branch
-`kernel-cache-target-held-order`, in a draft pull request. It is not merged and not
+`kernel-cache-target-held-order`, in the draft pull request
+[#329](https://github.com/philpaz/recusal/pull/329). It is not merged and not
 released; it is the last entry under the rounds.
 
 The part of the kernel under review is `recusal.invocation`
@@ -377,7 +378,8 @@ decorated tool. `recusal-crewai` still carries its own copy.
 - Not reviewed: stacks more than three decorators deep. Rounds seven and eight ran
   generated shapes to three deep, with async and generator wrappers.
 - **After 0.16.0: what two adapter reviews found open in its walk** (branch
-  `kernel-cache-target-held-order`, a draft pull request; not merged, not released).
+  `kernel-cache-target-held-order`, the draft pull request #329; not merged, not
+  released).
   The review of `recusal-openai-agents` 0.2.2 and a review of `recusal-pydantic-ai`
   beside 0.16.0 found the same gaps by different routes, each reproduced on 0.16.0
   before it was changed:
