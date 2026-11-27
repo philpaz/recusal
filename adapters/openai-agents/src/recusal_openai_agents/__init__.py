@@ -40,7 +40,7 @@ from ._gate import _too_deep as too_deep
 from ._gate import _tools_gated as tools_gated
 from ._gate import _unjudgeable as unjudgeable
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "GUARDRAIL_NAME",

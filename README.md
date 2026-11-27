@@ -219,7 +219,7 @@ The adapters are at different stages of security review. Of the 8 adapters,
 | [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review complete | Its fixes are released in 0.2.0. |
 | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review complete | Its fixes are released in 0.3.0. |
 | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review complete | Its fixes are released in 0.2.2. |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes so far are released in 0.2.1, and the review continues. |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes so far are released in 0.2.2, and the review continues. |
 | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
 | [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
 

@@ -6,6 +6,56 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`recusal-openai-agents` 0.2.2: every refusal the kernel's walk makes by a class of
+  its own has a reason that says what was found and what to do, and the package requires
+  `recusal` 0.16.0.** No verdict changes beside `recusal` 0.16.0: a tool 0.2.1 refuses
+  there is refused, and a tool it gates is gated. Reproduced on `openai-agents` 0.24.0,
+  each with a real tool of that shape.
+  - A `BoundArgumentKept` (a facade method that is `functools.wraps` of a function and
+    takes its object as `self`) was refused as "the function it runs cannot be inspected
+    (BoundArgumentKept)", and an `UnreadCache` as "cannot be inspected (UnreadCache)".
+    Each has a reason of its own now. The first carries the kernel's text, which names
+    the two parameters and says that a wrapper of that signature which runs correctly is
+    refused too; the second says that the function the cache calls could not be told.
+  - A declared signature (`__signature__`, a `__text_signature__` that is not the
+    interpreter's own) was refused as "cannot be inspected (DeclaredSignature)". The
+    reason now says what is declared, why the gate cannot tell which parameters a call
+    fills, and what to register in its place.
+  - The reason for a `HiddenWrapper` said that the held wrapper "takes a parameter of its
+    own" and put the kernel's text in brackets after it. The kernel also raises that
+    class where no parameter was found: the way from the held wrapper passes a
+    single-dispatch function with an implementation registered, or does not end. The
+    reason now says where the second wrapper is held and passes the kernel's text on as
+    the cause. It no longer advises applying each decorator to the function directly,
+    which gets a wrapper with a parameter of its own refused by another rule.
+  - Each of those reasons, and the ones for a single-dispatch function and a
+    `functools.partialmethod` the kernel finds, ends by saying that the gate judges the
+    plain function it advises and does not read what that function's body calls.
+  - The kernel's classes are imported and asked with `isinstance`. 0.2.1 knew three of
+    them by name, because `recusal` 0.15.0 has none of them, so an exception of another
+    class with the same name got the reason, and for `HiddenWrapper` its text. The three
+    name constants are removed.
+  - **The floor is `recusal>=0.16.0`** (it was `>=0.15.0`). The two stacks of decorators
+    that review round seven found open, a `functools.partial` that carries a
+    `__wrapped__` and `functools.wraps` written above `functools.lru_cache`, are read by
+    the walk of `recusal` 0.16.0 and not by that of 0.15.0 or 0.15.1, so 0.2.0 and 0.2.1
+    installed beside either of those run a parameter of a wrapper under them unjudged.
+    0.2.2 does not allow either.
+  - The package page and the docstrings named `recusal` 0.15.0 where a statement holds
+    for 0.15.1 too, or no longer holds beside 0.16.0. Each is corrected. The page no
+    longer lists as unseen a decorator that holds a second `functools.wraps` wrapper
+    with a parameter of its own, which the kernel refuses, and says what is still not
+    found.
+  - Stated as open on the package page, found while this release was prepared: a
+    single-dispatch function with nothing registered that is reached only through a
+    `functools.lru_cache` named again for another function (`functools.wraps(f)` above
+    the cache), by a wrapper that carries none of the dispatcher's attributes, is gated.
+    The gate's own walk follows what the cache names. An implementation that another
+    call of the same model turn registers on it runs for the calls of that turn; from
+    the next turn the call is refused.
+
 ## [0.16.0] - 2026-11-26
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation`, the module a
