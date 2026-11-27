@@ -985,7 +985,8 @@ fixes are in the same changelog entry).
   the wide-schema cost on 0.2.0; and six cases of its fuzzing that it did not read.
 - **Still open after it.** The steps did not count what `jsonschema` itself reads of a
   schema for `unevaluatedProperties` and `unevaluatedItems`, nor the walk of a `$ref`
-  pointer of many parts (round ten closed both). A hosted approval whose `arguments`
+  pointer of many parts (round ten closed the first, and bounded the second by the
+  characters of a reference, not by its parts: see round eleven). A hosted approval whose `arguments`
   is not text raised `TypeError` in `recusal-openai-agents`, which this package builds
   on (found by this round, belongs to that package): `recusal-openai-agents` 0.2.2
   refuses such an approval, and 0.2.1 of this package requires it. The time tables on
@@ -1035,8 +1036,9 @@ Pydantic schema refused that 0.2.0 sends, and compared 1,213,330 calls with
 **Round eleven** (2026-11-27, of round ten's changes; the fixes are in the same
 changelog entry).
 
-- **What it confirmed.** The shape of round ten closed, over about 2.2 million calls on
-  grids built by hand, none of them sent although `jsonschema` rejects it; the handling
+- **What it confirmed.** The shape of round ten closed, over about 2.2 million calls
+  (about 1.6 million on grids built by hand and about 0.6 million from two random
+  generators), none of them sent although `jsonschema` rejects it; the handling
   of a listing that is handed out and not kept; the longest reference; the step counts
   the package page states; and no ordinary schema refused that was sent before.
 - **What it found.** A list no step counted. A call notes each doubt the two readings
@@ -1058,9 +1060,25 @@ changelog entry).
   that they do not grow with the depth and grow by one for each naming.
 - **What it did not cover**, by its own list: 21 of the 24 object parts and 14 of the
   16 list parts of its grid; the race inside the SDK's own server classes; Python
-  3.10; real transports; a live zod server; `_audit.py`; and a proof of the bounds.
-- **Still open after it.** No proof of the bounds. Reading a listing is not counted in
-  steps. The time tables on the package page are of the code before round eight.
+  3.10; real transports; a live zod server; `_audit.py`; timings beyond their order of
+  magnitude; the doubling case at 28 definitions and more; the changes of
+  `recusal-openai-agents` 0.2.2 beyond one probe; sentences outside the diff it
+  reviewed; and a proof of the bounds.
+- **The confirmation pass** (2026-11-27, of the fix above). It compared 2,234,030 calls
+  line by line between the code before the fix and after: none differs in what is
+  sent, in what is refused or in a reason. The doubling case ends with 3 notes at
+  every depth it ran (10 to 26) and a peak of 96 MB. Six other routes were measured
+  for memory, and nothing grew without steps. It found one cost the page did not
+  state: a `$ref` of many pointer parts inside the 1,024 characters allowed (190
+  parts took the check of 30,000 integers from 0.3 s to 3.2 s for the same steps;
+  500 parts are refused when the listing is read). It is stated on the page and not
+  changed. It did not cover: the doubling case on a Python other than 3.12 or at 28
+  definitions and more; the rest of its grid; clean timings of its memory probe;
+  real transports; a live zod server; `_audit.py`; the race inside the SDK's own
+  server classes; and a proof that gathering the notes loses none.
+- **Still open after it.** No proof of the bounds. Reading a listing, and the walk of
+  a `$ref` pointer of many parts, are not counted in steps. The time tables on the
+  package page were measured again on the code of 0.2.1.
 
 **Where you can help.**
 

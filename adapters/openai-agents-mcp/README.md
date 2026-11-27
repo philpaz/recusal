@@ -392,7 +392,13 @@ power of their number of times). And a `$ref` may be 1,024 characters at the mos
 a reference is looked up again each time it is applied. What a call notes of the
 doubts it meets (for the reason of a refusal) is one note for each answer that is worked
 out once, however many doubts it stands for, so those notes are no more than the steps.
-One thing a listed schema can make long is still not counted: reading the listing
+Two things a listed schema can make long are still not counted. One is the walk of a
+`$ref` pointer of many parts: `jsonschema` looks a reference up again, part by part,
+each time it is applied, and the limit above bounds its characters, not its parts. In
+the confirmation pass of the eleventh review round a reference of 190 parts (383
+characters) took the check of 30,000 integers from 0.3 s to 3.2 s for the same
+150,012 steps; the time grew in proportion to the parts, and a reference of 500
+parts was refused when the listing was read. The other is reading the listing
 itself, once, when the first call after it is checked (its check against the
 metaschema, and the gate's own reading). That grows with the size of the listed schema,
 and with the number of places a `$ref` names outside the keywords that hold schemas,
@@ -513,22 +519,8 @@ ceilings. Measured with
 [`tools/measure_mcp_cost.py`](https://github.com/philpaz/recusal/blob/main/tools/measure_mcp_cost.py)
 on one laptop (Windows 11, Python 3.12.5), the best of three runs, the arguments
 decoded from JSON text as the SDK hands them to the gate. The figures in the three
-tables are of the code as it stood before the eighth review round (commit `fdd84b0`
-of this repository, where the tables were last written). That round changed
-how the gate reads the arguments outside the check (their measure, the copy and the
-count, which no longer recurse) and not what a step is, and it found that the place a
-call is made from moves these times (below the third table). The ninth round changed
-how a `oneOf`, a `not`, an `if` and a `maxContains` are read (by a second validator
-class, and twice where the two readings differ) and how the names a schema lists are
-looked up; the largest call of each row and the steps it spends are unchanged
-(`tools/measure_mcp_cost.py` reproduces them on this code), and the times of the rows
-with a discriminated union, which is a `oneOf`, are the ones this most likely moved.
-The tenth round changed how `unevaluatedProperties` and `unevaluatedItems` are read
-(by the gate itself, where `jsonschema` gathered what was evaluated), which the
-figures for `unevaluatedProperties` in the text below the second table are of. The
-tables and the times in the text around them have not been measured again on this
-code: 0.2.1 is released with them as they are, and they are what is still to be
-done. The first two tables time the
+tables, and the times in the text around them, are of the code of 0.2.1 (commit
+`8d10538` of this repository), measured on 2026-11-27. The first two tables time the
 check itself (`Listed.complete`: the validation, the two refusals and the defaults);
 what the rest of the gate and an audit log add is in the third. First the largest call
 of each shape that the default step ceiling completes (the table above), which is the
@@ -536,56 +528,56 @@ longest the check of one such call takes:
 
 | Arguments, at the default ceiling | The gate | Pydantic's validation of the same value |
 |---|---|---|
-| `list[int]`, 49,997 items | 249 ms | 0.4 ms |
-| `list[str]`, 49,997 items | 573 ms | 0.5 ms |
-| `dict[str, Optional[float]]`, 39,997 members | 398 ms | 1.5 ms |
-| `dict[str, Optional[str]]`, 39,997 members | 609 ms | 1.6 ms |
-| `list[Union[int, str]]`, 33,331 short strings | 718 ms | 1.8 ms |
-| `list[Union[int, float, bool, str, None]]`, 24,998 short strings | 837 ms | 3.6 ms |
-| a recursive JSON type, 60 lists deep around 12,420 numbers | 576 ms | 1.4 ms |
-| `list[Item]` (a model of four fields, two defaults written), 3,571 items | 267 ms | 1.2 ms |
-| a recursive model, 5,403 children | 369 ms | 4.9 ms |
-| a list of a discriminated union of ten models, 809 items | 353 ms | 0.3 ms |
-| a list of a discriminated union of thirty models, 308 items | 350 ms | 0.2 ms |
+| `list[int]`, 49,997 items | 171 ms | 0.4 ms |
+| `list[str]`, 49,997 items | 481 ms | 0.4 ms |
+| `dict[str, Optional[float]]`, 39,997 members | 338 ms | 1.3 ms |
+| `dict[str, Optional[str]]`, 39,997 members | 567 ms | 1.4 ms |
+| `list[Union[int, str]]`, 33,331 short strings | 657 ms | 1.7 ms |
+| `list[Union[int, float, bool, str, None]]`, 24,998 short strings | 799 ms | 3.5 ms |
+| a recursive JSON type, 60 lists deep around 12,420 numbers | 521 ms | 1.3 ms |
+| `list[Item]` (a model of four fields, two defaults written), 3,571 items | 248 ms | 1.1 ms |
+| a recursive model, 5,403 children | 353 ms | 4.7 ms |
+| a list of a discriminated union of ten models, 809 items | 380 ms | 0.3 ms |
+| a list of a discriminated union of thirty models, 308 items | 420 ms | 0.1 ms |
 
 A call one item larger is refused, and takes as long to refuse. A hand-written schema
-that reaches one subschema 4,096 ways (twelve levels of `allOf`) took 726 ms to be
+that reaches one subschema 4,096 ways (twelve levels of `allOf`) took 591 ms to be
 stopped at the ceiling, on 5,897 bytes of arguments: the ceiling bounds the steps, and
-a step took between 1.2 and 4.2 microseconds across these cases, the least for a
+a step took between 0.9 and 4.0 microseconds across these cases, the least for a
 number and the most for a short string beside other types in a union, which the gate
 reads for what a server could read it as. A check that fails costs what the steps
 count and no more: a recursive model nested 60 deep whose last node is not valid and
 holds 250,000 children (750 KB) is refused after 497 steps
-in 306 ms, all of it copying and counting the values, where every level used to write
+in 132 ms, all of it copying and counting the values, where every level used to write
 out everything below it (about 1,300 ms for the same call). One string of 1,000,000
-characters is 12 steps for an `Optional[str]` and took between 13 ms (letters) and
-35 ms (byte order marks) to check; where the schema lists ten alternatives and none is
+characters is 12 steps for an `Optional[str]` and took between 12 ms (letters) and
+33 ms (byte order marks) to check; where the schema lists ten alternatives and none is
 a string, it is refused in under 1 ms without being read. The time grows in proportion
 to the length: with the ceiling on the size raised that far, 10,000,000 characters took
-122 ms to 358 ms and 50,000,000 letters 626 ms. Then the same shapes with the step
+115 ms to 338 ms and 50,000,000 letters 601 ms. Then the same shapes with the step
 ceiling raised (`step_ceiling=`), which is what raising it costs:
 
 | Arguments, the ceiling raised | The gate | Pydantic's validation of the same value |
 |---|---|---|
-| `list[int]`, 10,000 items | 37 ms | 0.1 ms |
-| `list[str]`, 10,000 items | 116 ms | 0.1 ms |
-| `dict[str, Optional[float]]`, 10,000 members | 77 ms | 0.3 ms |
-| `list[Union[int, float, bool, str, None]]`, 10,000 short strings | 328 ms | 3.1 ms |
-| `list[Item]`, 10,000 items | 772 ms | 3.5 ms |
-| `list[Item]`, 50,000 items (1.6 MB: the ceiling on the size raised too) | 3,799 ms | 18.1 ms |
-| a recursive model, 10,000 children | 607 ms | 8.9 ms |
-| a list of a discriminated union of ten models, 10,000 items (140 KB) | 4,935 ms | 3.9 ms |
-| a list of a discriminated union of thirty models, 10,000 items (147 KB) | 11,725 ms | 4.1 ms |
+| `list[int]`, 10,000 items | 33 ms | 0.1 ms |
+| `list[str]`, 10,000 items | 88 ms | 0.1 ms |
+| `dict[str, Optional[float]]`, 10,000 members | 73 ms | 0.3 ms |
+| `list[Union[int, float, bool, str, None]]`, 10,000 short strings | 316 ms | 1.4 ms |
+| `list[Item]`, 10,000 items | 768 ms | 3.2 ms |
+| `list[Item]`, 50,000 items (1.6 MB: the ceiling on the size raised too) | 3,541 ms | 17.7 ms |
+| a recursive model, 10,000 children | 636 ms | 9.1 ms |
+| a list of a discriminated union of ten models, 10,000 items (140 KB) | 4,726 ms | 3.8 ms |
+| a list of a discriminated union of thirty models, 10,000 items (147 KB) | 12,749 ms | 3.9 ms |
 
-That is between 68 and 2,853 times Pydantic's own time across the cases the script
+That is between 61 and 3,372 times Pydantic's own time across the cases the script
 times beside it, and the gate's time grew in proportion: five times the items took
-between 4.6 and 6.1 times as long. Under `uniqueItems`, 20,000 ordinary integers took
-93 ms and 20,000 integers of one hash 104 ms at the default ceiling, and with the
-ceiling raised 100,000 took 533 ms and 513 ms. Under `unevaluatedProperties` on a
+between 4.6 and 5.8 times as long. Under `uniqueItems`, 20,000 ordinary integers took
+77 ms and 20,000 integers of one hash 78 ms at the default ceiling, and with the
+ceiling raised 100,000 took 431 ms and 438 ms. Under `unevaluatedProperties` on a
 hand-written schema, 443 members of one object are the most the default ceiling
-completes: 400 took 3 ms and spent 163,216 steps, 500 were refused in 1 ms and 30,000
-in 77 ms. With the ceiling raised, 1,000 members took 10 ms and spent 1,008,016 of the
-1,012,000 steps allowed, and 1,100 were refused in 3 ms for costing more than 1,000
+completes: 400 took 2 ms and spent 163,216 steps, 500 were refused in 1 ms and 30,000
+in 66 ms. With the ceiling raised, 1,000 members took 6 ms and spent 1,008,016 of the
+1,012,000 steps allowed, and 1,100 were refused in 2 ms for costing more than 1,000
 steps for each value.
 
 **What the rest of the gate adds, and the longest a call takes at the ceiling on its
@@ -600,24 +592,25 @@ by default:
 
 | Arguments | The check alone | `call_tool` | `call_tool` with an audit log |
 |---|---|---|---|
-| `list[int]`, 49,997 items (the first table) | 178 ms | 187 ms | 224 ms |
-| `list[str]`, 49,997 items | 511 ms | 515 ms | 523 ms |
-| `dict[str, Optional[float]]`, 39,997 members | 346 ms | 385 ms | 425 ms |
-| `list[Union[int, float, bool, str, None]]`, 24,998 short strings | 828 ms | 847 ms | 851 ms |
-| at the ceiling on the size: one string of letters | 13 ms | 13 ms | 16 ms |
-| at the ceiling: one string of byte order marks | 35 ms | 37 ms | 47 ms |
-| at the ceiling: a list of `0`, in an argument the schema does not name | 109 ms | 184 ms | 442 ms |
-| at the ceiling: a list of `{}`, in an argument the schema does not name | 336 ms | 439 ms | 942 ms |
-| at the ceiling: the same list 60 lists deep | 497 ms | 608 ms | 1,111 ms |
-| at the ceiling: a list of `{}` 60 lists deep, for a parameter typed `Any` | 501 ms | 609 ms | 1,105 ms |
-| at the ceiling: a recursive model 60 deep whose last node is not valid, its children `{}` (refused) | 360 ms | 465 ms | 2,399 ms |
-| at the ceiling: a list of `0` for `list[int]` (refused at the step ceiling) | 54 ms | 125 ms | 392 ms |
+| `list[int]`, 49,997 items (the first table) | 173 ms | 187 ms | 218 ms |
+| `list[str]`, 49,997 items | 486 ms | 497 ms | 501 ms |
+| `dict[str, Optional[float]]`, 39,997 members | 349 ms | 377 ms | 415 ms |
+| `list[Union[int, float, bool, str, None]]`, 24,998 short strings | 814 ms | 829 ms | 855 ms |
+| at the ceiling on the size: one string of letters | 13 ms | 12 ms | 16 ms |
+| at the ceiling: one string of byte order marks | 35 ms | 37 ms | 46 ms |
+| at the ceiling: a list of `0`, in an argument the schema does not name | 51 ms | 91 ms | 340 ms |
+| at the ceiling: a list of `{}`, in an argument the schema does not name | 308 ms | 349 ms | 842 ms |
+| at the ceiling: the same list 60 lists deep | 365 ms | 399 ms | 879 ms |
+| at the ceiling: a list of `{}` 60 lists deep, for a parameter typed `Any` | 320 ms | 360 ms | 882 ms |
+| at the ceiling: a recursive model 60 deep whose last node is not valid, its children `{}` (refused) | 175 ms | 209 ms | 693 ms |
+| at the ceiling: a list of `0` for `list[int]` (refused at the step ceiling) | 31 ms | 67 ms | 319 ms |
 
 A call over the ceiling on the size is refused as soon as the reading reaches the
 ceiling. Where one string, or the number of members of one list or object, is over it
 alone, nothing more is read: a string of 50,000,000 characters and a list of 2,000,000
-empty objects were each refused in under 3 ms, where a 50,000,000-character string took
-626 ms to check with the ceiling raised. A call a little over the ceiling is known to
+empty objects were each refused in under 14 ms (0.7 ms and 13.3 ms; with an audit log
+13.5 ms and 5.0 ms), where a 50,000,000-character string took
+601 ms to check with the ceiling raised. A call a little over the ceiling is known to
 be over only once most of it is read (500,001 numbers, 333,400 empty objects), so
 refusing it costs about what measuring a call at the ceiling costs, which is part of
 every `call_tool` figure above. Arguments that are not JSON data (a number too large
@@ -629,7 +622,8 @@ The two bounds add up: one call can spend 200,000 steps on an argument the schem
 and carry what is left of 1,000,000 characters in one it does not, so the longest one
 call can take is of the order of the longest row of the first table and the longest of
 this one together, and longer from an unlucky place in the stack (next). The tool times
-that call (`the two ceilings together`).
+that call (`the two ceilings together`): 1,122 ms through `call_tool`, and 1,551 ms
+with an audit log, from the place it measured them from.
 
 **The place a call is made from moves these times.** On Python 3.11 and later CPython
 keeps the frames of Python functions in blocks of 16 KB, and a function called where a
@@ -638,8 +632,12 @@ check is made of such calls, so the same arguments take longer when the gate is 
 from some depths of the application's own stack than from others, and each figure
 above is the time from the one place the tool measured it from.
 `python tools/measure_mcp_cost.py stack` makes four of these calls from each of 144
-depths of plain Python frames and prints the least, the median and the most; this
-page does not state that range yet. What the gate itself reads of the arguments (their
+depths of plain Python frames and prints the least, the median and the most, each call made once (not a best of three).
+Through `call_tool` on this code: the list of a union of five types at the step
+ceiling took 823 ms at the least, 844 ms at the median and 3,147 ms at the most; the
+recursive JSON type 525, 543 and 1,593 ms; the two ceilings together 1,124, 1,149
+and 3,415 ms, and with an audit log 1,516, 1,557 and 3,861 ms. So the longest call
+measured took up to 3.7 times its median, from a few depths beside one another. What the gate itself reads of the arguments (their
 measure, the copy, the count of their values, the text a refusal is bound to) it reads
 without recursion and without a Python call for each value, so the depth the sender
 nests the arguments at does not move those. The copy is the kernel's

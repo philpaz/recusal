@@ -601,10 +601,20 @@ All notable changes to this project are documented here. The format follows
     do not arrive as JSON text (an object, a list, a number) raised `TypeError` out
     of the approval callback this package installs, found by the ninth round here,
     and 0.2.2 of that package refuses it with a reason.
-  - Not done in 0.2.1, and stated on the page: its time tables, and the times in the
-    text around them, are of the code before the eighth round and are not measured
-    again. The counts beside them (the largest call of each shape and the steps it
-    spends) are reproduced on this code by `tools/measure_mcp_cost.py`.
+  - The confirmation pass of the eleventh round compared 2,234,030 calls line by line
+    with the code before that round's fix: none differs in what is sent, in what is
+    refused or in a reason. It found one cost the page did not state, now stated and
+    not changed: the limit of 1,024 characters on a `$ref` bounds its characters, not
+    its parts, and `jsonschema` walks a pointer part by part each time it is applied.
+    A reference of 190 parts (383 characters) took the check of 30,000 integers from
+    0.3 s to 3.2 s for the same 150,012 steps; a reference of 500 parts is refused
+    when the listing is read. No step counts that walk.
+  - The time tables of the page, and the times in the text around them, are measured
+    again on the code of 0.2.1 (commit `8d10538`) with `tools/measure_mcp_cost.py`:
+    they were of the code before the eighth round. The longest row of the first
+    table is 799 ms (was 837 ms), and the largest call of each shape
+    and the steps it spends are unchanged. The page now states the range by where a
+    call is made from (`stack`): up to 3.7 times the median.
 
 ## [0.16.0] - 2026-11-26
 
