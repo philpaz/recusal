@@ -85,7 +85,7 @@ from ._schema import LONG as _LONG
 from ._schema import LONGEST_INTEGER as _LONGEST_INTEGER
 from ._schema import OVER as _OVER
 from ._schema import PASSED_ON as _PASSED_ON
-from ._schema import SIZE_CEILING, STEP_CEILING
+from ._schema import SIZE_CEILING, STEP_CEILING, _same
 from ._schema import Listed as _Listed
 from ._schema import Refused as _Refused
 from ._schema import ceiling_of as _ceiling_of
@@ -192,10 +192,16 @@ _NOT_JUDGED = "<arguments the gate could not judge>"
 
 #: The schema of a tool the server has not listed.
 _UNLISTED: Any = object()
-#: The schema of a tool the server's listing names more than once. The SDK calls the
-#: first of them and a later one would be the last the gate read: the gate reads one
-#: schema for a tool, and does not choose between two.
+#: The schema of a tool the server's listing names more than once. A call carries the
+#: name alone, the SDK checks its required parameters against the first listing of the
+#: name, and the last one would be what the gate read: the gate reads one schema for a
+#: tool, and does not choose between two.
 _LISTED_TWICE: Any = object()
+#: The schema of a tool the server object keeps one listing of and handed out another.
+#: The SDK's servers hand out a listing they fetched and do not keep it when another
+#: fetch was published meanwhile, or when the cache was invalidated while it was in
+#: flight: the agent then holds one schema and the server object another.
+_LISTED_APART: Any = object()
 
 
 def _judged_call(
@@ -314,6 +320,13 @@ def _judged(
             "the server's listing names this tool more than once; the gate checks the "
             "arguments of a tool against the one schema the server lists for it, and "
             "does not choose between two listings of one name"
+        )
+    if schema is _LISTED_APART:
+        return refused(
+            "the server object keeps another schema for this tool than the one in the "
+            "listing it last handed out, and listing the tools again did not settle "
+            "which stands; the gate cannot tell which schema the server would run this "
+            "call under. List the server's tools again."
         )
     try:
         listed = schema if isinstance(schema, _Listed) else _Listed(schema)
@@ -482,18 +495,46 @@ def gate_mcp_server(
     original_list_tools = server.list_tools
     #: tool name -> the input schema in the server's most recent listing
     listed: dict[str, Any] = {}
+    #: tool name -> the schema the server object kept for it when the listing it handed
+    #: out held another (``_LISTED_APART``)
+    apart: dict[str, Any] = {}
 
-    def keep(tools: Any) -> None:
+    def schema_of(tool: Any) -> Any:
+        schema = getattr(tool, "input_schema", None)
+        return getattr(tool, "inputSchema", None) if schema is None else schema
+
+    def keep(tools: Any, handed: Any = None) -> None:
+        """Keep the schemas of ``tools``, the server's whole listing. ``handed`` is the
+        listing ``list_tools`` returned where that is another one (the whole listing
+        is the one the server object keeps): a tool it holds under another schema
+        than the whole listing does is kept as that, a difference (``_LISTED_APART``),
+        and one the whole listing does not hold is kept as handed. Where nothing was
+        handed out (a listing that failed after the server object's own was read), a
+        difference found before stands for as long as the server object keeps the
+        schema it was found against: nothing new is known about it."""
         latest: dict[str, Any] = {}
         for tool in tools:
             if tool.name in latest:
                 # one name, two listings: every call of it is refused
                 latest[tool.name] = _LISTED_TWICE
                 continue
-            schema = getattr(tool, "input_schema", None)
-            if schema is None:
-                schema = getattr(tool, "inputSchema", None)
-            latest[tool.name] = _Listed(copy.deepcopy(schema), ceiling)
+            latest[tool.name] = _Listed(copy.deepcopy(schema_of(tool)), ceiling)
+        still: dict[str, Any] = {}
+        for tool in handed or ():
+            kept = latest.get(tool.name)
+            if kept is None:
+                latest[tool.name] = _Listed(copy.deepcopy(schema_of(tool)), ceiling)
+            elif isinstance(kept, _Listed) and not _same(kept.schema, schema_of(tool)):
+                still[tool.name] = kept.schema
+        if handed is None:
+            for name, schema in apart.items():
+                kept = latest.get(name)
+                if isinstance(kept, _Listed) and _same(kept.schema, schema):
+                    still[name] = schema
+        for name in still:
+            latest[name] = _LISTED_APART
+        apart.clear()
+        apart.update(still)
         listed.clear()  # a tool the server withdrew is no longer listed
         listed.update(latest)
 
@@ -517,15 +558,21 @@ def gate_mcp_server(
             raise
         whole = whole_listing()
         # a ``tool_filter`` hides tools from one agent; the schemas are the server's, so
-        # the gate keeps the whole listing and two agents with two filters share it
-        keep(tools if whole is None else whole)
+        # the gate keeps the whole listing and two agents with two filters share it.
+        # What was handed out is read beside it: the SDK's servers hand out a listing
+        # they do not keep (another fetch was published first, or the cache was
+        # invalidated meanwhile), and the agent then holds a schema the kept one is not
+        if whole is None:
+            keep(tools)
+        else:
+            keep(whole, tools)
         return tools
 
     async def listed_schema(tool_name: str) -> Any:
         """The schema the server listed for the tool: from the most recent listing made
         through this server object, or from one the gate asks for when the tool is not
-        in it."""
-        if tool_name not in listed:
+        in it, or is in it under another schema than the server object keeps."""
+        if tool_name not in listed or listed[tool_name] is _LISTED_APART:
             try:
                 await gated_list_tools()
             except Exception:  # noqa: BLE001, a server that cannot list leaves the tool unlisted

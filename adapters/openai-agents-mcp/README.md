@@ -127,13 +127,26 @@ before the policy runs the gate:
   `format`, `patternProperties`). An `if` whose condition is not decided still sends
   arguments that meet both of its branches; and a `oneOf` asks only that no second
   alternative may be met, so a tagged union whose forms hold a `pattern` or a `format`
-  is called as before. What the gate sends is therefore valid for `jsonschema` as it
-  ships, for every keyword the gate evaluates: a test compares 186,016 calls with it,
-  each schema alone and under each of the four keywords, in the three drafts
+  is called as before. The same holds for what `unevaluatedProperties` and
+  `unevaluatedItems` count as evaluated, which the gate works out itself: which
+  members an `if` evaluated depends on its branch, so where the condition is not
+  decided only what both branches evaluated counts (and, for the reading that is met
+  wherever any is, what either did). What the gate sends is therefore valid for
+  `jsonschema` as it ships, for every keyword the gate evaluates, with one exception
+  that is `jsonschema`'s own: `uniqueItems`. The specification asks that no two items
+  are equal, and `jsonschema` 4.26.0 sorts the items and compares neighbours, so a list
+  whose equal items do not sort together (`[[true], [1], [true]]`) is unique for it.
+  Under a `not` the gate, which compares every item with every other, then sends what
+  `jsonschema` rejects. A test compares 245,248 calls with it, each schema alone and
+  under each of the four keywords, in the three drafts, and an `if` beside an
+  `unevaluated` keyword in every such position: every call the gate sends is valid for
+  `jsonschema` with `uniqueItems` compared pairwise, and the 104 of the calls the gate
+  sends that `jsonschema` as it ships rejects each hold such a list
   (`test_what_the_gate_sends_is_valid_for_jsonschema_as_it_ships`). The cost: a float
   that is a whole number, `true` beside a `const` of `1`, and any string under a `not`
   or an `if` that holds a `pattern`, are refused there although a server may accept
-  them.
+  them, and so is an object beside an `if` on a pattern that `unevaluatedProperties`
+  does not find evaluated by both branches.
 - **never evaluates a server's regular expression.** `pattern` is not checked: the server
   checks it. A pattern can take longer on a few dozen characters than any limit, and the
   text is the model's. The same holds for the names of members: under `propertyNames` a
@@ -145,9 +158,13 @@ before the policy runs the gate:
   where the keyword adds a demand; under a `not`, an `if`, a `oneOf` or a `maxContains`
   a keyword that is not evaluated is neither met nor not met (above). A test counts it:
   across 13,041 calls against schemas that hold a pattern in every keyword that takes
-  one, in every such position, and across the 186,016 above, nothing hands Python's `re`
+  one, in every such position, and across the 245,248 above, nothing hands Python's `re`
   module a pattern while the gate reads a listing or checks a call
-  (`test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module`).
+  (`test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module`). What that does not
+  say: a listing is checked against the metaschema of its draft, and the metaschema's
+  own fixed patterns (for the text of an `$anchor`) are run on the listed schema's
+  text, which is the server's and not the model's
+  (`test_the_patterns_run_while_a_listing_is_read_are_the_metaschemas_own`).
 - **refuses an object where the schema offers more than one object form, and a list
   where it offers more than one list form.** Two or more alternatives of an `anyOf` or
   `oneOf` that admit an object are what a `Union` of two models and a zod `z.union` of
@@ -312,11 +329,18 @@ carries no argument text. Refused:
   value in between (`{"$ref": "#"}`), or whose defaults never settle;
 - a schema that uses `unevaluatedProperties` together with `patternProperties`, which
   could be applied only by evaluating the patterns, wherever in the schema the two
-  stand (a `patternProperties` only a `$ref` reaches among them); and an `if` whose
-  condition is not decided in a schema that uses `unevaluatedProperties` or
-  `unevaluatedItems`, which depend on which branch applies;
-- a tool the server's listing names more than once: the SDK calls the first listing of
-  a name, and the gate reads one schema for a tool and does not choose between two;
+  stand (a `patternProperties` only a `$ref` reaches among them); a 2019-09 schema
+  with `unevaluatedItems` beside an `items` that is `true` or `false`, which
+  `jsonschema` raises on; and arguments that `unevaluatedProperties` or
+  `unevaluatedItems` forbid beside an `if` whose condition is not decided, unless both
+  branches evaluate what they hold (refused as not decided, like the four keywords);
+- a `$ref` of more than 1,024 characters: a reference is looked up again each time
+  it is applied to a value, in proportion to its length, which no step counts;
+- a tool the server's listing names more than once: a call carries the name alone, the
+  SDK checks its required parameters against the first listing of a name, and the gate
+  reads one schema for a tool and does not choose between two;
+- a tool the server object keeps under another schema than the listing it last handed
+  out, where listing again does not settle it (below);
 - arguments that cost more to check than the gate allows a call (below);
 - an integer too large to be a float (more than about 308 digits) where the schema
   lists a `multipleOf` that is a fraction, which is checked by dividing the two as
@@ -360,9 +384,15 @@ schema lists are never read one by one for an object: the members an object has 
 looked up among them, a `required` list is read to the first name that is missing, the
 defaults of a subschema and the form a tag names are worked out once for a listing. So a
 model of two thousand optional fields costs an empty object what a model of four does.
-Two things a listed schema can make long are not counted: what `jsonschema` itself reads
-of a schema to gather what the other keywords evaluated, for `unevaluatedProperties` and
-`unevaluatedItems`, and the walk of a `$ref` pointer of many parts.
+What the other keywords evaluated, for `unevaluatedProperties` and `unevaluatedItems`,
+is worked out by the gate once for a schema and a value, with a step for each subschema
+it goes into that nothing else counted (`jsonschema` followed a `$ref` again each time
+it was named, so definitions that each name the next one twice were read two to the
+power of their number of times). And a `$ref` may be 1,024 characters at the most, since
+a reference is looked up again each time it is applied. One thing a listed schema can
+make long is still not counted: reading the listing itself, once, when the first call
+after it is checked (its check against the metaschema, and the gate's own reading),
+which costs in proportion to the size of the listed schema.
 `unevaluatedProperties` and `unevaluatedItems` are counted as the square of the number
 of members or items they are applied to, because they are checked by comparing
 each with every other. Every step is
@@ -671,10 +701,19 @@ of the arguments for an audit entry: there the sender's nesting moves the place 
 To read the schema the gate also wraps the server's `list_tools`, in place. `list_tools`
 returns what the server listed, unchanged, and the gate keeps each tool's schema from the
 most recent listing: each listing replaces the one before, so a call to a tool the server
-no longer lists is refused, and so is a call to a tool the listing names more than once. A call to a tool that is not in the most recent listing makes
+no longer lists is refused, and so is a call to a tool the listing names more than
+once. A call to a tool that is not in the most recent listing makes
 the gate call `list_tools()` itself, with no run context and no agent, once for that
 call. A tool that is still not listed, and a server whose tools cannot be listed that
 way, is refused.
+
+The gate judges a call against the listing the agent was handed. The SDK's own server
+classes hand out a listing they fetched without keeping it when another fetch was
+published first, or when the cache was invalidated while the fetch was in flight
+(`invalidate_tools_cache()`): the agent then holds one schema and the server object
+(`cached_tools`) another. Where the two differ for a tool, the gate lists the tools
+again when that tool is called and judges by the fresh listing; where that cannot be
+had, the call is refused, with a reason that says the two listings differ.
 
 A `tool_filter` hides tools from one agent; the schemas are the server's. The SDK's own
 server classes keep the listing as it was fetched, before the filter (`cached_tools`),

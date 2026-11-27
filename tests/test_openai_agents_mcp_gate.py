@@ -6483,17 +6483,14 @@ class TestSeventhReview:
                     assert check is not base.VALIDATORS[keyword]
                     unread = check.__name__ == "unread"
                     assert unread == (keyword in ("$dynamicRef", "$recursiveRef")), (base, keyword)
-        # the functions it takes from `jsonschema` for what the other keywords evaluated
-        from jsonschema import _legacy_keywords, _utils
-
-        assert module._EVALUATED_2020 == (
-            _utils.find_evaluated_item_indexes_by_schema,
-            _utils.find_evaluated_property_keys_by_schema,
-        )
-        assert module._EVALUATED_2019 == (
-            _legacy_keywords.find_evaluated_item_indexes_by_schema,
-            _legacy_keywords.find_evaluated_property_keys_by_schema,
-        )
+        # from round ten it takes nothing from `jsonschema` for what the other keywords
+        # evaluated: its two functions follow a `$ref` again each time one is named and
+        # take the branch of an `if` by one reading's own answer, so the gate works that
+        # out itself (`_evaluated`), and imports nothing of theirs that is not public
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert not hasattr(module, "_EVALUATED_2020") and not hasattr(module, "_EVALUATED_2019")
+        assert "_legacy_keywords" not in source and "find_evaluated" not in source
+        assert "from jsonschema import _" not in source and "jsonschema._" not in source
 
     def test_no_error_made_while_a_call_is_checked_holds_the_value(self, example):
         """Every keyword of every draft, failing on a value that holds a marker, alone,
@@ -8038,12 +8035,13 @@ class TestNinthReview:
         return reason
 
     @staticmethod
-    def not_decided(position, *rests):
-        """What a reason for an answer the gate could not decide holds."""
+    def not_decided(position, *rests, of="argument `x` stands"):
+        """What a reason for an answer the gate could not decide holds. ``of`` is what
+        it says stands under the keyword: the argument, or what of it."""
 
         def check(reason):
-            assert reason is not None and reason.startswith("Recusal refused `purge`: argument `x`")
-            assert f"stands under {position}" in reason and "the gate cannot tell" in reason
+            assert reason is not None and reason.startswith(f"Recusal refused `purge`: {of} ")
+            assert f"{of} under {position}" in reason and "the gate cannot tell" in reason
             for each in rests:
                 assert each in reason, reason
             assert reason.endswith("and it cannot show that here.")
@@ -8215,7 +8213,10 @@ class TestNinthReview:
         ]
         for schema, value, position, rests in cases:
             assert not Draft202012Validator(self.under(schema)).is_valid({"x": value}), schema
-            assert self.not_decided(position, rests)(self.reason(schema, value)), schema
+            # under `maxContains` it is the items that stand there, not the list
+            of = "the items of argument `x` stand" if "maxContains" in position else None
+            decided = self.not_decided(position, rests, **({"of": of} if of else {}))
+            assert decided(self.reason(schema, value)), schema
         # `true` is not `1` for JSON Schema and is for a server that compares in Python:
         # the gate cannot tell, where it sent the value before
         flag = {"not": {"const": 1}}
@@ -8320,7 +8321,12 @@ class TestNinthReview:
         }
         assert self.not_decided("a `oneOf`", "a `pattern`")(self.reason(twins, "abc"))
 
-    def test_an_if_that_is_not_decided_beside_an_unevaluated_keyword_is_refused(self, example):
+    def test_an_if_that_is_not_decided_beside_an_unevaluated_keyword(self, example):
+        """What an ``if`` evaluated depends on its branch. Where the condition is not
+        decided, only what both branches evaluated counts (round ten; round nine
+        refused every such call when the ``if`` keyword was run, and missed the ones
+        where it was not)."""
+        number = "whether a whole number sent as a float (`5.0`) is an `integer`"
         schema = {
             "type": "object",
             "if": {"properties": {"k": {"type": "integer"}}, "required": ["k"]},
@@ -8329,13 +8335,15 @@ class TestNinthReview:
         }
         assert self.reason(schema, {"k": 5, "a": 1}) is not None  # `a` is not evaluated
         told = self.reason(schema, {"k": 5.0, "a": 1})
-        assert told == (
-            f"Recusal refused `purge`: {_SCHEMA} has an `if` whose condition the gate cannot "
-            "decide for these arguments (it rests on a keyword the gate leaves to the "
-            "server, or on a number, an `enum` or a `const` that JSON Schema and a server "
-            "read differently), and it uses `unevaluatedProperties` or `unevaluatedItems`, "
-            "which depend on which branch applies"
+        assert self.not_decided("an `if`", number, of="argument `x`, or a member of it, stands")(
+            told
         )
+        # where both branches evaluate every member, the call is valid either way: sent
+        both = {**schema, "properties": {"k": {}}, "then": {"properties": {"a": {}}}}
+        assert self.reason(both, {"k": 5.0, "a": 1}) is None
+        from jsonschema import Draft202012Validator
+
+        assert Draft202012Validator(self.under(both)).is_valid({"x": {"k": 5.0, "a": 1}})
 
     def test_ordinary_calls_cost_the_steps_they_cost_before(self, example):
         """Nothing is read twice where the two readings meet nothing they answer
@@ -8637,7 +8645,9 @@ class TestNinthReview:
         assert self.reason(quotas, {"cpu": 1, "ram": 2}) is None
         # a name the gate cannot decide for is said to be that
         dashed = {"type": "object", "propertyNames": {"not": {"pattern": "^-"}}}
-        assert self.not_decided("a `not`", "a `pattern`")(self.reason(dashed, {"a": 1}))
+        assert self.not_decided(
+            "a `not`", "a `pattern`", of="a member name of argument `x` stands"
+        )(self.reason(dashed, {"a": 1}))
 
     # --- one tool name listed twice ----------------------------------------------------------------
 
@@ -8730,6 +8740,388 @@ class TestNinthReview:
             "`model_fields_set`",
             "model_dump(exclude_unset=True)",
             "a field the call did not mention is then a field the call set",
+        ):
+            assert stated in readme, stated
+
+
+class TestTenthReview:
+    """The tenth review (2026-11-27), of the ninth round's changes. One hole was left: an
+    ``if`` beside ``unevaluatedProperties`` or ``unevaluatedItems``, under a keyword that
+    turns a failure into a pass. ``jsonschema`` gathers what the other keywords
+    evaluated by taking the branch of the ``if`` on one reading's own answer to the
+    condition, so neither bounding reading was a bound there, and the gate sent what
+    the schema forbids. The same gathering followed a ``$ref`` again each time it was
+    named (definitions that each name the next one twice held the loop for minutes),
+    a ``$ref`` of a million characters cost a minute at the step ceiling, and a
+    listing the SDK's server hands out and does not keep left the gate with the
+    schema before it."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    judged = TestTheWholeListedSchema.judged
+    schema_module = staticmethod(TestThirdReview.schema_module)
+    spent = TestThirdReview.spent
+    under = staticmethod(TestNinthReview.under)
+    reason = TestNinthReview.reason
+    not_decided = staticmethod(TestNinthReview.not_decided)
+
+    INTEGER = {"type": "integer"}
+    #: the reviewer's alternative: `k` is evaluated by `properties`, and `b` and `n` only
+    #: by the `else`, which applies when `k` is not 1
+    ALTERNATIVE = {
+        "properties": {"k": True},
+        "unevaluatedProperties": False,
+        "if": {"properties": {"k": {"const": 1}}},
+        "else": {"anyOf": [{"properties": {"b": True, "n": {"type": "integer"}}}]},
+    }
+    VALUE = {"k": True, "b": 0, "n": 5.0}
+
+    # --- G1: what an `if` evaluated, where its condition is not decided ---------------------
+
+    def test_the_reviewers_calls_are_no_longer_sent(self, example):
+        """Each was sent, and is not valid for ``jsonschema`` as it ships."""
+        from jsonschema import Draft201909Validator, Draft202012Validator
+
+        equal = "whether a value is equal to one of another JSON type"
+        pattern = "a `pattern`, which the gate does not evaluate"
+        on_patterns = {
+            "properties": {"k": True},
+            "unevaluatedProperties": False,
+            "if": {"properties": {"k": {"pattern": "^z"}}},
+            "else": {"anyOf": [{"properties": {"b": {"pattern": "^q"}}}]},
+        }
+        items = {
+            "prefixItems": [True],
+            "unevaluatedItems": False,
+            "if": {"prefixItems": [{"const": 1}]},
+            "else": {"anyOf": [{"prefixItems": [True, self.INTEGER]}]},
+        }
+        alternative, value = self.ALTERNATIVE, self.VALUE
+        cases = [
+            ({"not": alternative}, value, "a `not`", equal),
+            ({"if": alternative, "then": False}, value, "an `if`", equal),
+            ({"not": {"not": {"not": alternative}}}, value, "a `not`", equal),
+            ({"not": on_patterns}, {"k": "a", "b": "q1"}, "a `not`", pattern),
+            ({"not": items}, [True, 5.0], "a `not`", equal),
+        ]
+        for schema, sent, position, rests in cases:
+            assert not Draft202012Validator(self.under(schema)).is_valid({"x": sent}), schema
+            assert self.not_decided(position, rests)(self.reason(schema, sent)), schema
+        # the same in 2019-09, which gathers what was evaluated its own way
+        old = {"$schema": TestSeventhReview.DRAFT_2019, **self.under({"not": alternative})}
+        assert not Draft201909Validator(old).is_valid({"x": value})
+        told = self.judged({"x": value}, old)[2]
+        assert told is not None and "stands under a `not`" in told
+
+    def test_what_is_decided_there_is_decided_as_before(self, example):
+        from jsonschema import Draft202012Validator
+
+        alternative = self.ALTERNATIVE
+        # `k` is 1: the condition is met by every reading, `else` does not apply, and
+        # `b` is evaluated by nothing
+        met = {"k": 1, "b": 0}
+        assert "does not meet `unevaluatedProperties`" in self.reason(alternative, met)
+        assert self.reason({"not": alternative}, met) is None
+        assert Draft202012Validator(self.under({"not": alternative})).is_valid({"x": met})
+        # `k` is a string: not met by any reading, `else` applies and evaluates `b`
+        unmet = {"k": "s", "b": 0}
+        assert self.reason(alternative, unmet) is None
+        assert "does not meet `not`" in self.reason({"not": alternative}, unmet)
+        # not decided, standing alone: only what both branches evaluated counts, which
+        # leaves `b`, so the call is refused as not decided and not as not valid
+        told = self.reason(alternative, {"k": True, "b": 0})
+        assert self.not_decided("an `if`", of="argument `x`, or a member of it, stands")(told)
+
+    def test_what_was_evaluated_is_a_bound_for_each_reading(self, example):
+        """The mechanism itself: for the reviewer's value the reading that is met least
+        finds only ``k`` evaluated, the one that is met most every member, and the
+        gate's own what the least one does."""
+        module = self.schema_module()
+        from jsonschema import Draft202012Validator, validators
+
+        strict = module._DRAFTS[validators.Draft202012Validator]
+        sides = strict.RECUSAL_SIDES
+        found = {}
+        for name, reading in (("gate", strict), *sides.items()):
+            found[name] = module._evaluated(
+                reading(self.ALTERNATIVE), sides, True, False, self.VALUE, self.ALTERNATIVE, {}
+            )
+        assert found == {
+            "gate": frozenset({"k"}),
+            module._LEAST: frozenset({"k"}),
+            module._MOST: frozenset({"k", "b", "n"}),
+        }
+        # and `jsonschema` itself, which finds the condition not met (`true` is not 1)
+        # and the alternative of the `else` met (`5.0` is an integer): every member
+        assert Draft202012Validator(self.ALTERNATIVE).is_valid(self.VALUE)
+
+    # --- G3: what was evaluated is worked out once, and a reference has a longest length ------
+
+    @staticmethod
+    def doubling(depth):
+        """Definitions that each name the next one twice, with no value in between."""
+        definitions = {
+            f"n{index}": {
+                "$ref": f"#/$defs/n{index + 1}",
+                "dependentSchemas": {"a": {"$ref": f"#/$defs/n{index + 1}"}},
+            }
+            for index in range(depth)
+        }
+        definitions[f"n{depth}"] = {"properties": {"a": True}}
+        return {
+            "type": "object",
+            "properties": {"o": {"$ref": "#/$defs/n0", "unevaluatedProperties": False}},
+            "$defs": definitions,
+        }
+
+    def test_definitions_that_name_the_next_one_twice_are_read_once_each(
+        self, example, monkeypatch
+    ):
+        """The reviewer's schema at depth 22 held the event loop two minutes for 303
+        steps: ``jsonschema`` read the last definition two to the power of 22 times.
+        Counted here, with no clock: one reading of each definition for each reading
+        of the schema, and steps that grow with the depth and not with its power."""
+        module = self.schema_module()
+        original = module._evaluated  # the commit before has no such function
+        calls = []
+
+        def counting(*arguments):
+            calls.append(1)
+            return original(*arguments)
+
+        monkeypatch.setattr(module, "_evaluated", counting)
+        steps = {}
+        for depth in (10, 20, 40):
+            del calls[:]
+            spent, _, result = self.spent({"o": {"a": 1}}, self.doubling(depth))
+            assert result[1] == {"o": {"a": 1}}, result
+            # twice for each definition (the `$ref` and the `dependentSchemas`), in each
+            # of the two validations of a call
+            assert len(calls) <= 4 * depth + 8, (depth, len(calls))
+            steps[depth] = spent
+        assert steps[20] - steps[10] == (steps[40] - steps[20]) // 2 > 0
+
+    def test_a_reference_has_a_longest_length(self, example, monkeypatch):
+        module = self.schema_module()
+        assert module.LONGEST_REFERENCE == 1_024
+
+        def named(length):
+            name = "n" * (length - len("#/$defs/"))
+            return {
+                "type": "object",
+                "properties": {"p": {"type": "array", "items": {"$ref": f"#/$defs/{name}"}}},
+                "$defs": {name: {"type": "integer"}},
+            }
+
+        assert self.judged({"p": [1, 2]}, named(1_024))[2] is None
+        assert self.judged({"p": [1, 2]}, named(1_025)) == (
+            None,
+            None,
+            f"Recusal refused `purge`: {_SCHEMA} has a `$ref` of more than 1,024 characters, "
+            "which the gate does not read: a reference is looked up again each time it is "
+            "applied to a value, in proportion to its length",
+        )
+        # refused when the listing is read: no value is ever checked against it
+        made = []
+        monkeypatch.setattr(module._Work, "step", lambda work, count=1: made.append(count))
+        told = self.judged({"p": list(range(40_000))}, named(1_000_000))[2]
+        assert told.startswith(f"Recusal refused `purge`: {_SCHEMA} has a `$ref` of more than")
+        assert made == []
+
+    def test_a_2019_items_that_is_true_beside_unevaluated_items_is_refused_by_name(self, example):
+        """``jsonschema`` takes the length of that ``items`` and raises ``TypeError``. The
+        gate, which no longer asks it, says what it does not read."""
+        schema = {
+            "$schema": TestSeventhReview.DRAFT_2019,
+            "type": "object",
+            "properties": {"x": {"items": True, "unevaluatedItems": False}},
+        }
+        assert self.judged({"x": [1]}, schema)[2] == (
+            f"Recusal refused `purge`: {_SCHEMA} uses `unevaluatedItems` beside an `items` "
+            "that is `true` or `false` in a 2019-09 schema, which the gate does not read "
+            "(`jsonschema` raises on it)"
+        )
+
+    # --- an answer that was not decided says what it is of -----------------------------------
+
+    def test_an_item_that_is_not_decided_is_said_to_be_an_item(self, example):
+        """Passed up through ``contains``, the reason said the list stands under the
+        ``not`` that one of its items stands under."""
+        dashed = {"type": "array", "contains": {"type": "string", "not": {"pattern": "^-"}}}
+        told = self.reason(dashed, ["report.txt"])
+        assert self.not_decided("a `not`", of="an item of argument `x` stands")(told)
+        open_ = {"unevaluatedProperties": {"not": {"pattern": "^-"}}}
+        told = self.reason(open_, {"a": "report.txt"})
+        assert self.not_decided("a `not`", of="argument `x`, or a member of it, stands")(told)
+
+    # --- a listing the server hands out and does not keep ---------------------------------------
+
+    OLD = {"type": "object", "properties": {"sql": {"type": "string"}}}
+    NEW = {
+        "type": "object",
+        "properties": {"sql": {"type": "string"}, "force": {"type": "boolean", "default": True}},
+    }
+
+    def sdk_server(self, example, cache):
+        """The SDK's own stdio server class, never connected: its one request for a page
+        of the listing is replaced by one the test answers when it chooses."""
+        from types import SimpleNamespace
+
+        from agents.mcp import MCPServerStdio
+        from mcp.types import CallToolResult, TextContent, Tool
+
+        class Server(MCPServerStdio):
+            def __init__(self):
+                super().__init__(params={"command": "none"}, cache_tools_list=cache)
+                self.session = object()
+                self.pages, self.waits, self.ran = [], [], []
+
+            async def _list_tools_page(self, session, cursor=None):
+                index = len(self.waits)
+                wait = asyncio.Event()
+                self.waits.append(wait)
+                schema = self.pages[index]  # none left: the request fails
+                if index < 2:
+                    await wait.wait()
+                tools = [Tool(name="run_sql", description="d", inputSchema=schema)]
+                return SimpleNamespace(tools=tools, next_cursor=None, nextCursor=None)
+
+            async def call_tool(self, tool_name, arguments, meta=None):
+                self.ran.append((tool_name, arguments))
+                return CallToolResult(content=[TextContent(type="text", text="ran")])
+
+        policy = self.Recording()
+        return example.gate_mcp_server(Server(), policy), policy
+
+    @staticmethod
+    def has(tools):
+        tool = tools[0]
+        schema = getattr(tool, "input_schema", None) or tool.inputSchema
+        return "NEW" if "force" in schema["properties"] else "OLD"
+
+    APART = (
+        "Recusal refused `run_sql`: the server object keeps another schema for this tool "
+        "than the one in the listing it last handed out, and listing the tools again did "
+        "not settle which stands; the gate cannot tell which schema the server would run "
+        "this call under. List the server's tools again."
+    )
+
+    @pytest.mark.parametrize("cache", [False, True])
+    def test_a_listing_fetched_while_the_cache_is_invalidated_is_not_judged_by_the_one_before(
+        self, example, cache
+    ):
+        """The SDK's server returns a listing it fetched and does not keep it when its
+        cache was invalidated meanwhile: the agent is handed the new schema and the
+        server object still shows the old one, which is what the gate read."""
+
+        async def scenario():
+            server, policy = self.sdk_server(example, cache)
+            server.pages = [self.OLD, self.NEW]
+            first = asyncio.ensure_future(server.list_tools())
+            await asyncio.sleep(0)
+            server.waits[0].set()
+            assert self.has(await first) == "OLD"
+            server.invalidate_tools_cache()
+            second = asyncio.ensure_future(server.list_tools())
+            await asyncio.sleep(0)
+            server.invalidate_tools_cache()  # while the second fetch is in flight
+            server.waits[1].set()
+            handed = await second
+            # the premise: handed the new listing, the server object keeps the old one
+            assert (self.has(handed), self.has(server.cached_tools)) == ("NEW", "OLD")
+            # no further listing to be had: the gate cannot tell, and refuses
+            result = await server.call_tool("run_sql", {"sql": "SELECT 1"})
+            assert result.content[0].text == self.APART
+            assert policy.seen == [] and server.ran == []
+            # once the server answers a listing again, the gate asks and judges by it
+            while len(server.pages) <= len(server.waits):
+                server.pages.append(self.NEW)
+            await server.call_tool("run_sql", {"sql": "SELECT 1"})
+            assert policy.seen == [("run_sql", {"sql": "SELECT 1", "force": True})]
+            assert server.ran == [("run_sql", {"sql": "SELECT 1", "force": True})]
+
+        asyncio.run(scenario())
+
+    def test_two_listings_in_flight_that_answer_out_of_order(self, example):
+        """The request made first answers last and is handed out without being kept:
+        one agent holds each listing, and the gate holds neither as the tool's."""
+
+        async def scenario():
+            server, policy = self.sdk_server(example, False)
+            server.pages = [self.OLD, self.NEW]
+            slow = asyncio.ensure_future(server.list_tools())
+            await asyncio.sleep(0)
+            fast = asyncio.ensure_future(server.list_tools())
+            await asyncio.sleep(0)
+            server.waits[1].set()
+            assert self.has(await fast) == "NEW"
+            server.waits[0].set()
+            assert self.has(await slow) == "OLD"
+            assert self.has(server.cached_tools) == "NEW"
+            result = await server.call_tool("run_sql", {"sql": "SELECT 1"})
+            assert result.content[0].text == self.APART and policy.seen == []
+            while len(server.pages) <= len(server.waits):
+                server.pages.append(self.NEW)
+            await server.call_tool("run_sql", {"sql": "SELECT 1"})
+            assert policy.seen == [("run_sql", {"sql": "SELECT 1", "force": True})]
+
+        asyncio.run(scenario())
+
+    def test_a_listing_handed_out_as_it_is_kept_is_judged_as_before(self, example):
+        async def scenario():
+            server, policy = self.sdk_server(example, False)
+            server.pages = [self.NEW]
+            listing = asyncio.ensure_future(server.list_tools())
+            await asyncio.sleep(0)
+            server.waits[0].set()
+            assert self.has(await listing) == self.has(server.cached_tools) == "NEW"
+            await server.call_tool("run_sql", {"sql": "SELECT 1"})
+            assert policy.seen == [("run_sql", {"sql": "SELECT 1", "force": True})]
+            assert len(server.waits) == 1  # and the gate asked for no listing of its own
+
+        asyncio.run(scenario())
+
+    def test_what_the_sdk_does_with_a_tool_listed_twice_is_what_the_page_says(self, example):
+        """A call carries the name alone. The SDK's own check of the required
+        parameters reads the first listing of a name, and the gate kept the last."""
+        from agents.exceptions import UserError
+        from mcp.types import Tool
+
+        server, _ = self.sdk_server(example, False)
+        strict = {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}
+        loose = {"type": "object", "properties": {"sql": {"type": "string"}}}
+        server._cache_dirty = False
+        server._tools_list = [Tool(name="run_sql", inputSchema=each) for each in (strict, loose)]
+        with pytest.raises(UserError):
+            server._validate_required_parameters("run_sql", {})
+        server._tools_list = [Tool(name="run_sql", inputSchema=each) for each in (loose, strict)]
+        server._validate_required_parameters("run_sql", {})
+        readme = " ".join(
+            (ROOT / "adapters" / "openai-agents-mcp" / "README.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        assert (
+            "the SDK checks its required parameters against the first listing of a name" in readme
+        )
+        assert "the SDK calls the first listing" not in readme
+
+    # --- what the page states of the comparison with `jsonschema` -----------------------------
+
+    def test_the_page_states_the_comparison_as_the_test_makes_it(self, example):
+        from importlib.metadata import version
+
+        readme = " ".join(
+            (ROOT / "adapters" / "openai-agents-mcp" / "README.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        assert version("jsonschema") == "4.26.0"
+        for stated in (
+            "A test compares 245,248 calls with it",
+            "`jsonschema` 4.26.0 sorts the items and compares neighbours",
+            "`[[true], [1], [true]]`",
+            "104 of the calls the gate sends",
         ):
             assert stated in readme, stated
 

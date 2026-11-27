@@ -292,8 +292,8 @@ All notable changes to this project are documented here. The format follows
     it stands, and checked to be a valid schema, before anything is validated against
     it. A test counts what is handed to Python's `re` module while the gate reads a
     listing and checks a call: nothing, across 13,041 calls against schemas that hold
-    a pattern in every keyword that takes one and across the 186,016 calls of the
-    comparison below.
+    a pattern in every keyword that takes one and across the calls of the comparison
+    below (the tenth round words this exactly).
   - Ninth round: the gate sent what the listed schema forbids. A float is not an
     `integer` and an `enum` or `const` is compared by JSON type, which refuses more
     where a keyword adds a demand and ADMITS more under a keyword that turns a failure
@@ -313,10 +313,10 @@ All notable changes to this project are documented here. The format follows
     `pattern`, a `format`, `patternProperties`). Arguments that meet both branches of
     an `if` that is not decided are sent, and a `oneOf` asks only that no second
     alternative may be met, so a tagged union whose forms hold a pattern is called as
-    before. A committed test holds the property: 186,016 calls (22 schemas, each
-    alone and under 22 positions of those keywords, beside 4 others, against 28
-    values, in the three drafts, and 16,000 calls on schemas made at random), of
-    which the gate sends 117,990, every one valid for `jsonschema` as it ships. The
+    before. A committed test holds the property (22 schemas, each alone and under 22
+    positions of those keywords, beside 4 others, against a list of values, in the
+    three drafts, and 16,000 calls on schemas made at random; the tenth round
+    extended it, and its counts are given there). The
     cost: `5.0`, `0.0` beside a `const` of `0`, `true` beside a `const` of `1`, and
     any string under a `not` or an `if` that holds a pattern, are refused there
     although a server may accept them. Steps are unchanged for calls that meet
@@ -367,8 +367,79 @@ All notable changes to this project are documented here. The format follows
     being one of the listed values, or not meeting `maxLength`; the reason now says a
     member's name does not meet `propertyNames`, and does not write the name. And a
     server that lists one tool name twice, with two schemas, was read by the last
-    listing where the SDK calls the first: every call of such a tool is now refused,
-    with a reason that says so.
+    listing where the SDK checks a call's required parameters against the first: every
+    call of such a tool is now refused, with a reason that says so.
+  - Tenth round: the gate still sent what the listed schema forbids, in one shape. An
+    `if` beside `unevaluatedProperties` or `unevaluatedItems`, under a keyword that
+    turns a failure into a pass. `jsonschema` gathers what the other keywords
+    evaluated by taking the branch of the `if` on one reading's own answer to the
+    condition, and a branch is not a demand that only adds: neither of round nine's
+    two readings was a bound there. Its refusal of an `if` that is not decided beside
+    such a keyword was made where the `if` keyword is run, and where both readings
+    failed at the `unevaluated` keyword first it was not run. So `{"not":
+    {"properties": {"k": true}, "unevaluatedProperties": false, "if": {"properties":
+    {"k": {"const": 1}}}, "else": {"anyOf": [{"properties": {"b": true, "n": {"type":
+    "integer"}}}]}}}` sent `{"k": true, "b": 0, "n": 5.0}`, which `jsonschema` as it
+    ships rejects; the same under an outer `if`, under three `not`, resting on two
+    patterns, and for `unevaluatedItems`, in 2019-09 and 2020-12. The gate now works
+    out what was evaluated itself, keyword for keyword as `jsonschema` 4.26 does, and
+    as a bound: where the two readings answer the condition of an `if` differently,
+    the reading that is met most counts what either branch evaluated and the others
+    only what both did. Arguments an `unevaluated` keyword then forbids are refused
+    as not decided, with the `if` named, and are no longer refused whenever such an
+    `if` is merely present. The comparison with `jsonschema` gains a family built
+    from the mechanism (47,088 calls: 4 conditions, each branch one of 6 or 5, alone
+    and under 8 negating positions, 2 drafts), which the general corpus of a review
+    of 1.2 million calls did not reach: 245,248 calls now, of which the gate sends
+    140,028.
+  - Tenth round, stated: `jsonschema` 4.26.0 sorts the items of a list and compares
+    neighbours for `uniqueItems`, so `[[true], [1], [true]]` is unique for it although
+    an item is there twice, and `{"not": {"uniqueItems": true}}` with that list is
+    sent by the gate and rejected by `jsonschema`. The gate is right by the
+    specification and is not changed. The page says so, and the comparison is made
+    with `jsonschema` as it ships but for that keyword, compared pairwise: every call
+    the gate sends is valid for it, and the 104 that `jsonschema` as it ships rejects
+    are asserted to hold such a list.
+  - Tenth round: two ways a small listed schema held the event loop. Definitions that
+    each name the next one twice, through `$ref` and `dependentSchemas`, beside
+    `unevaluatedProperties`: `jsonschema` followed each again every time it was named,
+    two to the power of the depth (the review measured 125 s for 22 definitions,
+    1.5 KB of schema and 13 characters of arguments, 303 steps). What was evaluated is
+    now worked out once for a schema and a value, a step for each subschema gone
+    into that nothing else counted: the same call spends 370 steps and reads each
+    definition twice for each reading, which a test counts. And a `$ref` of a
+    million characters, looked up again for each of 40,000 values, cost a minute
+    before the step ceiling refused the call: a `$ref` of more than 1,024 characters
+    is now refused when the listing is read. The page no longer lists either as not
+    counted; what it lists is reading the listing itself, once.
+  - Tenth round: a listing the SDK hands out and does not keep. Its server classes
+    return a listing they fetched without storing it when another fetch was published
+    first, or when `invalidate_tools_cache()` ran while the fetch was in flight, and
+    the gate read the schema the server object keeps (`cached_tools`): the agent was
+    handed the new schema and the call was judged, and its defaults written, by the
+    old one (reproduced with the SDK's own server class, its page request replaced).
+    The gate now reads what was handed out beside what is kept. Where the two differ
+    for a tool it lists again when that tool is called and judges by the fresh
+    listing, and where none can be had it refuses the call and says the listings
+    differ.
+  - Tenth round, smaller, and what round nine's entry did not say. A value under
+    `contains`, `unevaluatedProperties` or `unevaluatedItems`, or a member name under
+    `propertyNames`, that the gate could not decide was said to be the list or the
+    object itself standing under the keyword: the reason now says an item of it, a
+    member name of it, or it or a member of it. A 2019-09 `items` that is `true` or
+    `false` beside `unevaluatedItems`, which `jsonschema` raises `TypeError` on, is
+    refused by name where it was refused as a `TypeError`. The page said "nothing
+    hands Python's `re` module a pattern while the gate reads a listing": no pattern
+    of the listed schema is, and the metaschema's own fixed pattern for an `$anchor`
+    is run on the listed schema's text, which the page now says and a test holds. It
+    said the SDK "calls the first listing" of a tool listed twice: the SDK checks a
+    call's required parameters against the first listing, and the call carries the
+    name alone. And two changes of round nine that its entry did not name: `items`
+    with an `allOf` of one empty schema over 40,000 integers, sent before, is
+    refused at the step ceiling now, since a subschema that checks nothing is counted
+    a step for each value; and an object beside an `if` on a `pattern` and an
+    `unevaluatedProperties` was refused by round nine whatever it held, and is now
+    refused only where the two branches do not evaluate the same members.
 
 ## [0.16.0] - 2026-11-26
 

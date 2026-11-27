@@ -850,7 +850,7 @@ so an integer of more than 4,300 digits is now refused from its bits on every Py
 the gate's own readings of the arguments recursed, so their time moved with the depth
 the sender nested at; a call a little over the size ceiling was read almost to its
 end; the gate read a `$ref` its own way; and three exceptions left the gate
-uncaught) and of a ninth round (below),
+uncaught) and of a ninth and a tenth round (below),
 are in the changelog's Unreleased entry for 0.2.1, which is not released. 0.2.1 copies
 a call's arguments with the kernel's `recusal.invocation.detached`, as 0.2.0 does, and
 requires `recusal` 0.16.0, the first whose copy does not recurse.
@@ -906,19 +906,62 @@ fixes are in the same Unreleased entry).
   tool listed twice is refused. The consequence of the written defaults is stated on
   the package page and the design is not changed. Tests: `TestNinthReview` in
   `tests/test_openai_agents_mcp_gate.py`, and in
-  `tests/test_compat_openai_agents_mcp.py` a comparison of 186,016 calls with
-  `jsonschema` as it ships (every call the gate sends is valid for it) and a count of
-  what is handed to Python's `re` module (nothing, across those and 13,041 more).
+  `tests/test_compat_openai_agents_mcp.py` a comparison with `jsonschema` as it ships
+  (round ten extended it and gives its counts) and a count of what is handed to
+  Python's `re` module (no pattern of a listed schema, across those and 13,041 more).
 - **What it did not cover**, by its own list: the timing figures on the package page;
   the measuring tool's `stack` mode; Python 3.10; real transports (stdio, HTTP);
   `_audit.py` beyond the package's own tests; `tool_filter`, `cache_tools_list`,
-  `MCPServerManager`, realtime agents, a resumed `RunState` and a rejected approval.
-- **Still open after it.** The steps do not count what `jsonschema` itself reads of a
+  `MCPServerManager`, realtime agents, a resumed `RunState` and a rejected approval;
+  the internals of `recusal_openai_agents`, and hosted MCP in a real run; a live zod
+  server; the kernel's `decide` and its fingerprint; the pages sentence by sentence;
+  the wide-schema cost on 0.2.0; and six cases of its fuzzing that it did not read.
+- **Still open after it.** The steps did not count what `jsonschema` itself reads of a
   schema for `unevaluatedProperties` and `unevaluatedItems`, nor the walk of a `$ref`
-  pointer of many parts. A hosted approval whose `arguments` is not text raises
-  `TypeError` in `recusal-openai-agents`, which this package builds on (found by this
-  round, belongs to that package). The time tables on the package page are of the code
-  before round eight.
+  pointer of many parts (round ten closed both). A hosted approval whose `arguments`
+  is not text raised `TypeError` in `recusal-openai-agents`, which this package builds
+  on (found by this round, belongs to that package). The time tables on the package
+  page are of the code before round eight.
+
+**Round ten** (2026-11-27, of round nine's changes; the fixes are in the same
+Unreleased entry). It confirmed every finding of round nine closed, found no ordinary
+Pydantic schema refused that 0.2.0 sends, and compared 1,213,330 calls with
+`jsonschema` without one the gate sends and `jsonschema` rejects, outside what follows.
+
+- **What it found.** One shape the gate still sent although the schema forbids it: an
+  `if` beside `unevaluatedProperties` or `unevaluatedItems`, under a keyword that turns
+  a failure into a pass. What `jsonschema` gathers as evaluated takes the branch of
+  the `if` on one reading's own answer, so neither of round nine's two readings was a
+  bound there. One place where the gate and `jsonschema` as it ships disagree and the
+  gate is right: `uniqueItems`, which `jsonschema` checks by sorting. Two ways a small
+  listed schema held the event loop: definitions that each name the next one twice
+  beside `unevaluatedProperties` (two minutes for 1.5 KB of schema), and a `$ref` of a
+  million characters. A listing the SDK's server hands out and does not keep, which
+  left the gate judging by the schema before it (suspected from the SDK's source,
+  then reproduced). And sentences that said more than is so: what reaches Python's
+  `re` module while a listing is read, what the SDK does with a tool listed twice,
+  and a reason that named a list where an item of it was meant.
+- **What closed it.** The gate works out what was evaluated itself, as a bound for
+  each reading, once for a schema and a value, with steps; a `$ref` has a longest
+  length; the gate reads the listing that was handed out beside the one the server
+  object keeps, and lists again or refuses where they differ. The `uniqueItems`
+  difference is stated on the package page and held by the comparison, which is now
+  made with `jsonschema` compared pairwise for that keyword and counts the calls
+  where `jsonschema` as it ships differs. The sentences are corrected. Tests:
+  `TestTenthReview` in `tests/test_openai_agents_mcp_gate.py`, and in
+  `tests/test_compat_openai_agents_mcp.py` the comparison (245,248 calls, a family
+  for this shape among them) and a test of which patterns are run while a listing is
+  read.
+- **What it did not cover**, by its own list: timings beyond their order of
+  magnitude, and the time tables on the package page; the measuring tool's `stack`
+  mode; Python 3.10; real transports; a live zod server; `_audit.py`; hosted MCP in a
+  real run; `tool_filter`, `cache_tools_list`, `MCPServerManager`, realtime agents, a
+  resumed `RunState` and a rejected approval; a proof that the two readings are
+  bounds; sentences outside the diff it reviewed; and the 2019-09 `unevaluatedItems`
+  path where `jsonschema` raises `TypeError` on `items: true`.
+- **Still open after it.** No proof of the bounds: the evidence is the comparison.
+  Reading a listing is not counted in steps (once for a listing, in proportion to
+  its size). The time tables on the package page are of the code before round eight.
 
 **Where you can help.**
 

@@ -767,6 +767,9 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
             validators={keyword: own[keyword] for keyword in on_purpose if keyword in own},
             type_checker=base.TYPE_CHECKER.redefine("integer", module._is_integer),
         )
+        # the gate's own checks of `not`, `if` and `contains` ask which reading they
+        # are made for
+        reference.RECUSAL_READING = module._GATE
         for schema in schemas:
             ours, theirs = strict(schema), reference(schema)
             for instance in instances:
@@ -802,6 +805,13 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
                         for index, each in enumerate(wanted)
                         if each[0] not in once or each not in wanted[:index]
                     ]
+                if (found, wanted) == ("Refused", "TypeError"):
+                    # a 2019-09 `items` that is `true` beside `unevaluatedItems`:
+                    # `jsonschema` takes its length and raises, and the gate, which
+                    # works out what was evaluated itself, refuses the schema by name
+                    assert base is validators.Draft201909Validator, case
+                    assert "unevaluatedItems" in schema and "'items': True" in str(schema), case
+                    found = wanted
                 assert found == wanted, case
                 compared += failed
     # the comparison is not of nothing: most of these values fail
@@ -849,6 +859,9 @@ _NINE_VALUES = [
     *(0, 1, -1, 5, 13, 0.0, 1.0, 5.0, 13.0, 1.5, True, False, None, "", "a"),
     *([1], [1.0], [True], [1, 1.0], [1, True], [0, 0.0, False], [1, 2], []),
     *({"k": 1}, {"k": 1.0}, {"k": True}, {}, {"k": 5.0, "a": 1}),
+    # lists that `jsonschema` 4.26 finds unique although an item is there twice (round
+    # ten): it sorts the items and compares neighbours, and these do not sort together
+    *([[True], [1], [True]], [[0], [False], [0]]),
 ]
 
 
@@ -921,20 +934,123 @@ def _nine_random(rng, depth=0):
     return made
 
 
+def _ten_family(modern):
+    """Round ten's shape, built from its mechanism: an ``if`` beside
+    ``unevaluatedProperties`` or ``unevaluatedItems``, whose branches evaluate
+    different members, standing alone and under every keyword that turns a failure into
+    a pass. ``(schema of x, values, definitions)`` for each."""
+    integer = {"type": "integer"}
+    conditions = [{"const": 1}, integer, {"enum": [0, 1]}, {"type": "string"}]
+
+    def under(alternative, wrap):
+        yield alternative, wrap
+        yield {"not": alternative}, wrap
+        yield {"not": {"not": {"not": alternative}}}, wrap
+        yield {"if": alternative, "then": False}, wrap
+        yield {"if": alternative, "else": False}, wrap
+        yield {"anyOf": [alternative, False]}, wrap
+        yield {"allOf": [{"not": alternative}]}, wrap
+        yield {"oneOf": [alternative, {"required": ["zz"]}]}, wrap
+        yield {"contains": alternative, "maxContains": 0}, lambda value: [wrap(value)]
+
+    branches = [
+        None,
+        {},
+        {"properties": {"b": True}},
+        {"anyOf": [{"properties": {"b": True, "n": integer}}]},
+        {"allOf": [{"properties": {"b": {"const": 0}}}]},
+        {"$ref": "#/$defs/e"},
+    ]
+    members = [
+        *({"k": True, "b": 0, "n": 5.0}, {"k": 1, "b": 0}, {"k": 1.0, "b": 0, "n": 5}),
+        *({"k": "s", "b": 1}, {"k": True}, {"b": 0}, {}),
+    ]
+    definitions = {"e": {"properties": {"b": True}}}
+    for condition in conditions:
+        for then in branches:
+            for otherwise in branches:
+                for unevaluated in (False, integer):
+                    alternative = {
+                        "properties": {"k": True},
+                        "unevaluatedProperties": unevaluated,
+                        "if": {"properties": {"k": condition}},
+                    }
+                    if then is not None:
+                        alternative["then"] = then
+                    if otherwise is not None:
+                        alternative["else"] = otherwise
+                    for schema, wrap in under(alternative, lambda value: value):
+                        yield schema, [wrap(value) for value in members], definitions
+    first = "prefixItems" if modern else "items"
+    branches = [
+        None,
+        {},
+        {first: [True, True]},
+        {"anyOf": [{first: [True, integer]}]},
+        {"contains": integer},
+    ]
+    lists = [[True, 5.0], [1, 5], [1.0], [True], [], ["s", 1]]
+    for condition in conditions:
+        for then in branches:
+            for otherwise in branches:
+                alternative = {
+                    first: [True],
+                    "unevaluatedItems": False,
+                    "if": {first: [condition]},
+                }
+                if then is not None:
+                    alternative["then"] = then
+                if otherwise is not None:
+                    alternative["else"] = otherwise
+                for schema, wrap in under(alternative, lambda value: value):
+                    yield schema, [wrap(value) for value in lists], {}
+
+
+def _unique_pairwise(equal):
+    """``uniqueItems`` as the specification states it, with ``jsonschema``'s own test of
+    whether two values are equal: no two items are."""
+
+    def check(validator, wanted, instance, schema):
+        from jsonschema.exceptions import ValidationError
+
+        if wanted and validator.is_type(instance, "array"):
+            for index, item in enumerate(instance):
+                if any(equal(item, other) for other in instance[:index]):
+                    yield ValidationError("two items are equal")
+                    return
+
+    return check
+
+
+def _sorted_apart(value, unique, equal):
+    """Whether ``value`` holds a list ``jsonschema`` finds unique although two of its
+    items are equal."""
+    if type(value) is list:
+        pairwise = not any(
+            equal(item, other) for index, item in enumerate(value) for other in value[:index]
+        )
+        if unique(value) and not pairwise:
+            return True
+        return any(_sorted_apart(item, unique, equal) for item in value)
+    if type(value) is dict:
+        return any(_sorted_apart(item, unique, equal) for item in value.values())
+    return False
+
+
 class _NoPattern:
-    """Counts every call that hands the ``re`` module a pattern while the gate works:
+    """Notes every call that hands the ``re`` module a pattern while the gate works:
     each of its functions that takes one, and the one function all of them compile
-    through."""
+    through. Where it is told to ``stop`` them, a pattern is noted and not run."""
 
     ENTRIES = (
         *("compile", "search", "match", "fullmatch", "split", "findall", "finditer", "sub"),
         *("subn", "_compile"),
     )
 
-    def __init__(self):
+    def __init__(self, stop=True):
         import re
 
-        self.re, self.ran, self.on = re, [], False
+        self.re, self.ran, self.on, self.stop = re, [], False, stop
         self.originals = {name: getattr(re, name) for name in self.ENTRIES if hasattr(re, name)}
         assert "_compile" in self.originals and "search" in self.originals
 
@@ -942,9 +1058,10 @@ class _NoPattern:
         def spying(name):
             def spy(pattern, *args, **kwargs):
                 if self.on:
-                    # noted and stopped, never run: a pattern here may not finish
                     self.ran.append((name, pattern))
-                    raise RuntimeError("a pattern was handed to `re` while the gate worked")
+                    if self.stop:
+                        # noted and stopped, never run: a pattern here may not finish
+                        raise RuntimeError("a pattern was handed to `re` while the gate worked")
                 return self.originals[name](pattern, *args, **kwargs)
 
             return spy
@@ -968,32 +1085,60 @@ def test_what_the_gate_sends_is_valid_for_jsonschema_as_it_ships(ex):
     the other branch for ``5000.0``; a ``oneOf`` of an integer and a number was met
     once by ``5.0``). So: every schema above, alone and under every such keyword, in
     the three drafts, against every value above; and schemas made at random from the
-    same keywords, four deep. ``pattern``, ``format`` and ``patternProperties`` are not
-    in these schemas: the gate leaves them to the server, and they have a corpus of
-    their own below. While the gate works, nothing hands the ``re`` module a pattern."""
+    same keywords, four deep. Round ten found it broken once more, for an ``if``
+    beside ``unevaluatedProperties`` or ``unevaluatedItems`` under such a keyword, which
+    a generator of the general kind did not reach in 1.2 million calls: that shape is
+    built here from its mechanism (:func:`_ten_family`), in the two drafts that have
+    the keywords.
+
+    One divergence is known, explained and counted, and it is ``jsonschema``'s:
+    ``uniqueItems``. The specification asks that no two items are equal. ``jsonschema``
+    4.26 sorts the items and compares neighbours, so ``[[true], [1], [true]]``, which
+    does not sort so that the two ``[true]`` meet, is unique for it; under a ``not``
+    the gate, which compares every item with every other, sends what ``jsonschema``
+    then rejects. So the comparison is with ``jsonschema`` as it ships but for that
+    one keyword, compared pairwise with its own test of equality, and every call the
+    two differ on is asserted to hold such a list.
+
+    ``pattern``, ``format`` and ``patternProperties`` are not in these schemas: the gate
+    leaves them to the server, and they have a corpus of their own below. While the
+    gate works, nothing hands the ``re`` module a pattern."""
     import importlib
     import random
 
     validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    from jsonschema import _utils
+
     module = importlib.import_module("recusal_openai_agents_mcp._schema")
-    tried = sent = 0
+    exact = {
+        getattr(validators, name): validators.extend(
+            getattr(validators, name),
+            validators={"uniqueItems": _unique_pairwise(_utils.equal)},
+        )
+        for _, name in _DRAFT_ADDRESSES
+    }
+    tried = sent = apart = 0
     kept = {"not": 0, "if": 0, "oneOf": 0, "maxContains": 0}
 
     def check(base, root, value):
-        nonlocal tried, sent
+        nonlocal tried, sent, apart
         tried += 1
         spy.on = True
         try:
             _, completed = listed.complete({"x": value})
         except module.Refused as refused:
             for position in kept:
-                kept[position] += f"stands under a `{position}`" in refused.reason
-                kept[position] += f"stands under an `{position}`" in refused.reason
+                kept[position] += f"under a `{position}`" in refused.reason
+                kept[position] += f"under an `{position}`" in refused.reason
             return
         finally:
             spy.on = False
         sent += 1
-        assert base(root).is_valid(completed), (base.__name__, root, value)
+        assert exact[base](root).is_valid(completed), (base.__name__, root, value)
+        if not base(root).is_valid(completed):
+            # the one explained divergence
+            apart += 1
+            assert _sorted_apart(completed, _utils.uniq, _utils.equal), (base.__name__, root, value)
 
     with _NoPattern() as spy:
         for address, name in _DRAFT_ADDRESSES:
@@ -1027,15 +1172,76 @@ def test_what_the_gate_sends_is_valid_for_jsonschema_as_it_ships(ex):
             listed = module.Listed(root)
             for value in rng.sample(_NINE_VALUES, 4):
                 check(base, root, value)
+        general, before = tried, sent
+        for address, name in _DRAFT_ADDRESSES[1:]:
+            base = getattr(validators, name)
+            for schema, values, definitions in _ten_family(name == "Draft202012Validator"):
+                root = {
+                    "$schema": address,
+                    "type": "object",
+                    "properties": {"x": schema},
+                    "$defs": definitions,
+                }
+                base.check_schema(root)
+                listed = module.Listed(root)
+                for value in values:
+                    check(base, root, value)
         assert spy.ran == []
     positions = len(list(_nine_positions({}, {})))
     assert positions == 23
     assert structured == 3 * len(_NINE_LEAVES) * len(_NINE_BESIDE) * positions * len(_NINE_VALUES)
-    assert structured == 170_016 and tried == structured + 16_000
+    assert structured == 182_160 and general == structured + 16_000
+    # round ten's family: 4 conditions, each branch one of 6 (members) or 5 (items),
+    # 2 schemas for what is left, 9 positions, 7 objects or 6 lists, 2 drafts
+    assert tried - general == 2 * (4 * 6 * 6 * 2 * 9 * 7 + 4 * 5 * 5 * 9 * 6) == 47_088
     # not of nothing: a good part is sent, and each of the four keywords was left
     # undecided for some of them
-    assert sent == 117_990
+    assert (sent, sent - before, apart) == (140_028, 14_894, 104)
     assert all(count > 100 for count in kept.values()), kept
+
+
+def test_the_patterns_run_while_a_listing_is_read_are_the_metaschemas_own(ex):
+    """What "no pattern of a server's is evaluated" does not say. A listing is checked
+    against the metaschema of its draft by ``jsonschema``, and the metaschema has fixed
+    patterns of its own (for the text of an ``$anchor``): those are run, on text of the
+    listed schema, which is the server's and not the model's. No pattern the listed
+    schema itself holds is."""
+    import importlib
+
+    pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    from jsonschema_specifications import REGISTRY
+
+    module = importlib.import_module("recusal_openai_agents_mcp._schema")
+
+    def patterns(node, found):
+        if type(node) is dict:
+            if type(node.get("pattern")) is str:
+                found.add(node["pattern"])
+            for member in node.values():
+                patterns(member, found)
+        elif type(node) is list:
+            for item in node:
+                patterns(item, found)
+        return found
+
+    shipped: set = set()
+    for address in REGISTRY:
+        patterns(REGISTRY.contents(address), shipped)
+    assert shipped and "^(a+)+$" not in shipped
+    for address, _ in _DRAFT_ADDRESSES[1:]:
+        root = {
+            "$schema": address,
+            "$anchor": "top",
+            "type": "object",
+            "properties": {"x": {"type": "string", "pattern": "^(a+)+$"}},
+            "$defs": {"d": {"$anchor": "inner", "patternProperties": {"^(a+)+$": {}}}},
+        }
+        with _NoPattern(stop=False) as spy:
+            spy.on = True
+            assert module.Listed(root).complete({"x": "a" * 60 + "!"})[1] == {"x": "a" * 60 + "!"}
+            spy.on = False
+        ran = {pattern for _, pattern in spy.ran}
+        assert ran and ran <= shipped, ran  # the premise, and the statement
 
 
 def test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module(ex):
@@ -1046,7 +1252,8 @@ def test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module(ex):
     directly, through ``$defs`` and through a ``$ref`` to a place no keyword holds; in
     the three drafts, against strings and objects whose names the patterns would be
     run on. Reading the listing, checking the call and writing the reason hand the
-    ``re`` module nothing."""
+    ``re`` module nothing: these schemas hold no keyword the metaschema checks with a
+    pattern of its own (the test above)."""
     import importlib
 
     pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
@@ -1090,4 +1297,4 @@ def test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module(ex):
                             spy.on = False
         assert spy.ran == [], spy.ran[:3]
     assert cases == 3 * len(holders) * 23 * 3 * len(values) == 13_041
-    assert refused == 6_378
+    assert refused == 6_375

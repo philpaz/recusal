@@ -26,7 +26,10 @@ judged. So before the policy runs, :meth:`Listed.complete`
    a stricter reading would admit what the schema forbids and a keyword left to the
    server would decide the result, so what stands under them is read by two readings
    that bound every reading a server can make, and a call they answer differently for
-   is refused as not decided (the three readings, below);
+   is refused as not decided (the three readings, below). What ``unevaluatedProperties``
+   and ``unevaluatedItems`` count as evaluated is worked out here and is a bound for
+   each reading too (:func:`_evaluated`): the branch of an ``if`` is not a demand that
+   only adds, so where its condition is not decided the two branches are both read;
 2. walks the arguments along the schema and refuses, at every depth,
 
    * an object where the schema offers more than one object form (two or more alternatives
@@ -77,10 +80,12 @@ wide schema costs is counted too: a step for each subschema of an ``allOf``, ``a
 ``oneOf`` or ``patternProperties`` that checks nothing (:func:`_silent`), for each name
 read of a ``dependentRequired`` list, and for each value a default holds beyond the
 first, each time it is written; and the names a schema lists are never read one by one
-for an object (:func:`_both`, :func:`_lacks`, :meth:`Listed._left_out`). Not counted:
-what ``jsonschema`` itself reads of the schema to gather what the other keywords
-evaluated, for ``unevaluatedProperties`` and ``unevaluatedItems``, and the walk of a
-``$ref`` pointer of many parts. Nothing is
+for an object (:func:`_both`, :func:`_lacks`, :meth:`Listed._left_out`). What the other
+keywords evaluated is worked out once for a schema and a value, a step for each
+subschema gone into that nothing else counted (:func:`_evaluated`), and a ``$ref`` has a
+longest length (:data:`LONGEST_REFERENCE`), since a reference is looked up again each
+time it is applied. Not counted: reading the listing itself, once, at the first call
+after it. Nothing is
 validated twice for the same schema and the same value while the arguments stand as they
 are, a value is walked once for a schema, and every step is counted against an allowance
 that grows with the number of values in the arguments up to a ceiling
@@ -148,28 +153,6 @@ from recusal.invocation import detached
 #: among them (a panic in a compiled dependency arrives as a ``BaseException``), is a
 #: refusal of the call.
 PASSED_ON = (KeyboardInterrupt, SystemExit, GeneratorExit, CancelledError)
-
-#: The functions ``jsonschema`` gathers with what the other keywords of a schema
-#: evaluated (the positions of a list, the names of an object), for 2019-09 and for
-#: 2020-12: all the gate takes from it for ``unevaluatedItems`` and
-#: ``unevaluatedProperties``. They are not part of its public interface, so where a
-#: ``jsonschema`` has none the two keywords have no check, and a schema that uses one is
-#: refused (:func:`_unread`).
-_EVALUATED_2019: tuple[Any, Any] = (None, None)
-_EVALUATED_2020: tuple[Any, Any] = (None, None)
-try:
-    from jsonschema import _legacy_keywords, _utils
-
-    _EVALUATED_2019 = (
-        _legacy_keywords.find_evaluated_item_indexes_by_schema,
-        _legacy_keywords.find_evaluated_property_keys_by_schema,
-    )
-    _EVALUATED_2020 = (
-        _utils.find_evaluated_item_indexes_by_schema,
-        _utils.find_evaluated_property_keys_by_schema,
-    )
-except (ImportError, AttributeError):  # pragma: no cover, a jsonschema without them
-    pass
 
 #: The JSON type each Python type of decoded JSON data is.
 _JSON_TYPES = {
@@ -312,6 +295,13 @@ _WINDOW = 65_536
 #: The gate refuses a longer one on every interpreter, whatever its limit is set to, and
 #: writes none out itself (:func:`measure`).
 LONGEST_INTEGER = 4_300
+
+#: The most characters a ``$ref`` of a listed schema may have. ``jsonschema`` looks a
+#: reference up again each time it applies one to a value, which costs in proportion to
+#: its length and is counted as one step: a pointer of a million characters, applied to
+#: forty thousand values, held the event loop a minute under both ceilings. An ordinary
+#: reference (``#/$defs/Name``) is a few dozen characters.
+LONGEST_REFERENCE = 1_024
 
 #: The least integer of more digits than that, and its bits: no integer of fewer bits has
 #: more digits, and every integer of more bits has.
@@ -544,12 +534,13 @@ class _Work:
         #: it added, and adds it again when it is used again
         self.notes: list[tuple] = []
         #: what the listing worked out once for every call (:meth:`Listed._prepare`): the
-        #: subschemas that hold no keyword the validation checks, what each ``const``
-        #: and ``enum`` is compared by when the JSON types are not told apart, and
-        #: whether the schema uses ``unevaluatedProperties`` or ``unevaluatedItems``
+        #: subschemas that hold no keyword the validation checks, and what each
+        #: ``const`` and ``enum`` is compared by when the JSON types are not told apart
         self.silent: dict[int, int] = {}
         self.loose: dict[int, tuple] = {}
-        self.unevaluated = False
+        #: (reading, items or members, schema, value) -> what the keywords of the
+        #: schema evaluated of the value (:func:`_evaluated`), kept the same way
+        self.evaluated: dict[tuple, tuple] = {}
 
     def step(self, count: int = 1) -> None:
         self.steps += count
@@ -562,6 +553,7 @@ class _Work:
         self.answers.clear()
         self.walked.clear()
         self.keys.clear()
+        self.evaluated.clear()
         del self.notes[:]
 
 
@@ -760,28 +752,35 @@ def _kinds(mark: int) -> tuple[str, ...]:
     return tuple(dict.fromkeys(note[0] for note in work.notes[mark:] if len(note) == 1))
 
 
-def _undecided(position: str, kinds: tuple[str, ...]) -> Any:
+def _undecided(position: str, kinds: tuple[str, ...], of: str = "{}") -> Any:
     """The error of a keyword the gate could not decide: ``position`` is the keyword,
-    and ``kinds`` what its answer rests on (:func:`_doubt`). It is noted, so that a
-    keyword which drops the errors under it (an ``anyOf`` asks each alternative only
-    whether it is met) can still say that one of them was not decided."""
+    and ``kinds`` what its answer rests on (:func:`_doubt`). ``of`` says what of the
+    value the error is left at stands under that keyword, where it is not the value
+    itself: the value's own subject goes where its ``{}`` is (``an item of {}``,
+    ``a member name of {}``). It is noted, so
+    that a keyword which drops the errors under it (an ``anyOf`` asks each alternative
+    only whether it is met) can still say that one of them was not decided."""
     error = _unmet()
-    error.recusal_undecided = (position, kinds)
+    error.recusal_undecided = (position, kinds, of)
     work = _WORK.get()
     if work is not None:
-        work.notes.append(("", position, kinds))
+        work.notes.append(("", position, kinds, of))
     return error
 
 
-def _failed(mark: int) -> Any:
+def _failed(mark: int, of: str = "{}") -> Any:
     """The error of a keyword that is not met by what it asked of the schemas under it
     since ``mark``: its own, or, where one of those was not decided, that one's again,
-    since "not met" would then say more than the gate knows."""
+    since "not met" would then say more than the gate knows. ``of`` is what of the
+    value the keyword asked those schemas about, where that is not the value itself:
+    the error is left at the value, and its reason must not say the value stands
+    under a keyword that one of its items does. The last one noted is the one said:
+    it is what the keyword asked last."""
     work = _WORK.get()
     if work is not None:
-        for note in work.notes[mark:]:
-            if len(note) == 3:
-                return _undecided(note[1], note[2])
+        for note in reversed(work.notes[mark:]):
+            if len(note) == 4:
+                return _undecided(note[1], note[2], of.format(note[3]))
     return _unmet()
 
 
@@ -1006,7 +1005,9 @@ def _property_names(validator: Any, names: Any, instance: Any, schema: Any) -> I
         failed = False
         for name in instance:
             for error in validator.descend(instance=name, schema=names):
-                if getattr(error, "recusal_undecided", None) is not None:
+                open_ = getattr(error, "recusal_undecided", None)
+                if open_ is not None:
+                    error.recusal_undecided = (open_[0], open_[1], "a member name of {}")
                     yield error
                     return
                 failed = True
@@ -1082,12 +1083,23 @@ def _decide(
     return None, _kinds(mark)
 
 
-_IF_UNREAD = (
-    f"{_SCHEMA} has an `if` whose condition the gate cannot decide for these arguments "
-    "(it rests on a keyword the gate leaves to the server, or on a number, an `enum` or "
-    "a `const` that JSON Schema and a server read differently), and it uses "
-    "`unevaluatedProperties` or `unevaluatedItems`, which depend on which branch applies"
-)
+def _condition(validator: Any, sides: dict, instance: Any, condition: Any) -> Optional[bool]:
+    """Whether the condition of an ``if`` is met, for the reading ``validator`` makes:
+    True or False where both bounding readings answer alike, None where they do not.
+    For the gate's own reading that is noted as an answer it could not decide."""
+    if validator.RECUSAL_READING == _GATE:
+        answer, kinds = _decide(validator, sides, instance, condition)
+        if answer is None:
+            work = _WORK.get()
+            if work is not None:
+                work.notes.append(("", "if", kinds, "{}"))
+        return answer
+    mark = _mark()
+    own = _passes(validator, instance, condition)
+    if _settled(mark):
+        return own
+    other = _MOST if validator.RECUSAL_READING == _LEAST else _LEAST
+    return own if _passes(_as(validator, sides[other]), instance, condition) == own else None
 
 
 def _not(sides: dict) -> Any:
@@ -1110,17 +1122,15 @@ def _if(sides: dict) -> Any:
     and any others are refused as not decided, never for what one branch asks."""
 
     def check(validator: Any, condition: Any, instance: Any, schema: Any) -> Iterable[Any]:
-        answer, kinds = _decide(validator, sides, instance, condition)
+        mark = _mark()
+        answer = _condition(validator, sides, instance, condition)
         if answer is None:
-            work = _WORK.get()
-            if work is None or work.unevaluated:
-                raise Refused(_IF_UNREAD)
             if not all(
                 _valid(validator, instance, schema[branch])
                 for branch in ("then", "else")
                 if branch in schema
             ):
-                yield _undecided("if", kinds)
+                yield _failed(mark)
         elif answer:
             if "then" in schema:
                 yield from validator.descend(instance, schema["then"], schema_path="then")
@@ -1148,24 +1158,16 @@ def _if_bound(reading: str, sides: dict) -> Any:
     branches and the one that is met most for either."""
 
     def check(validator: Any, condition: Any, instance: Any, schema: Any) -> Iterable[Any]:
-        mark = _mark()
-        own = _passes(validator, instance, condition)
-        if not _settled(mark):
-            other = _passes(
-                _as(validator, sides[_MOST if reading == _LEAST else _LEAST]), instance, condition
-            )
-            if other != own:
-                work = _WORK.get()
-                if work is None or work.unevaluated:
-                    raise Refused(_IF_UNREAD)
-                met = [
-                    _valid(validator, instance, schema[branch])
-                    for branch in ("then", "else")
-                    if branch in schema
-                ]
-                if not (all(met) if reading == _LEAST else any(met) or len(met) < 2):
-                    yield _unmet()
-                return
+        own = _condition(validator, sides, instance, condition)
+        if own is None:
+            met = [
+                _valid(validator, instance, schema[branch])
+                for branch in ("then", "else")
+                if branch in schema
+            ]
+            if not (all(met) if reading == _LEAST else any(met) or len(met) < 2):
+                yield _unmet()
+            return
         if own:
             if "then" in schema:
                 yield from validator.descend(instance, schema["then"], schema_path="then")
@@ -1256,7 +1258,7 @@ def _contains(reading: str, sides: dict) -> Any:
                     ):
                         yield _unmet(validator="maxContains", validator_value=most)
                     else:
-                        error = _undecided("maxContains", _kinds(beside))
+                        error = _undecided("maxContains", _kinds(beside), "the items of {}")
                         error.validator, error.validator_value = "maxContains", most
                         yield error
                     return
@@ -1270,7 +1272,7 @@ def _contains(reading: str, sides: dict) -> Any:
                     return
         if matches < least:
             if not matches:
-                yield _failed(mark)
+                yield _failed(mark, "an item of {}")
             else:
                 yield _unmet(validator="minContains", validator_value=least)
 
@@ -1283,7 +1285,7 @@ def _contains_one(validator: Any, contains: Any, instance: Any, schema: Any) -> 
     if validator.is_type(instance, "array") and not any(
         _valid(validator, each, contains) for each in instance
     ):
-        yield _failed(mark)
+        yield _failed(mark, "an item of {}")
 
 
 def _sized(kind: str, beyond: Any) -> Any:
@@ -1331,26 +1333,157 @@ def _multiple_of(validator: Any, factor: Any, instance: Any, schema: Any) -> Ite
         yield _unmet()
 
 
-def _unevaluated_items(evaluated: Any) -> Any:
-    """``unevaluatedItems``: no item is left that no other keyword evaluated.
-    ``evaluated`` is the function of ``jsonschema`` that gathers the positions the other
-    keywords evaluated, for the draft; it writes no message."""
+_ITEMS_NOT_READ = (
+    f"{_SCHEMA} uses `unevaluatedItems` beside an `items` that is `true` or `false` in a "
+    "2019-09 schema, which the gate does not read (`jsonschema` raises on it)"
+)
+
+
+def _evaluated(
+    validator: Any, sides: dict, modern: bool, items: bool, instance: Any, schema: Any, memo: dict
+) -> frozenset:
+    """The members of an object (``items`` False: their names) or the items of a list
+    (their positions) that the keywords of ``schema`` evaluated, as ``jsonschema`` 4.26
+    gathers them for ``unevaluatedProperties`` and ``unevaluatedItems`` in 2019-09
+    and in 2020-12 (``modern``), keyword for keyword, with three differences.
+
+    It is a bound. ``jsonschema`` takes the branch of an ``if`` by its own answer to
+    the condition, and a branch is not a demand that only adds: a reading that finds
+    the condition met where another does not reads other members as evaluated, so
+    neither is within the other. Here, where the two bounding readings answer the
+    condition differently (:func:`_condition`), the reading that is met most counts
+    what either branch evaluated, and the other two only what both did. Everything
+    else that is asked of the schemas under it (which alternatives are met, which
+    members meet ``additionalProperties``) is asked of the reading itself, which only
+    ever evaluates more for the reading that is met more.
+
+    It is worked out once for a schema and a value while the arguments stand as they
+    are (``memo``, the call's own where there is a call). ``jsonschema`` follows a
+    ``$ref``, a ``dependentSchemas`` and the branches of an ``if`` again each time
+    one is named, with no validation in between, so definitions that each name the
+    next one twice were read two to the power of their number of times.
+
+    And it counts: a step for each subschema it goes into that nothing else counted
+    (what a ``$ref`` names, a member of ``dependentSchemas``, a condition and its
+    branches; an alternative that checks nothing, :func:`_silent`). The alternatives
+    themselves are validated, which counts their keywords, and the members and items
+    are covered by the square the keyword counts first (:func:`_squared`).
+
+    No pattern is evaluated: a schema that uses ``unevaluatedProperties`` together with
+    ``patternProperties`` is refused when it is read. Should one reach here, the
+    members a pattern governs are every member for the reading that is met most and
+    none for the others."""
+    if type(schema) is not dict:
+        return frozenset()
+    work = _WORK.get()
+    reading = validator.RECUSAL_READING
+    key = (reading, items, id(schema), id(instance))
+    kept = memo if work is None else work.evaluated
+    known = kept.get(key)
+    if known is not None and known[0] is schema and known[1] is instance:
+        if work is not None:
+            work.notes.extend(known[3])
+        return frozenset(known[2])
+    mark = _mark()
+    found: set = set()
+
+    def within(subschema: Any, using: Any = validator) -> frozenset:
+        if work is not None:
+            work.step()
+        return _evaluated(using, sides, modern, items, instance, subschema, memo)
+
+    ref = schema.get("$ref")
+    if ref is not None:
+        resolved = validator._resolver.lookup(ref)
+        found |= within(
+            resolved.contents,
+            validator.evolve(schema=resolved.contents, _resolver=resolved.resolver),
+        )
+    if items:
+        everything = range(len(instance))
+        if "items" in schema:
+            listed = schema["items"]
+            if modern or "additionalItems" in schema or type(listed) is dict:
+                found.update(everything)
+            elif type(listed) is list:
+                found.update(range(min(len(listed), len(instance))))
+            else:
+                raise Refused(_ITEMS_NOT_READ)
+        if modern and type(schema.get("prefixItems")) is list:
+            found.update(range(min(len(schema["prefixItems"]), len(instance))))
+        for keyword in ("contains", "unevaluatedItems"):
+            if keyword in schema:
+                for index, item in enumerate(instance):
+                    if _valid(validator, item, schema[keyword]):
+                        found.add(index)
+    else:
+        for keyword in ("properties", "additionalProperties", "unevaluatedProperties"):
+            if keyword not in schema:
+                continue
+            listed = schema[keyword]
+            if modern and keyword != "properties":
+                # the members whose value meets it
+                for name, member in instance.items():
+                    if _valid(validator, member, listed):
+                        found.add(name)
+            elif type(listed) is dict:
+                # the names it lists (for 2019-09 `jsonschema` reads the other two
+                # keywords this way too, by the names of their schema's own keywords)
+                found.update(_both(listed, instance))
+            elif listed is True and not modern:
+                found.update(instance)
+        if schema.get("patternProperties") and reading == _MOST:
+            found.update(instance)
+        dependents = schema.get("dependentSchemas")
+        if type(dependents) is dict:
+            for name in _both(dependents, instance):
+                found |= within(dependents[name])
+    for keyword in ("allOf", "oneOf", "anyOf"):
+        members = schema.get(keyword)
+        if type(members) is list:
+            _silent(members)
+            for subschema in members:
+                if _valid(validator, instance, subschema):
+                    found |= _evaluated(validator, sides, modern, items, instance, subschema, memo)
+    if "if" in schema:
+        if work is not None:
+            work.step()
+        answer = _condition(validator, sides, instance, schema["if"])
+        met: frozenset = frozenset()
+        unmet: frozenset = frozenset()
+        if answer is not False:
+            met = within(schema["if"])
+            if "then" in schema:
+                met |= within(schema["then"])
+        if answer is not True and "else" in schema:
+            unmet = within(schema["else"])
+        if answer is None and reading != _MOST:
+            found |= met & unmet
+        else:
+            found |= met | unmet
+    result = frozenset(found)
+    kept[key] = (schema, instance, result, tuple(work.notes[mark:]) if work is not None else ())
+    return result
+
+
+def _unevaluated_items(sides: dict, modern: bool) -> Any:
+    """``unevaluatedItems``: no item is left that no other keyword evaluated
+    (:func:`_evaluated`)."""
 
     def unevaluated_items(validator: Any, value: Any, instance: Any, schema: Any) -> Iterable[Any]:
         if not validator.is_type(instance, "array"):
             return
         mark = _mark()
-        known = evaluated(validator, instance, schema)
-        if any(index not in known for index in range(len(instance))):
-            yield _failed(mark)
+        known = _evaluated(validator, sides, modern, True, instance, schema, {})
+        if len(known) < len(instance):
+            yield _failed(mark, "{}, or an item of it,")
 
     return unevaluated_items
 
 
-def _unevaluated_properties(evaluated: Any) -> Any:
+def _unevaluated_properties(sides: dict, modern: bool) -> Any:
     """``unevaluatedProperties``: every member no other keyword evaluated meets the
-    schema. ``evaluated`` is the function of ``jsonschema`` that gathers the names the
-    other keywords evaluated, for the draft; it writes no message."""
+    schema (:func:`_evaluated`)."""
 
     def unevaluated_properties(
         validator: Any, value: Any, instance: Any, schema: Any
@@ -1358,24 +1491,26 @@ def _unevaluated_properties(evaluated: Any) -> Any:
         if not validator.is_type(instance, "object"):
             return
         mark = _mark()
-        known = evaluated(validator, instance, schema)
+        known = _evaluated(validator, sides, modern, False, instance, schema, {})
         failed = False
         for name in instance:
             if name not in known:
                 for _ in validator.descend(instance[name], value, path=name, schema_path=name):
                     failed = True
         if failed:
-            yield _failed(mark)
+            yield _failed(mark, "{}, or a member of it,")
 
     return unevaluated_properties
 
 
 def _squared(check: Any, kind: Any) -> Any:
     """``check``, an ``unevaluatedProperties`` or ``unevaluatedItems``, counted for what it
-    costs. What every other keyword evaluated (member names, positions) is gathered into
-    a list, and each member or item of the value is looked up in it: one comparison for
-    every pair of them. So that many steps are counted before it runs, and a value too
-    large for the allowance is refused without the scan."""
+    costs: the square of the members or items of the value, before it runs, so that a
+    value too large for the allowance is refused without the reading. Every keyword of
+    the schema is asked about every member (which of them meet ``additionalProperties``,
+    which a ``contains`` is met by), and that is counted here once and not for each
+    keyword; it is also what the keyword cost when ``jsonschema`` gathered what was
+    evaluated into a list and looked every member up in it."""
 
     def squared(validator: Any, value: Any, instance: Any, schema: Any) -> Iterable[Any]:
         work = _WORK.get()
@@ -1679,22 +1814,16 @@ _KEYWORDS: dict[str, Any] = {
 }
 
 #: The keywords a draft checks its own way: ``contains`` (None for the one with
-#: ``maxContains``, which each reading has its own check for) and ``items``, and the
-#: functions of ``jsonschema`` that gather what the other keywords evaluated, for the two
-#: ``unevaluated`` keywords (None where this ``jsonschema`` has none).
+#: ``maxContains``, which each reading has its own check for) and ``items``.
 _BY_DRAFT: dict[Any, dict[str, Any]] = {
     validators.Draft7Validator: {"contains": _contains_one, "items": _items_or_list},
     validators.Draft201909Validator: {
         "contains": None,
         "items": _items_or_list,
-        "unevaluatedItems": _EVALUATED_2019[0],
-        "unevaluatedProperties": _EVALUATED_2019[1],
     },
     validators.Draft202012Validator: {
         "contains": None,
         "items": _items,
-        "unevaluatedItems": _EVALUATED_2020[0],
-        "unevaluatedProperties": _EVALUATED_2020[1],
     },
 }
 
@@ -1725,11 +1854,9 @@ def _checks(base: Any, reading: str, sides: dict) -> dict[str, Any]:
                 "additionalProperties": _additional_properties_bound(reading),
             }
         )
-    evaluated = (own.get("unevaluatedItems"), own.get("unevaluatedProperties"))
-    if evaluated[0] is not None:
-        own["unevaluatedItems"] = _squared(_unevaluated_items(evaluated[0]), list)
-    if evaluated[1] is not None:
-        own["unevaluatedProperties"] = _squared(_unevaluated_properties(evaluated[1]), dict)
+    modern = base is validators.Draft202012Validator
+    own["unevaluatedItems"] = _squared(_unevaluated_items(sides, modern), list)
+    own["unevaluatedProperties"] = _squared(_unevaluated_properties(sides, modern), dict)
     checks = {}
     for keyword, check in base.VALIDATORS.items():
         checks[keyword] = check if keyword == "$ref" else own.get(keyword) or _unread(keyword)
@@ -1869,6 +1996,12 @@ class _References:
         if type(ref) is str:
             if ref in self._known:
                 return self._known[ref]
+            if len(ref) > LONGEST_REFERENCE:
+                raise Refused(
+                    f"{_SCHEMA} has a `$ref` of more than {LONGEST_REFERENCE:,} characters, "
+                    "which the gate does not read: a reference is looked up again each "
+                    "time it is applied to a value, in proportion to its length"
+                )
             if ref == "#" or ref.startswith("#/"):
                 try:
                     node = self._resolver.lookup(ref).contents
@@ -2166,11 +2299,10 @@ class Listed:
         self._planned: dict[int, tuple[dict, list]] = {}
         self._lasts: dict[int, tuple[list, int]] = {}
         #: for a call's work (:class:`_Work`): the subschemas that hold no keyword the
-        #: validation checks, what each ``const`` and ``enum`` is compared by when the
-        #: JSON types are not told apart, and whether an ``unevaluated`` keyword is used
+        #: validation checks, and what each ``const`` and ``enum`` is compared by when
+        #: the JSON types are not told apart
         self._silent: dict[int, int] = {}
         self._loose: dict[int, tuple] = {}
-        self._unevaluated = False
 
     # --- the schema itself must be checkable --------------------------------------------------
 
@@ -2293,7 +2425,6 @@ class Listed:
                     )
                 self._left_out(node)
             self._silent = silent
-            self._unevaluated = bool({"unevaluatedProperties", "unevaluatedItems"} & read.keywords)
         except SchemaError:
             raise Refused(f"{_SCHEMA} is not a valid JSON Schema") from None
         self._names = read.names
@@ -2535,8 +2666,10 @@ class Listed:
         strict = "the gate sends only arguments that are valid against it as they stand"
         undecided = getattr(error, "recusal_undecided", None)
         if undecided is not None:
-            position, kinds = undecided
+            position, kinds, of = undecided
             rests = [_RESTS_ON[kind] for kind in kinds if kind in _RESTS_ON]
+            if of != "{}":
+                subject, plural = of.format(subject), of.startswith("the items of")
             return (
                 f"{subject} {'stand' if plural else 'stands'} under {_UNDECIDED[position]} "
                 f"That rests on {'; and on '.join(rests) or 'what the gate does not settle'}. "
@@ -2997,7 +3130,6 @@ class Listed:
             sent = arguments if owned else detached(arguments)
             work = _Work(min(_STEPS + _STEPS_PER_VALUE * _count(sent), self._ceiling))
             work.silent, work.loose = self._silent, self._loose
-            work.unevaluated = self._unevaluated
             token = _WORK.set(work)
             return self._complete(validator, work, sent)
         except Refused:
