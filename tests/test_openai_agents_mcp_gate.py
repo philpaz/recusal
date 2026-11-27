@@ -6465,17 +6465,24 @@ class TestSeventhReview:
         the gate's, which refuses a schema that uses it rather than run one of theirs."""
         module = self.schema_module()
         for _, base, strict in self.drafts():
-            checks = module._checks(base)
-            assert set(checks) == set(base.VALIDATORS) == set(strict.VALIDATORS)
-            assert set(checks) <= set(self.FAILING) | {"$dynamicRef", "$recursiveRef"}, base
-            for keyword, check in checks.items():
-                if keyword == "$ref":
-                    assert check is base.VALIDATORS["$ref"]
-                    continue
-                assert check.__module__ == module.__name__, (base, keyword)
-                assert check is not base.VALIDATORS[keyword]
-                unread = check.__name__ == "unread"
-                assert unread == (keyword in ("$dynamicRef", "$recursiveRef")), (base, keyword)
+            # the gate's own reading, and the two that bound it (round nine)
+            sides = strict.RECUSAL_SIDES
+            assert set(sides) == {module._LEAST, module._MOST}
+            readings = {module._GATE: strict, **sides}
+            assert len({id(each) for each in readings.values()}) == 3
+            for reading, made in readings.items():
+                assert made.RECUSAL_READING == reading
+                checks = module._checks(base, reading, sides)
+                assert set(checks) == set(base.VALIDATORS) == set(made.VALIDATORS)
+                assert set(checks) <= set(self.FAILING) | {"$dynamicRef", "$recursiveRef"}, base
+                for keyword, check in checks.items():
+                    if keyword == "$ref":
+                        assert check is base.VALIDATORS["$ref"]
+                        continue
+                    assert check.__module__ == module.__name__, (base, reading, keyword)
+                    assert check is not base.VALIDATORS[keyword]
+                    unread = check.__name__ == "unread"
+                    assert unread == (keyword in ("$dynamicRef", "$recursiveRef")), (base, keyword)
         # the functions it takes from `jsonschema` for what the other keywords evaluated
         from jsonschema import _legacy_keywords, _utils
 
@@ -6733,11 +6740,14 @@ class TestSeventhReview:
         given = {"$schema": "x"}
         assert self.judged(given, named) == (given, given, None)
 
-    def test_a_schema_the_scan_does_not_read_that_declares_a_draft_is_refused_at_the_call(
+    def test_a_schema_only_a_ref_reaches_that_declares_a_draft_is_refused_when_it_is_read(
         self, example
     ):
-        """A ``$ref`` may name a place under a keyword the gate does not read, which the
-        scan does not look into. Whatever leaves the gate's validator is refused."""
+        """A ``$ref`` may name a place under a keyword the gate does not know. From round
+        nine the scan reads what every ``$ref`` names, wherever that is, so the draft
+        declared there is refused when the schema is read, as one under ``$defs`` is.
+        Before, the scan did not look there and the call was refused when the
+        validator left the gate's class, which still stands behind the scan."""
         schema = {
             "properties": {"p": {"$ref": "#/x-shared/n"}},
             "x-shared": {"n": {"$schema": DRAFT_07, "type": "integer"}},
@@ -6745,9 +6755,14 @@ class TestSeventhReview:
         assert self.judged({"p": 5.0}, schema) == (
             None,
             None,
-            f"Recusal refused `purge`: {_SCHEMA} declares a JSON Schema draft on a subschema, "
-            "which the gate does not read",
+            f"Recusal refused `purge`: {_SCHEMA} embeds a schema that declares a draft of "
+            "its own (`$schema`), which the gate does not read",
         )
+        # behind the scan: a validator that leaves the gate's class is refused
+        module = self.schema_module()
+        strict = module._DRAFTS[self.drafts()[2][1]]
+        with pytest.raises(module.Refused, match="declares a JSON Schema draft on a subschema"):
+            strict({}).evolve(schema={"$schema": DRAFT_07})
 
     # --- a ceiling on the size of one call's arguments -----------------------------------------
 
@@ -7980,13 +7995,743 @@ class TestEighthReview:
         assert self.judged({"p": {"a": 1, "b": 2}}, schema) == (
             None,
             None,
-            "Recusal refused `purge`: argument `p` does not meet `propertyNames` in the "
-            f"server's schema; {_AS_THEY_STAND}",
+            "Recusal refused `purge`: argument `p` holds a member whose name does not meet "
+            "what the server's schema asks of member names there (`propertyNames`); "
+            f"{_AS_THEY_STAND}",
         )
 
     def test_no_reason_names_a_keyword_none(self, example):
         for schema, given, _ in self.FALSE:
             assert "`None`" not in self.judged(given, schema)[2]
+
+
+class TestNinthReview:
+    """The ninth review (2026-11-27), of the 0.2.1 changes as they stood after the eighth.
+
+    A ``$ref`` to a place no keyword the scan knows holds was validated against and
+    never read: a ``patternProperties`` there, beside ``unevaluatedProperties``, had
+    ``jsonschema`` run the server's regular expression on member names the model chose.
+    The three stricter readings ADMITTED what the schema forbids under ``not``, as the
+    condition of an ``if``, in a ``oneOf`` and under ``maxContains``; and ``pattern``,
+    never evaluated, refused every string under a ``not`` with a reason that was not
+    true. A member NAMED ``default`` was taken for the keyword. A step did not count
+    what a wide schema costs. A member name that failed ``propertyNames`` was reported
+    as the object failing ``enum``. And a server that lists one tool name twice was
+    read by its last listing where the SDK calls its first."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    judged = TestTheWholeListedSchema.judged
+    schema_module = staticmethod(TestThirdReview.schema_module)
+    spent = TestThirdReview.spent
+
+    @staticmethod
+    def under(schema):
+        return {"type": "object", "properties": {"x": schema}, "required": ["x"]}
+
+    def reason(self, schema, value):
+        """The reason ``{"x": value}`` is refused for under ``schema``, or None if sent."""
+        judged, sent, reason = self.judged({"x": value}, self.under(schema))
+        assert (sent is None) == (reason is not None)
+        if sent is not None:
+            assert sent == judged == {"x": value}
+        return reason
+
+    @staticmethod
+    def not_decided(position, *rests):
+        """What a reason for an answer the gate could not decide holds."""
+
+        def check(reason):
+            assert reason is not None and reason.startswith("Recusal refused `purge`: argument `x`")
+            assert f"stands under {position}" in reason and "the gate cannot tell" in reason
+            for each in rests:
+                assert each in reason, reason
+            assert reason.endswith("and it cannot show that here.")
+            return True
+
+        return check
+
+    # --- F1: what a `$ref` names is read, wherever it is --------------------------------------
+
+    HIDDEN = [
+        ("x-shapes", lambda hidden: {"a": hidden}, "#/x-shapes/a"),
+        ("examples", lambda hidden: [hidden], "#/examples/0"),
+        ("default", lambda hidden: {"a": hidden}, "#/default/a"),
+        ("const", lambda hidden: hidden, "#/const"),
+    ]
+
+    @pytest.mark.parametrize("keyword, held, ref", HIDDEN, ids=[each[0] for each in HIDDEN])
+    def test_no_pattern_behind_a_ref_to_a_place_no_keyword_holds_is_evaluated(
+        self, example, keyword, held, ref
+    ):
+        """The reviewer's schema: ``unevaluatedProperties`` beside a ``$ref`` to a
+        ``patternProperties`` under a keyword the scan did not look into. It is refused
+        as the same schema under ``$defs`` is, and no regular expression is run."""
+        import re
+
+        entries = ("search", "match", "fullmatch", "compile", "finditer", "findall", "sub")
+        ran: list = []
+        originals = {name: getattr(re, name) for name in entries}
+
+        def spying(name):
+            def spy(pattern, *args, **kwargs):
+                # noted and stopped, never run: the second pattern below does not
+                # finish on the name beside it
+                ran.append((name, pattern))
+                raise RuntimeError("a pattern of the listed schema was handed to `re`")
+
+            return spy
+
+        refused = (
+            f"Recusal refused `purge`: {_SCHEMA} uses `unevaluatedProperties` together with "
+            "`patternProperties`, which the gate could apply only by evaluating the "
+            "server's patterns"
+        )
+        for pattern, name in (("^a+$", "aaa"), ("^(a+)+$", "a" * 40 + "!")):
+            hidden = {"patternProperties": {pattern: True}}
+            root = {"type": "object", "$ref": ref, "unevaluatedProperties": False}
+            root[keyword] = held(hidden)
+            for entry in entries:
+                setattr(re, entry, spying(entry))
+            try:
+                answer = self.judged({name: 1}, root)
+            finally:
+                for entry in entries:
+                    setattr(re, entry, originals[entry])
+            assert ran == [], (keyword, ran)
+            assert answer == (None, None, refused), answer[2]
+
+    def test_what_a_ref_names_outside_the_known_keywords_is_read_by_the_same_rules(self, example):
+        """A reference to such a place works where what it names can be checked, and
+        what the scan refuses under ``$defs`` it refuses there."""
+        plain = {
+            "properties": {"p": {"$ref": "#/x-shared/n"}},
+            "x-shared": {"n": {"type": "integer"}},
+        }
+        assert self.judged({"p": 5}, plain) == ({"p": 5}, {"p": 5}, None)
+        assert (
+            "is of JSON type number where the server's schema declares integer"
+            in (self.judged({"p": 5.0}, plain)[2])
+        )
+        # a default listed there is written, as one under `$defs` is
+        listed = {
+            "properties": {"p": {"$ref": "#/examples/0"}},
+            "examples": [
+                {"type": "object", "properties": {"q": {"type": "integer", "default": 7}}}
+            ],
+        }
+        assert self.judged({"p": {}}, listed)[1] == {"p": {"q": 7}}
+        # a schema that never ends, behind two such references (the reviewer's)
+        endless = {
+            "type": "object",
+            "properties": {"p": {"$ref": "#/x-shapes/a"}},
+            "x-shapes": {
+                "a": {"type": "object", "properties": {"q": {"$ref": "#/x-shapes/b"}}},
+                "b": {"allOf": [{"$ref": "#/x-shapes/b"}]},
+            },
+        }
+        for arguments in ({"p": {"q": 1}}, {"p": {}}, {}):
+            assert self.judged(arguments, endless)[2] == (
+                f"Recusal refused `purge`: {_SCHEMA} refers to itself without end"
+            )
+        # what is named there is checked as the schema it is used as
+        broken = {"properties": {"p": {"$ref": "#/x-shared/n"}}, "x-shared": {"n": {"type": 5}}}
+        assert self.judged({"p": 1}, broken)[2] == (
+            f"Recusal refused `purge`: {_SCHEMA} is not a valid JSON Schema"
+        )
+        # a default under a keyword the walk does not write through, reached only so
+        under_not = {
+            "properties": {"p": {"$ref": "#/x-shared/n"}},
+            "x-shared": {"n": {"not": {"properties": {"q": {"default": 1}}}}},
+        }
+        assert "lists a default under" in self.judged({"p": 1}, under_not)[2]
+        # a map of `properties` taken as a schema: its names are read as keywords
+        as_schema = {
+            "properties": {"p": {"$ref": "#/properties/m/properties"}, "m": {"properties": {}}},
+        }
+        as_schema["properties"]["m"]["properties"] = {"patternProperties": {"^a": False}}
+        as_schema["properties"]["p"]["unevaluatedProperties"] = False
+        assert "together with `patternProperties`" in self.judged({"p": {"a": 1}}, as_schema)[2]
+
+    def test_every_subschema_a_ref_names_was_read_by_the_scan(self, example):
+        """The rule itself: after the reading, what any ``$ref`` of any subschema read
+        names is itself a subschema that was read."""
+        module = self.schema_module()
+        schema = {
+            "properties": {"p": {"$ref": "#/x/0/y"}},
+            "x": [{"y": {"items": {"$ref": "#/z"}}}],
+            "z": {"anyOf": [{"$ref": "#/x/0"}, {"type": "null"}]},
+        }
+        listed = module.Listed(schema)
+        listed.complete({"p": [None]})
+        read = module._Read(listed._resolve)
+        module._scan(schema, schema, read)
+        assert id(schema["x"][0]["y"]) not in read.scanned  # the premise: not by the keywords
+        # what the listing worked out covers each of them
+        for node in (schema["x"][0]["y"], schema["z"], schema["x"][0]):
+            assert id(node) in listed._typed, node
+
+    # --- F2: a stricter reading under a keyword that turns a failure into a pass ---------------
+
+    def test_the_reviewers_values_are_no_longer_sent(self, example):
+        """Each was sent, and is not valid for ``jsonschema`` as it ships."""
+        from jsonschema import Draft202012Validator
+
+        number = "whether a whole number sent as a float (`5.0`) is an `integer`"
+        equal = "whether a value is equal to one of another JSON type"
+        cases = [
+            ({"type": "number", "not": {"const": 0}}, 0.0, "a `not`", equal),
+            ({"type": "number", "not": {"enum": [13, 666]}}, 13.0, "a `not`", equal),
+            ({"type": "number", "not": {"type": "integer"}}, 5.0, "a `not`", number),
+            (
+                {"type": "number", "if": {"type": "integer"}, "then": {"maximum": 10}},
+                5000.0,
+                "an `if`",
+                number,
+            ),
+            (
+                {
+                    "type": "object",
+                    "properties": {"level": {"type": "number"}, "sudo": {"type": "boolean"}},
+                    "if": {"properties": {"level": {"const": 0}}, "required": ["level"]},
+                    "then": {"properties": {"sudo": {"const": False}}, "required": ["sudo"]},
+                },
+                {"level": 0.0, "sudo": True},
+                "an `if`",
+                equal,
+            ),
+            (
+                {"oneOf": [{"type": "integer"}, {"type": "number", "minimum": 0}]},
+                5.0,
+                "a `oneOf`",
+                number,
+            ),
+            (
+                {"type": "array", "contains": {"type": "integer"}, "maxContains": 1},
+                [1, 2.0],
+                "a `maxContains`",
+                number,
+            ),
+        ]
+        for schema, value, position, rests in cases:
+            assert not Draft202012Validator(self.under(schema)).is_valid({"x": value}), schema
+            assert self.not_decided(position, rests)(self.reason(schema, value)), schema
+        # `true` is not `1` for JSON Schema and is for a server that compares in Python:
+        # the gate cannot tell, where it sent the value before
+        flag = {"not": {"const": 1}}
+        assert Draft202012Validator(self.under(flag)).is_valid({"x": True})
+        assert self.not_decided("a `not`", equal)(self.reason(flag, True))
+
+    def test_what_both_readings_answer_alike_is_decided_as_before(self, example):
+        met = f"argument `x` does not meet `not` in the server's schema; {_AS_THEY_STAND}"
+        zero = {"type": "number", "not": {"const": 0}}
+        assert self.reason(zero, 1) is None and self.reason(zero, 1.5) is None
+        assert self.reason(zero, 0) == f"Recusal refused `purge`: {met}"
+        whole = {"type": "number", "if": {"type": "integer"}, "then": {"maximum": 10}}
+        assert self.reason(whole, 5) is None and self.reason(whole, 2.5) is None
+        assert "does not meet `maximum`" in self.reason(whole, 5000)
+        # not decided, and valid whichever branch applies: sent
+        assert self.reason(whole, 5.0) is None
+        one = {"oneOf": [{"type": "integer"}, {"type": "number", "minimum": 0}]}
+        assert self.reason(one, -5) is None and self.reason(one, 5.5) is None
+        assert "matches not exactly one of the alternatives" in self.reason(one, 5)
+        most = {"type": "array", "contains": {"type": "integer"}, "maxContains": 1}
+        assert self.reason(most, [1, 2.5]) is None
+        assert "does not meet `maxContains`" in self.reason(most, [1, 2])
+        # a `not` under a `not`: the readings change places twice
+        twice = {"not": {"not": {"type": "integer"}}}
+        assert self.reason(twice, 5) is None
+        assert "does not meet `not`" in self.reason(twice, "a")
+        assert self.not_decided("a `not`")(self.reason(twice, 5.0))
+
+    # --- F6: a keyword the gate does not evaluate never decides ---------------------------------
+
+    def test_a_pattern_under_a_not_or_an_if_is_not_taken_as_met(self, example):
+        pattern = "a `pattern`, which the gate does not evaluate"
+        dash = {"type": "string", "not": {"pattern": "^-"}}
+        assert self.not_decided("a `not`", pattern)(self.reason(dash, "report.txt"))
+        assert "does not meet `not`" not in self.reason(dash, "report.txt")
+        # what a pattern does not apply to is decided
+        anything = {"not": {"pattern": "^-"}}
+        assert self.reason(anything, 5) == (
+            "Recusal refused `purge`: argument `x` does not meet `not` in the server's "
+            f"schema; {_AS_THEY_STAND}"
+        )
+        port = {
+            "type": "object",
+            "properties": {"url": {"type": "string"}, "port": {"type": "integer"}},
+            "if": {"properties": {"url": {"pattern": "^http:"}}},
+            "then": {"required": ["port"]},
+        }
+        told = self.reason(port, {"url": "https://example.com"})
+        assert self.not_decided("an `if`", pattern)(told)
+        assert "leaves out" not in told
+        # valid whichever branch applies: sent
+        assert self.reason(port, {"url": "http://example.com", "port": 80}) is None
+        # no `url`, so the pattern applies to nothing: the condition is met, `then` asks
+        assert "leaves out `port`" in self.reason(port, {})
+        for keyword, text in (("format", "a `format`"), ("pattern", "a `pattern`")):
+            assert self.not_decided("a `not`", text)(
+                self.reason({"not": {"type": "string", keyword: "date"}}, "2026-11-27")
+            )
+        # under an `anyOf` the reason is still that it was not decided
+        beside = {"anyOf": [{"type": "string", "not": {"pattern": "^-"}}, {"type": "integer"}]}
+        assert self.not_decided("a `not`", pattern)(self.reason(beside, "report.txt"))
+        assert self.reason(beside, 5) is None
+        # but not where what was not decided is the cause of nothing: the alternative
+        # that held it was met by another of its own, and fails for its length
+        moot = {"anyOf": [{"anyOf": [beside["anyOf"][0], {"type": "string"}], "minLength": 20}]}
+        assert self.reason(moot, "report.txt") == (
+            "Recusal refused `purge`: argument `x` matches none of the alternatives the "
+            f"server's schema lists there; {_AS_THEY_STAND}"
+        )
+        # and beside `patternProperties`, whose patterns say which members it governs
+        governed = {"not": {"patternProperties": {"^a": {"type": "integer"}}}}
+        assert self.not_decided("a `not`", "`patternProperties`")(self.reason(governed, {"b": "s"}))
+
+    def test_where_a_keyword_only_adds_a_demand_it_is_read_as_before(self, example):
+        """``pattern`` and ``format`` are left to the server where they stand as a
+        demand of their own, a tagged union among them: a field with a pattern in the
+        one form the tag names does not make the ``oneOf`` undecided."""
+        assert self.reason({"type": "string", "pattern": "^-"}, "report.txt") is None
+        union = {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"const": "file"},
+                        "path": {"type": "string", "pattern": "^/", "format": "uri-reference"},
+                    },
+                    "required": ["kind", "path"],
+                },
+                {
+                    "type": "object",
+                    "properties": {"kind": {"const": "note"}, "text": {"type": "string"}},
+                    "required": ["kind", "text"],
+                },
+            ]
+        }
+        assert self.reason(union, {"kind": "file", "path": "/etc/hosts"}) is None
+        assert self.reason(union, {"kind": "note", "text": "-"}) is None
+        assert "matches not exactly one" in self.reason(union, {"kind": "note"})
+        # two forms that may both be met, told apart only by a pattern: not decided
+        twins = {
+            "oneOf": [{"type": "string", "pattern": "^a"}, {"type": "string", "pattern": "^b"}]
+        }
+        assert self.not_decided("a `oneOf`", "a `pattern`")(self.reason(twins, "abc"))
+
+    def test_an_if_that_is_not_decided_beside_an_unevaluated_keyword_is_refused(self, example):
+        schema = {
+            "type": "object",
+            "if": {"properties": {"k": {"type": "integer"}}, "required": ["k"]},
+            "else": {"properties": {"a": {}}},
+            "unevaluatedProperties": False,
+        }
+        assert self.reason(schema, {"k": 5, "a": 1}) is not None  # `a` is not evaluated
+        told = self.reason(schema, {"k": 5.0, "a": 1})
+        assert told == (
+            f"Recusal refused `purge`: {_SCHEMA} has an `if` whose condition the gate cannot "
+            "decide for these arguments (it rests on a keyword the gate leaves to the "
+            "server, or on a number, an `enum` or a `const` that JSON Schema and a server "
+            "read differently), and it uses `unevaluatedProperties` or `unevaluatedItems`, "
+            "which depend on which branch applies"
+        )
+
+    def test_ordinary_calls_cost_the_steps_they_cost_before(self, example):
+        """Nothing is read twice where the two readings meet nothing they answer
+        differently: a tagged union, a ``not``, an ``if`` and a ``maxContains`` cost
+        the steps they cost before the two readings were made (the numbers are those
+        of the commit before)."""
+        forms = [
+            {"type": "object", "properties": {"kind": {"const": f"k{n}"}, "n": {"type": "integer"}}}
+            for n in range(10)
+        ]
+        items = [{"kind": f"k{n % 10}", "n": n} for n in range(50)]
+
+        def of(item):
+            return {"type": "object", "properties": {"p": {"type": "array", "items": item}}}
+
+        assert self.spent({"p": items}, of({"oneOf": forms}))[0] == 5_012
+        assert self.spent({"p": items}, of({"anyOf": forms}))[0] == 2_987
+        numbers = {"p": list(range(50))}
+        assert self.spent(numbers, of({"not": {"type": "string"}}))[0] == 262
+        branch = {"if": {"type": "integer"}, "then": {"minimum": 0}, "else": {"maxLength": 1}}
+        assert self.spent(numbers, of(branch))[0] == 312
+        lists = {"p": [[n, "a"] for n in range(50)]}
+        most = {"type": "array", "contains": {"type": "integer"}}
+        assert self.spent(lists, of(most))[0] == 762
+
+    # --- F3: a member NAMED `default` is not the keyword ---------------------------------------
+
+    def test_a_tagged_union_whose_tag_is_default_is_called(self, example):
+        """What Pydantic publishes for a discriminated union with a tag ``"default"``:
+        ``discriminator.mapping`` is keyed by the tag values."""
+        pydantic = pytest.importorskip("pydantic")
+        from typing import Annotated, Literal
+
+        class Default(pydantic.BaseModel):
+            kind: Literal["default"]
+            size: int = 1
+
+        class Custom(pydantic.BaseModel):
+            kind: Literal["custom"]
+            width: int
+
+        profile = Annotated[Union[Default, Custom], pydantic.Field(discriminator="kind")]
+        listed = pydantic.TypeAdapter(profile).json_schema()
+        assert listed["discriminator"]["mapping"]["default"] == "#/$defs/Default"  # the premise
+        schema = {
+            "type": "object",
+            "properties": {"profile": {key: listed[key] for key in listed if key != "$defs"}},
+            "required": ["profile"],
+            "$defs": listed["$defs"],
+        }
+        assert self.judged({"profile": {"kind": "default"}}, schema)[1] == {
+            "profile": {"kind": "default", "size": 1}
+        }
+        assert self.judged({"profile": {"kind": "custom", "width": 3}}, schema)[2] is None
+
+    def test_a_property_named_default_in_a_map_of_names_is_a_name(self, example):
+        schema = {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "default": {"type": "string"},
+                "fallback": {"type": "boolean"},
+            },
+            "dependentRequired": {"default": ["fallback"]},
+        }
+        assert self.judged({"key": "a"}, schema)[2] is None
+        assert self.judged({"default": "a", "fallback": True}, schema)[2] is None
+        assert "`dependentRequired`" in self.judged({"default": "a"}, schema)[2]
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"x-fills": {"default": 1}},
+            {"x-fills": {"mapping": {"a": {"default": 1}}}},
+            {"discriminator": {"propertyName": "kind", "mapping": {"a": {"default": 1}}}},
+            {"discriminator": {"propertyName": "kind", "x-more": [{"default": 1}]}},
+            {"discriminator": [{"default": 1}]},
+            {"dependentRequired": {"a": [{"default": 1}]}},
+        ],
+        ids=["unknown", "unknown mapping", "mapping to an object", "more", "a list", "not names"],
+    )
+    def test_a_default_under_a_keyword_the_gate_does_not_know_is_still_refused(
+        self, example, extra
+    ):
+        schema = {"type": "object", "properties": {"p": {"type": "integer"}}, **extra}
+        assert self.judged({"p": 1}, schema)[2] == (
+            f"Recusal refused `purge`: {_SCHEMA} lists a default under a keyword the gate "
+            "does not read, where it cannot tell whether the server would apply it"
+        )
+
+    # --- F5: the steps count what a wide schema costs --------------------------------------------
+
+    @staticmethod
+    def lines_run(listed, arguments):
+        """How many lines of Python run for one call, the listing already read: a count
+        that no clock and no load on the machine moves."""
+        ran = [0]
+
+        def tracer(frame, event, argument):
+            if event == "line":
+                ran[0] += 1
+            return tracer
+
+        refused = type(listed).complete.__globals__["Refused"]
+        listed.complete({})
+        previous = sys.gettrace()
+        sys.settrace(tracer)
+        try:
+            listed.complete(arguments)
+        except refused:
+            pass  # a call that is refused is read as far as it is read
+        finally:
+            sys.settrace(previous)
+        return ran[0]
+
+    def test_what_a_call_costs_does_not_grow_with_the_names_a_schema_lists(self, example):
+        """The reviewer's first shape: a model of optional fields, and objects that set
+        none of them. The steps were the same for 4 fields and for 2,000 and the time
+        was not; now the lines of Python that run are the same too."""
+        module = self.schema_module()
+
+        def model(width, **more):
+            fields = {f"f{n}": {"type": "string"} for n in range(width)}
+            item = {"type": "object", "properties": fields, **more}
+            return {"type": "object", "properties": {"rows": {"type": "array", "items": item}}}
+
+        rows = {"rows": [{} for _ in range(40)]}
+        narrow = self.lines_run(module.Listed(model(4)), rows)
+        assert self.lines_run(module.Listed(model(2_000)), rows) == narrow
+        assert self.spent(rows, model(2_000))[0] == self.spent(rows, model(4))[0]
+        # and with a member set, a `required`, and what depends on a member
+        rows = {"rows": [{"f1": "a", "f3": "b"} for _ in range(40)]}
+        more = {
+            "required": ["f1", "f3"],
+            "dependentRequired": {f"f{n}": ["f1"] for n in range(4)},
+        }
+        wide = {
+            "required": ["f1", "f3"],
+            "dependentRequired": {f"f{n}": ["f1"] for n in range(2_000)},
+        }
+        narrow = self.lines_run(module.Listed(model(4, **more)), rows)
+        assert self.lines_run(module.Listed(model(2_000, **wide)), rows) == narrow
+        # what depends on a member by a schema of its own is walked whether or not the
+        # member is there (no default may stand under it), and every one is a step
+        few = model(4, dependentSchemas={f"f{n}": {"minProperties": 1} for n in range(4)})
+        many = model(2_000, dependentSchemas={f"f{n}": {"minProperties": 1} for n in range(2_000)})
+        assert self.spent(rows, many)[0] - self.spent(rows, few)[0] == 40 * 1_996
+
+    @staticmethod
+    def drafts_of(module):
+        """The 2020-12 validator of ``jsonschema``, which the gate's is made from."""
+        from jsonschema import validators
+
+        assert validators.Draft202012Validator in module._DRAFTS
+        return validators.Draft202012Validator
+
+    def test_a_long_list_of_required_names_is_read_to_the_first_one_missing(self, example):
+        module = self.schema_module()
+
+        def needing(count):
+            names = [f"f{n}" for n in range(count)]
+            return {"type": "object", "properties": {"x": {"type": "object", "required": names}}}
+
+        read: list = []
+
+        class Counted(list):
+            def __iter__(self):
+                for name in list.__iter__(self):
+                    read.append(name)
+                    yield name
+
+        call = {"x": {"f0": 1}}
+        names = Counted(needing(5_000)["properties"]["x"]["required"])
+        assert module._lacks(names, call["x"], False) is True and read == ["f0", "f1"]
+        del read[:]
+        assert module._lacks(Counted(["f0"]), call["x"], False) is False and read == ["f0"]
+        # one error for the keyword, and the reason names every name that is left out
+        strict = module._DRAFTS[self.drafts_of(module)]
+        errors = list(strict(needing(5)["properties"]["x"]).iter_errors(call["x"]))
+        assert [error.validator for error in errors] == ["required"]
+        told = self.judged(call, needing(5))[2]
+        assert told == (
+            "Recusal refused `purge`: argument `x` leaves out `f1`, `f2`, `f3`, `f4`, which "
+            f"the server's schema requires; {_AS_THEY_STAND}"
+        )
+
+    def test_subschemas_that_check_nothing_are_counted_where_a_keyword_holds_many(self, example):
+        """The reviewer's second shape: ``allOf`` of empty schemas. Each costs a
+        descent and counted no step."""
+
+        def numbers(width, keyword="allOf"):
+            return {
+                "type": "object",
+                "properties": {"n": {"type": "array", "items": {keyword: [{}] * width}}},
+            }
+
+        ten = {"n": list(range(10))}
+        base = self.spent(ten, numbers(1))[0]
+        for keyword in ("allOf", "anyOf"):
+            start = self.spent(ten, numbers(1, keyword))[0]
+            assert self.spent(ten, numbers(1_000, keyword))[0] - start == 10 * 999, keyword
+        # a `oneOf` of one form that is met and of `false`, which is met by nothing
+        one, many = numbers(1, "oneOf"), numbers(1, "oneOf")
+        one["properties"]["n"]["items"]["oneOf"] = [{"type": "integer"}]
+        many["properties"]["n"]["items"]["oneOf"] = [{"type": "integer"}] + [False] * 999
+        assert self.spent(ten, many)[0] - self.spent(ten, one)[0] == 10 * 999
+        assert self.spent(ten, numbers(1))[0] == base
+        # `true`, `false` and a title alone check nothing either; a keyword that does is
+        # counted by its own step
+        mixed = numbers(1)
+        mixed["properties"]["n"]["items"]["allOf"] = [True, {"title": "t"}, {"type": "integer"}]
+        assert self.spent(ten, mixed)[0] == base + 10 * 2
+        # the reviewer's call is refused at the ceiling, where it was sent after a minute
+        module = self.schema_module()
+        steps, allowed, told = self.spent(
+            {"n": list(range(1000, 41_000))}, numbers(1_000), module.STEP_CEILING
+        )
+        assert allowed == module.STEP_CEILING < steps <= module.STEP_CEILING + 1_001
+        assert "the check was stopped at 200,000 steps" in told
+        # a map of patterns: every member against every pattern's schema
+        patterns = {"type": "object", "patternProperties": {f"^{n}": {} for n in range(50)}}
+        few = self.spent({"a": 1, "b": 2}, {"type": "object", "patternProperties": {"^0": {}}})[0]
+        # for the check, and for the walk, which goes through each as well
+        assert self.spent({"a": 1, "b": 2}, patterns)[0] - few == 2 * 49 * 2
+
+    def test_a_default_is_counted_by_the_values_it_holds(self, example):
+        """A default is copied into every object that leaves it out: an object of a
+        thousand members under an untyped property cost one step for each copy."""
+
+        def filled(default):
+            item = {"type": "object", "properties": {"d": {"default": default}}}
+            return {"type": "object", "properties": {"rows": {"type": "array", "items": item}}}
+
+        rows = {"rows": [{} for _ in range(10)]}
+        small = self.spent(rows, filled(0))[0]
+        assert self.spent(rows, filled([]))[0] == small
+        thousand = {str(number): number for number in range(1_000)}
+        assert self.spent(rows, filled(thousand))[0] - small == 10 * 1_000
+        # the same for the reviewer's width: 2,000 defaults for each of 30,000 objects
+        # are refused at the ceiling
+        module = self.schema_module()
+        fields = {f"f{n}": {"default": None} for n in range(2_000)}
+        wide = {
+            "type": "object",
+            "properties": {
+                "rows": {"type": "array", "items": {"type": "object", "properties": fields}}
+            },
+        }
+        steps, allowed, told = self.spent(
+            {"rows": [{} for _ in range(30_000)]}, wide, module.STEP_CEILING
+        )
+        assert steps <= allowed + 2 and "the check was stopped at 200,000 steps" in told
+
+    def test_the_form_a_tag_names_is_looked_up_among_the_forms(self, example):
+        module = self.schema_module()
+
+        def union(count):
+            forms = [
+                {"type": "object", "properties": {"kind": {"const": f"k{n}"}}, "required": ["kind"]}
+                for n in range(count)
+            ]
+            return {"type": "object", "properties": {"p": {"anyOf": forms}}}
+
+        for count in (3, 300):
+            schema = union(count)
+            listed = module.Listed(schema)
+            forms = schema["properties"]["p"]["anyOf"]
+            listed.complete({})
+            assert listed._chosen({"kind": "k0"}, forms, (None, "p")) == [forms[0]]
+            assert listed._chosen({"kind": f"k{count - 1}"}, forms, (None, "p")) == [forms[-1]]
+            with pytest.raises(module.Refused, match="carries the value of none of them"):
+                listed._chosen({"kind": "other"}, forms, (None, "p"))
+            # a tag of another JSON type is not the tag
+            with pytest.raises(module.Refused):
+                listed._chosen({"kind": 0}, forms, (None, "p"))
+
+    # --- F7: a member name that does not meet `propertyNames` ----------------------------------
+
+    def test_a_member_name_the_schema_does_not_allow_is_said_to_be_a_name(self, example):
+        """What Pydantic publishes for ``dict[Literal["cpu", "ram"], int]``: the reason
+        said the object "is not one of the values the server's schema lists"."""
+        names = (
+            "holds a member whose name does not meet what the server's schema asks of "
+            f"member names there (`propertyNames`); {_AS_THEY_STAND}"
+        )
+        quotas = {
+            "type": "object",
+            "additionalProperties": {"type": "integer"},
+            "propertyNames": {"enum": ["cpu", "ram"]},
+        }
+        for schema, value in (
+            (quotas, {"cpu": 1, "disk-SECRET": 5}),
+            ({"type": "object", "propertyNames": {"maxLength": 3}}, {"abcdef-SECRET": 1}),
+            ({"type": "object", "propertyNames": False}, {"SECRET": 1}),
+        ):
+            told = self.reason(schema, value)
+            assert told == f"Recusal refused `purge`: argument `x` {names}", told
+            assert "SECRET" not in told
+        assert self.reason(quotas, {"cpu": 1, "ram": 2}) is None
+        # a name the gate cannot decide for is said to be that
+        dashed = {"type": "object", "propertyNames": {"not": {"pattern": "^-"}}}
+        assert self.not_decided("a `not`", "a `pattern`")(self.reason(dashed, {"a": 1}))
+
+    # --- one tool name listed twice ----------------------------------------------------------------
+
+    @pytest.mark.parametrize("order", ["strict first", "loose first", "the same twice"])
+    def test_a_tool_the_server_lists_twice_is_refused(self, example, order):
+        """The SDK calls the first listing of a name and the gate kept the last: with
+        a strict schema first and a loose one last, a default of the loose one was
+        written into a call the server would run under the strict one."""
+        import copy
+
+        from mcp.types import CallToolResult, TextContent, Tool
+
+        loose = {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string"},
+                "force": {"type": "boolean", "default": True},
+            },
+        }
+        strict = {
+            "type": "object",
+            "properties": {"sql": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        pair = {
+            "strict first": (strict, loose),
+            "loose first": (loose, strict),
+            "the same twice": (strict, strict),
+        }[order]
+        ran: list = []
+
+        class Twice(example.InProcessMCPServer):
+            async def list_tools(self, run_context=None, agent=None):
+                return [
+                    Tool(name="run_sql", description="d", inputSchema=copy.deepcopy(pair[0])),
+                    Tool(name="run_sql", description="d", inputSchema=copy.deepcopy(pair[1])),
+                    Tool(name="other", description="d", inputSchema=copy.deepcopy(strict)),
+                ]
+
+            async def call_tool(self, tool_name, arguments, meta=None):
+                ran.append((tool_name, arguments))
+                return CallToolResult(content=[TextContent(type="text", text="ran")])
+
+        policy = self.Recording()
+        server = example.gate_mcp_server(Twice(name="db"), policy)
+        result = asyncio.run(server.call_tool("run_sql", {"sql": "SELECT 1"}))
+        assert result.model_dump(by_alias=True).get("isError") is True
+        assert result.content[0].text == (
+            "Recusal refused `run_sql`: the server's listing names this tool more than "
+            "once; the gate checks the arguments of a tool against the one schema the "
+            "server lists for it, and does not choose between two listings of one name"
+        )
+        assert ran == [] and policy.seen == []
+        # a tool listed once beside it is called as before
+        asyncio.run(server.call_tool("other", {"sql": "SELECT 1"}))
+        assert ran == [("other", {"sql": "SELECT 1"})] and len(policy.seen) == 1
+
+    # --- F4: what writing the listed defaults does to a server that asks what was set ----------
+
+    def test_a_default_the_gate_writes_is_a_field_the_call_set(self, example):
+        """Stated on the page and not changed: the policy judges what the server would
+        run with, so the listed defaults are written into what is sent, and a Pydantic
+        server that asks which fields the call set (``model_fields_set``,
+        ``exclude_unset``) is told the written ones were set."""
+        pydantic = pytest.importorskip("pydantic")
+        from typing import Optional
+
+        class Patch(pydantic.BaseModel):
+            name: Optional[str] = None
+            email: Optional[str] = None
+            phone: Optional[str] = None
+
+        schema = {
+            "type": "object",
+            "properties": {"patch": Patch.model_json_schema()},
+            "required": ["patch"],
+        }
+        call = {"patch": {"phone": "555-0199"}}
+        judged, sent, reason = self.judged(call, schema)
+        assert reason is None and judged == sent
+        assert sent == {"patch": {"phone": "555-0199", "name": None, "email": None}}
+        assert Patch(**call["patch"]).model_dump(exclude_unset=True) == {"phone": "555-0199"}
+        assert Patch(**sent["patch"]).model_fields_set == {"name", "email", "phone"}
+        readme = " ".join(
+            (ROOT / "adapters" / "openai-agents-mcp" / "README.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for stated in (
+            "`model_fields_set`",
+            "model_dump(exclude_unset=True)",
+            "a field the call did not mention is then a field the call set",
+        ):
+            assert stated in readme, stated
 
 
 class SimpleRequest:

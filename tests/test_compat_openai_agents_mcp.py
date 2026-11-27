@@ -624,20 +624,31 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
     errors, by keyword and by place, for every schema and value here, in every draft the
     gate reads. The reference is the validator of ``jsonschema`` with only what the gate
     makes stricter or does not evaluate on purpose: the comparisons, the patterns, the
-    alternatives, and an integer that is written as a float.
+    alternatives, and an integer that is written as a float; and, from round nine, the
+    keywords that turn a failure into a pass (``not``, ``if``, and ``contains`` with its
+    ``maxContains``), which the gate reads by two bounding readings and which have a
+    comparison of their own with ``jsonschema`` as it ships
+    (``test_what_the_gate_sends_is_valid_for_jsonschema_as_it_ships``).
 
     One error is placed and named differently on purpose, and asserted for the same
     values: the one of the ``false`` schema, which has no keyword. ``jsonschema`` leaves
     it at the list or the object that holds the value; the gate puts it at the value,
     which is the place its reason names. And where ``propertyNames`` is ``false``,
     ``jsonschema`` makes one such error for every member, at the object, and the gate
-    one error of ``propertyNames`` there (a name has no place of its own)."""
+    one error of ``propertyNames`` there (a name has no place of its own). From round
+    nine the gate makes that one error for any ``propertyNames`` a name does not meet,
+    where ``jsonschema`` leaves the error of the keyword the name failed at the object;
+    and one error for the names a ``required``, a ``dependentRequired`` or a list of
+    ``dependencies`` leaves out, where ``jsonschema`` makes one for each name: the gate
+    stops reading such a list at the first name that is missing."""
     import importlib
 
     validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
     module = importlib.import_module("recusal_openai_agents_mcp._schema")
     on_purpose = {"enum", "const", "uniqueItems", "pattern", "patternProperties", "format"}
-    on_purpose |= {"additionalProperties", "anyOf", "oneOf"}
+    on_purpose |= {"additionalProperties", "anyOf", "oneOf", "not", "if", "contains"}
+    #: one error where `jsonschema` makes one for every name that is left out
+    once = {"required", "dependentRequired", "dependencies"}
     integer, string, number = {"type": "integer"}, {"type": "string"}, {"type": "number"}
     schemas = [
         integer,
@@ -750,7 +761,7 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
 
     compared = moved = 0
     for base, strict in module._DRAFTS.items():
-        own = module._checks(base)
+        own = module._checks(base, module._GATE, strict.RECUSAL_SIDES)
         reference = validators.extend(
             base,
             validators={keyword: own[keyword] for keyword in on_purpose if keyword in own},
@@ -769,6 +780,12 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
                         assert all(place == () for place in nowhere), case
                         assert found == [("propertyNames", ())] * bool(nowhere), case
                         found = wanted = []
+                    elif "propertyNames" in schema:
+                        # one error of the keyword for theirs of each name that fails,
+                        # which they leave at the object under the keyword it failed
+                        assert all(place == () for _, place in wanted), case
+                        assert found == [("propertyNames", ())] * bool(wanted), case
+                        found = wanted = []
                     else:
                         # the same errors, each at the holder or one part further in
                         assert len(never) == len(nowhere), case
@@ -778,9 +795,299 @@ def test_the_gates_keywords_assert_what_jsonschemas_assert():
                         moved += sum(len(a) != len(b) for a, b in zip(never, nowhere))
                         found = [each for each in found if each[0] != "None"]
                         wanted = [each for each in wanted if each[0] != "None"]
+                if type(found) is list and type(wanted) is list:
+                    # one error of ours for theirs of each name left out, at the same place
+                    wanted = [
+                        each
+                        for index, each in enumerate(wanted)
+                        if each[0] not in once or each not in wanted[:index]
+                    ]
                 assert found == wanted, case
                 compared += failed
     # the comparison is not of nothing: most of these values fail
     assert compared > 2_500
     # and the `false` schema's error was moved to the value in some of them
     assert moved > 20
+
+
+# --- review round nine: what the gate sends, against `jsonschema` as it ships ---------------------
+
+_DRAFT_ADDRESSES = (
+    ("http://json-schema.org/draft-07/schema#", "Draft7Validator"),
+    ("https://json-schema.org/draft/2019-09/schema", "Draft201909Validator"),
+    ("https://json-schema.org/draft/2020-12/schema", "Draft202012Validator"),
+)
+
+#: Schemas the three stricter readings and the stock one answer differently for some
+#: value below, and plain ones beside them.
+_NINE_LEAVES = [
+    {"type": "integer"},
+    {"type": ["integer", "string"]},
+    {"type": "number"},
+    {"const": 0},
+    {"const": 1},
+    {"const": True},
+    {"const": 0.0},
+    {"enum": [1, 13]},
+    {"enum": [1.0, "a", None]},
+    {"const": [1]},
+    {"const": {"k": 1}},
+    {"enum": [[0], {"k": True}]},
+    {"uniqueItems": True},
+    {"minimum": 1},
+    {"multipleOf": 2},
+    {"type": "string"},
+    {"required": ["k"]},
+    {"properties": {"k": {"type": "integer"}}},
+    {"items": {"type": "integer"}},
+    {"contains": {"const": 1}},
+    {},
+    False,
+]
+_NINE_BESIDE = [{"type": "number"}, {"minimum": 1}, {"const": 1}, False]
+_NINE_VALUES = [
+    *(0, 1, -1, 5, 13, 0.0, 1.0, 5.0, 13.0, 1.5, True, False, None, "", "a"),
+    *([1], [1.0], [True], [1, 1.0], [1, True], [0, 0.0, False], [1, 2], []),
+    *({"k": 1}, {"k": 1.0}, {"k": True}, {}, {"k": 5.0, "a": 1}),
+]
+
+
+def _nine_positions(a, b):
+    """``a`` where a keyword only adds a demand, and under every keyword that turns a
+    failure into a pass or counts what is met, with ``b`` beside it."""
+    yield a
+    yield {"not": a}
+    yield {"not": {"not": a}}
+    yield {"if": a, "then": b}
+    yield {"if": a, "else": b}
+    yield {"if": a, "then": b, "else": {"not": b}}
+    yield {"if": {"not": a}, "then": b}
+    yield {"oneOf": [a, b]}
+    yield {"oneOf": [a, {"not": b}]}
+    yield {"not": {"oneOf": [a, b]}}
+    yield {"anyOf": [a, b]}
+    yield {"anyOf": [{"not": a}, b]}
+    yield {"allOf": [{"not": a}, b]}
+    yield {"dependentSchemas": {"k": {"not": a}}}
+    yield {"dependencies": {"k": {"not": a}}}
+    yield {"contains": a, "maxContains": 1}
+    yield {"contains": a, "minContains": 2}
+    yield {"contains": {"not": a}, "maxContains": 0}
+    yield {"properties": {"k": {"not": a}}}
+    yield {"items": {"not": a}}
+    yield {"additionalProperties": {"oneOf": [a, b]}}
+    yield {"unevaluatedProperties": {"not": a}}
+    yield {
+        "if": {"required": ["k"], "properties": {"k": a}},
+        "then": {"properties": {"a": {}}},
+        "unevaluatedProperties": False,
+    }
+
+
+def _nine_random(rng, depth=0):
+    """A schema of the keywords the gate evaluates, at random, nested four deep."""
+    if depth > 3 or rng.random() < 0.1:
+        return rng.choice(_NINE_LEAVES)
+    made = {}
+    for _ in range(rng.randint(1, 3)):
+        keyword = rng.choice(
+            (
+                *("not", "if", "oneOf", "anyOf", "allOf", "contains", "properties", "items"),
+                *("additionalProperties", "dependentSchemas", "propertyNames", "leaf", "leaf"),
+                *("unevaluatedProperties", "unevaluatedItems", "ref"),
+            )
+        )
+        if keyword == "leaf":
+            leaf = rng.choice(_NINE_LEAVES)
+            if type(leaf) is dict:
+                made.update(leaf)
+        elif keyword == "if":
+            made["if"] = _nine_random(rng, depth + 1)
+            for branch in ("then", "else"):
+                if rng.random() < 0.7:
+                    made[branch] = _nine_random(rng, depth + 1)
+        elif keyword in ("oneOf", "anyOf", "allOf"):
+            made[keyword] = [_nine_random(rng, depth + 1) for _ in range(rng.randint(1, 3))]
+        elif keyword == "contains":
+            made["contains"] = _nine_random(rng, depth + 1)
+            if rng.random() < 0.7:
+                made[rng.choice(("minContains", "maxContains"))] = rng.randint(0, 2)
+        elif keyword in ("properties", "dependentSchemas"):
+            made[keyword] = {rng.choice("ka"): _nine_random(rng, depth + 1)}
+        elif keyword == "ref":
+            made["$ref"] = "#/$defs/d"
+        else:
+            made[keyword] = _nine_random(rng, depth + 1)
+    return made
+
+
+class _NoPattern:
+    """Counts every call that hands the ``re`` module a pattern while the gate works:
+    each of its functions that takes one, and the one function all of them compile
+    through."""
+
+    ENTRIES = (
+        *("compile", "search", "match", "fullmatch", "split", "findall", "finditer", "sub"),
+        *("subn", "_compile"),
+    )
+
+    def __init__(self):
+        import re
+
+        self.re, self.ran, self.on = re, [], False
+        self.originals = {name: getattr(re, name) for name in self.ENTRIES if hasattr(re, name)}
+        assert "_compile" in self.originals and "search" in self.originals
+
+    def __enter__(self):
+        def spying(name):
+            def spy(pattern, *args, **kwargs):
+                if self.on:
+                    # noted and stopped, never run: a pattern here may not finish
+                    self.ran.append((name, pattern))
+                    raise RuntimeError("a pattern was handed to `re` while the gate worked")
+                return self.originals[name](pattern, *args, **kwargs)
+
+            return spy
+
+        for name in self.originals:
+            setattr(self.re, name, spying(name))
+        return self
+
+    def __exit__(self, *exc):
+        for name, original in self.originals.items():
+            setattr(self.re, name, original)
+
+
+def test_what_the_gate_sends_is_valid_for_jsonschema_as_it_ships(ex):
+    """The property the stricter readings must keep: for every schema and every value,
+    if the gate sends the arguments, ``jsonschema`` as it ships finds them valid against
+    the listed schema. The gate may refuse more, never send more.
+
+    Round nine found it broken under the keywords that turn a failure into a pass
+    (``{"not": {"const": 0}}`` sent ``0.0``; an ``if`` on ``{"type": "integer"}`` took
+    the other branch for ``5000.0``; a ``oneOf`` of an integer and a number was met
+    once by ``5.0``). So: every schema above, alone and under every such keyword, in
+    the three drafts, against every value above; and schemas made at random from the
+    same keywords, four deep. ``pattern``, ``format`` and ``patternProperties`` are not
+    in these schemas: the gate leaves them to the server, and they have a corpus of
+    their own below. While the gate works, nothing hands the ``re`` module a pattern."""
+    import importlib
+    import random
+
+    validators = pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    tried = sent = 0
+    kept = {"not": 0, "if": 0, "oneOf": 0, "maxContains": 0}
+
+    def check(base, root, value):
+        nonlocal tried, sent
+        tried += 1
+        spy.on = True
+        try:
+            _, completed = listed.complete({"x": value})
+        except module.Refused as refused:
+            for position in kept:
+                kept[position] += f"stands under a `{position}`" in refused.reason
+                kept[position] += f"stands under an `{position}`" in refused.reason
+            return
+        finally:
+            spy.on = False
+        sent += 1
+        assert base(root).is_valid(completed), (base.__name__, root, value)
+
+    with _NoPattern() as spy:
+        for address, name in _DRAFT_ADDRESSES:
+            base = getattr(validators, name)
+            for leaf in _NINE_LEAVES:
+                for beside in _NINE_BESIDE:
+                    for schema in _nine_positions(leaf, beside):
+                        root = {
+                            "$schema": address,
+                            "type": "object",
+                            "properties": {"x": schema},
+                        }
+                        base.check_schema(root)
+                        spy.on = True
+                        listed = module.Listed(root)
+                        spy.on = False
+                        for value in _NINE_VALUES:
+                            check(base, root, value)
+        structured = tried
+        rng = random.Random(9)
+        for _ in range(4_000):
+            address, name = rng.choice(_DRAFT_ADDRESSES)
+            base = getattr(validators, name)
+            root = {
+                "$schema": address,
+                "type": "object",
+                "properties": {"x": _nine_random(rng)},
+                "$defs": {"d": _nine_random(rng, 2)},
+            }
+            base.check_schema(root)
+            listed = module.Listed(root)
+            for value in rng.sample(_NINE_VALUES, 4):
+                check(base, root, value)
+        assert spy.ran == []
+    positions = len(list(_nine_positions({}, {})))
+    assert positions == 23
+    assert structured == 3 * len(_NINE_LEAVES) * len(_NINE_BESIDE) * positions * len(_NINE_VALUES)
+    assert structured == 170_016 and tried == structured + 16_000
+    # not of nothing: a good part is sent, and each of the four keywords was left
+    # undecided for some of them
+    assert sent == 117_990
+    assert all(count > 100 for count in kept.values()), kept
+
+
+def test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module(ex):
+    """ "The gate never evaluates a server's regular expression", by counting: schemas
+    that hold a pattern in every keyword that takes one (``pattern``,
+    ``patternProperties``, a ``format`` of ``regex``, ``propertyNames`` with a pattern),
+    where a keyword only adds a demand and under every keyword of round nine, reached
+    directly, through ``$defs`` and through a ``$ref`` to a place no keyword holds; in
+    the three drafts, against strings and objects whose names the patterns would be
+    run on. Reading the listing, checking the call and writing the reason hand the
+    ``re`` module nothing."""
+    import importlib
+
+    pytest.importorskip("jsonschema.validators", reason="jsonschema is not installed")
+    module = importlib.import_module("recusal_openai_agents_mcp._schema")
+    evil = "^(a+)+$"
+    holders = [
+        {"type": "string", "pattern": evil},
+        {"pattern": evil},
+        {"type": "object", "patternProperties": {evil: {"type": "integer"}}},
+        {"patternProperties": {evil: False}, "additionalProperties": False},
+        {"patternProperties": {evil: {}}, "additionalProperties": {"type": "integer"}},
+        {"propertyNames": {"pattern": evil}},
+        {"type": "string", "format": "regex"},
+        {"format": "date-time", "pattern": evil},
+        {"patternProperties": {evil: {}}, "unevaluatedProperties": False},
+    ]
+    long_name = "a" * 60 + "!"
+    values = [long_name, "", 5, {long_name: 1}, {long_name: "s", "k": 1}, [long_name], {}]
+    cases = refused = 0
+    with _NoPattern() as spy:
+        for address, _ in _DRAFT_ADDRESSES:
+            for holder in holders:
+                for schema in _nine_positions(holder, {"type": "number"}):
+                    for where in ("in place", "$defs", "x-shared"):
+                        root = {"$schema": address, "type": "object"}
+                        if where == "in place":
+                            root["properties"] = {"x": schema}
+                        else:
+                            root["properties"] = {"x": {"$ref": f"#/{where}/held"}}
+                            root[where] = {"held": schema}
+                        spy.on = True
+                        try:
+                            listed = module.Listed(root)
+                            for value in values:
+                                cases += 1
+                                try:
+                                    listed.complete({"x": value})
+                                except module.Refused:
+                                    refused += 1
+                        finally:
+                            spy.on = False
+        assert spy.ran == [], spy.ran[:3]
+    assert cases == 3 * len(holders) * 23 * 3 * len(values) == 13_041
+    assert refused == 6_378

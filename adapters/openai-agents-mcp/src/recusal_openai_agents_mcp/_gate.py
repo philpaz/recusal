@@ -192,6 +192,10 @@ _NOT_JUDGED = "<arguments the gate could not judge>"
 
 #: The schema of a tool the server has not listed.
 _UNLISTED: Any = object()
+#: The schema of a tool the server's listing names more than once. The SDK calls the
+#: first of them and a later one would be the last the gate read: the gate reads one
+#: schema for a tool, and does not choose between two.
+_LISTED_TWICE: Any = object()
 
 
 def _judged_call(
@@ -304,6 +308,12 @@ def _judged(
         return refused(
             "the server lists no tool of this name, or its tools could not be listed, so the "
             "gate cannot read the schema its arguments would be checked against"
+        )
+    if schema is _LISTED_TWICE:
+        return refused(
+            "the server's listing names this tool more than once; the gate checks the "
+            "arguments of a tool against the one schema the server lists for it, and "
+            "does not choose between two listings of one name"
         )
     try:
         listed = schema if isinstance(schema, _Listed) else _Listed(schema)
@@ -474,8 +484,12 @@ def gate_mcp_server(
     listed: dict[str, Any] = {}
 
     def keep(tools: Any) -> None:
-        latest = {}
+        latest: dict[str, Any] = {}
         for tool in tools:
+            if tool.name in latest:
+                # one name, two listings: every call of it is refused
+                latest[tool.name] = _LISTED_TWICE
+                continue
             schema = getattr(tool, "input_schema", None)
             if schema is None:
                 schema = getattr(tool, "inputSchema", None)

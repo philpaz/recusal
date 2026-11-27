@@ -280,6 +280,95 @@ All notable changes to this project are documented here. The format follows
     refused under a `false` subschema. Two checks no test held are
     held now (a list below the depth the gate reads that holds more members than
     characters are left, and the count of a long integer).
+  - Ninth round: a server's regular expression was run on member names the model
+    chose. The gate reads the subschemas the keywords it knows hold, and a `$ref` may
+    name any other place in the schema (a vendor's `x-shapes`, an entry of
+    `examples`): a `patternProperties` there, beside `unevaluatedProperties`, was not
+    refused, and `jsonschema` evaluated the pattern to tell which members it governs
+    (the review measured 0.36 s for a name of 25 characters under `^(a+)+$`, doubling
+    with each two more). A schema that never ends, reached the same way, was not
+    refused as one, and flat arguments were said to be nested too deeply. Whatever a
+    `$ref` names is now read by the same rules as a subschema under `$defs`, wherever
+    it stands, and checked to be a valid schema, before anything is validated against
+    it. A test counts what is handed to Python's `re` module while the gate reads a
+    listing and checks a call: nothing, across 13,041 calls against schemas that hold
+    a pattern in every keyword that takes one and across the 186,016 calls of the
+    comparison below.
+  - Ninth round: the gate sent what the listed schema forbids. A float is not an
+    `integer` and an `enum` or `const` is compared by JSON type, which refuses more
+    where a keyword adds a demand and ADMITS more under a keyword that turns a failure
+    into a pass: `{"type": "number", "not": {"const": 0}}` sent `0.0`, an `if` on
+    `{"type": "integer"}` took the other branch for `5000.0`, and a `oneOf` of an
+    integer and a number at least 0 was met once by `5.0`, each of them not valid for
+    `jsonschema` as it ships. And `pattern`, which is never evaluated, counted as met
+    there, so `{"not": {"pattern": "^-"}}` refused every string as not meeting `not`,
+    and an `if` on a pattern refused a call for leaving out what `then` requires:
+    reasons that were not true. What stands under `not`, the condition of an `if`,
+    `oneOf` and `maxContains` is now read by two readings that bound every reading a
+    server can make, one met only where every reading is and one met wherever any is
+    (it also takes `true` and `1` for equal, as a server that compares them in Python
+    does). Where they agree that is the answer; where they differ the call is
+    refused with a reason that names the keyword and what the answer rests on (a
+    whole number sent as a float, a value equal to one of another JSON type, a
+    `pattern`, a `format`, `patternProperties`). Arguments that meet both branches of
+    an `if` that is not decided are sent, and a `oneOf` asks only that no second
+    alternative may be met, so a tagged union whose forms hold a pattern is called as
+    before. A committed test holds the property: 186,016 calls (22 schemas, each
+    alone and under 22 positions of those keywords, beside 4 others, against 28
+    values, in the three drafts, and 16,000 calls on schemas made at random), of
+    which the gate sends 117,990, every one valid for `jsonschema` as it ships. The
+    cost: `5.0`, `0.0` beside a `const` of `0`, `true` beside a `const` of `1`, and
+    any string under a `not` or an `if` that holds a pattern, are refused there
+    although a server may accept them. Steps are unchanged for calls that meet
+    nothing the two readings answer differently, which a test holds against the
+    numbers of the commit before.
+  - Ninth round: a member NAMED `default` was taken for the keyword. A schema is
+    refused for a `default` under a keyword the gate does not read, and that was asked
+    of any object with a member of that name: the `discriminator` Pydantic publishes
+    beside a tagged union is keyed by the tag values, so a union with the tag
+    `"default"` was refused on every call, and so was a `dependentRequired` keyed by
+    a property called `default`. Those two shapes are read exactly (a map of names to
+    lists of names; `propertyName` and a `mapping` of strings) and hold names. A
+    `default` under any other shape of them, and under a keyword the gate does not
+    know, is refused as before.
+  - Ninth round: a step did not count what a wide schema costs. A step was one
+    keyword applied to one value whatever the keyword holds, and three loops ran over
+    everything a schema lists for each value: every listed property for each object,
+    every property an object leaves out, and every member of an `allOf`, each of
+    which counts nothing when it checks nothing. Under both default ceilings the
+    review measured 14.5 s for 30,000 empty objects against a model of 2,000 optional
+    fields, and 95.7 s for 40,000 integers against `items` with an `allOf` of 1,000
+    empty schemas. Now the members an object has are looked up among the listed
+    names; a `required` list is read to the first name that is missing (one error,
+    where there was one for each name; the reason names them all as before); the
+    properties of a subschema that list a default, and the form each tag value
+    names, are worked out once for a listing; and a step is counted for each
+    subschema of an `allOf`, `anyOf`, `oneOf` or `patternProperties` that checks
+    nothing, for each name read of a `dependentRequired` list, for each value a
+    default holds beyond the first each time it is written, and for each default
+    that cannot be sent at every pass. The first of the review's calls costs the
+    150,012 steps it cost and the same lines of Python as against a model of four
+    fields, which a test counts; the second is refused at the step ceiling. The rows
+    of the page's table of the largest call completed are unchanged, steps
+    included. Not counted, and stated: what `jsonschema` itself reads of a schema
+    for `unevaluatedProperties` and `unevaluatedItems`, and the walk of a `$ref`
+    pointer of many parts. The time tables are still of the code before the eighth
+    round; this round adds to what is to be measured again every row with a
+    discriminated union (a `oneOf`, now read by a second validator class).
+  - Ninth round, stated and not changed: writing the listed defaults into what is
+    sent makes them values the call set. A Pydantic server that asks which fields a
+    call set (`model_fields_set`, `model_dump(exclude_unset=True)`), as a
+    partial-update tool does, clears the fields the model never mentioned. The policy
+    is shown exactly that call, and the page now says so, with the example and what a
+    server's author can do. The sentence in the code that said a written default
+    "changes nothing it runs" is corrected.
+  - Ninth round, smaller. A member name that does not meet `propertyNames` (Pydantic
+    lists one for `dict[Literal["cpu", "ram"], int]`) was reported as the object not
+    being one of the listed values, or not meeting `maxLength`; the reason now says a
+    member's name does not meet `propertyNames`, and does not write the name. And a
+    server that lists one tool name twice, with two schemas, was read by the last
+    listing where the SDK calls the first: every call of such a tool is now refused,
+    with a reason that says so.
 
 ## [0.16.0] - 2026-11-26
 

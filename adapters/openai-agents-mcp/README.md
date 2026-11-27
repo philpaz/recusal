@@ -109,6 +109,31 @@ before the policy runs the gate:
   set holds once). A JSON string sent for a parameter the schema types as an object or a
   list is refused like any other value of another type; the MCP Python SDK's server
   would parse it into one.
+- **never sends what the listed schema forbids because it read a keyword more strictly.**
+  A stricter reading refuses more only where a keyword adds a demand. Four keywords turn
+  a failure into a pass: `not`, the condition of an `if`, `oneOf` (a second alternative
+  that is met makes it fail) and `maxContains`. Under those, reading `5.0` as no
+  `integer` would admit what the schema forbids (`{"type": "number", "not": {"const":
+  0}}` and `0.0`), and a keyword the gate leaves to the server would decide the result.
+  So what stands under one of the four is read by two readings that bound every reading
+  a server can make: one that is met only where every reading is (the stricter three,
+  and `pattern`, `format` and the members a `patternProperties` governs counted as not
+  met), and one that is met wherever any is (JSON Schema's own three, with `true` and
+  `1` equal as a server written in Python finds them, and those keywords counted as
+  met). Where the two agree, that is the answer. Where they differ the gate cannot tell
+  whether the keyword is met, and the call is refused with a reason that names the
+  keyword (`not`, `if`, `oneOf`, `maxContains`) and what the answer rests on (a whole
+  number sent as a float, a value equal to one of another JSON type, a `pattern`, a
+  `format`, `patternProperties`). An `if` whose condition is not decided still sends
+  arguments that meet both of its branches; and a `oneOf` asks only that no second
+  alternative may be met, so a tagged union whose forms hold a `pattern` or a `format`
+  is called as before. What the gate sends is therefore valid for `jsonschema` as it
+  ships, for every keyword the gate evaluates: a test compares 186,016 calls with it,
+  each schema alone and under each of the four keywords, in the three drafts
+  (`test_what_the_gate_sends_is_valid_for_jsonschema_as_it_ships`). The cost: a float
+  that is a whole number, `true` beside a `const` of `1`, and any string under a `not`
+  or an `if` that holds a `pattern`, are refused there although a server may accept
+  them.
 - **never evaluates a server's regular expression.** `pattern` is not checked: the server
   checks it. A pattern can take longer on a few dozen characters than any limit, and the
   text is the model's. The same holds for the names of members: under `propertyNames` a
@@ -116,7 +141,13 @@ before the policy runs the gate:
   which pattern a member's name matches, so every member of the object must meet the
   schema of every pattern listed there, a member `properties` does not name must also
   meet `additionalProperties` when that is a schema, and `additionalProperties: false`
-  asserts nothing there (the server rejects a member no pattern matches).
+  asserts nothing there (the server rejects a member no pattern matches). That holds
+  where the keyword adds a demand; under a `not`, an `if`, a `oneOf` or a `maxContains`
+  a keyword that is not evaluated is neither met nor not met (above). A test counts it:
+  across 13,041 calls against schemas that hold a pattern in every keyword that takes
+  one, in every such position, and across the 186,016 above, nothing hands Python's `re`
+  module a pattern while the gate reads a listing or checks a call
+  (`test_no_pattern_of_a_listed_schema_is_handed_to_the_re_module`).
 - **refuses an object where the schema offers more than one object form, and a list
   where it offers more than one list form.** Two or more alternatives of an `anyOf` or
   `oneOf` that admit an object are what a `Union` of two models and a zod `z.union` of
@@ -184,6 +215,27 @@ before the policy runs the gate:
 
 The policy judges the completed arguments. They are what is sent, with one exception.
 
+**Writing the defaults changes what a server sees as set.** The gate writes the listed
+defaults so that the policy judges what the server would run with: a server fills what a
+call leaves out after the gate has judged, and a policy that was shown `{"path": "/"}`
+has not judged the `recursive: true` the server then adds. Since what is judged is what
+is sent, the written defaults are in the call the server receives, and a server cannot
+tell a default the gate wrote from a value the model sent. For most tools that changes
+nothing: the server would have filled the same value. It does change a tool that asks
+which fields the call set. A Pydantic model knows that (`model_fields_set`), and a
+partial-update tool that writes `patch.model_dump(exclude_unset=True)` over a record
+changes only the fields the call mentions. Called through the gate with `{"patch":
+{"phone": "555-0199"}}`, where `name` and `email` are `Optional[str] = None`, it is sent
+`{"patch": {"phone": "555-0199", "name": null, "email": null}}`: a field the call did
+not mention is then a field the call set, and the tool clears the name and the email.
+The policy is shown exactly that call, so a policy can refuse it, and an audit entry
+records it; the gate does not prevent it. A server that tells "left out" from "set to
+the default" should not be called through this gate as it stands, or should list no
+default for those fields (a field with no listed default is never written). The gate
+has no way to send the model's own arguments and still show the policy what runs: that
+would rest on the server applying exactly the defaults it lists, which the listing does
+not promise (the exception below gives cases where it does not).
+
 **The exception: a listed default that cannot be sent is judged, as listed, and not
 sent.** There are two kinds. One that is not valid against its own property schema:
 Pydantic publishes `{"default": null, "type": "string"}` for a parameter written
@@ -210,7 +262,11 @@ carries no argument text. Refused:
 - arguments that are not valid against the schema. A value of another JSON type is told
   the types the schema declares: send the declared type, and an object as an object, not
   as JSON text. A value outside an `enum`, a `required` property left out, a member that
-  `additionalProperties: false` forbids and any other constraint each say so;
+  `additionalProperties: false` forbids and any other constraint each say so. A member
+  whose NAME does not meet `propertyNames` (what Pydantic lists for
+  `dict[Literal["cpu", "ram"], int]`) is said to be that, and the name is not written;
+- arguments that stand under a `not`, an `if`, a `oneOf` or a `maxContains` the gate
+  cannot decide for them (above);
 - an object where the schema offers more than one object form and no tag tells which,
   and a list where it offers more than one list form (above);
 - a string whose text a server reads as another type the schema also admits there
@@ -224,14 +280,22 @@ carries no argument text. Refused:
   reads from the schema a `$ref` names (its types, its default, the forms of a union)
   is read from the schema the arguments are validated against, whatever the pointer
   holds (a percent-escape that decodes to `/`, a position in a list written with a
-  sign);
+  sign). A `$ref` may name any place in the schema, also one under a keyword that holds
+  no schemas (a vendor's `x-shapes`, an entry of `examples`, a map of `properties` taken
+  as a schema): whatever a `$ref` names is read by the same rules as a subschema under
+  `$defs`, and is checked to be a valid schema, before anything is validated against
+  it;
 - a `default` listed where the gate does not read one, because it cannot tell whether
   the server would apply it: under `if`, `then`, `else`, `not`, `patternProperties`,
   `additionalProperties` beside `patternProperties`, `dependentSchemas`, `dependencies`,
   `contains`, `propertyNames`, `unevaluatedProperties`, `unevaluatedItems` and
   `contentSchema`, and under any keyword the gate does not know (a vendor's `x-shape`, a
   keyword of a later draft). `const`, `enum`, `examples`, `example` and `default` hold
-  data and are not looked into;
+  data and are not looked into. A member NAMED `default` is not the keyword where the
+  value holds names and no schema, in the two shapes the gate reads exactly: a
+  `dependentRequired` (a property may be called `default`), and the `discriminator`
+  Pydantic publishes beside a tagged union, whose `mapping` is keyed by the tag values
+  (a tag may be `"default"`);
 - a property left out whose alternatives list different defaults
   (`{"anyOf": [{"type": "boolean", "default": true}, {"type": "string", "default":
   "no"}]}`), and a place two parts of the schema list different defaults for;
@@ -247,7 +311,12 @@ carries no argument text. Refused:
   `if`, `then`, `else`, `dependentSchemas` or the draft-07 `dependencies` alone, with no
   value in between (`{"$ref": "#"}`), or whose defaults never settle;
 - a schema that uses `unevaluatedProperties` together with `patternProperties`, which
-  could be applied only by evaluating the patterns;
+  could be applied only by evaluating the patterns, wherever in the schema the two
+  stand (a `patternProperties` only a `$ref` reaches among them); and an `if` whose
+  condition is not decided in a schema that uses `unevaluatedProperties` or
+  `unevaluatedItems`, which depend on which branch applies;
+- a tool the server's listing names more than once: the SDK calls the first listing of
+  a name, and the gate reads one schema for a tool and does not choose between two;
 - arguments that cost more to check than the gate allows a call (below);
 - an integer too large to be a float (more than about 308 digits) where the schema
   lists a `multipleOf` that is a fraction, which is checked by dividing the two as
@@ -281,7 +350,19 @@ arguments themselves (the gate always sends an object), of the items of a list a
 **The work is bounded by counting it, not by a timer.** A step is one keyword of the
 schema applied to one value (and one more for each member or item that value holds
 directly), one value visited by the walk above, one value read for a comparison (`enum`,
-`const`, `uniqueItems`), or one part of the place of a validation error.
+`const`, `uniqueItems`), or one part of the place of a validation error. And what a wide
+schema costs beyond that: one step for each subschema an `allOf`, `anyOf`, `oneOf` or
+`patternProperties` holds that checks nothing (`{}`, `true`, `false`, a title alone),
+which would otherwise cost a descent and count nothing; one for each name read of a
+`dependentRequired` list; one for each value a default holds beyond the first, each time
+it is written; and one for each default that cannot be sent, at every pass. The names a
+schema lists are never read one by one for an object: the members an object has are
+looked up among them, a `required` list is read to the first name that is missing, the
+defaults of a subschema and the form a tag names are worked out once for a listing. So a
+model of two thousand optional fields costs an empty object what a model of four does.
+Two things a listed schema can make long are not counted: what `jsonschema` itself reads
+of a schema to gather what the other keywords evaluated, for `unevaluatedProperties` and
+`unevaluatedItems`, and the walk of a `$ref` pointer of many parts.
 `unevaluatedProperties` and `unevaluatedItems` are counted as the square of the number
 of members or items they are applied to, because they are checked by comparing
 each with every other. Every step is
@@ -401,8 +482,13 @@ decoded from JSON text as the SDK hands them to the gate. The figures in the thr
 tables are of the code as it stood before the eighth review round. That round changed
 how the gate reads the arguments outside the check (their measure, the copy and the
 count, which no longer recurse) and not what a step is, and it found that the place a
-call is made from moves these times (below the third table); the tables have not been
-measured again on this code. The first two tables time the
+call is made from moves these times (below the third table). The ninth round changed
+how a `oneOf`, a `not`, an `if` and a `maxContains` are read (by a second validator
+class, and twice where the two readings differ) and how the names a schema lists are
+looked up; the largest call of each row and the steps it spends are unchanged
+(`tools/measure_mcp_cost.py` reproduces them on this code), and the times of the rows
+with a discriminated union, which is a `oneOf`, are the ones this most likely moved.
+The tables have not been measured again on this code. The first two tables time the
 check itself (`Listed.complete`: the validation, the two refusals and the defaults);
 what the rest of the gate and an audit log add is in the third. First the largest call
 of each shape that the default step ceiling completes (the table above), which is the
@@ -585,7 +671,7 @@ of the arguments for an audit entry: there the sender's nesting moves the place 
 To read the schema the gate also wraps the server's `list_tools`, in place. `list_tools`
 returns what the server listed, unchanged, and the gate keeps each tool's schema from the
 most recent listing: each listing replaces the one before, so a call to a tool the server
-no longer lists is refused. A call to a tool that is not in the most recent listing makes
+no longer lists is refused, and so is a call to a tool the listing names more than once. A call to a tool that is not in the most recent listing makes
 the gate call `list_tools()` itself, with no run context and no agent, once for that
 call. A tool that is still not listed, and a server whose tools cannot be listed that
 way, is refused.

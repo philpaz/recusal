@@ -850,7 +850,7 @@ so an integer of more than 4,300 digits is now refused from its bits on every Py
 the gate's own readings of the arguments recursed, so their time moved with the depth
 the sender nested at; a call a little over the size ceiling was read almost to its
 end; the gate read a `$ref` its own way; and three exceptions left the gate
-uncaught),
+uncaught) and of a ninth round (below),
 are in the changelog's Unreleased entry for 0.2.1, which is not released. 0.2.1 copies
 a call's arguments with the kernel's `recusal.invocation.detached`, as 0.2.0 does, and
 requires `recusal` 0.16.0, the first whose copy does not recurse.
@@ -878,6 +878,47 @@ requires `recusal` 0.16.0, the first whose copy does not recurse.
   side of `_STEPS_PER_VALUE`.
 - **Not verified.** Whether a hand-written `anyOf` of two `required` lists is refused by
   the union rule.
+
+**Round nine** (2026-11-27, of the 0.2.1 changes as they stood after the eighth; the
+fixes are in the same Unreleased entry).
+
+- **What it found.** A `$ref` to a place no keyword the scan knows holds was validated
+  against and never read, so a `patternProperties` there had `jsonschema` run the
+  server's regular expression on member names the model chose, and a schema that never
+  ends was not refused as one. The three stricter readings admitted what the schema
+  forbids under `not`, as the condition of an `if`, in a `oneOf` and under
+  `maxContains` (`0.0` under `{"not": {"const": 0}}`), and `pattern`, never evaluated,
+  refused every string under a `not` with a reason that was not true. A member named
+  `default` was taken for the keyword, which refused every call of a Pydantic tagged
+  union with the tag `"default"`. A step did not count what a wide schema costs (a
+  model of 2,000 optional fields, an `allOf` of 1,000 empty schemas). A member name
+  that failed `propertyNames` was reported as the object failing `enum`. A server that
+  lists one tool name twice was read by its last listing where the SDK calls its
+  first. And, as a consequence nobody was told of: the defaults the gate writes are
+  values the call set, which a Pydantic partial-update tool acts on.
+- **What closed it.** Whatever a `$ref` names is read by the scan's rules, wherever it
+  stands. What stands under one of the four keywords is read by two bounding readings,
+  and a call they answer differently for is refused as not decided, with the keyword
+  and the cause. Maps of names (`dependentRequired`, a `discriminator`) are read as
+  names. The names a schema lists are looked up, not looped over, and the subschemas
+  that check nothing, the names of a `dependentRequired` list and the values of a
+  default are counted. The reason for `propertyNames` says it is a member's name. A
+  tool listed twice is refused. The consequence of the written defaults is stated on
+  the package page and the design is not changed. Tests: `TestNinthReview` in
+  `tests/test_openai_agents_mcp_gate.py`, and in
+  `tests/test_compat_openai_agents_mcp.py` a comparison of 186,016 calls with
+  `jsonschema` as it ships (every call the gate sends is valid for it) and a count of
+  what is handed to Python's `re` module (nothing, across those and 13,041 more).
+- **What it did not cover**, by its own list: the timing figures on the package page;
+  the measuring tool's `stack` mode; Python 3.10; real transports (stdio, HTTP);
+  `_audit.py` beyond the package's own tests; `tool_filter`, `cache_tools_list`,
+  `MCPServerManager`, realtime agents, a resumed `RunState` and a rejected approval.
+- **Still open after it.** The steps do not count what `jsonschema` itself reads of a
+  schema for `unevaluatedProperties` and `unevaluatedItems`, nor the walk of a `$ref`
+  pointer of many parts. A hosted approval whose `arguments` is not text raises
+  `TypeError` in `recusal-openai-agents`, which this package builds on (found by this
+  round, belongs to that package). The time tables on the package page are of the code
+  before round eight.
 
 **Where you can help.**
 
