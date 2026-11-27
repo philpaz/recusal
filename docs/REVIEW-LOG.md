@@ -783,9 +783,10 @@ a seventh found the open items.
   calls the wrapper it was built over, which was not read. Closed and open as the item
   above.
 - Four refusal reasons advised calling the function from a plain function and
-  registering that one, without saying that what its body calls is not read. In 0.2.2
-  the reason for a decorator that holds a second wrapper says so. Three do not yet: a
-  weak proxy, a decorator the gate cannot read, too many wrappers. The page says so.
+  registering that one, without saying that what its body calls is not read, and a
+  fifth, for a callable the gate cannot question, advised registering one plain
+  function. In 0.2.2 every reason that gives that advice says so, and a test holds
+  them to it.
 - Two refusals named only an exception class (`DeclaredSignature` for the `decorator`
   package, `TypeError` for a wrapper over `wrapt.ObjectProxy`), with no cause or advice.
   In 0.2.2 a `DeclaredSignature` has a reason with both. The other is open.
@@ -801,12 +802,39 @@ a seventh found the open items.
   [`tests/test_openai_agents_gate.py`](../tests/test_openai_agents_gate.py)). An
   `UnreadCache` is raised there by shortening what the cache lists, as the kernel's own
   test does: no supported interpreter gives one.
-- Found while 0.2.2 was prepared, and open: a single-dispatch function with nothing
-  registered, reached only through a `functools.lru_cache` named again for another
-  function by a wrapper that carries none of the dispatcher's attributes, is gated. The
-  gate's own walk follows what the cache names, and the kernel's walk, which reads what
-  the cache calls, refuses a dispatcher only once an implementation is registered. The
-  README lists it under what the gate does not see.
+- Found by the review of 0.2.2 before its release, in 0.2.1 too, and open. Each is on
+  the package page under what the gate does not see, and each is held by a test in
+  `TestStatedLimits` in the same file, which gates the tool and runs it:
+  - Behind a `functools.lru_cache` named again for another function, the gate's own
+    questions are not asked: its walk follows what the cache names. The kernel's walk
+    reads what the cache calls, and refuses a single-dispatch function there only once
+    an implementation is registered, and a weak proxy not at all. A single-dispatch
+    function with nothing registered is gated where the wrapper that reaches it carries
+    none of the dispatcher's attributes (`functools.partial(dispatcher)`, a
+    `functools.wraps(dispatcher, updated=())` wrapper, a class-based decorator that sets
+    only `__wrapped__`). An implementation registered after a call was judged runs for
+    it, and the judged call itself can register it. The declared parameters run with
+    the judged values; a parameter the implementation adds runs at its default.
+  - Behind such a cache, a `weakref.proxy` hides what stands behind it: a wrapper with
+    a parameter of its own, with no dispatcher anywhere, and a dispatcher with an
+    implementation registered before the tool is gated, which runs on every turn and is
+    never refused.
+  - A decorator that holds a `functools.wraps` wrapper which takes the tool's own
+    parameters in another order is gated, and the function runs with the values
+    swapped. The same wrapper on the `__wrapped__` chain is refused. This is in how the
+    kernel reads a held wrapper.
+  - A decorator that holds a `functools.wraps` wrapper with a parameter of its own is
+    gated where the way from that wrapper to the function passes a class-based
+    decorator, a callable object, a `functools.partial` that carries a `__wrapped__`, a
+    weak proxy, a cache named again or a second held wrapper. The kernel states these
+    as not found.
+- Refused although they run correctly beside `recusal` 0.16.0, and gated by 0.2.1
+  beside `recusal` 0.15.1: a decorator that holds a cache named again for the function
+  over anything but a plain function, and a cache named again over a
+  `functools.partial` of a second cache or of a `staticmethod` object. The package page
+  and the changelog entry for 0.2.2 say so, with the two the kernel's own entries
+  state: a facade that does pass its bound argument on, and a declared signature that
+  matches the real parameters.
 
 **Where you can help.**
 

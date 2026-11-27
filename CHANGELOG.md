@@ -11,28 +11,37 @@ All notable changes to this project are documented here. The format follows
 - **`recusal-openai-agents` 0.2.2: every refusal the kernel's walk makes by a class of
   its own has a reason that says what was found and what to do, and the package requires
   `recusal` 0.16.0.** No verdict changes beside `recusal` 0.16.0: a tool 0.2.1 refuses
-  there is refused, and a tool it gates is gated. Reproduced on `openai-agents` 0.24.0,
-  each with a real tool of that shape.
+  there is refused, and a tool it gates is gated. Beside the kernel 0.2.1 could be
+  installed with, `recusal` 0.15.0 or 0.15.1, some tools were gated that 0.2.2 refuses,
+  a few of them although they run correctly: see "Refused although it runs correctly"
+  below. Reproduced on `openai-agents` 0.24.0, each with a real tool of that shape.
   - A `BoundArgumentKept` (a facade method that is `functools.wraps` of a function and
-    takes its object as `self`) was refused as "the function it runs cannot be inspected
-    (BoundArgumentKept)", and an `UnreadCache` as "cannot be inspected (UnreadCache)".
-    Each has a reason of its own now. The first carries the kernel's text, which names
-    the two parameters and says that a wrapper of that signature which runs correctly is
-    refused too; the second says that the function the cache calls could not be told.
-  - A declared signature (`__signature__`, a `__text_signature__` that is not the
+    takes its object as `self`, or in `*args`) was refused as "the function it runs
+    cannot be inspected (BoundArgumentKept)", and an `UnreadCache` as "cannot be
+    inspected (UnreadCache)". Each has a reason of its own now. The first says in the
+    gate's own words that the walk cannot tell whether the wrapper passes the bound
+    argument on, and that a tool refused for this may run correctly, and passes the
+    kernel's text on as what the walk reports: that text names the parameter that could
+    be left open and, where a wrapper took the bound argument under a name, that name
+    too. The second says that the function the cache calls could not be told.
+  - A declared signature (a `__signature__`, a `__text_signature__` that is not the
     interpreter's own) was refused as "cannot be inspected (DeclaredSignature)". The
-    reason now says what is declared, why the gate cannot tell which parameters a call
-    fills, and what to register in its place.
+    reason now says what is carried, that the kernel's walk relies on no declared
+    signature and refuses each one, also where this Python would not read it and where
+    it matches the real parameters, and what to register in its place.
   - The reason for a `HiddenWrapper` said that the held wrapper "takes a parameter of its
     own" and put the kernel's text in brackets after it. The kernel also raises that
-    class where no parameter was found: the way from the held wrapper passes a
-    single-dispatch function with an implementation registered, or does not end. The
-    reason now says where the second wrapper is held and passes the kernel's text on as
-    the cause. It no longer advises applying each decorator to the function directly,
-    which gets a wrapper with a parameter of its own refused by another rule.
-  - Each of those reasons, and the ones for a single-dispatch function and a
-    `functools.partialmethod` the kernel finds, ends by saying that the gate judges the
-    plain function it advises and does not read what that function's body calls.
+    class for a parameter the tool declares, and where no parameter was found: the way
+    from the held wrapper passes a single-dispatch function with an implementation
+    registered, or a cache named again for another function that calls anything but a
+    plain function, or does not end. The reason now says where the second wrapper is
+    held and passes the kernel's text on as the cause. It no longer advises applying
+    each decorator to the function directly, which gets a wrapper with a parameter of
+    its own refused by another rule.
+  - Every reason that advises registering a plain function ends by saying that the gate
+    judges that function's parameters and does not read what its body calls. Four did
+    not: a callable the gate cannot question, a weak proxy, a decorator it cannot read,
+    and too many wrappers.
   - The kernel's classes are imported and asked with `isinstance`. 0.2.1 knew three of
     them by name, because `recusal` 0.15.0 has none of them, so an exception of another
     class with the same name got the reason, and for `HiddenWrapper` its text. The three
@@ -45,16 +54,50 @@ All notable changes to this project are documented here. The format follows
     0.2.2 does not allow either.
   - The package page and the docstrings named `recusal` 0.15.0 where a statement holds
     for 0.15.1 too, or no longer holds beside 0.16.0. Each is corrected. The page no
-    longer lists as unseen a decorator that holds a second `functools.wraps` wrapper
-    with a parameter of its own, which the kernel refuses, and says what is still not
-    found.
-  - Stated as open on the package page, found while this release was prepared: a
-    single-dispatch function with nothing registered that is reached only through a
-    `functools.lru_cache` named again for another function (`functools.wraps(f)` above
-    the cache), by a wrapper that carries none of the dispatcher's attributes, is gated.
-    The gate's own walk follows what the cache names. An implementation that another
-    call of the same model turn registers on it runs for the calls of that turn; from
-    the next turn the call is refused.
+    longer lists every decorator that holds a second wrapper as unseen: it says which
+    held wrappers the kernel refuses and which it does not find.
+  - **Refused although it runs correctly**, and gated by 0.2.1 beside `recusal` 0.15.1:
+    a decorator that holds `functools.lru_cache` over anything but a plain function
+    (`functools.partial(f)`, a callable object), named again for `f`, refused as a
+    `HiddenWrapper` with no parameter named; and a cache named again for another
+    function over a `functools.partial` of a second `functools.lru_cache` wrapper or of
+    a `staticmethod` object, for which Python shows no signature, refused as "cannot be
+    inspected (ValueError)". Also refused although correct, as the kernel's entries for
+    0.16.0 say: a facade that does pass its bound argument on, and a declared signature
+    that matches the real parameters.
+  - **Stated as open on the package page**, found by the review of this release before
+    it was made. All of them are in 0.2.1 too, and none is closed here:
+    - Behind a `functools.lru_cache` named again for another function
+      (`functools.wraps(f)` above the cache), the gate's own questions are not asked:
+      its walk follows what the cache names. The kernel's walk reads what the cache
+      calls, and there it refuses a single-dispatch function only once an
+      implementation is registered, and a weak proxy not at all. So a single-dispatch
+      function with nothing registered is gated where the wrapper that reaches it
+      carries none of the dispatcher's attributes (`functools.partial(dispatcher)`, a
+      `functools.wraps(dispatcher, updated=())` wrapper, a class-based decorator that
+      sets only `__wrapped__`). An implementation registered after the calls of a turn
+      were judged runs for them, and the judged call itself can be the one that
+      registers it (a wrapper that registers on first use). The declared parameters run
+      with the judged values; a parameter the implementation adds runs at its default.
+      From the next model turn the call is refused.
+    - Behind such a cache a `weakref.proxy` is not refused, and what stands behind it
+      is not read as what it is. A wrapper with a parameter of its own behind a proxy
+      of a second cache named again runs that parameter at its default, with no
+      dispatcher anywhere. A dispatcher with an implementation registered before the
+      tool is gated, behind `functools.partial(weakref.proxy(dispatcher))`, runs that
+      implementation with a parameter of its own at its default, and the call is never
+      refused.
+    - A decorator that holds a `functools.wraps` wrapper which takes the tool's own
+      parameters in another order is gated, and the function runs with the values
+      swapped (judged `sql=''`, `force=True`; ran `sql=True`, `force=''`). The same
+      wrapper on the `__wrapped__` chain is refused. This is in how the kernel reads a
+      held wrapper.
+    - A decorator that holds a `functools.wraps` wrapper with a parameter of its own is
+      gated where the way from that wrapper to the function passes a class-based
+      decorator built with `functools.update_wrapper`, a callable object, a
+      `functools.partial` that carries a `__wrapped__`, a weak proxy, a cache named
+      again, or a second wrapper that is itself only held. The kernel states these as
+      not found.
 
 ## [0.16.0] - 2026-11-26
 
