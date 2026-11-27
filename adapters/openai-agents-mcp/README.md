@@ -50,7 +50,7 @@ Install it from PyPI. `recusal-openai-agents`, which this package requires, come
 pip install recusal-openai-agents-mcp
 ```
 
-Requires Python 3.10+, `recusal>=0.16.0`, `recusal-openai-agents>=0.2.0`,
+Requires Python 3.10+, `recusal>=0.16.0`, `recusal-openai-agents>=0.2.2`,
 `openai-agents>=0.24.0`, `mcp>=2.3.0`, `jsonschema>=4.26.0` and `referencing>=0.37.0` (the
 MCP SDK requires `jsonschema` itself, and `referencing` comes with `jsonschema`). It is
 tested on every pull request against exactly `openai-agents==0.24.0` with
@@ -509,7 +509,8 @@ ceilings. Measured with
 [`tools/measure_mcp_cost.py`](https://github.com/philpaz/recusal/blob/main/tools/measure_mcp_cost.py)
 on one laptop (Windows 11, Python 3.12.5), the best of three runs, the arguments
 decoded from JSON text as the SDK hands them to the gate. The figures in the three
-tables are of the code as it stood before the eighth review round. That round changed
+tables are of the code as it stood before the eighth review round (commit `fdd84b0`
+of this repository, where the tables were last written). That round changed
 how the gate reads the arguments outside the check (their measure, the copy and the
 count, which no longer recurse) and not what a step is, and it found that the place a
 call is made from moves these times (below the third table). The ninth round changed
@@ -518,7 +519,12 @@ class, and twice where the two readings differ) and how the names a schema lists
 looked up; the largest call of each row and the steps it spends are unchanged
 (`tools/measure_mcp_cost.py` reproduces them on this code), and the times of the rows
 with a discriminated union, which is a `oneOf`, are the ones this most likely moved.
-The tables have not been measured again on this code. The first two tables time the
+The tenth round changed how `unevaluatedProperties` and `unevaluatedItems` are read
+(by the gate itself, where `jsonschema` gathered what was evaluated), which the
+figures for `unevaluatedProperties` in the text below the second table are of. The
+tables and the times in the text around them have not been measured again on this
+code: 0.2.1 is released with them as they are, and they are what is still to be
+done. The first two tables time the
 check itself (`Listed.complete`: the validation, the two refusals and the defaults);
 what the rest of the gate and an audit log add is in the third. First the largest call
 of each shape that the default step ceiling completes (the table above), which is the
@@ -962,7 +968,7 @@ full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-know
 
 ## Status
 
-**In-depth review under way.** Its fixes so far are released in 0.2.0, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes so far are released in 0.2.1, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).

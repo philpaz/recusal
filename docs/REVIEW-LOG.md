@@ -867,11 +867,13 @@ a seventh found the open items.
 
 ## `recusal-openai-agents-mcp`
 
-**Where it stands.** `recusal-openai-agents-mcp` 0.2.0 is released (tag
-`recusal-openai-agents-mcp-v0.2.0`, 2026-11-22), with the fixes of the rounds below,
+**Where it stands.** `recusal-openai-agents-mcp` 0.2.1 is the release with the fixes of
+rounds five to ten, in [#309](https://github.com/philpaz/recusal/pull/309); 0.2.0 (tag
+`recusal-openai-agents-mcp-v0.2.0`, 2026-11-22) has the fixes of the rounds before them,
 merged in [#297](https://github.com/philpaz/recusal/pull/297) with those of
-`recusal-openai-agents`. It requires `recusal-openai-agents` 0.2.0. The review continues:
-its package page states the open items below.
+`recusal-openai-agents`. 0.2.1 requires `recusal` 0.16.0 and `recusal-openai-agents`
+0.2.2 (0.2.0 required 0.15.0 and 0.2.0). The review continues: its package page states
+what is open, and what each round did not cover is below.
 [Package](../adapters/openai-agents-mcp/README.md).
 
 **The rounds.** The same commits as `recusal-openai-agents`, on
@@ -916,9 +918,9 @@ the gate's own readings of the arguments recursed, so their time moved with the 
 the sender nested at; a call a little over the size ceiling was read almost to its
 end; the gate read a `$ref` its own way; and three exceptions left the gate
 uncaught) and of a ninth and a tenth round (below),
-are in the changelog's Unreleased entry for 0.2.1, which is not released. 0.2.1 copies
-a call's arguments with the kernel's `recusal.invocation.detached`, as 0.2.0 does, and
-requires `recusal` 0.16.0, the first whose copy does not recurse.
+are in the changelog entry for 0.2.1. 0.2.1 copies a call's arguments with the
+kernel's `recusal.invocation.detached`, as 0.2.0 does, and requires `recusal` 0.16.0,
+the first whose copy does not recurse.
 
 - **The most serious.** In 0.2.0 a model can still stall the agent's process. Under
   `uniqueItems`, integers chosen to share one hash make the uniqueness check slow, and
@@ -945,7 +947,7 @@ requires `recusal` 0.16.0, the first whose copy does not recurse.
   the union rule.
 
 **Round nine** (2026-11-27, of the 0.2.1 changes as they stood after the eighth; the
-fixes are in the same Unreleased entry).
+fixes are in the same changelog entry).
 
 - **What it found.** A `$ref` to a place no keyword the scan knows holds was validated
   against and never read, so a `patternProperties` there had `jsonschema` run the
@@ -985,11 +987,12 @@ fixes are in the same Unreleased entry).
   schema for `unevaluatedProperties` and `unevaluatedItems`, nor the walk of a `$ref`
   pointer of many parts (round ten closed both). A hosted approval whose `arguments`
   is not text raised `TypeError` in `recusal-openai-agents`, which this package builds
-  on (found by this round, belongs to that package). The time tables on the package
-  page are of the code before round eight.
+  on (found by this round, belongs to that package): `recusal-openai-agents` 0.2.2
+  refuses such an approval, and 0.2.1 of this package requires it. The time tables on
+  the package page are of the code before round eight.
 
 **Round ten** (2026-11-27, of round nine's changes; the fixes are in the same
-Unreleased entry). It confirmed every finding of round nine closed, found no ordinary
+changelog entry). It confirmed every finding of round nine closed, found no ordinary
 Pydantic schema refused that 0.2.0 sends, and compared 1,213,330 calls with
 `jsonschema` without one the gate sends and `jsonschema` rejects, outside what follows.
 

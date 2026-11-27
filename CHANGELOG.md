@@ -570,6 +570,16 @@ All notable changes to this project are documented here. The format follows
     a step for each value; and an object beside an `if` on a `pattern` and an
     `unevaluatedProperties` was refused by round nine whatever it held, and is now
     refused only where the two branches do not evaluate the same members.
+  - What 0.2.1 requires. `recusal>=0.16.0` (0.2.0: 0.15.0), the first kernel whose
+    `recusal.invocation.detached` does not call itself. And
+    `recusal-openai-agents>=0.2.2` (0.2.0: 0.2.0): a hosted approval whose arguments
+    do not arrive as JSON text (an object, a list, a number) raised `TypeError` out
+    of the approval callback this package installs, found by the ninth round here,
+    and 0.2.2 of that package refuses it with a reason.
+  - Not done in 0.2.1, and stated on the page: its time tables, and the times in the
+    text around them, are of the code before the eighth round and are not measured
+    again. The counts beside them (the largest call of each shape and the steps it
+    spends) are reproduced on this code by `tools/measure_mcp_cost.py`.
 
 ## [0.16.0] - 2026-11-26
 
