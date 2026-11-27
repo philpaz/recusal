@@ -832,7 +832,9 @@ a seventh found the open items.
   beside `recusal` 0.15.1: a decorator that holds a cache named again for the function
   over anything but a plain function, a cache named again over a
   `functools.partial` of a second cache or of a `staticmethod` object, and a
-  `functools.partial` of a `staticmethod` object under a decorator. The package page
+  `functools.partial` of a `staticmethod` object under a decorator written with
+  `functools.update_wrapper` over a `functools.partial` (under an ordinary
+  `functools.wraps` decorator 0.2.1 refused that one too). The package page
   and the changelog entry for 0.2.2 say so, with the two the kernel's own entries
   state: a facade that does pass its bound argument on, and a declared signature that
   matches the real parameters.
@@ -842,11 +844,17 @@ a seventh found the open items.
   `refusal`. Nothing was approved, but it was an exception and not a refusal. The one
   place the package decodes arguments now refuses them before the policy runs, for the
   hosted seam, a function tool and an agent tool alike, and an empty `dict` or list,
-  `0` and `False` are no longer read as no arguments. Pinned by
-  `TestArgumentsThatAreNotText` in the same file.
-- Probed for 0.2.2 and not open: a `functools.partialmethod` behind a cache named again
-  for another function, with a `weakref.proxy` between or not, is refused in each shape
-  a test in `TestStatedLimits` holds.
+  `0` and `False` are no longer read as no arguments. The type is asked exactly and the
+  value is never asked whether it is true, so an instance of a subclass of `str` or
+  `bytes` is refused too. Pinned by `TestArgumentsThatAreNotText` in the same file.
+- Found by the confirmation review of 0.2.2, in 0.2.1 too, and open, as part of what
+  stands behind a `weakref.proxy` behind a cache named again: a second cache named
+  again that calls a `functools.partialmethod` through a `functools.partial` or a
+  wrapper is gated, and the callable the partialmethod holds runs with a parameter of
+  its own at its default. Built directly over the method, that second cache is refused,
+  only because `functools.lru_cache` copies the partialmethod's mark onto it. Without a
+  proxy of a cache between, the kernel's walk reaches the partialmethod and refuses it.
+  Tests in `TestStatedLimits` hold both the refused and the gated shapes.
 
 **Where you can help.**
 

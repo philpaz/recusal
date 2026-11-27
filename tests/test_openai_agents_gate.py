@@ -4073,8 +4073,7 @@ class TestKernelRefusals:
         "cannot tell from the wrapper's signature whether it passes that argument on, keeps "
         "it or passes a value of its own in its place, so it cannot tell which parameter of "
         "the function each judged value fills. A tool refused for this may run correctly. "
-        "The kernel's walk reports: {}. Register a plain function that names every parameter "
-        "the tool takes and calls it; " + NOT_READ
+        "The kernel's walk reports: {}; " + NOT_READ
     )
     DECLARED = (
         "the function it runs, or a callable on the way to it, carries a declared signature "
@@ -4610,12 +4609,16 @@ class TestKernelRefusals:
 
     def test_every_reason_that_advises_a_plain_function_says_its_body_is_not_read(self, example):
         """A plain function registered in the tool's place is judged by its parameters, and
-        what its body calls is not read. Every reason that gives that advice says so."""
+        what its body calls is not read. Every reason that gives that advice says so. The
+        one for a bound argument gives it in the kernel's text, which it quotes whole,
+        and does not repeat it."""
         adapter = _adapter()
         reasons = {
             name: value
             for name, value in vars(adapter).items()
-            if name.isupper() and type(value) is str and "plain function" in value
+            if name.isupper()
+            and type(value) is str
+            and ("plain function" in value or "what its body calls" in value)
         }
         assert sorted(reasons) == [
             "_BOUND_ARGUMENT_KEPT",
@@ -4976,12 +4979,13 @@ class TestStatedLimits:
         ],
     )
     def test_a_partialmethod_behind_a_cache_named_again_is_refused(self, example, how):
-        """Not open: behind a cache named again for another function, with a
-        ``weakref.proxy`` between or not, a callable that is or carries a partialmethod
-        is refused in each shape here. The kernel's walk reads the mark through the
-        proxy, or the gate finds the copy of it ``functools.update_wrapper`` leaves on
-        the cache. What a plain function's body calls is not read, a partialmethod
-        included."""
+        """The shapes of a partialmethod behind a cache named again that ARE refused. In
+        four the kernel's walk reads what the cache calls and finds the mark, through a
+        ``weakref.proxy`` of a function too. In the fifth, a proxy of a second cache
+        named again, the kernel reads nothing behind the proxy, and the tool is refused
+        only because ``functools.lru_cache`` copied the mark from the method onto the
+        cache built directly over it, where the gate's own walk finds it. The next test
+        holds the shapes where nothing copies it."""
         import functools
         import weakref
 
@@ -5032,6 +5036,50 @@ class TestStatedLimits:
         )
         assert policy.seen == [] and events == []
 
+    @pytest.mark.parametrize("between", ["a-partial", "a-wrapper-naming-it"])
+    def test_open_a_partialmethod_behind_a_proxy_of_a_cache_named_again(self, example, between):
+        """Open, part of what stands behind a ``weakref.proxy`` behind a cache named
+        again: a cache named again calls a proxy of a second cache named again, and that
+        one calls the partialmethod's method through a ``functools.partial`` or through a
+        wrapper that names it as ``__wrapped__``. Nothing copies the mark onto a cache,
+        the kernel's walk reads nothing behind the proxy, and the tool is gated: the
+        callable the partialmethod holds runs with a parameter of its own at its
+        default."""
+        import functools
+        import weakref
+
+        events: list = []
+
+        class Reviewed:
+            """A callable object with no ``__get__``: a partialmethod over it hands out a
+            method of a function ``functools`` builds, which carries the mark."""
+
+            def __call__(self, owner, sql="", force=False, skip_review=True):
+                events.append(("reviewed", sql, force, skip_review))
+                return "recorded"
+
+        class Tools:
+            run = functools.partialmethod(Reviewed())
+
+        method = Tools().run
+        assert _adapter()._held_partialmethod(method.__func__) is not None
+
+        def naming(*args, **kwargs):
+            return method(*args, **kwargs)
+
+        naming.__wrapped__ = method  # type: ignore[attr-defined]
+        inner = self.again(
+            functools.partial(method) if between == "a-partial" else naming, self.named(events)
+        )
+        tool = self.again(weakref.proxy(inner), self.named(events))
+        reached, complete = _adapter()._reached_callables(tool)
+        assert complete
+        assert not any(_adapter()._held_partialmethod(link) is not None for link in reached)
+        outputs, seen = self.run(example, tool, {"sql": "x"})
+        assert outputs == {"c1": "recorded"}
+        assert seen == [("run_sql", {"sql": "x", "force": False})]
+        assert events == [("reviewed", "x", False, True)]
+
 
 @pytest.mark.skipif(
     sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
@@ -5049,8 +5097,32 @@ class TestArgumentsThatAreNotText:
     Recording = TestEffectiveArguments.Recording
 
     SECRET = "SECRET-VALUE-93417"
+
+    class Falsy(str):
+        """Text that says it is false: ``arguments or "{}"`` read it as no arguments."""
+
+        def __bool__(self):
+            return False
+
+    class OwnDecoding(bytes):
+        """Bytes that decode to something else than they hold."""
+
+        def decode(self, *args, **kwargs):
+            return "{}"
+
     #: name -> arguments that are not text, and the name of the type in the reason
     NOT_TEXT = {
+        "str-subclass-that-is-false": (
+            lambda secret: TestArgumentsThatAreNotText.Falsy('{"sql": "%s"}' % secret),
+            "Falsy",
+        ),
+        "bytes-subclass-with-its-own-decode": (
+            lambda secret: TestArgumentsThatAreNotText.OwnDecoding(
+                ('{"sql": "%s"}' % secret).encode()
+            ),
+            "OwnDecoding",
+        ),
+        "memoryview": (lambda secret: memoryview(b"{}"), "memoryview"),
         "dict": (lambda secret: {"sql": secret}, "dict"),
         "list": (lambda secret: [secret], "list"),
         "int": (lambda secret: 5, "int"),
@@ -5066,7 +5138,8 @@ class TestArgumentsThatAreNotText:
     def reason(tool, kind):
         return (
             f"Recusal refused `{tool}`: arguments are not JSON text (they arrived as a "
-            f"`{kind}`, not as a string or bytes), so they cannot be judged"
+            f"`{kind}`, which is not exactly `str`, `bytes` or `bytearray`), so they cannot be "
+            "judged"
         )
 
     @pytest.mark.parametrize("how", sorted(NOT_TEXT))
@@ -5138,6 +5211,29 @@ class TestArgumentsThatAreNotText:
         assert len(log.entries) == 1 and log.entries[0]["decision"] == "FAIL"
         assert self.SECRET not in path.read_text(encoding="utf-8")
         assert verify(log.entries) == (True, [])
+
+    def test_a_type_name_that_is_not_a_word_is_not_put_in_the_reason(self, example):
+        """The reason and the record name the type the arguments arrived as. A class can
+        be given any name; only a plain identifier is passed on."""
+        import recusal_openai_agents
+
+        odd = type('x`\n"}], "decision": "PASS', (), {})
+        policy = self.Recording(lambda name, args: [])
+        answer = recusal_openai_agents.refusal("lookup", odd(), policy)
+        assert answer == self.reason("lookup", "object") and policy.seen == []
+
+    def test_empty_text_and_empty_bytes_are_no_arguments(self, example):
+        import recusal_openai_agents
+
+        for arguments in ("", b"", bytearray()):
+            policy = self.Recording(lambda name, args: [])
+            assert recusal_openai_agents.refusal("lookup", arguments, policy) is None
+            assert policy.seen == [("lookup", {})]
+        policy = self.Recording(lambda name, args: [])
+        assert recusal_openai_agents.refusal("lookup", "  ", policy) == (
+            "Recusal refused `lookup`: arguments are not valid JSON"
+        )
+        assert policy.seen == []
 
     def test_text_none_and_bytes_are_judged_as_before(self, example):
         """What is not changed: a string, the empty string, None and bytes are decoded and

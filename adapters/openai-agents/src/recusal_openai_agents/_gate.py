@@ -132,12 +132,20 @@ _MAX_DEPTH = 64
 
 _TOO_DEEP = "arguments are nested too deeply"
 
-#: For arguments that did not arrive as text. The braces take the name of their type,
-#: never anything they hold.
+#: For arguments that did not arrive as text. The braces take the name of their type
+#: (:func:`_type_name`), never anything they hold.
 _NOT_TEXT = (
-    "arguments are not JSON text (they arrived as a `{}`, not as a string or bytes), so "
-    "they cannot be judged"
+    "arguments are not JSON text (they arrived as a `{}`, which is not exactly `str`, "
+    "`bytes` or `bytearray`), so they cannot be judged"
 )
+
+
+def _type_name(value: Any) -> str:
+    """The name of ``value``'s type, for a reason and a record: the name itself where it
+    is a plain identifier, and ``object`` for any other name a class was given, so that
+    nothing but a word reaches the text."""
+    name = type.__dict__["__name__"].__get__(type(value))
+    return name if type(name) is str and name.isidentifier() else "object"
 
 
 def _too_deep(value: Any, depth: int = 0) -> bool:
@@ -364,16 +372,17 @@ _UNREAD_CACHE = (
 #: For the kernel walk's ``BoundArgumentKept``. The framing is this gate's and holds for
 #: every one: which parameter is left open, and whether it then takes a keyword, runs at
 #: a default or makes the call fail, is not said here. The kernel's own text goes in the
-#: braces: it names one parameter, or two where a wrapper took the bound argument under a
-#: name, and no value. A wrapper of this signature that runs correctly is refused too.
+#: braces, whole: it names one parameter, or two where a wrapper took the bound argument
+#: under a name, and no value, and it ends with what to register, a plain function, which
+#: the gate's closing words then speak of. A wrapper of this signature that runs
+#: correctly is refused too.
 _BOUND_ARGUMENT_KEPT = (
     "a wrapper on the way to the function it runs is handed a bound argument (the object "
     "of a method, or a positional argument of a `functools.partial`), and the gate cannot "
     "tell from the wrapper's signature whether it passes that argument on, keeps it or "
     "passes a value of its own in its place, so it cannot tell which parameter of the "
     "function each judged value fills. A tool refused for this may run correctly. The "
-    "kernel's walk reports: {}. Register a plain function that names every parameter the "
-    "tool takes and calls it; the gate judges that function's parameters, and what its "
+    "kernel's walk reports: {}; the gate judges that function's parameters, and what its "
     "body calls is not read."
 )
 
@@ -994,27 +1003,35 @@ def _proposed(
     """The arguments the model proposed, as a JSON object: ``(arguments, None)``, or
     ``(None, reason)`` for text that is not one, and for arguments that are not text.
 
-    The arguments are JSON text: a ``str``, or ``bytes`` or a ``bytearray``, which
-    ``json.loads`` decodes. None stands for no arguments, as the empty string does.
-    Anything else (a ``dict`` that looks decoded already, a list, a number, a bool) is
-    refused and not read: what would be executed for it is not known here, and
-    ``json.loads`` raises ``TypeError`` for it, which would leave this function as an
-    exception and not as a refusal. That holds for an empty ``dict`` or list, ``0`` and
-    ``False`` too, which were read as no arguments. With a recording, such a refusal is
-    bound to the name of the type the arguments arrived as, since they may not be data.
+    The arguments are JSON text: exactly a ``str``, ``bytes`` or a ``bytearray``, which
+    ``json.loads`` decodes. None stands for no arguments, as empty text does. Anything
+    else (a ``dict`` that looks decoded already, a list, a number, a bool) is refused
+    and not read: what would be executed for it is not known here, and ``json.loads``
+    raises ``TypeError`` for it, which would leave this function as an exception and not
+    as a refusal. That holds for an empty ``dict`` or list, ``0`` and ``False`` too,
+    which were read as no arguments. The type is asked exactly, and the value is never
+    asked whether it is true: an instance of a subclass of ``str`` or ``bytes`` can
+    answer for its own truth and its own decoding (one that says it is false was read as
+    no arguments), so it is refused like any other value. With a recording, such a
+    refusal is bound to the name of the type the arguments arrived as, since they may
+    not be data.
 
     A non-finite number (``NaN``, ``Infinity``, a literal too large for a float) is not
     JSON data: no policy can compare it and no record can fingerprint it, so it is refused
     here, before the policy runs, with or without a recording. So are arguments that hold
     a value more than ``_MAX_DEPTH`` levels down, before anything else reads them. Those
     refusals are bound to the argument text, as the one for malformed JSON is."""
-    if arguments is not None and not isinstance(arguments, (str, bytes, bytearray)):
-        kind = type(arguments).__name__
+    if arguments is None:
+        text: Any = "{}"
+    elif type(arguments) is str or type(arguments) is bytes or type(arguments) is bytearray:
+        text = arguments if len(arguments) else "{}"
+    else:
+        kind = _type_name(arguments)
         return None, _unjudgeable(
             tool_name, _NOT_TEXT.format(kind), {"arguments_type": kind}, record
         )
     try:
-        args = json.loads(arguments or "{}")
+        args = json.loads(text)
     except RecursionError:
         return None, _unjudgeable(tool_name, _TOO_DEEP, arguments, record)
     except ValueError:

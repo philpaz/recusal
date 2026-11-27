@@ -21,9 +21,10 @@ All notable changes to this project are documented here. The format follows
     inspected (UnreadCache)". Each has a reason of its own now. The first says in the
     gate's own words that the walk cannot tell whether the wrapper passes the bound
     argument on, and that a tool refused for this may run correctly, and passes the
-    kernel's text on as what the walk reports: that text names the parameter that could
-    be left open and, where a wrapper took the bound argument under a name, that name
-    too. The second says that the function the cache calls could not be told.
+    kernel's text on, whole, as what the walk reports: that text names the parameter
+    that could be left open and, where a wrapper took the bound argument under a name,
+    that name too, and in `recusal` 0.16.0 it can say a parameter "runs at a default"
+    where the parameter has none. The second says that the function the cache calls could not be told.
   - A declared signature (a `__signature__`, a `__text_signature__` that is not the
     interpreter's own) was refused as "cannot be inspected (DeclaredSignature)". The
     reason now says what is carried, that the kernel's walk relies on no declared
@@ -63,8 +64,10 @@ All notable changes to this project are documented here. The format follows
     function over a `functools.partial` of a second `functools.lru_cache` wrapper or of
     a `staticmethod` object, for which Python shows no signature, refused as "cannot be
     inspected (ValueError)". A `functools.partial` of a `staticmethod` object under a
-    decorator is refused the same way with the reason for an object Python shows no
-    signature for, which named only a class-based decorator and now names both. Also
+    decorator is refused with the reason for an object Python shows no signature for,
+    which named only a class-based decorator and now names both; 0.2.1 beside `recusal`
+    0.15.1 gated it under a decorator written with `functools.update_wrapper` over a
+    `functools.partial`, and refused it under an ordinary `functools.wraps` decorator. Also
     refused although correct, as the kernel's entries for 0.16.0 say: a facade that does
     pass its bound argument on, and a declared signature that matches the real
     parameters.
@@ -77,12 +80,17 @@ All notable changes to this project are documented here. The format follows
     arguments in one place, which the hosted seam, the guardrail of a function tool and
     an agent tool all pass through: it now refuses anything but a `str`, `bytes`, a
     `bytearray` or `None` before the policy runs, with "arguments are not JSON text
-    (they arrived as a `dict`, not as a string or bytes), so they cannot be judged".
-    The reason names the type and nothing the arguments hold, and with a log the entry
-    is bound to the name of the type. A `dict` is not taken for arguments decoded
-    already. **This refuses what 0.2.1 judged**: an empty `dict`, an empty list, `0`
-    and `False` were read as no arguments and judged as `{}`. A string, the empty
-    string, `None` and bytes are judged as before.
+    (they arrived as a `dict`, which is not exactly `str`, `bytes` or `bytearray`), so
+    they cannot be judged". The reason names the type and nothing the arguments hold,
+    and with a log the entry is bound to the name of the type; a class name that is not
+    a plain identifier is given as `object`. A `dict` is not taken for arguments
+    decoded already. **This refuses what 0.2.1 judged**: an empty `dict`, an empty
+    list, `0` and `False` were read as no arguments and judged as `{}`. So was an
+    instance of a subclass of `str` that says it is false, and a subclass of `bytes`
+    with a `decode` of its own was decoded by it: the type is now asked exactly, and
+    the value is never asked whether it is true, so both are refused (neither reaches
+    the gate from the model or the SDK). A string, the empty string, `None`, bytes and
+    a bytearray are judged as before.
   - **Stated as open on the package page**, found by the review of this release before
     it was made. All of them are in 0.2.1 too, and none is closed here:
     - Behind a `functools.lru_cache` named again for another function
@@ -104,7 +112,12 @@ All notable changes to this project are documented here. The format follows
       dispatcher anywhere. A dispatcher with an implementation registered before the
       tool is gated, behind `functools.partial(weakref.proxy(dispatcher))`, runs that
       implementation with a parameter of its own at its default, and the call is never
-      refused.
+      refused. A `functools.partialmethod` behind a proxy of a second cache named
+      again is gated where a `functools.partial` or a wrapper stands between that
+      cache and the method, and the callable it holds runs with a parameter of its own
+      at its default; with the second cache built directly over the method it is
+      refused, only because `functools.lru_cache` copies the partialmethod's mark onto
+      that cache.
     - A decorator that holds a `functools.wraps` wrapper which takes the tool's own
       parameters in another order is gated, and the function runs with the values
       swapped (judged `sql=''`, `force=True`; ran `sql=True`, `force=''`). The same
