@@ -224,7 +224,10 @@ guardrail cannot judge:
 - **A decorator whose signature cannot be read.** A class-based decorator that is also a
   descriptor (`cachetools.cached`, `cachetools.func.ttl_cache`, `cachetools.func.lru_cache`)
   hides the functions under it from inspection. Call the decorated function from a plain
-  function and register that. `functools.lru_cache` and `functools.cache` are read
+  function and register that. A `staticmethod` object that something other than a class
+  holds (`functools.partial(staticmethod(f))` under a decorator) is such an object too:
+  Python shows no signature for it, so the tool is refused with the same reason,
+  although it runs correctly. `functools.lru_cache` and `functools.cache` are read
   through and gated. With `functools.wraps(f)` written above the cache, the cache names
   `f` and calls the wrapper it was built over. The kernel's walk reads that wrapper: one
   that only forwards is gated, and one with a parameter of its own is refused where the
@@ -320,6 +323,10 @@ guardrail cannot judge:
   a plain function or method read from an object is a `functools.partial`, which the
   SDK refuses itself (`function_tool` raises). Register a plain function that calls it;
   the gate judges that function's parameters, and what its body calls is not read.
+  Behind a cache named again for another function, with a `weakref.proxy` between or
+  not, a callable that is or carries a partialmethod is refused in each shape the tests
+  hold. A partialmethod that a plain function's body calls is not read, as nothing a
+  body calls is.
 - **A `weakref.proxy`**, as the tool's function or anywhere among the callables the
   gate's own walk reaches. A proxy shows the attributes of the object it stands for and
   is not that object, so the gate cannot tell which callables a call to it runs.
@@ -352,6 +359,11 @@ guardrail cannot judge:
 
 Refused call by call, before the policy runs, with a reason the model reads:
 
+- arguments that did not arrive as JSON text (a `dict`, a list, a number). The SDK
+  hands a function tool's arguments as text; a seam another package builds on this one
+  (the hosted approval callback of `recusal-openai-agents-mcp`) may be handed something
+  else. It is not read as arguments decoded already: it is refused, and the reason
+  names the type it arrived as and nothing it holds;
 - arguments that are not a JSON object, or that do not validate against the tool's
   parameters (for an agent tool, against its `parameters` model);
 - a non-finite number (`NaN`, `Infinity`, a literal too large for a float, or a string a
@@ -532,9 +544,10 @@ parameters and not bodies, so it refuses some signatures a correct tool can have
 is described in the list of refused tools above: a facade that is handed a bound
 argument and does pass it on; a declared signature that this Python would not read or
 that matches the real parameters; a decorator that holds a cache named again for the
-function over anything but a plain function; and a cache named again over a
-`functools.partial` of a second cache or of a `staticmethod` object. 0.2.1 beside
-`recusal` 0.15.1 gated the last two.
+function over anything but a plain function; a cache named again over a
+`functools.partial` of a second cache or of a `staticmethod` object; and a
+`functools.partial` of a `staticmethod` object under a decorator. 0.2.1 beside
+`recusal` 0.15.1 gated the last three.
 
 **Open**, stated so you can judge them. Each is described under "What the gate does not
 see", each was found by the review of 0.2.2 before its release, and each is in 0.2.1

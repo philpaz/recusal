@@ -830,11 +830,23 @@ a seventh found the open items.
     as not found.
 - Refused although they run correctly beside `recusal` 0.16.0, and gated by 0.2.1
   beside `recusal` 0.15.1: a decorator that holds a cache named again for the function
-  over anything but a plain function, and a cache named again over a
-  `functools.partial` of a second cache or of a `staticmethod` object. The package page
+  over anything but a plain function, a cache named again over a
+  `functools.partial` of a second cache or of a `staticmethod` object, and a
+  `functools.partial` of a `staticmethod` object under a decorator. The package page
   and the changelog entry for 0.2.2 say so, with the two the kernel's own entries
   state: a facade that does pass its bound argument on, and a declared signature that
   matches the real parameters.
+- Found in review round nine of `recusal-openai-agents-mcp`, and closed in 0.2.2:
+  arguments that did not arrive as JSON text (a `dict`, a list, a number) left the gate
+  as a `TypeError`, on the hosted approval callback that package builds on this one's
+  `refusal`. Nothing was approved, but it was an exception and not a refusal. The one
+  place the package decodes arguments now refuses them before the policy runs, for the
+  hosted seam, a function tool and an agent tool alike, and an empty `dict` or list,
+  `0` and `False` are no longer read as no arguments. Pinned by
+  `TestArgumentsThatAreNotText` in the same file.
+- Probed for 0.2.2 and not open: a `functools.partialmethod` behind a cache named again
+  for another function, with a `weakref.proxy` between or not, is refused in each shape
+  a test in `TestStatedLimits` holds.
 
 **Where you can help.**
 

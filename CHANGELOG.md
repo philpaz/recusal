@@ -62,9 +62,27 @@ All notable changes to this project are documented here. The format follows
     `HiddenWrapper` with no parameter named; and a cache named again for another
     function over a `functools.partial` of a second `functools.lru_cache` wrapper or of
     a `staticmethod` object, for which Python shows no signature, refused as "cannot be
-    inspected (ValueError)". Also refused although correct, as the kernel's entries for
-    0.16.0 say: a facade that does pass its bound argument on, and a declared signature
-    that matches the real parameters.
+    inspected (ValueError)". A `functools.partial` of a `staticmethod` object under a
+    decorator is refused the same way with the reason for an object Python shows no
+    signature for, which named only a class-based decorator and now names both. Also
+    refused although correct, as the kernel's entries for 0.16.0 say: a facade that does
+    pass its bound argument on, and a declared signature that matches the real
+    parameters.
+  - **Arguments that are not JSON text are refused, not raised on.** Found in review
+    round nine of `recusal-openai-agents-mcp`, on the hosted approval callback, which
+    decides with this package's `refusal`. Arguments that arrived as a `dict`, a list
+    or a number left the gate as `TypeError: the JSON object must be str, bytes or
+    bytearray` out of `json.loads`. Nothing was approved and nothing ran, but it was an
+    exception and not a refusal, and there was no audit entry. The package decodes
+    arguments in one place, which the hosted seam, the guardrail of a function tool and
+    an agent tool all pass through: it now refuses anything but a `str`, `bytes`, a
+    `bytearray` or `None` before the policy runs, with "arguments are not JSON text
+    (they arrived as a `dict`, not as a string or bytes), so they cannot be judged".
+    The reason names the type and nothing the arguments hold, and with a log the entry
+    is bound to the name of the type. A `dict` is not taken for arguments decoded
+    already. **This refuses what 0.2.1 judged**: an empty `dict`, an empty list, `0`
+    and `False` were read as no arguments and judged as `{}`. A string, the empty
+    string, `None` and bytes are judged as before.
   - **Stated as open on the package page**, found by the review of this release before
     it was made. All of them are in 0.2.1 too, and none is closed here:
     - Behind a `functools.lru_cache` named again for another function

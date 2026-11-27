@@ -132,6 +132,13 @@ _MAX_DEPTH = 64
 
 _TOO_DEEP = "arguments are nested too deeply"
 
+#: For arguments that did not arrive as text. The braces take the name of their type,
+#: never anything they hold.
+_NOT_TEXT = (
+    "arguments are not JSON text (they arrived as a `{}`, not as a string or bytes), so "
+    "they cannot be judged"
+)
+
 
 def _too_deep(value: Any, depth: int = 0) -> bool:
     """Whether decoded arguments hold a value more than ``_MAX_DEPTH`` levels down."""
@@ -398,9 +405,13 @@ _TOO_MANY_WRAPPERS = (
     "calls is not read."
 )
 
+#: For a callable on the way that is an object whose class defines ``__get__`` and for
+#: which ``inspect.signature`` finds no signature (:func:`_opaque_decorator`).
 _OPAQUE_DECORATOR = (
-    "a decorator on the function cannot be inspected (a class-based decorator that is also "
-    "a descriptor, such as `cachetools.cached`), so the functions under it cannot be read. "
+    "a callable on the way to the function cannot be inspected: it is an object whose "
+    "class defines `__get__`, for which Python shows no signature (a class-based decorator "
+    "that is also a descriptor, such as `cachetools.cached`, or a `staticmethod` object "
+    "that something other than a class holds), so the functions under it cannot be read. "
     "Call the decorated function from a plain function and register that; the gate judges "
     "that function's parameters, and what its body calls is not read."
 )
@@ -618,8 +629,9 @@ def _is_dispatcher(link: Any) -> bool:
 
 
 def _opaque_decorator(link: Any) -> bool:
-    """A decorator object ``inspect`` reads as a built-in and finds no signature for: an
-    instance of a class with ``__get__``, as ``cachetools.cached`` returns."""
+    """An object ``inspect`` reads as a built-in and finds no signature for: an instance
+    of a class with ``__get__``, as ``cachetools.cached`` returns, and a ``staticmethod``
+    object reached as itself (``functools.partial(staticmethod(f))``)."""
     if not inspect.ismethoddescriptor(link) or isinstance(link, _LRU_WRAPPER):
         return False
     try:
@@ -980,13 +992,27 @@ def _proposed(
     tool_name: str, arguments: str, record: dict
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """The arguments the model proposed, as a JSON object: ``(arguments, None)``, or
-    ``(None, reason)`` for text that is not one.
+    ``(None, reason)`` for text that is not one, and for arguments that are not text.
+
+    The arguments are JSON text: a ``str``, or ``bytes`` or a ``bytearray``, which
+    ``json.loads`` decodes. None stands for no arguments, as the empty string does.
+    Anything else (a ``dict`` that looks decoded already, a list, a number, a bool) is
+    refused and not read: what would be executed for it is not known here, and
+    ``json.loads`` raises ``TypeError`` for it, which would leave this function as an
+    exception and not as a refusal. That holds for an empty ``dict`` or list, ``0`` and
+    ``False`` too, which were read as no arguments. With a recording, such a refusal is
+    bound to the name of the type the arguments arrived as, since they may not be data.
 
     A non-finite number (``NaN``, ``Infinity``, a literal too large for a float) is not
     JSON data: no policy can compare it and no record can fingerprint it, so it is refused
     here, before the policy runs, with or without a recording. So are arguments that hold
     a value more than ``_MAX_DEPTH`` levels down, before anything else reads them. Those
     refusals are bound to the argument text, as the one for malformed JSON is."""
+    if arguments is not None and not isinstance(arguments, (str, bytes, bytearray)):
+        kind = type(arguments).__name__
+        return None, _unjudgeable(
+            tool_name, _NOT_TEXT.format(kind), {"arguments_type": kind}, record
+        )
     try:
         args = json.loads(arguments or "{}")
     except RecursionError:

@@ -1363,11 +1363,13 @@ class TestSecondReview:
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
         assert str(refusal.value) == (
-            "Recusal cannot gate 'run_sql': a decorator on the function cannot be inspected "
-            "(a class-based decorator that is also a descriptor, such as `cachetools.cached`), "
-            "so the functions under it cannot be read. Call the decorated function from a "
-            "plain function and register that; the gate judges that function's parameters, "
-            "and what its body calls is not read."
+            "Recusal cannot gate 'run_sql': a callable on the way to the function cannot be "
+            "inspected: it is an object whose class defines `__get__`, for which Python shows "
+            "no signature (a class-based decorator that is also a descriptor, such as "
+            "`cachetools.cached`, or a `staticmethod` object that something other than a "
+            "class holds), so the functions under it cannot be read. Call the decorated "
+            "function from a plain function and register that; the gate judges that "
+            "function's parameters, and what its body calls is not read."
         )
 
     def test_a_decorator_that_calls_the_decorated_function_from_a_plain_one_is_gated(self, example):
@@ -4928,6 +4930,230 @@ class TestStatedLimits:
         self.refused_although_correct(
             example, make, "the function it runs cannot be inspected (ValueError)"
         )
+
+    def test_refused_although_correct_a_staticmethod_object_under_a_partial(self, example):
+        """A ``functools.partial`` of a ``staticmethod`` object, under a decorator written
+        with ``functools.update_wrapper`` over a partial. Python shows no signature for
+        the ``staticmethod`` object, which is an object whose class defines ``__get__``:
+        the reason says so, and no longer calls it a class-based decorator."""
+        import functools
+
+        def helper(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        def make(events):
+            inner = functools.partial(staticmethod(self.fetch(events)))
+            decorated = functools.update_wrapper(functools.partial(helper, inner), inner)
+
+            @functools.wraps(decorated)
+            def forwarding(*args, **kwargs):
+                return decorated(*args, **kwargs)
+
+            return forwarding
+
+        reached, _ = _adapter()._reached_callables(make([]))
+        assert any(type(link) is staticmethod for link in reached)
+        self.refused_although_correct(
+            example,
+            make,
+            "a callable on the way to the function cannot be inspected: it is an object "
+            "whose class defines `__get__`, for which Python shows no signature (a "
+            "class-based decorator that is also a descriptor, such as `cachetools.cached`, "
+            "or a `staticmethod` object that something other than a class holds), so the "
+            "functions under it cannot be read. Call the decorated function from a plain "
+            "function and register that; the gate judges that function's parameters, and "
+            "what its body calls is not read.",
+        )
+
+    @pytest.mark.parametrize(
+        "how",
+        [
+            "the-method",
+            "proxy-of-the-function",
+            "partial-of-a-proxy",
+            "proxy-of-a-function-naming-it",
+            "proxy-of-a-cache-named-again",
+        ],
+    )
+    def test_a_partialmethod_behind_a_cache_named_again_is_refused(self, example, how):
+        """Not open: behind a cache named again for another function, with a
+        ``weakref.proxy`` between or not, a callable that is or carries a partialmethod
+        is refused in each shape here. The kernel's walk reads the mark through the
+        proxy, or the gate finds the copy of it ``functools.update_wrapper`` leaves on
+        the cache. What a plain function's body calls is not read, a partialmethod
+        included."""
+        import functools
+        import weakref
+
+        events: list = []
+
+        def run_on(conn, sql: str = "", force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            events.append(("run_on", sql, force))
+            return "recorded"
+
+        class Logged:
+            def __init__(self, inner):
+                functools.update_wrapper(self, inner)
+                self.inner = inner
+
+            def __call__(self, *args, **kwargs):
+                return self.inner(*args, **kwargs)
+
+        class Db:
+            over_object = functools.partialmethod(Logged(self.reviewed(events, run_on)))
+            over_function = functools.partialmethod(self.reviewed(events, run_on))
+
+        db = Db()
+        method, from_class = db.over_object, Db.over_function
+
+        def naming(*args, **kwargs):
+            return method(*args, **kwargs)
+
+        naming.__wrapped__ = method  # type: ignore[attr-defined]
+        inner = self.again(method, self.named(events))
+        called = {
+            "the-method": method,
+            "proxy-of-the-function": functools.partial(weakref.proxy(from_class), db),
+            "partial-of-a-proxy": functools.partial(
+                functools.partial(weakref.proxy(from_class)), db
+            ),
+            "proxy-of-a-function-naming-it": weakref.proxy(naming),
+            "proxy-of-a-cache-named-again": weakref.proxy(inner),
+        }[how]
+        tool = example.function_tool(
+            self.again(called, self.named(events)), name_override="run_sql", strict_mode=False
+        )
+        policy = self.Recording(lambda name, args: [])
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], policy)
+        assert str(refusal.value).startswith(
+            "Recusal cannot gate 'run_sql': it runs a `functools.partialmethod`"
+        )
+        assert policy.seen == [] and events == []
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestArgumentsThatAreNotText:
+    """Found in review round nine of ``recusal-openai-agents-mcp``, on the hosted approval
+    seam that package builds on ``refusal``: arguments that arrive as a ``dict``, a list or
+    a number, not as JSON text, left the gate as a ``TypeError`` out of ``json.loads``.
+    Nothing was approved and nothing ran, but it was an exception and not a refusal, and
+    an empty ``dict`` or list, ``0`` and ``False`` were read as no arguments and judged.
+    Every one is refused now, before the policy, on each way into the one decode the
+    package has, and nothing the arguments hold is in the reason or on the log."""
+
+    example = TestJudgedIsWhatRuns.example
+    Recording = TestEffectiveArguments.Recording
+
+    SECRET = "SECRET-VALUE-93417"
+    #: name -> arguments that are not text, and the name of the type in the reason
+    NOT_TEXT = {
+        "dict": (lambda secret: {"sql": secret}, "dict"),
+        "list": (lambda secret: [secret], "list"),
+        "int": (lambda secret: 5, "int"),
+        "float": (lambda secret: 1.5, "float"),
+        "true": (lambda secret: True, "bool"),
+        "empty-dict": (lambda secret: {}, "dict"),
+        "empty-list": (lambda secret: [], "list"),
+        "zero": (lambda secret: 0, "int"),
+        "false": (lambda secret: False, "bool"),
+    }
+
+    @staticmethod
+    def reason(tool, kind):
+        return (
+            f"Recusal refused `{tool}`: arguments are not JSON text (they arrived as a "
+            f"`{kind}`, not as a string or bytes), so they cannot be judged"
+        )
+
+    @pytest.mark.parametrize("how", sorted(NOT_TEXT))
+    def test_the_hosted_seam_refuses_them(self, example, how):
+        """``refusal`` is what the hosted approval callback of ``recusal-openai-agents-mcp``
+        decides with: a reason means "do not approve"."""
+        import recusal_openai_agents
+
+        make, kind = self.NOT_TEXT[how]
+        policy = self.Recording(lambda name, args: [])
+        answer = recusal_openai_agents.refusal("lookup", make(self.SECRET), policy)
+        assert answer == self.reason("lookup", kind)
+        assert policy.seen == [] and self.SECRET not in answer
+
+    @pytest.mark.parametrize("how", sorted(NOT_TEXT))
+    def test_the_guardrail_of_a_function_tool_refuses_them(self, example, how):
+        """The guardrail as the SDK calls it, handed a tool context whose arguments are
+        not text. The SDK hands text; this is the same decode, held to the same answer."""
+        from types import SimpleNamespace
+
+        make, kind = self.NOT_TEXT[how]
+        ran: list = []
+
+        def run_sql(sql: str = "") -> str:
+            """Record SQL text without connecting to a database."""
+            ran.append(sql)
+            return "recorded"
+
+        policy = self.Recording(lambda name, args: [])
+        (gated,) = example.gate_tools([example.function_tool(run_sql, strict_mode=False)], policy)
+        guardrail = gated.tool_input_guardrails[0].guardrail_function
+        ctx = SimpleNamespace(tool_name="run_sql", tool_arguments=make(self.SECRET))
+        output = guardrail(SimpleNamespace(context=ctx))
+        assert output.behavior == {
+            "type": "reject_content",
+            "message": self.reason("run_sql", kind),
+        }
+        assert policy.seen == [] and ran == []
+        assert not hasattr(ctx, "_function_tool_arguments")  # nothing was pinned to run
+
+    @pytest.mark.parametrize("how", sorted(NOT_TEXT))
+    def test_an_agent_tool_refuses_them(self, example, how):
+        make, kind = self.NOT_TEXT[how]
+        policy = self.Recording(lambda name, args: [])
+        sub = example.gated_agent(example.Agent(name="sub", tools=[]), policy)
+        (tool,) = example.gate_tools([sub.as_tool(tool_name="ask", tool_description="d")], policy)
+        answer = _adapter()._function_tool_refusal("ask", make(self.SECRET), policy, tool)
+        assert answer == self.reason("ask", kind)
+        assert policy.seen == []
+
+    @pytest.mark.parametrize("how", ["dict", "list", "int"])
+    def test_with_a_log_the_refusal_is_one_entry_that_holds_no_value(self, example, how, tmp_path):
+        """Recorded, the refusal goes through ``decide`` like every other: one entry,
+        bound to the name of the type the arguments arrived as and to nothing they hold."""
+        import recusal_openai_agents
+
+        from recusal.audit import AuditLog, verify
+
+        make, kind = self.NOT_TEXT[how]
+        path = tmp_path / "audit.jsonl"
+        log = AuditLog(path=str(path))
+        policy = self.Recording(lambda name, args: [])
+        answer = recusal_openai_agents.refusal(
+            "lookup", make(self.SECRET), policy, audit=log, surface="test.hosted", tool_use_id="r1"
+        )
+        assert answer is not None and answer.startswith("Recusal refused `lookup` [FAIL]")
+        assert f"they arrived as a `{kind}`" in answer and self.SECRET not in answer
+        assert policy.seen == []
+        assert len(log.entries) == 1 and log.entries[0]["decision"] == "FAIL"
+        assert self.SECRET not in path.read_text(encoding="utf-8")
+        assert verify(log.entries) == (True, [])
+
+    def test_text_none_and_bytes_are_judged_as_before(self, example):
+        """What is not changed: a string, the empty string, None and bytes are decoded and
+        judged. A ``dict`` is not taken for arguments that were decoded already."""
+        import recusal_openai_agents
+
+        for arguments, judged in (
+            ('{"sql": "x"}', {"sql": "x"}),
+            ("", {}),
+            (None, {}),
+            (b'{"sql": "x"}', {"sql": "x"}),
+            (bytearray(b'{"sql": "x"}'), {"sql": "x"}),
+        ):
+            policy = self.Recording(lambda name, args: [])
+            assert recusal_openai_agents.refusal("lookup", arguments, policy) is None
+            assert policy.seen == [("lookup", judged)]
 
 
 def types_method(func, obj):
