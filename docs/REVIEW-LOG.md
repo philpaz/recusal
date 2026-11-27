@@ -2,7 +2,7 @@
 
 This is the record of the in-depth review of each Recusal package, round by round: what
 each round found, what changed, what is still open, and where you can help. It covers
-2026-11-19 to 2026-11-22, the date of the newest commit it cites.
+2026-11-19 to 2026-11-27, the date of the newest change it describes.
 
 The threat model is in two parts. The model is untrusted: everything it produces is input
 to the gate. The application's own code is trusted but ordinary: a decorator around a
@@ -34,14 +34,16 @@ How to check this page:
 
 ## The kernel: `recusal`
 
-**Where it stands.** `recusal` 0.15.1 is released (tag `v0.15.1`, 2026-11-23). It has
-none of the change below: it fixed the audit log, and its `recusal.invocation` is that
-of 0.15.0. The change is in review in
-[#299](https://github.com/philpaz/recusal/pull/299) as one commit, `322ee13`, which is
-the kernel change rebuilt on main after 0.15.1. It is not merged and not released. The
+**Where it stands.** `recusal` 0.16.0 is released (tag `v0.16.0`, 2026-11-26). It has
+the change of the rounds below, merged in
+[#299](https://github.com/philpaz/recusal/pull/299); `recusal` 0.15.1 (tag `v0.15.1`,
+2026-11-23) has none of it, and its `recusal.invocation` is that of 0.15.0. The
 commits named under the rounds below are the change as each round read it; they are
 kept on the branches `review-history/kernel-299-pre-rebuild` (`293f22f`) and
-`review-history/kernel-299-rounds-6-8` (all the others).
+`review-history/kernel-299-rounds-6-8` (all the others). A further change, which
+answers what two adapter reviews found open in the walk of 0.16.0, is on the branch
+`kernel-cache-target-held-order`, in a draft pull request. It is not merged and not
+released; it is the last entry under the rounds.
 
 The part of the kernel under review is `recusal.invocation`
 ([source](../recusal/invocation.py)), which adapters use to read the parameters of a
@@ -60,7 +62,8 @@ decorated tool. `recusal-crewai` still carries its own copy.
   default. Refused now. Pinned by
   `test_a_wrapper_that_takes_a_parameter_the_function_also_takes_is_refused` in
   [`tests/test_invocation.py`](../tests/test_invocation.py). Released in 0.15.0.
-- **In review, #299** (commit `293f22f`). Three adapter reviews found the same gap: a
+- **The change of #299, as first read** (commit `293f22f`; merged with the rounds after
+  it, released in 0.16.0). Three adapter reviews found the same gap: a
   decorator that applies a second wrapper inside itself calls it from its closure, and
   the walk never read that wrapper. A `functools.singledispatch` function runs an
   implementation chosen by the type of an argument, and the walk read only the base one.
@@ -369,10 +372,49 @@ decorated tool. `recusal-crewai` still carries its own copy.
 - A wrapper that takes the object of a method under the same name as the first
   parameter of the function it wraps, and does not hand it on, is read as handing it
   on: the two cannot be told apart from signatures. Stated in the changelog; not fixed.
-- The changelog entries in #299 list what the walk does not find by design, under "Not
-  found, by design". Those are stated limits, not fixed.
+- The changelog entries for 0.16.0 list what the walk does not find by design, under
+  "Not found, by design". Those are stated limits, not fixed.
 - Not reviewed: stacks more than three decorators deep. Rounds seven and eight ran
   generated shapes to three deep, with async and generator wrappers.
+- **After 0.16.0: what two adapter reviews found open in its walk** (branch
+  `kernel-cache-target-held-order`, a draft pull request; not merged, not released).
+  The review of `recusal-openai-agents` 0.2.2 and a review of `recusal-pydantic-ai`
+  beside 0.16.0 found the same gaps by different routes, each reproduced on 0.16.0
+  before it was changed:
+  - A `weakref.proxy` on the way was read through as the object it stands for, so what
+    the walk tells by type was not told: a cache named again behind it was read by its
+    name, a dispatcher with an implementation registered as its base, and the
+    `__call__` of a class-based decorator not at all. A proxy written in Python that
+    forwards `__wrapped__` to its target had the same effect. Both are refused
+    (`WeakProxy`, `ProxiedCallable`).
+  - A single-dispatch function with nothing registered was read as its base, and a
+    wrapper that registers an implementation on its first use ran it for the call that
+    was judged. Refused (`OpenDispatch`), although one nothing is ever registered on
+    runs correctly.
+  - A held wrapper that takes the tool's parameters in another order was read as
+    passing them on. Refused.
+  - A held wrapper with a parameter of its own was not found where its way to the
+    function passed a class-based decorator, a callable object, a `functools.partial`
+    that carries a `__wrapped__`, a weak proxy, a cache named again for another
+    function, or a second held wrapper. Each is followed.
+  - Two reasons were not true: a `DeclaredSignature` said nothing, and gates wrote "a
+    `__signature__`" for a `__text_signature__`; and the reason for a bound argument
+    said a parameter "runs at a default" where it has none. Both say what holds.
+  - Two public functions are added so that an adapter needs no walk of its own beside
+    the kernel's: `reached_callables` and `cache_target`. No adapter uses them yet, so
+    `recusal-pydantic-ai` still refuses the stack the changelog names, which the kernel
+    reads.
+  - Pinned by the tests named `test_o_` and `test_p_` in
+    [`tests/test_invocation.py`](../tests/test_invocation.py). The changelog entry
+    under Unreleased lists what is refused although it runs correctly and what is
+    still not found.
+  - Not reviewed in a round of its own yet. The generated stacks of the
+    `recusal-openai-agents` review were run again through that adapter beside this
+    change; the scripts are not in the repository, so no count is stated here.
+  - Still open: a wrapper held where no instance dictionary shows it (a slot, a wrapper
+    a C extension builds), in a container, in a class attribute or as an argument a
+    `functools.partial` binds; a second wrapper that names nothing as `__wrapped__`;
+    and the `__call__` of a held callable object that names nothing.
 
 **Where you can help.**
 
@@ -382,8 +424,9 @@ decorated tool. `recusal-crewai` still carries its own copy.
 - Hand `recusal.invocation.unsupported_signature` a tool wrapped the way your code wraps
   tools, with the decorators of the libraries you use, and report an answer that is
   wrong.
-- Read #299 and its "Not found, by design" list, and say which of those shapes exist in
-  real code you know.
+- Read the "Not found, by design" lists in the changelog entries for 0.16.0, and "Still
+  not found, by design" in the kernel entry under Unreleased, and say which of those
+  shapes exist in real code you know.
 
 ## `recusal-crewai`
 
@@ -802,9 +845,12 @@ a seventh found the open items.
   [`tests/test_openai_agents_gate.py`](../tests/test_openai_agents_gate.py)). An
   `UnreadCache` is raised there by shortening what the cache lists, as the kernel's own
   test does: no supported interpreter gives one.
-- Found by the review of 0.2.2 before its release, in 0.2.1 too, and open. Each is on
-  the package page under what the gate does not see, and each is held by a test in
-  `TestStatedLimits` in the same file, which gates the tool and runs it:
+- Found by the review of 0.2.2 before its release, in 0.2.1 too, and open beside
+  `recusal` 0.16.0, the newest kernel release. Each is on the package page under what
+  the gate does not see, and each is held by a test in `TestStatedLimits` in the same
+  file, which gates the tool and runs it. The kernel's walk as it stands after 0.16.0,
+  not released (the last entry under the kernel's rounds above), refuses all four
+  shapes below, and those tests hold both outcomes, by the kernel they run beside:
   - Behind a `functools.lru_cache` named again for another function, the gate's own
     questions are not asked: its walk follows what the cache names. The kernel's walk
     reads what the cache calls, and refuses a single-dispatch function there only once
@@ -854,7 +900,9 @@ a seventh found the open items.
   its own at its default. Built directly over the method, that second cache is refused,
   only because `functools.lru_cache` copies the partialmethod's mark onto it. Without a
   proxy of a cache between, the kernel's walk reaches the partialmethod and refuses it.
-  Tests in `TestStatedLimits` hold both the refused and the gated shapes.
+  Tests in `TestStatedLimits` hold both the refused and the gated shapes. The kernel's
+  walk as it stands after 0.16.0, not released, refuses the proxy, and the gated shapes
+  with it.
 
 **Where you can help.**
 
