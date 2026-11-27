@@ -5893,7 +5893,9 @@ class TestSixthReview:
             given = {"payload": text}
             assert self.judged(given, {"properties": {"payload": {}}}) == (given, given, None)
 
-    def test_negative_control_the_sdks_server_decodes_what_this_interpreter_would_not(self):
+    def test_negative_control_the_sdks_server_decodes_what_this_interpreter_would_not(
+        self, example
+    ):
         """The server's side, under the other limit: with no digit limit the MCP Python
         SDK decodes the text into a list, which is what ran."""
         from mcp.server.mcpserver.tools import Tool
@@ -6246,7 +6248,7 @@ class TestSixthReview:
             ]
         )
 
-    def test_the_other_conversions_the_page_names_are_pydantics_own(self):
+    def test_the_other_conversions_the_page_names_are_pydantics_own(self, example):
         """The cases the page names beside the ones the stdio server runs."""
         import datetime
         from decimal import Decimal
@@ -6449,7 +6451,7 @@ class TestSeventhReview:
 
     # --- B1: no message is written from a value ------------------------------------------------
 
-    def test_the_premise_jsonschema_writes_the_value_into_the_message(self):
+    def test_the_premise_jsonschema_writes_the_value_into_the_message(self, example):
         from jsonschema import validators
 
         with self.messages() as made:
@@ -6457,7 +6459,7 @@ class TestSeventhReview:
             list(validators.Draft202012Validator(False).iter_errors(self.MARK))
         assert len(made) == 2 and all(self.MARK in message for message in made)
 
-    def test_every_keyword_is_the_gates_own_function_but_ref(self):
+    def test_every_keyword_is_the_gates_own_function_but_ref(self, example):
         """A function of ``jsonschema`` among them would write its message again. A
         ``jsonschema`` that adds a keyword fails here: the keyword has no function of
         the gate's, which refuses a schema that uses it rather than run one of theirs."""
@@ -6486,7 +6488,7 @@ class TestSeventhReview:
             _legacy_keywords.find_evaluated_property_keys_by_schema,
         )
 
-    def test_no_error_made_while_a_call_is_checked_holds_the_value(self):
+    def test_no_error_made_while_a_call_is_checked_holds_the_value(self, example):
         """Every keyword of every draft, failing on a value that holds a marker, alone,
         beside null and inside a list: every error made, kept or dropped, has the
         gate's one message."""
@@ -6526,7 +6528,7 @@ class TestSeventhReview:
                 assert listed.complete({"p": self.MARK})[1] == {"p": self.MARK}
             assert made == []
 
-    def test_a_refusal_reads_as_it_did(self):
+    def test_a_refusal_reads_as_it_did(self, example):
         """What the gate reads of an error is unchanged: the keyword, its value, the
         JSON type of the value and the place. (The ``false`` schema, which has no
         keyword, is named for what it is since the eighth review.)"""
@@ -6608,7 +6610,7 @@ class TestSeventhReview:
             node = {"kid": node}
         return {"p": node}
 
-    def test_the_reviewers_chain_costs_the_same_whatever_its_last_node_holds(self):
+    def test_the_reviewers_chain_costs_the_same_whatever_its_last_node_holds(self, example):
         """The reviewer's case: every level of the chain asked its alternative for an
         error, and each error wrote out everything below it. Counted here without a
         clock: the errors made and the characters of their messages are the same for
@@ -6641,7 +6643,7 @@ class TestSeventhReview:
         steps, errors, characters = found[0]
         assert steps == 497 and characters == errors * len(module._UNMET) and errors < 500
 
-    def test_a_keyword_jsonschema_adds_refuses_the_schema_that_uses_it(self, monkeypatch):
+    def test_a_keyword_jsonschema_adds_refuses_the_schema_that_uses_it(self, example, monkeypatch):
         """What a later ``jsonschema`` with one more keyword meets: no function of the
         gate's for it, so a schema that uses it is refused when a call reaches it, and
         every other schema is checked as before."""
@@ -6662,6 +6664,7 @@ class TestSeventhReview:
 
     def test_the_premise_jsonschema_picks_its_own_validator_for_a_schema_that_declares_a_draft(
         self,
+        example,
     ):
         from jsonschema import validators
 
@@ -6671,7 +6674,7 @@ class TestSeventhReview:
 
     @pytest.mark.parametrize("declared", [DRAFT_07, DRAFT_2019, DRAFT_2020])
     def test_a_ref_back_to_a_root_that_declares_a_draft_is_checked_by_the_gates_keywords(
-        self, declared, monkeypatch
+        self, example, declared, monkeypatch
     ):
         """A float for an integer, a boolean for an ``enum`` of numbers and a pattern,
         one level under a ``$ref`` to the schema of the arguments: each was checked by
@@ -6714,7 +6717,7 @@ class TestSeventhReview:
         assert self.judged(ok, schema) == (ok, ok, None)
         assert searched == []
 
-    def test_a_subschema_that_declares_a_draft_is_refused(self):
+    def test_a_subschema_that_declares_a_draft_is_refused(self, example):
         told = (
             f"Recusal refused `purge`: {_SCHEMA} embeds a schema that declares a draft of its "
             "own (`$schema`), which the gate does not read"
@@ -6730,7 +6733,9 @@ class TestSeventhReview:
         given = {"$schema": "x"}
         assert self.judged(given, named) == (given, given, None)
 
-    def test_a_schema_the_scan_does_not_read_that_declares_a_draft_is_refused_at_the_call(self):
+    def test_a_schema_the_scan_does_not_read_that_declares_a_draft_is_refused_at_the_call(
+        self, example
+    ):
         """A ``$ref`` may name a place under a keyword the gate does not read, which the
         scan does not look into. Whatever leaves the gate's validator is refused."""
         schema = {
@@ -6769,7 +6774,7 @@ class TestSeventhReview:
     ]
 
     @pytest.mark.parametrize("value", SIZED, ids=[str(n) for n in range(len(SIZED))])
-    def test_the_size_is_the_length_of_the_most_compact_json_text(self, value):
+    def test_the_size_is_the_length_of_the_most_compact_json_text(self, example, value):
         module = self.schema_module()
         size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
         assert not module.too_large(value, size)
@@ -6777,7 +6782,7 @@ class TestSeventhReview:
         assert module.too_large(value, size - 1)
         assert module.too_large(value, 1)
 
-    def test_the_size_is_read_no_further_than_the_ceiling(self, monkeypatch):
+    def test_the_size_is_read_no_further_than_the_ceiling(self, example, monkeypatch):
         """Without a clock: a string longer than what is left is not read, and data
         that holds itself is given up at the ceiling or at the depth the gate reads."""
         module = self.schema_module()
@@ -6943,7 +6948,7 @@ class TestSeventhReview:
 
     # --- a copy handed over is not copied again -------------------------------------------------
 
-    def test_arguments_handed_over_are_written_to_and_others_are_not(self):
+    def test_arguments_handed_over_are_written_to_and_others_are_not(self, example):
         module = self.schema_module()
         schema = {"properties": {"o": {"properties": {"flag": {"default": True}}}}}
         given = {"o": {}}
@@ -7028,7 +7033,7 @@ class TestSeventhReview:
             "for every value in its arguments, which the gate refuses under any ceiling."
         ) in _OVER_THE_CEILING
 
-    def test_a_number_runs_as_what_the_page_now_names(self):
+    def test_a_number_runs_as_what_the_page_now_names(self, example):
         """The cases the page's two headings did not name: a float that is `1.0` or
         `0.0` runs as a boolean, a number as an address or a complex number, and beside
         a `Decimal` only a whole number of days runs as a date."""
@@ -7140,7 +7145,7 @@ class TestEighthReview:
     # --- an integer is never written out, and a long one is refused ------------------------------
 
     @pytest.mark.parametrize("limit", [640, 4300, 0])
-    def test_the_digits_of_an_integer_are_counted_from_its_bits_exactly(self, limit):
+    def test_the_digits_of_an_integer_are_counted_from_its_bits_exactly(self, example, limit):
         """Under a limit of 640 digits Python refuses to write a longer integer as text
         at all, so a count that wrote one would fail or fall back on a guess. The count
         is exact for the least and the greatest integer of every length, where a guess
@@ -7160,7 +7165,7 @@ class TestEighthReview:
             assert module.measure(0, 1) == module.FITS and module.measure(-0, 1) == module.FITS
             assert module.measure({"a": [7, -7, 10, -10]}, len('{"a":[7,-7,10,-10]}')) == ""
 
-    def test_the_bounds_the_count_rests_on(self):
+    def test_the_bounds_the_count_rests_on(self, example):
         """An integer of ``b`` bits has at least ``(b - 1) * 30102 // 100000 + 1`` digits
         and at most ``b * 30103 // 100000 + 1``, and they differ by one at the most for
         every integer the gate reads. Checked against the digits themselves. (An
@@ -7277,7 +7282,9 @@ class TestEighthReview:
                 '{"n":1' + "0" * 639 + ',"x":inf}'
             )
 
-    def test_json_text_is_read_without_making_an_integer_from_its_digits(self, monkeypatch):
+    def test_json_text_is_read_without_making_an_integer_from_its_digits(
+        self, example, monkeypatch
+    ):
         """Where the interpreter has no limit, decoding a long run of digits is quadratic
         too. The decoder is handed a function that makes no integer and gives up on more
         than 4,300 digits, as the decoder itself does under the default limit."""
@@ -7338,7 +7345,7 @@ class TestEighthReview:
         "argument keys must be strings",
     )
 
-    def test_the_copy_is_the_kernels_and_the_package_requires_the_kernel_that_has_it(self):
+    def test_the_copy_is_the_kernels_and_the_package_requires_the_kernel_that_has_it(self, example):
         """The gate copies the arguments with the kernel's ``detached`` and has no copy of
         its own: what is JSON data is said in one place. The kernel's does not call
         itself from 0.16.0, which is therefore the oldest kernel the package installs
@@ -7419,7 +7426,7 @@ class TestEighthReview:
         assert copy is not given and copy["a"] is not twice and copy["a"] is not copy["b"]
         assert copy["c"] is not given["c"] and copy["c"]["d"][0] is not copy["a"]
 
-    def test_no_reading_of_the_arguments_that_is_the_gates_own_recurses(self):
+    def test_no_reading_of_the_arguments_that_is_the_gates_own_recurses(self, example):
         """Without a clock: data nested 5,000 deep, five times the interpreter's recursion
         limit, is measured, copied, counted, compared and written with no
         ``RecursionError``. (The validation recurses with the schema, and is refused at
@@ -7463,7 +7470,7 @@ class TestEighthReview:
                 assert text == '{"k":' * 64 + "{...:...,...:...}" + ',"n":1}' * 64
 
     @pytest.mark.parametrize("value", DATA, ids=[str(n) for n in range(len(DATA))])
-    def test_what_the_readings_find_is_what_a_recursion_finds(self, value):
+    def test_what_the_readings_find_is_what_a_recursion_finds(self, example, value):
         module = self.schema_module()
 
         def count(each):
@@ -7501,7 +7508,7 @@ class TestEighthReview:
         for other in self.DATA:
             assert module._same(value, other) is (value is other), (value, other)
 
-    def test_two_objects_are_the_same_only_under_the_same_names(self):
+    def test_two_objects_are_the_same_only_under_the_same_names(self, example):
         module = self.schema_module()
         assert module._same({"a": 1, "b": [2]}, {"b": [2], "a": 1})
         assert not module._same({"a": 1}, {"b": 1})
@@ -7592,7 +7599,7 @@ class TestEighthReview:
     # --- the size is read no further than the ceiling, and cheaply -------------------------------
 
     def test_a_string_is_counted_a_part_at_a_time_and_no_further_than_the_ceiling(
-        self, monkeypatch
+        self, example, monkeypatch
     ):
         """Without a clock. A string of escapes a little over the ceiling was read to its
         end, a Python step for each escape (999,000 of them: 70 ms). It is written out
@@ -7632,7 +7639,7 @@ class TestEighthReview:
             size = len(json.dumps(text, ensure_ascii=False))
             assert not module.too_large(text, size) and module.too_large(text, size - 1)
 
-    def test_what_a_list_below_the_depth_holds_counts_one_character_each(self):
+    def test_what_a_list_below_the_depth_holds_counts_one_character_each(self, example):
         """What a list or an object more than 64 levels down holds is not read. Each
         member is one character at the least, so one that holds more of them than
         characters are left is over the ceiling all the same."""
