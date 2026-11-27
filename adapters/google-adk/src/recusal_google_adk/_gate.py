@@ -57,6 +57,7 @@ from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import detached as _detached
 from recusal.invocation import json_data as _json_data
@@ -68,6 +69,31 @@ if TYPE_CHECKING:
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the walk that the installed kernel does not have.
+    ``recusal`` 0.15.0, the oldest this package allows, has neither ``HiddenWrapper`` nor
+    ``DispatchedAtCallTime``. Nothing raises this class, so a handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.1).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 #: Given the call's ``ToolContext``, the recording arguments ``decide`` takes for it
 #: (``audit=``, ``surface=``, ``tool_use_id=``, ...). ``recusal_google_adk.recording``
 #: builds one.
@@ -131,7 +157,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     skip = tuple(getattr(tool, "_ignore_params", ()) or ())
     why = _unsupported_signature(func, skip)
     if why is not None:
-        return None, f"its signature cannot be judged ({why})"
+        return None, f"its signature cannot be judged ({_with_remedy(func, why, skip)})"
     parameters = inspect.signature(func).parameters
     raw: dict[str, Any] = {}
     # A parameter whose default is ``None`` (``region: str = None``) and that the call
@@ -177,7 +203,7 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     # Judge only arguments that are plain JSON data and that this validation gives back
     # exactly, type for type: whatever the validation does to them has then been applied,
     # and applying it again changes nothing
-    explicit = _none_defaults_to_write(func, none_defaults)
+    explicit = _none_defaults_to_write(func, none_defaults, skip)
     written = {**converted, **{name: None for name in explicit}}
     again, errors = tool._preprocess_args_with_validation(copy.deepcopy(written))
     if errors:
@@ -201,15 +227,68 @@ def _prepared(tool: Any, args: dict[str, Any]) -> tuple[Optional[dict[str, Any]]
     return judged, None
 
 
-def _none_defaults_to_write(func: Any, names: list[str]) -> list[str]:
+def _takes_skip(walk: Any) -> bool:
+    """True if the kernel's ``reached_parameters`` takes the names a framework injects.
+
+    ``recusal`` 0.15.0, the oldest this package allows, takes the callable alone; a later
+    kernel also takes ``skip``. Handing ``skip`` to the former raises ``TypeError`` on
+    every tool, which :func:`_none_defaults_to_write` would answer by writing every
+    ``None`` default."""
+    try:
+        return "skip" in inspect.signature(walk).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+#: Decided once, at import, from the kernel that is installed.
+_WALK_TAKES_SKIP = _takes_skip(_reached_parameters)
+
+
+def _with_remedy(func: Any, why: str, skip: tuple = ()) -> str:
+    """``why``, the kernel's reason a tool's signature cannot be judged, with what to do
+    about it where the reason is one of the two the kernel's walk raises by name: a
+    decorator that holds a second wrapper with a parameter of its own (``HiddenWrapper``)
+    and a single-dispatch function that can run more than its base implementation
+    (``DispatchedAtCallTime``). A kernel later than 0.15.1 raises them; beside 0.15.0 or 0.15.1
+    neither shape is found, no handler here runs and ``why`` is returned as it is. The
+    walk is made a second time only for a call that is refused already, and the remedy is
+    added only when what it raises is, word for word, the reason the kernel gave."""
+    try:
+        _reached_parameters(func, skip) if _WALK_TAKES_SKIP else _reached_parameters(func)
+    except _UnreadCache:
+        return why  # the kernel's reason for it says what it is and what to do
+    except _HiddenWrapper as refused:
+        if str(refused) == why:
+            return (
+                f"{why}: a decorator on the tool holds a second wrapper of the function, in "
+                "its closure or on the decorator object, which is not reached through "
+                "`__wrapped__`; call the decorated function from a plain function and "
+                "register that one"
+            )
+    except _DispatchedAtCallTime as refused:
+        if str(refused) == why:
+            return (
+                f"{why}: it is a single-dispatch function (`functools.singledispatch` or "
+                "`singledispatchmethod`) with an implementation registered beside its base "
+                "one or in its place; call it from a plain function and register that one"
+            )
+    except Exception:  # noqa: BLE001, refused already, for the reason the kernel gave
+        pass
+    return why
+
+
+def _none_defaults_to_write(func: Any, names: list[str], skip: tuple = ()) -> list[str]:
     """Of the parameters left at a ``None`` default, the ones that must be written as
     ``None``: those some callable the call reaches names with another default (or none),
     which would otherwise fill its own. The others are left for Python, which fills
     ``None`` on every level."""
     if not names:
         return []
+    # called as the installed kernel takes it; typed loosely so that the call checks
+    # beside a kernel of either signature
+    walk: Callable[..., Any] = _reached_parameters
     try:
-        levels = _reached_parameters(func)
+        levels = walk(func, skip) if _WALK_TAKES_SKIP else walk(func)
     except Exception:  # noqa: BLE001, read before by unsupported_signature; write them all
         return list(names)
     write = []

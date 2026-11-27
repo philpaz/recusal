@@ -10,6 +10,8 @@ PyPI. The links in it are followed by ``tests/test_markdown_links.py``.
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
@@ -61,27 +63,49 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
     note = _callout()
     flat = " ".join(line.lstrip("> ") for line in note.splitlines())
     for claim, evidence in (
-        ("walks every callable a tool call reaches", ROOT / "recusal" / "invocation.py"),
-        ("two adapter packages", ROOT / "adapters" / "google-adk" / "README.md"),
+        ("refuses what its walk cannot follow to the end", ROOT / "recusal" / "invocation.py"),
+        ("This release is stricter", ROOT / "CHANGELOG.md"),
     ):
         assert claim in flat, claim
         assert evidence.is_file(), evidence
-    # the kernel helper the note describes is public in the tree
+    # the refusals the note names have a public class each in the tree
+    import functools
+
     from recusal import invocation
 
-    assert callable(invocation.reached_parameters)
-    # the versions the note tells a reader to upgrade to are the ones in the tree, and the
-    # Google ADK package requires this kernel, as the note says
-    for directory, version in (("crewai", "0.2.1"), ("google-adk", "0.2.0")):
-        package = "recusal_" + directory.replace("-", "_")
-        init = (ROOT / "adapters" / directory / "src" / package / "__init__.py").read_text("utf-8")
-        current = re.search(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', init, re.M).groups()
-        assert tuple(map(int, current)) >= tuple(map(int, version.split("."))), directory
-        assert f"`recusal-{directory}` to {version}" in flat or (
-            f"`recusal-{directory}`" in flat and f"to {version}" in flat
-        ), directory
-    adk = (ROOT / "adapters" / "google-adk" / "pyproject.toml").read_text(encoding="utf-8")
-    assert f'"recusal>={_version()},<1"' in adk and "requires this kernel" in flat
+    for name, base in (
+        ("HiddenWrapper", ValueError),
+        ("UnreadCache", invocation.HiddenWrapper),
+        ("DispatchedAtCallTime", ValueError),
+        ("PartialMethodSignature", TypeError),
+        ("BoundArgumentKept", ValueError),
+    ):
+        assert issubclass(getattr(invocation, name), base), name
+
+    # the first one the note names is refused: a decorator that holds a second wrapper,
+    # whose own `force=True` no policy would have judged
+    def holding(function):
+        @functools.wraps(function)
+        def held(*args, force: bool = True, **kwargs):
+            return function(*args, **kwargs)
+
+        @functools.wraps(function)
+        def shown(*args, **kwargs):
+            return held(*args, **kwargs)
+
+        return shown
+
+    @holding
+    def pay(amount: int) -> int:
+        return amount
+
+    with pytest.raises(invocation.HiddenWrapper):
+        invocation.reached_parameters(pay)
+    # what the note says the changelog lists is there, in the section it links
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    section = changelog.split(f"## [{_version()}]", 1)[1].split("\n## [", 1)[0]
+    assert "Refused although it runs correctly" in " ".join(section.split())
+    assert "Still not found, by design" in section
     # what the note says of the kernel diff is what the kernel diff is
     assert "in `recusal.invocation` and the version string" in flat
 
@@ -134,7 +158,9 @@ def test_a_readme_that_pypi_renders_has_no_relative_link_or_image():
     """PyPI shows a package's README as its project page and resolves nothing against the
     repository, so a relative path there is a dead link or a missing picture. The kernel's
     README and each adapter's are those pages: every link and image in them is absolute."""
-    pages = [ROOT / "README.md", *sorted((ROOT / "adapters").glob("*/README.md"))]
+    # adapters/drafts/README.md is a page of the repository, not of a package on PyPI
+    packages = [p for p in (ROOT / "adapters").glob("*/README.md") if p.parent.name != "drafts"]
+    pages = [ROOT / "README.md", *sorted(packages)]
     assert len(pages) == 9
     for page in pages:
         text = page.read_text(encoding="utf-8")
@@ -245,7 +271,7 @@ def test_every_adapter_page_carries_the_website_and_scorecard_badges():
         "(https://scorecard.dev/viewer/?uri=github.com/philpaz/recusal)"
     )
     assert README.count(website) == 1 and README.count(scorecard) == 1
-    pages = sorted((ROOT / "adapters").glob("*/README.md"))
+    pages = sorted(p for p in (ROOT / "adapters").glob("*/README.md") if p.parent.name != "drafts")
     assert len(pages) == 8
     for page in pages:
         text = page.read_text(encoding="utf-8")
@@ -294,3 +320,28 @@ def test_every_adapter_states_the_status_the_project_table_gives_it():
         assert "**Help make it better.**" in own
         assert "https://github.com/philpaz/recusal/security/advisories/new" in own
         assert "https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md" in own
+
+
+LIMITS = "https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing"
+
+
+def test_every_page_says_what_recusal_does_not_enforce():
+    """Recusal judges only the tool calls that reach a gate. The kernel README says so near
+    its top, and every adapter page says so just before its Status, each linking the limits
+    in full; the section it links exists."""
+    assert "\n## Things worth knowing\n" in (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    head = README.split("\n## ", 1)[0]
+    assert "**What it does not enforce:**" in head
+    paragraph = head.split("**What it does not enforce:**", 1)[1].split("\n\n", 1)[0]
+    flat = " ".join(paragraph.split())
+    assert "judges the tool calls that reach a gate you have installed" in flat
+    assert "reach a resource another way" in flat and LIMITS in flat
+    directories = sorted(p.parent.name for p in (ROOT / "adapters").glob("*/pyproject.toml"))
+    assert len(directories) == 8
+    for directory in directories:
+        page = (ROOT / "adapters" / directory / "README.md").read_text(encoding="utf-8")
+        before = page.split("\n## Status\n", 1)[0].rstrip()
+        last = before.rsplit("\n\n", 1)[1]
+        flat = " ".join(last.split())
+        assert flat.startswith("**Beyond the gate.**"), directory
+        assert "reach a resource another way" in flat and LIMITS in flat, directory

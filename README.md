@@ -28,6 +28,15 @@ Pydantic AI. The kernel has zero runtime dependencies and runs on Python 3.9+.
 product. The adapters are at different stages of security review, and help is welcome:
 [project status](#project-status).
 
+**What it does not enforce:** Recusal judges the tool calls that reach a gate you have
+installed. It does not stop an agent that can reach a resource another way: a credential
+with wider rights, a shell or network path outside the governed session, a file it can
+write that configures the gate, or the Python environment the hook runs in. Use it as
+one layer of several: least-privilege credentials for the agent, a sandbox or container,
+limits on its network egress, Claude Code managed settings for the hook configuration,
+and an audit anchor the writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
+
 [![Website](https://img.shields.io/badge/website-recusal.io-2453c4)](https://recusal.io)
 [![PyPI](https://img.shields.io/pypi/v/recusal)](https://pypi.org/project/recusal/)
 [![CI](https://github.com/philpaz/recusal/actions/workflows/ci.yml/badge.svg)](https://github.com/philpaz/recusal/actions/workflows/ci.yml)
@@ -44,21 +53,23 @@ product. The adapters are at different stages of security review, and help is we
 [How it works](#how-it-works) · [CI](#gate-your-ci) ·
 [Built to be checked](#built-to-be-checked) · [Documentation](#documentation)
 
-> **New with 0.15.0**
+> **New with 0.16.0**
 >
-> - **The kernel finds a parameter a wrapper adds.** `recusal.invocation` now walks every
->   callable a tool call reaches, so a decorator's own `force=True` is refused instead of
->   running unjudged, and look-alike types are refused:
->   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0150---2026-11-21).
-> - **Security releases of two adapter packages.** If you gate a CrewAI crew, upgrade
->   `recusal-crewai` to 0.2.1; if you gate a Google ADK agent, upgrade `recusal-google-adk`
->   to 0.2.0, which requires this kernel:
->   [what changed and why](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#security).
+> - **The kernel refuses what its walk cannot follow to the end.** `recusal.invocation`
+>   reads the function a tool call runs. It now refuses a decorator that holds a second
+>   wrapper, a function chosen at call time by the type of an argument, a
+>   `functools.partialmethod` that shows another signature, a signature a callable
+>   declares for itself, and a bound argument a wrapper keeps or hands on by keyword. In
+>   each, a value no policy judged could run:
+>   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0160---2026-11-26).
+> - **This release is stricter.** Some tools 0.15.1 read are refused now, a few of them
+>   although they run correctly, and one limit is stated and not closed:
+>   [what is refused, and what is still not found](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#security).
 >
-> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.15.0
-> differs from 0.14.2 in `recusal.invocation` and the version string; the adapters are
+> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.16.0
+> differs from 0.15.1 in `recusal.invocation` and the version string; the adapters are
 > not part of its wheel. The full list is in the
-> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0150---2026-11-21).
+> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0160---2026-11-26).
 
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
@@ -208,7 +219,7 @@ The adapters are at different stages of security review. Of the 8 adapters,
 | [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | In-depth review complete | Its fixes are released in 0.2.0. |
 | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | In-depth review complete | Its fixes are released in 0.3.0. |
 | [`recusal-openai`](https://github.com/philpaz/recusal/tree/main/adapters/openai) | In-depth review complete | Its fixes are released in 0.2.2. |
-| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
+| [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | In-depth review under way | Its fixes so far are released in 0.2.1, and the review continues. |
 | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
 | [`recusal-pydantic-ai`](https://github.com/philpaz/recusal/tree/main/adapters/pydantic-ai) | In-depth review under way | Its fixes so far are released in 0.2.0, and the review continues. |
 
@@ -572,6 +583,10 @@ entry to any object with a `write(entry)` method (a WORM bucket, another host, a
 `recusal.AuditSink` is the protocol), and a sink failure surfaces as a failed append, so
 the hook fails closed to a deny rather than adjudicating off the record. Each entry
 carries its `seq` and `hash`, so a sink holds the head anchor `(seq + 1, hash)` directly.
+Each sink is handed a copy of its own, the entry as the file stores it, and `append`
+returns another to its caller: a sink that changes or keeps its copy, or a caller that
+changes the returned entry, changes nothing any other sink receives and nothing the log
+holds.
 Opening a log can then refuse instead of trusting: `AuditLog(path, verify_on_open=True)`
 raises `AuditIntegrityError` rather than extend a file that fails strict verification,
 and `AuditLog(path, expected_head=(count, hash))` also refuses truncation, a tail-suffix
@@ -736,7 +751,7 @@ the policy runs and what its hook cannot see is in
 <!-- framework-gates:start -->
 | Framework | Package | Tested with | Offline examples | More |
 |---|---|---|---|---|
-| LangGraph | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | `langgraph==1.2.20` `langchain-core==1.7.7` | [`langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py), [`langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph) |
+| LangGraph | [`recusal-langgraph`](https://github.com/philpaz/recusal/tree/main/adapters/langgraph) | `langgraph==1.2.20` `langchain-core==1.7.7` `langgraph-prebuilt==1.1.1` | [`langgraph_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_gate.py), [`langgraph_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langgraph_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langgraph) |
 | LangChain `create_agent` | [`recusal-langchain`](https://github.com/philpaz/recusal/tree/main/adapters/langchain) | `langgraph==1.2.20` `langchain-core==1.7.7` `langchain==1.4.10` | [`langchain_agent_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_gate.py), [`langchain_agent_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/langchain_agent_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#langchain-create_agent) |
 | OpenAI Agents SDK, function tools | [`recusal-openai-agents`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents) | `openai-agents==0.24.0` `openai==3.49.0` | [`openai_agents_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_gate.py), [`openai_agents_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-function-tools) |
 | OpenAI Agents SDK, MCP tools | [`recusal-openai-agents-mcp`](https://github.com/philpaz/recusal/tree/main/adapters/openai-agents-mcp) | `openai-agents==0.24.0` `openai==3.49.0` | [`openai_agents_mcp_gate.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_gate.py), [`openai_agents_mcp_audit.py`](https://github.com/philpaz/recusal/blob/main/examples/openai_agents_mcp_audit.py) | [detail](https://github.com/philpaz/recusal/blob/main/docs/FRAMEWORKS.md#openai-agents-sdk-mcp-tools) |
@@ -805,6 +820,8 @@ recusal audit verify audit.jsonl --expect-head "42:<hash>"   # a missing log is 
 recusal doctor                         # "the gate silently isn't installed" fails CI, not prod
 ```
 
+Every command and flag of the command line is in [`docs/CLI.md`](https://github.com/philpaz/recusal/blob/main/docs/CLI.md).
+
 Or as a GitHub Action ([`action.yml`](https://github.com/philpaz/recusal/blob/main/action.yml), dogfooded by this repo's own CI,
 including the negative case: a tampered audit log must make the gate refuse):
 
@@ -812,12 +829,25 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.15.0   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.16.0   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
     doctor-dir: "."
 ```
+
+Every input is optional. `findings`, `audit-log` and `doctor-dir` each run a check, and
+the action exits with the highest code any of them returns.
+
+| Input | What it does | Default |
+|---|---|---|
+| `findings` | A findings JSON file to adjudicate (an array, or an object with a `findings` array). PASS exits 0, RETRY 1, FAIL 2. | none |
+| `lenient` | With `findings`: `"true"` accepts findings that omit `status` or `passed` instead of failing closed. | `"false"` |
+| `audit-log` | A hash-chained JSONL audit log to verify: 0 intact, 1 broken, 2 missing or unreadable. | none |
+| `expect-head` | With `audit-log`: the head you recorded elsewhere, as `COUNT:HASH`, so truncation, a rewritten tail and a forged append are caught. | none |
+| `doctor-dir` | A project directory whose scaffolded Claude Code gate is health-checked: 0 healthy, 1 degraded, 2 not installed. | none |
+| `version` | Installs this recusal release from PyPI instead of the source bundled with the action ref. | none |
+| `use-installed` | `"true"` keeps a recusal that is already importable instead of the action ref's bundled source. | `"false"` |
 
 The action ref selects the implementation: the action force-installs the recusal bundled
 with the selected ref, replacing whatever happens to be on the runner, so pinning the
@@ -881,6 +911,7 @@ Everything is indexed in [`docs/`](https://github.com/philpaz/recusal/blob/main/
 |  | [`docs/COOKBOOK.md`](https://github.com/philpaz/recusal/blob/main/docs/COOKBOOK.md) | Copy-paste policies for the actions people actually gate. |
 |  | [`docs/EXAMPLE.md`](https://github.com/philpaz/recusal/blob/main/docs/EXAMPLE.md) | One complete configuration for a real use case, end to end. |
 |  | [`docs/MCP.md`](https://github.com/philpaz/recusal/blob/main/docs/MCP.md) | MCP governance in full: pinning, verification, the call-time gate, every named residual. |
+|  | [`docs/CLI.md`](https://github.com/philpaz/recusal/blob/main/docs/CLI.md) | Every command and flag of the command line, kept complete by a test that reads the parser. |
 |  | [`docs/EXTENDING.md`](https://github.com/philpaz/recusal/blob/main/docs/EXTENDING.md) | Write your own checks, bundle policies, add a gate for another framework. |
 | **Understand the design** | [`CONSTITUTION.md`](https://github.com/philpaz/recusal/blob/main/CONSTITUTION.md) | The four rules, and why each one helps. |
 |  | [`docs/EVIDENCE.md`](https://github.com/philpaz/recusal/blob/main/docs/EVIDENCE.md) | The contract: `Finding`, `Verdict`, `Severity`, `Decision`, `compute_verdict`. |
@@ -976,7 +1007,10 @@ Thank you to the people who have made Recusal better:
   mypy checks for three adapters, `recusal-pydantic-ai`, `recusal-google-adk` and
   `recusal-crewai`, in [#270](https://github.com/philpaz/recusal/pull/270),
   [#301](https://github.com/philpaz/recusal/pull/301) and
-  [#303](https://github.com/philpaz/recusal/pull/303).
+  [#303](https://github.com/philpaz/recusal/pull/303); and the check that the
+  wheel of every adapter installs, runs and type-checks on its minimum Python as well as
+  on 3.12, in [#310](https://github.com/philpaz/recusal/pull/310) and
+  [#320](https://github.com/philpaz/recusal/pull/320).
 - [@noqt](https://github.com/noqt): the weekly lane that smoke-tests each installed adapter
   wheel against the newest framework release, in
   [#268](https://github.com/philpaz/recusal/pull/268).

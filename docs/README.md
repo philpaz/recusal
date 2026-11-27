@@ -37,6 +37,8 @@ certify a tool call *before* it runs. Start with whichever door fits you:
 - **[MCP](MCP.md)**: MCP governance in full: the call-time gate, discovery-integrity
   pinning (`recusal mcp pin` / `verify` / `manifest_policy`), the three tool-call
   boundaries, and every named residual and scope statement.
+- **[CLI](CLI.md)**: every command and flag of `python -m recusal`, as `--help` prints them,
+  kept complete by a test that reads the parser.
 - **[EXAMPLE](EXAMPLE.md)**: one complete, copy-paste configuration for a real use case
   (a database-admin agent left in auto mode), shown end to end: install, hook, settings,
   and what the agent experiences when it tries something it shouldn't.

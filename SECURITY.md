@@ -103,7 +103,9 @@ best-effort. The full policy is in [`STABILITY.md`](STABILITY.md#supported-versi
   object with a `write(entry)` method (`recusal.AuditSink`, structural), and a sink failure
   raises out of `append`, so the hook fails closed to a deny rather than adjudicating off the
   record; entries carry `seq` and `hash`, so a sink holds the external head `(seq + 1, hash)`
-  verbatim; `AuditLog(path, verify_on_open=True)` refuses (`AuditIntegrityError`) to extend a
+  verbatim, and each sink is handed a copy of its own, the entry as the file stores it, as
+  is the caller of `append`, so a sink or a caller that changes its copy changes nothing
+  another sink receives and nothing the log holds; `AuditLog(path, verify_on_open=True)` refuses (`AuditIntegrityError`) to extend a
   file that fails strict verification, and `expected_head=(count, hash)` refuses truncation, a
   tail-suffix rewrite, and forged appends against a head you hold elsewhere. `verify(...,
   expected_head=...)` applies the same check to entries you already have. Without an anchor a

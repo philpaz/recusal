@@ -70,12 +70,44 @@ from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from pydantic import BaseModel, ValidationError
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import DeclaredSignature as _DeclaredSignature
 from recusal.invocation import reached_parameters as _reached_parameters
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict], List[Any]]
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the walk that the installed kernel does not have.
+    ``recusal`` 0.15.0, the oldest this package allows, has neither ``HiddenWrapper`` nor
+    ``DispatchedAtCallTime``. Nothing raises this class, so a handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.1).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A callable on the way is read by ``inspect.signature`` as a ``functools.partialmethod``
+#: (the same kernels).
+_PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
+#: A bound argument is taken by a wrapper under another name than the parameter with a
+#: default it would fill on the function the wrapper names (the same kernels).
+_BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 
 
 class RecusalRefusal(ToolException):
@@ -411,6 +443,14 @@ def _reached(func) -> list:
     defines ``__get__`` (``cachetools.cached`` returns one), which ``inspect.signature``
     takes for a builtin. A stack of ``functools.wraps`` decorators deeper than the walk
     follows is the other failure that has a cause the gate can state (:func:`_stacked`).
+
+    Three refusals the kernel's walk makes by name (a kernel later than 0.15.1; beside
+    0.15.0 or 0.15.1 none of the shapes is found) are reported as what they are: a decorator that
+    holds a second wrapper with a parameter of its own (``HiddenWrapper``, whose text
+    names the parameter and never a value), a single-dispatch function that can run more
+    than its base implementation (``DispatchedAtCallTime``), and a callable that
+    ``inspect.signature`` reads as a ``functools.partialmethod``
+    (``PartialMethodSignature``).
     """
     try:
         return _reached_parameters(func)
@@ -418,6 +458,33 @@ def _reached(func) -> list:
         raise TypeError(
             "the tool's callable declares a signature that is not its own (`__signature__`), "
             "so the gate cannot tell which parameters it runs with"
+        ) from None
+    except _PartialMethodSignature:
+        raise TypeError(
+            "the tool's callable is a `functools.partialmethod` over a callable that does "
+            "not bind as a method (a callable object, a class-based decorator), or a "
+            "wrapper of one: the signature it shows is that of what the partialmethod "
+            "binds, not its own, so what runs under it cannot be read; give the tool a "
+            "plain function that calls it"
+        ) from None
+    except _BoundArgumentKept as refused:
+        raise TypeError(f"the tool's callable cannot be read: {refused}") from None
+    except _UnreadCache as refused:
+        raise TypeError(f"a cache on the tool's callable cannot be read: {refused}") from None
+    except _HiddenWrapper as refused:
+        raise TypeError(
+            "a decorator on the tool's function holds a second wrapper of that function (in "
+            "its closure or on the decorator object), which is not reached through "
+            f"`__wrapped__` and so is not read like one applied directly: {refused}; call "
+            "the decorated function from a plain function and give the tool that"
+        ) from None
+    except _DispatchedAtCallTime:
+        raise TypeError(
+            "the tool's function is a single-dispatch function (`functools.singledispatch` "
+            "or `singledispatchmethod`) with an implementation registered beside its base "
+            "one or in its place: the implementation that runs is chosen at call time, by "
+            "the type of an argument, so its parameters and defaults cannot be read; call "
+            "it from a plain function and give the tool that"
         ) from None
     except Exception as exc:  # noqa: BLE001, an uninspectable callable cannot be judged
         if _stacked(func) > _READ_DEPTH:

@@ -162,6 +162,45 @@ order of a turn's entries on the chain is not always the order the model propose
   the schema too. The gate holds a tool to CrewAI's and Pydantic's own machinery and
   refuses what it can tell is not stock; code written to show the gate one thing and do
   another is, like the tool's body, the tool's own code.
+- **Not seen beside `recusal` 0.15.1 or older, refused beside a later kernel:** a
+  decorator that applies another `functools.wraps` wrapper of the same function inside
+  itself, holds it in its closure, in a module global it names or on a class-based decorator's instance and calls
+  that one, where the inner wrapper takes a parameter of its own (that parameter runs
+  with a value the policy did not see); and a `functools.singledispatch` function with
+  an implementation registered beside its base one, behind a wrapper that passes its
+  first argument by position (the implementation that runs is chosen by the type of
+  the argument and has defaults of its own; the bare function, called by keyword,
+  fails in Python). The gate asks a
+  kernel later than 0.15.1 (0.15.1 is the newest release as this is written) for these two and refuses the call before the policy runs.
+  An inner wrapper held any other way (a plain function or a lambda that names nothing
+  as `__wrapped__`, a callable object, a container) is not found beside any kernel.
+  A `functools.partialmethod` over a callable object is refused beside every kernel,
+  with a reason that says so. For each, call the function from a plain function and
+  give the tool that.
+- **Refused beside every kernel:** a `functools.wraps` wrapper that passes `*args` or
+  `**kwargs` on and also names a parameter the function it wraps takes
+  (`def wrapper(*args, limit=1000, **kwargs)` around `def fetch(query, limit=10)`): the
+  wrapper keeps the judged value and the function runs with its own default. Drop the
+  name from the wrapper, or pass it on by name.
+- **Four more decorator shapes, not found beside `recusal` 0.15.1 or older.** This
+  package reads a tool with a walk of its own, which follows `__wrapped__` and nothing
+  else, so each of these lets a value run that the policy did not judge: a decorator
+  written as `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a
+  parameter of its own; `@functools.wraps(f)` above `@functools.lru_cache` above a
+  wrapper with a parameter of its own (on a function or on a method, and whatever the
+  cache calls: a wrapper, a `functools.partial`, a callable object, a second cache); a
+  class-based decorator written inside the
+  decorator, whose `__call__` calls a second wrapper the decorator built, or one at
+  module level whose `__call__` names that wrapper as a global; and a method that
+  delegates to a free function under `functools.wraps` of it and keeps its object,
+  where the free function's first parameter has a default, with or without decorators
+  on the free function that only pass their arguments on. Beside a kernel later than
+  0.15.1 the gate asks the kernel's walk as well, holds every level it returns to the
+  schema, and refuses all four with the cause. Until that kernel is this package's
+  floor, an install beside 0.15.1, 0.15.0 or 0.14.x has these four. Not found beside any
+  kernel: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. For each, call the
+  function from a plain function and give the tool that.
 - **Annotations:** `str`, `int`, `float`, `bool`, optionals, and lists and string-keyed
   dicts of those. `Literal`, `Enum`, `Any`, `Annotated` and models are refused; use
   `str` and check the value in your policy. CrewAI builds an MCP tool's `enum`
@@ -189,6 +228,15 @@ order of a turn's entries on the chain is not always the order the model propose
   running the tool.
 - **Not on the audit log:** a call a hook registered before the gate blocked, and whatever
   a hook registered after the gate changed.
+
+**Beyond the gate.** This gate judges the tool calls the framework routes through it;
+the paths around it inside the framework are listed above. Like every Recusal gate, it
+does not stop an agent that can reach a resource another way: a credential with wider
+rights, a shell or network path outside the agent, or a file it can write that
+configures the gate. Use it as one layer of several: least-privilege credentials for the
+agent, a sandbox or container, limits on its network egress, and an audit anchor the
+writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
 
 ## Status
 

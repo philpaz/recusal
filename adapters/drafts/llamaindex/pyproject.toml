@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "recusal-llamaindex"
+dynamic = ["version"]
+description = "Recusal gate for explicit LlamaIndex FunctionTool wrappers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
+dependencies = [
+    "recusal>=0.15.0,<1",
+    "llama-index-core>=0.14.25,<0.15.0",
+]
+
+[project.urls]
+Repository = "https://github.com/philpaz/recusal"
+Issues = "https://github.com/philpaz/recusal/issues"
+
+[tool.hatch.version]
+path = "src/recusal_llamaindex/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recusal_llamaindex"]

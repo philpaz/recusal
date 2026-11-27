@@ -5,6 +5,13 @@ name: Traffic record
 # branch, so the record accumulates. It writes through the contents API only: the job
 # holds no git credentials, and its commits land on the data branch, never on main.
 # The record begins at the first capture; nothing is estimated or back-filled.
+#
+# The token: the traffic endpoints answer only a token whose owner has push access, and
+# the job's own GITHUB_TOKEN is refused there ("Resource not accessible by integration").
+# The job therefore reads a repository secret, TRAFFIC_TOKEN: a fine-grained personal
+# access token limited to this repository, with Administration read-only (to read the
+# traffic) and Contents read and write (to write the data branch). Without it the job
+# stops at its first step and says what is missing.
 
 on:
   schedule:
@@ -18,8 +25,16 @@ jobs:
     name: Capture the 14-day traffic window
     runs-on: ubuntu-latest
     permissions:
-      contents: write # the traffic endpoints need push access; the writes go to the data branch
+      contents: read # only the checkout; reads and writes go through TRAFFIC_TOKEN
     steps:
+      - name: The traffic token is set
+        env:
+          TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+        run: |
+          if [ -z "$TRAFFIC_TOKEN" ]; then
+            echo "::error::Set the repository secret TRAFFIC_TOKEN: a fine-grained token for this repository with Administration read-only and Contents read and write. The job's own GITHUB_TOKEN cannot read traffic."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no job here pushes; the default keeps a live token in .git
@@ -28,6 +43,6 @@ jobs:
           python-version: "3.12"
       - name: Merge the window into the traffic branch
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
           REPO: ${{ github.repository }}
         run: python tools/traffic_record.py --repo "$REPO" --branch traffic

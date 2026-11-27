@@ -98,4 +98,4 @@ __all__ = [
     "DEFAULT_TAXONOMY",
 ]
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"

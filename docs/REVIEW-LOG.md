@@ -34,9 +34,14 @@ How to check this page:
 
 ## The kernel: `recusal`
 
-**Where it stands.** `recusal` 0.15.0 is released (tag `v0.15.0`, 2026-11-21). Two more
-changes are in review in [#299](https://github.com/philpaz/recusal/pull/299). They are
-not merged and not released.
+**Where it stands.** `recusal` 0.15.1 is released (tag `v0.15.1`, 2026-11-23). It has
+none of the change below: it fixed the audit log, and its `recusal.invocation` is that
+of 0.15.0. The change is in review in
+[#299](https://github.com/philpaz/recusal/pull/299) as one commit, `322ee13`, which is
+the kernel change rebuilt on main after 0.15.1. It is not merged and not released. The
+commits named under the rounds below are the change as each round read it; they are
+kept on the branches `review-history/kernel-299-pre-rebuild` (`293f22f`) and
+`review-history/kernel-299-rounds-6-8` (all the others).
 
 The part of the kernel under review is `recusal.invocation`
 ([source](../recusal/invocation.py)), which adapters use to read the parameters of a
@@ -61,20 +66,313 @@ decorated tool. `recusal-crewai` still carries its own copy.
   implementation chosen by the type of an argument, and the walk read only the base one.
   The change refuses both (`HiddenWrapper`, `DispatchedAtCallTime`), reads nothing it
   cannot read with certainty, and lists what it does not find. The commit message says
-  four reviews shaped it.
+  four reviews shaped it. The review after those four held it on two items: importing
+  `recusal.invocation` raised in a few environments where 0.15.0 imports (a replaced
+  `functools.partial`, a `sys.modules["functools"]` that is not a module, an audit hook
+  that raises on `__code__`), and the code that counts receivers was not pinned by
+  tests. Both are fixed in commit `f6162a3`, the change rebuilt on main: nothing is
+  prepared at import, and the checks are settled once at the first walk.
+- **`functools.partialmethod`** (commit `4650c71`). Round twelve of
+  `recusal-pydantic-ai` found that the walk read one level for a `partialmethod` over a
+  callable object and nothing under the object. Closed in the kernel, so that every
+  adapter that uses the walk gets it, and in `recusal-crewai`'s own walk. The adapters
+  report the kernel's named refusals as what they are.
+- **A wrapper held in a module global** (commit `a4aaf5d`). A wrapper that calls a
+  second wrapper, or a single-dispatch function, of the same function by its global
+  name is refused like one that holds it in a closure. The `partialmethod` refusal got
+  a public name (`PartialMethodSignature`), and `unsupported_signature` gives it before
+  any other reason.
+- **Kernel review round six** (commit `c40ee87`). No category 1. Four shapes the walk
+  read wrongly, each accepted by 0.15.0 too: a `__wrapped__` carried by a
+  `functools.partial` was not followed; `functools.wraps` over `functools.lru_cache`
+  over a wrapper was read as the function the cache was named for; the `__call__` of a
+  class-based decorator written inside the decorator was not read for what it holds;
+  and a method that delegates to a free function under `functools.wraps` of it was read
+  as handing its object on. All four are closed. One regression of the change itself
+  was found and fixed: the `partialmethod` check asked `functools.partialmethod` about
+  every callable, so a process with another object under that name refused every tool.
+  Five sentences of the changelog and the docstrings were corrected. After it, a cache
+  that was named again is read as the wrapper it calls, which is picked out of what the
+  cache refers to by its place, in place of refusing every such cache (a caching
+  decorator written as `functools.wraps(f)` over `functools.lru_cache` over a
+  forwarding wrapper was refused though nothing unjudged ran); a cache whose function
+  cannot be told has a refusal of its own (`UnreadCache`); and what a cache calls is
+  told once per cache (commit `e9b3dcb`).
+- **Kernel review round seven** (commit `e9b3dcb`). No category 1; round six's four
+  confirmed closed, and nothing 0.15.0 refused accepted in the generated shapes, which
+  went to three decorators deep and to async and generator wrappers. Two category 2. The fourth shape of round six came back when the free
+  function wore one decorator that only passes its arguments on (a forwarding wrapper,
+  a class-based decorator, a caching decorator): the method was accepted, and the free
+  function ran its first parameter at a default no signature showed. And over a method,
+  a cache named again that calls something other than a plain function (a
+  `functools.partial`, a callable object, a second cache) was still read by its name.
+  Four regressions of the change itself: `import gc` at the top of the module raised
+  where a process had None under that name in `sys.modules`; an audit hook that stopped
+  the listing of a cache with a `BaseException` stopped every tool with a cache; another
+  function of `gc` under `get_referents` refused every cache; and on Python 3.9 to 3.11
+  `list(d.items())` could raise out of the walk when a collection it set off changed
+  the dictionary. Also: 41 clean shapes refused with a reason that did not help (a
+  callable object that defines `__get__`), four surviving mutants, eight sentences that
+  were untrue or incomplete, and a walk that cost 1.3 milliseconds for five stacked
+  decorators in a module of 5,000 globals. Closed in commit `7ab31c3`: the name a bound
+  argument was taken under goes with it through every layer that only passes arguments
+  on, so the delegating method is refused under any number of them. A method over a
+  cache named again is read as what the cache calls. The two imports 0.15.0 did not
+  make are guarded and never made at a walk; a listing a hook stops, whatever it raises
+  but an interrupt from the keyboard, and a replaced `gc.get_referents` leave the cache
+  read by its name; a listing a collection interrupts is made again. What is kept
+  between walks is a plain `dict` by `id()` beside a weak reference, in place of a
+  `weakref.WeakKeyDictionary`. The module globals a wrapper names are looked up by
+  name, with the names kept for each code object. The `ValueError` for a callable
+  object that defines `__get__` says the cause and what to do.
+- **Kernel review round eight** (commit `7ab31c3`, whose source is that of `322ee13`).
+  No category 1; round seven's two category 2 and four regressions confirmed closed,
+  and nothing 0.15.0 refused accepted in the generated shapes. Held on one category 2
+  that 0.15.0 has too: a wrapper that keeps one bound argument moves every argument
+  bound after it up one place, and the walk tested the parameter the kept argument
+  would fill where the one left without a value is the one the LAST bound argument
+  would fill. `functools.partial(tools.search, "acme")` over a method that delegates to
+  `def search(tenant, region="eu", limit=10)` declared `(limit=10)`, was judged
+  `{'limit': 5}` and ran `region='eu'`. The review's own generator had filed these rows
+  as a stated limit, by a name in the row. Category 3: a false refusal on Python 3.9
+  only (a decorator over the bound delegating method, which 3.9 shows with every
+  parameter of the free function); a refusal of a facade that runs correctly, because
+  it passes a field of its object where the other facade passes nothing; any built-in
+  type put under `weakref.ref` was used as the weak reference type, which raised from
+  the second walk; two costs not stated (the first walk of a new cache on a
+  free-threaded build, and the memory entries of dead objects hold until the next
+  sweep); seven surviving mutants of 28 (two test gaps, five lines that were not
+  needed); and nine sentences that were untrue or incomplete.
+- **Kernel review round nine** (commit `f712d61`). No category 1. Round eight's
+  category 2 and its 3.9 false refusal confirmed closed; the change for a signature
+  declared on the class of what a method binds and the `detached` that no longer calls
+  itself confirmed (the second compared with the version that called itself: no
+  difference in 105,587 cases on Python 3.12, 3.9 and 3.14 free-threaded). Nothing
+  0.15.0 refused accepted in the generated shapes or the scans. Verdict: release, with
+  one more member of the bound-argument family reported for the maintainer's choice,
+  present in 0.15.0: a facade that hands its bound argument on BY KEYWORD over a
+  wrapper that keeps a leading named parameter (declared `(limit=10)`, judged
+  `{'limit': 5}`, ran `limit=10`; the same through `recusal_openai.judge_and_run`).
+  Also, each constructed and present in 0.15.0: a `__signature__` a class answers for
+  in `__getattr__` or `__getattribute__` (a forwarding proxy), and a
+  `__text_signature__` on an object whose class defines `__get__`, are honoured by
+  `inspect.signature` and were not seen by the check; a callable object whose
+  metaclass declares `__signature__` was refused with a reason untrue of it. To state:
+  `recusal-pydantic-ai`'s plain gate counted on the `RecursionError` that `detached`
+  no longer raises (no call ran without its policy being called); and a sentence on
+  `detached` was inexact (a value's metaclass `__eq__` runs when its type is told).
+  Not covered: the timing and memory figures in the changelog, mutation testing,
+  generator modes on the free-threaded build, pydantic-ai output functions with deep
+  data, and the origin of exceptions that escape four framework runners at depth,
+  which are the same beside 0.15.1.
+- **Kernel review round ten** (commit `5fba40c`, the change that closes round nine).
+  No category 1. Round nine's findings confirmed closed on Python 3.9 to 3.15, with no
+  clean row newly refused in 71,474 generated shapes of the keyword hand-on. Verdict:
+  release, after one defect of the change itself is fixed: the first form of the
+  text-signature rule refused every callable written in C once it was bound as a
+  method (`types.MethodType(len, obj)`, a `classmethod` of a built-in), with a reason
+  untrue of it, which changed 2,243 of 2,715 outcomes of a scan of the standard
+  library. One more member of the bound-argument family, present in 0.15.0: the
+  keyword hand-on where the keeping wrapper is HELD by the facade, which the rule made
+  where the walk binds never reaches. And, constructed and present in 0.15.0: an
+  object that shows a code object, a name and defaults is read by `inspect.signature`
+  as a function, which hides a default (no parameter: the walk read its `__call__`
+  too). Three sentences inexact. Not covered: the two-deep generator modes, the
+  hostile-environment scenarios and the probes of rounds one to five on this commit,
+  a real Cython function with an embedded text signature, timing, mutation testing.
+- **Kernel review round eleven** (commit `788d632`, the change that closes round ten).
+  No category 1. Round ten's findings confirmed closed on Python 3.9 to 3.15: no
+  outcome of a callable written in C differs from 0.15.0, bare or bound, in the
+  standard library or the scanned packages; the held keyword hand-on is refused held
+  through a cache, a `functools.partial`, a pass-through decorator and a cache named
+  again; six clean method decorators that hold a second wrapper are read. Verdict:
+  release, with the last member of the bound-argument family the review could find,
+  present in 0.15.0: a held wrapper whose leading parameter is its own, has a default
+  and is not declared by the tool, which runs with that default when the holder hands
+  the bound argument on by keyword. The review stated the family in one sentence (the
+  changelog quotes it) and the one shape of it that stays a stated limit. Also: the
+  lookalike rule left out an object whose `__wrapped__` is None; and a limit that was
+  nowhere stated, in ordinary code and in 0.15.0: the walk compares names, not
+  defaults, so a wrapper that declares a parameter again with another default runs
+  that default when the call leaves the parameter out. Not covered: the two-deep
+  generator modes, the kernel's test file and the keyword hand-on generator on this
+  commit, hostile-environment scenarios, timing, mutation testing.
+- **Kernel review round twelve** (commit `47670de`, the change that closes round
+  eleven). No category 1. Round eleven's findings confirmed closed. On this commit
+  every generator mode was run to the end, 3,879,764 generated shapes in nine runs
+  (one, two and three wrappers deep, async and generator wrappers, third-party
+  decorators, Python 3.12 and one mode on 3.9): no verdict or outcome differs from
+  round nine's, and nothing 0.15.0 refused is accepted; the scans of the standard
+  library and the installed packages differ from 0.15.0 only in the single-dispatch
+  functions refused on purpose and two objects that are not tool shapes. Verdict:
+  release, after two small things. One defect of the change itself: the held rule
+  counted the places a held `functools.partial` binds itself as places a holder could
+  hand on by keyword, and refused a decorator that holds
+  `functools.partial(retrying(function), 5)` with a reason untrue of it. And one more
+  member of the bound-argument family, present in 0.15.0: a facade that takes its
+  receiver in `*args` raises no name doubt, so the rule for a wrapper the walk reads,
+  made only under a doubt, did not act, where the rule for a held wrapper did. The
+  review tried the rule without the doubt on every callable; see the open items.
+
+- **Kernel review round thirteen** (commit `65370a2`, the change that closes round
+  twelve). No category 1. Round twelve's findings confirmed closed; the nine generator
+  runs and the scans as in round twelve, with no verdict or outcome changed; ten
+  ordinary shapes of decorated methods and partials read, eight of them on Python 3.9
+  (the other two, a decorator over a bound method, not compared with 0.15.0 there).
+  The reviewer corrected two of its own earlier counts: the kernel's tests it had
+  reported as passing under its trial fixes in rounds nine and twelve had been run
+  against the unpatched tree. Verdict: release, after one change. One more member of
+  the bound-argument family, constructed and present in 0.15.0: the rule for a
+  wrapper the walk reads tested the LAST place the bound arguments would fill, where
+  the rule for a held wrapper tests each; with two arguments bound by one
+  `functools.partial` and both handed on by keyword, the judged name in the first
+  place was not seen. Apart from that the review found nothing outside the stated
+  limit. Not covered: its trial of the fix on the two-deep modes and on 3.9, the
+  kernel's tests on five of the eight interpreters, hostile-environment scenarios,
+  timing, mutation testing.
+
+- **Kernel review round fourteen** (commit `386e21b`, the change that closes round
+  thirteen). No category 1. Round thirteen's finding confirmed closed on Python 3.9
+  to 3.15; the nine generator runs and the scans unchanged; no clean shape newly
+  refused in 71,474 generated shapes of the keyword hand-on or in 27 ordinary shapes
+  of decorated methods and partials. The review compared the rule for a wrapper the
+  walk reads with the rule for a held one: the same for a wrapper that passes the
+  call on, with two differences left. One is a member of the bound-argument family,
+  constructed and present in 0.15.0: a held wrapper that passes the call on to
+  nothing, with a default of its own for its first parameter, under a holder that
+  keeps its receiver, ran with that default; the same wrapper read by the walk was
+  refused. The other: the held rule excepted the names a framework injects and the
+  read rule did not. Verdict: release, and tag once the first is refused or stated.
+  Apart from it the review found no shape that is neither refused nor inside the
+  stated limit. Not covered: a trial of the refusal, the kernel's tests on five of
+  the eight interpreters, hostile-environment scenarios, timing, mutation testing.
+
+- **Kernel review round fifteen** (commit `e05977e`, the change that closes round
+  fourteen). No category 1, no category 2, and the reviewer would tag the commit.
+  Round fourteen's finding confirmed closed on Python 3.9 to 3.15. The rule for a
+  wrapper the walk reads and the rule for a held one are the same for a callable that
+  passes the call on; for one that passes the call on to nothing they differ in the
+  one stated way (a defaulted place the tool does not declare is refused on a held
+  wrapper always, and on one the walk reads only under a name doubt). The review
+  found no shape, on either path, that is neither refused nor the stated limit in
+  substance. In the nine generator runs no clean shape is newly refused and nothing
+  0.15.0 refused is accepted; in each of the three two-deep runs, two shapes that
+  were accepted while something unjudged ran are refused now. Of 56 method
+  decorators that hold a second wrapper (14 decorators, among them
+  `pydantic.validate_call`, `tenacity`, `wrapt` and `cachetools`, on four kinds of
+  tool) one differs from round fourteen: the stated twin. Removing the exception for
+  injected names changed no verdict found: only `recusal-google-adk` passes such
+  names to the kernel. One sentence was narrower than the limit it states (the
+  parameter left at its default need not be the leading one) and is widened. Not
+  covered: the kernel's tests on five of the eight interpreters on this commit,
+  hostile-environment scenarios, timing, mutation testing, and the 135 generated
+  shapes of the stated limit one by one (classified by the wrapper they contain).
 
 **Open items.**
 
-- The review after those four held #299 on two items. Importing `recusal.invocation`
-  raised in a few environments where 0.15.0 imports: a replaced `functools.partial`, a
-  `sys.modules["functools"]` that is not a module, and an audit hook that raises on
-  `__code__`. And the newest code, which counts receivers, is not pinned by tests. A fix
-  for both is being written and is not committed.
-- Round twelve of `recusal-pydantic-ai` found that the walk does not read under
-  `functools.partialmethod` over a callable object. See that package's open items. The
-  decision whether the fix goes in the kernel is open.
-- The changelog entry in #299 lists what the walk does not find by design, under "Not
+- After round fifteen, only the sentence that states the limit was changed. No code
+  has changed since the commit round fifteen reviewed.
+- After round fourteen, a change reviewed in round fifteen closes what it found: a
+  held wrapper's leading parameter in the place of a bound argument is refused where
+  it has a default the tool does not declare, whether or not the wrapper passes the
+  call on; and the held rule no longer excepts an injected name. Refused by it
+  although it runs correctly, and stated in the changelog: a `functools.partial`
+  that binds by position the defaulted first parameter of a function whose decorator
+  holds a wrapper that names the parameter again.
+- After round thirteen, a change reviewed in round fourteen closes what it found: on
+  a wrapper the walk reads that passes the call on, every place the bound arguments
+  would fill is tested.
+- After round twelve, a change reviewed in round thirteen closes what it found: the
+  places a held `functools.partial` or method fills itself are not in doubt; and a
+  wrapper the walk reads that passes the call on is refused, doubt or no doubt, where
+  the last parameter the bound arguments would fill on it is one the tool declares or
+  has a default, which is the rule a held wrapper gets.
+- Tried and not kept: refusing bound arguments wherever the last parameter they would
+  fill has a default, on every callable and without a name doubt. It refused no clean
+  generated shape, and closed the stated limit below as well. It also refused four
+  shapes the kernel's own tests pin as ordinary, among them
+  `functools.partial(traced(table), "orders")` over `def table(table="users", ...)`,
+  a `functools.partial` of a decorated method that binds a defaulted parameter, and a
+  facade that hands its receiver on to a function that takes it as a defaulted
+  parameter. Those have the signature of the stated limit and run correctly. (The
+  review reported the kernel's tests as passing under its trial; they had been run
+  against the unpatched tree.)
+- Stated limit, by design: a wrapper the walk reads that takes a bound argument in
+  `*args`, or under the very name the function has for it, and keeps it or hands it
+  on by keyword, over a function the walk reads that passes the call on to nothing,
+  where a parameter the bound arguments would fill there has a default the tool does
+  not declare (the first, or a later one, since a kept argument moves the ones bound
+  after it): the function runs at that default.
+  `functools.partial(dropping(table), "orders")`, where `dropping` calls
+  `function(*args[1:], **kwargs)`, is read as the partial over a pass-through
+  decorator is, and ran `table="users"`.
+- After round eleven, a change reviewed in round twelve closes what it found: a held
+  wrapper's leading parameter in the place of a bound argument is refused where it has
+  a default, as where the tool declares it; a lookalike whose `__wrapped__` is None is
+  refused; the limit on defaults is stated in the changelog.
+- After round ten, a change reviewed in round eleven closes what it found: a method
+  is asked for a text signature as what it binds; a held wrapper that passes the call
+  on and has a parameter the tool declares in the place of a bound argument is
+  refused; an object called through a `__call__` written in Python that shows a code
+  object and names nothing as `__wrapped__` is refused; the three sentences are
+  corrected.
+- After round nine, the maintainer chose to close its findings before release, in a
+  change reviewed in round ten: bound arguments under a doubt are refused where
+  the last parameter they would fill is one the tool declares and the callable that
+  has it passes the call on; the declared-signature check makes the lookup
+  `inspect.signature` makes, so a proxy that answers for `__signature__` is refused
+  and a signature only the metaclass declares is not; a declared `__text_signature__`
+  is refused. Two more shapes than the review found are closed in it: a text signature
+  on a plain function, which `inspect.signature` reads on Python 3.9 to 3.15 (and on
+  any callable object from 3.13), and a `__signature__` set on a cache wrapper or a
+  `staticmethod` object, which the walk looked through without asking. The
+  `recusal-pydantic-ai` difference and the `detached` sentence are stated in the
+  changelog.
+- Not decided: whether `recusal-pydantic-ai`'s plain gate should bound the depth of
+  the arguments it hands to a policy, now that the kernel does not stop them.
+- Not decided: whether `detached` and `json_data` should tell a value's type without
+  the comparison a metaclass can answer (`type(value) in (...)`). A model's arguments
+  are parsed JSON and never of such a class.
+
+- After round eight, a change committed as `837047e` (on top of the rebuilt round-seven
+  change, `d4ff8da`) closes the review's findings. The walk
+  refuses bound arguments under a doubt where the LAST parameter they would fill has a
+  default the tool does not declare, and the doubt stays with the arguments bound after
+  the doubted one and with the same arguments further in; one more shape of it than the
+  review found is closed (a wrapper between the facade and the function that hands the
+  next argument on, under one partial that binds both). A parameter the tool declares
+  is not refused, unless a wrapper on the way (one the walk reads or one a decorator holds) takes it by name itself, which ends the
+  false refusal on 3.9. Only the interpreter's own weak
+  reference type is used. A cache laid out in neither known way is refused outright.
+  Seven simplifications the review listed are applied. The two test gaps are pinned,
+  and the five lines that were not needed are gone. The sentences are corrected and
+  the two costs stated. Reviewed in round nine.
+- Simplification 8 was tried and not kept: removing the legacy reading of a method over
+  a cache named for a non-function lost the `DeclaredSignature` refusal of a class-level
+  `__signature__` and accepted stated-limit holders that run an unjudged default. The
+  legacy reading stays.
+- Found while trying it, present in 0.15.0, and closed in a change reviewed in round
+  nine: a callable object whose class declares `__signature__`, bound as a method
+  (by its own `__get__`, by `types.MethodType`, by a `classmethod`, or under a
+  `functools.wraps` wrapper used as a method), was read as the signature it declared,
+  and a parameter that signature left out ran at its default. The walk now looks at
+  what a method binds as it looks at the method. Refused although it runs correctly,
+  by decision: a bound object that declares a signature, whatever the signature says,
+  among them a method over a cache named for the method that calls such an object.
+- Refused although it runs correctly, by decision: a facade whose method passes a value
+  of its own in the place of the object
+  (`return search(self.tenant, *args, **kwargs)` under `functools.wraps(search)`, the
+  first parameter defaulted) has the signature of the facade that keeps the object, and
+  the walk reads parameters, not bodies. 0.15.0 accepts it. The changelog, the message
+  and the exception say so, with the remedy: register a plain function that names every
+  parameter the tool takes and calls the facade.
+- A wrapper that takes the object of a method under the same name as the first
+  parameter of the function it wraps, and does not hand it on, is read as handing it
+  on: the two cannot be told apart from signatures. Stated in the changelog; not fixed.
+- The changelog entries in #299 list what the walk does not find by design, under "Not
   found, by design". Those are stated limits, not fixed.
+- Not reviewed: stacks more than three decorators deep. Rounds seven and eight ran
+  generated shapes to three deep, with async and generator wrappers.
 
 **Where you can help.**
 
@@ -128,7 +426,10 @@ before the fifth are in one commit. All are in the changelog entry for 0.2.1.
 - The package still carries its own copy of the walk (`_reached_parameters` in
   [`_gate.py`](../adapters/crewai/src/recusal_crewai/_gate.py)). The changelog entry for
   0.15.0 says it moves to the kernel's walk in its next release. That release is not
-  made.
+  made. Since commit `4650c71` the gate also asks a kernel later than 0.15.1 for what
+  that copy does not find; beside 0.15.1 or older, the four shapes of kernel review
+  round six, a decorator that holds a second wrapper and a single-dispatch function are
+  not found, and the package page says so.
 - An MCP tool with an `enum` parameter is refused on every call, because CrewAI builds
   the parameter as a `Literal`. The README says so.
 
@@ -293,6 +594,8 @@ not, and the package page states the first two.
   can judge one value while the tool runs another, and a default can run unjudged. Over
   a plain function the same `partialmethod` is read correctly. The gap is in the
   kernel's walk (`own_parameters`, `_next_callables`) and in the adapter's `_steps`.
+  Fixed in the kernel's walk in commit `4650c71`, which is not released; the released
+  kernels, 0.15.0 and 0.15.1, have the gap.
 - **Wrong advice, fixed in 0.2.0.** The README and two refusal reasons said to set
   `__name__` and `__doc__` on a partial. Pydantic AI needs `__name__` and
   `__qualname__`, which they now say.
@@ -384,13 +687,16 @@ setup was found.
 
 ## `recusal-openai-agents`
 
-**Where it stands.** `recusal-openai-agents` 0.2.0 is released (tag
-`recusal-openai-agents-v0.2.0`, 2026-11-22), with the fixes of the rounds below, merged in
-[#297](https://github.com/philpaz/recusal/pull/297). The review continues: its package
-page states the open items below. [Package](../adapters/openai-agents/README.md).
+**Where it stands.** `recusal-openai-agents` 0.2.1 is the release with the fixes of
+rounds five and six, merged in [#308](https://github.com/philpaz/recusal/pull/308); 0.2.0
+(tag `recusal-openai-agents-v0.2.0`, 2026-11-22) has the fixes of the rounds before them,
+merged in [#297](https://github.com/philpaz/recusal/pull/297). The review continues: a
+seventh round found the open items below, which the package page states.
+[Package](../adapters/openai-agents/README.md).
 
 **The rounds.** `review-history/openai-agents` holds a first commit and the commits of
-rounds two to four. A fifth round found the open items below.
+rounds two to four. A fifth and a sixth round found what the next two entries close, and
+a seventh found the open items.
 
 - **The first commit** (`bfc41e5`). For one kind of tool the gate named every argument
   one parameter off, so the policy saw the SQL under the wrong name and it ran. The gate
@@ -407,34 +713,89 @@ rounds two to four. A fifth round found the open items below.
   method is recognised, and the refusal of an agent tool's `parameters` type names its
   reason.
 
-**Open items**, from round five. All are about `functools.singledispatch`. None is fixed
-in the code; 0.2.0 corrects the sentence the first item names and states the items on the
-package page.
+- **Round five** found four things, all in 0.2.0, and the changelog entry for 0.2.1
+  closes them. They are pinned by `TestFifthReview` in
+  [`tests/test_openai_agents_gate.py`](../tests/test_openai_agents_gate.py).
+  - The most serious. A single-dispatch tool with nothing registered was accepted. The
+    SDK checks every call of a model turn before any tool body runs. So an
+    implementation registered during the same turn, by another tool call or by the
+    tool's own first use, ran without having been judged. Every single-dispatch function
+    is now refused when the tool is gated, whether or not anything is registered.
+  - A single-dispatch function that is a callable object's `__call__`, under a
+    `functools.wraps` wrapper, was not found. The question is now asked of every
+    callable `_reached_callables` finds, which follows `__call__`.
+  - A single-dispatch function was recognised by one code object read at import. If
+    `functools` was reloaded, or `functools.singledispatch` was replaced before the
+    import, one was not recognised, and one kind of replacement made the package's
+    import raise. It is now recognised in three ways, any one of which is enough, and
+    whatever stands at `functools.singledispatch`, the import goes on.
+  - `_agent_tool_parameters_reason` named the wrong cause for some fields: a pattern
+    field, a list of nested models, a model with a validator. Two sentences of the
+    README overstated what is found.
 
-- **The most serious.** A single-dispatch tool with nothing registered is accepted. The
-  SDK checks every call of a model turn before any tool body runs. So an implementation
-  registered during the same turn, by another tool call or by the tool's own first use,
-  runs without having been judged. The README and the changelog had said an
-  implementation "registered afterwards refuses its next call", which is not true in that
-  case; they now say so, and say not to register implementations while an agent runs.
-  The decision is taken and not yet built: refuse every single-dispatch function when
-  the tool is gated, whether or not anything is registered.
-- A single-dispatch function that is a callable object's `__call__`, under a
-  `functools.wraps` wrapper, is not found. `_wrapped_chain` does not follow `__call__`,
-  and the kernel's walk does.
-- A single-dispatch function is recognised by one code object read at import. If
-  `functools` is reloaded, or `functools.singledispatch` was replaced before the import,
-  one is not recognised, and one kind of replacement makes the package's import raise.
-- **Messages and documentation.** `_agent_tool_parameters_reason` names the wrong cause
-  for some fields: a pattern field, a list of nested models, a model with a validator.
-  Two sentences of the README overstate what is found.
-- **Tests.** Some checks are not pinned by a test, and the items above need tests.
+- **Round six**, on the changes that close round five, found seven things. The same
+  changelog entry closes them, and they are pinned by `TestSixthReview` in the same
+  file.
+  - The most serious, and in 0.2.0 too. A `functools.partialmethod` hid the callable it
+    holds. Read from a class, or from an object when the held callable has no `__get__`,
+    it showed the gate the held callable's parameters, and nothing read what was under
+    that callable. A single-dispatch function or a wrapper with a parameter of its own
+    there ran with a value no policy judged. A callable that is or carries a
+    partialmethod is now refused, whatever it holds.
+  - A `weakref.proxy` of a single-dispatch function was accepted: the walk read
+    `__wrapped__` through the proxy and stepped past the dispatcher. A weak proxy is now
+    refused.
+  - An ordinary event bus, a function that closes over a `dispatch` function over a
+    `registry` dict, was refused as a single-dispatch function. The closure test now
+    also asks for the two other names `functools` uses.
+  - The README said a change to a tool's function is refused on every call. A change a
+    tool body makes is seen from the next model turn, not by the other calls of the
+    same turn. The README says so now.
+  - Two sentences were not true: that the gate's walk takes every step the kernel's
+    walk takes, and that no code of the object runs. Both now say exactly what is read
+    and how.
+  - The refusal's advice, "dispatch inside its body", could be read as "call the
+    dispatcher from a plain function", which is not read. It now says to branch on the
+    type.
+  - Five mutations of the gate passed the suite. Each is now killed by a test.
+
+- **Round seven**, on the changes that close round six, confirmed those closed and found
+  no call a model can cause to run unjudged. It found two ordinary stacks of decorators
+  that run a wrapper's own parameter unjudged. Both come from how the kernel's walk in
+  `recusal` 0.15.0 reads them, both are in 0.2.0 too, and neither is fixed in 0.2.1: the
+  fix is in the kernel, in review in [#299](https://github.com/philpaz/recusal/pull/299).
+  They are the first two open items below. It also found sentences that overstated what
+  the walk reads, which 0.2.1 corrects, and refusal reasons whose advice or wording is
+  the third and fourth open items.
+
+**Open items.**
+
+- A `functools.partial` that carries a `__wrapped__` (a decorator written with
+  `functools.update_wrapper` over a partial) is read as a pass-through, so a wrapper
+  under it with a parameter of its own runs that parameter unjudged. Open; stated on the
+  package page with what to write instead.
+- `functools.wraps` written above `functools.lru_cache`: the cache names one function and
+  calls the wrapper it was built over, which is not read. Open; stated on the package
+  page with what to write instead.
+- Four refusal reasons advise calling the function from a plain function and registering
+  that one, without saying that what its body calls is not read. The page says so; the
+  reasons do not yet.
+- Two refusals name only an exception class (`DeclaredSignature` for the `decorator`
+  package, `TypeError` for a wrapper over `wrapt.ObjectProxy`), with no cause or advice.
+- A single-dispatch function that a wrapper calls from a closure, a global or an
+  attribute, and not through `__wrapped__`, is not found, and neither is one a plain
+  function's body calls. The README lists it under what the gate does not see.
+- A change a tool body makes to another tool's function is not seen by the other calls
+  of the same model turn. The README lists it there too.
+- The reasons given for a later kernel's refusals (`DispatchedAtCallTime`,
+  `HiddenWrapper`, `PartialMethodSignature`) are tested with stand-in classes of those
+  names, not with that kernel, which is not merged.
 
 **Where you can help.**
 
-- Read `_wrapped_chain`, `_registered` and `_agent_tool_parameters_reason` in
+- Read `_steps`, `_reached_callables`, `_held_partialmethod`, `_dispatch_function`,
+  `_dispatch_method` and `_agent_tool_parameters_reason` in
   [`_gate.py`](../adapters/openai-agents/src/recusal_openai_agents/_gate.py).
-- Write the test for the same-turn item: two calls in one turn, in both orders.
 - Run the adapter's tests against an `openai-agents` release newer than the one in
   [`adapters/openai-agents/tested-with.txt`](../adapters/openai-agents/tested-with.txt).
 - The scripts of this review are not in the repository.

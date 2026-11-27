@@ -215,6 +215,75 @@ def test_ci_builds_installs_and_smoke_tests_the_wheel(directory):
 
 
 @pytest.mark.parametrize("directory", sorted(PACKAGES))
+def test_every_adapter_wheel_job_covers_312_and_its_declared_minimum(directory):
+    project = _project(directory)["project"]
+    minimum = project["requires-python"].removeprefix(">=")
+    minimum_environment = f"/tmp/adapter-py{minimum.replace('.', '')}"
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = ci.split(f"  adapter-{directory}-wheel:\n", 1)[1].split("\n  # ", 1)[0]
+    _, module, _framework = PACKAGES[directory]
+
+    assert f"name: {project['name']} wheel (build, install, smoke)" in job
+    versions = re.findall(r'^\s+python-version: "([\d.]+)"$', job, re.M)
+    assert versions == ["3.12", minimum], (directory, versions)
+    adapter_build = f"python -m build --no-isolation --outdir dist-adapters adapters/{directory}"
+    assert job.count(adapter_build) == 1
+    assert job.count("python -m pip install --require-hashes -r release-requirements.txt") == 1
+    assert f"python -m venv {minimum_environment}" in job
+    builds = [
+        match.start()
+        for match in re.finditer(r"python -m build --no-isolation --outdir dist-adapters", job)
+    ]
+    minimum_setup = job.rindex(f'python-version: "{minimum}"')
+    assert len(builds) == 2 + sum(
+        requirement.split(">", 1)[0] in {values[0] for values in PACKAGES.values()}
+        for requirement in project["dependencies"]
+    ), (directory, builds)
+    assert max(builds) < minimum_setup, (directory, "wheel build moved off Python 3.12")
+
+    lock = f"requirements/adapter-{directory}.txt"
+    lock_roots = (ROOT / lock).read_text(encoding="utf-8").splitlines()[0]
+    assert f"| python>={minimum}" in lock_roots, (directory, lock_roots)
+    assert job.count(f"pip install --quiet --require-hashes -r {lock}") == 2
+    assert job.count("/tmp/adapter/bin/pip check") == 1
+    assert job.count(f"{minimum_environment}/bin/pip check") == 1
+
+    # Include companion adapter wheels required by LangChain and OpenAI Agents MCP.
+    distribution_modules = {values[0]: values[1] for values in PACKAGES.values()}
+    wheel_files = {"dist-adapters/recusal-*.whl"}
+    wheel_files.add(f"dist-adapters/{project['name'].replace('-', '_')}-*.whl")
+    for requirement in project["dependencies"]:
+        dependency = re.match(r"[A-Za-z0-9_.-]+", requirement).group(0)
+        if dependency in distribution_modules:
+            wheel_files.add(f"dist-adapters/{dependency.replace('-', '_')}-*.whl")
+    installs = [
+        line.strip().split("--no-deps ", 1)[1].split()
+        for line in job.splitlines()
+        if "/bin/pip install --quiet --no-deps " in line
+    ]
+    assert len(installs) == 2, (directory, installs)
+    assert all(sorted(install) == sorted(wheel_files) for install in installs), (
+        directory,
+        installs,
+    )
+
+    smoke = f'cd /tmp && {{environment}}/bin/python "$GITHUB_WORKSPACE/adapters/{directory}/smoke_test.py"'
+    assert job.count(smoke.format(environment="/tmp/adapter")) == 1
+    assert job.count(smoke.format(environment=minimum_environment)) == 1
+    type_checks = re.findall(r"^\s+cd /tmp && (/tmp/[^ ]+/bin/python -m mypy .+)$", job, re.M)
+    assert len(type_checks) == 2, (directory, type_checks)
+    flags = [command.split("-m mypy ", 1)[1] for command in type_checks]
+    assert flags[0].removeprefix("--python-version 3.12 ") == flags[1].removeprefix(
+        f"--python-version {minimum} "
+    ), (directory, flags)
+    assert flags[0].startswith("--python-version 3.12 ")
+    assert flags[1].startswith(f"--python-version {minimum} ")
+    assert all(f"-p {module}" in command for command in flags)
+    assert any(command.startswith("/tmp/adapter/bin/python ") for command in type_checks)
+    assert any(command.startswith(f"{minimum_environment}/bin/python ") for command in type_checks)
+
+
+@pytest.mark.parametrize("directory", sorted(PACKAGES))
 def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(directory):
     """``py.typed`` is a claim to every user's type checker. It is made only where CI
     type-checks the installed package against the framework's own types, with the
@@ -229,17 +298,17 @@ def test_the_adapter_ships_inline_types_and_ci_checks_them_as_installed(director
     dev = kernel["project"]["optional-dependencies"]["dev"]
     pin = next(spec for spec in dev if spec.startswith("mypy"))
     flags = "--check-untyped-defs --warn-unused-ignores --warn-redundant-casts"
-    ci_flags = flags
+    ci_flags = f"--python-version 3.12 {flags}"
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     job = ci.split(f"  adapter-{directory}-wheel:\n", 1)[1].split("\n  # ", 1)[0]
     if directory == "pydantic-ai":
         ci_flags = (
-            "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
+            "--python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
             "--warn-unused-ignores --warn-redundant-casts"
         )
     elif directory == "crewai":
         ci_flags = (
-            "--check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
+            "--python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs "
             "--warn-unused-ignores --warn-redundant-casts"
         )
     elif directory == "google-adk":

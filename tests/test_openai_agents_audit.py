@@ -508,7 +508,7 @@ class TestOpenAIAgentsAudit:
         reason = gate.tool_outputs(parent_model)["p1"]
         assert reason.startswith(
             "Recusal refused `ask_sub` [FAIL]: its `parameters` model has a field outside the "
-            "data-only set: `task` (pydantic core type `function-after`)"
+            "data-only set: `task` (a validator, pydantic core type `function-after`)"
         )
         assert sub_model.first_call is None and seen == []
         (entry,) = log.entries

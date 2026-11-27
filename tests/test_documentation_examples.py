@@ -9,7 +9,9 @@ from typing import NamedTuple
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCUMENTS = (ROOT / "docs" / "EXTENDING.md", ROOT / "docs" / "HOWTO.md")
+DOCUMENTS = tuple(
+    ROOT / "docs" / name for name in ("EVIDENCE.md", "EXTENDING.md", "HOWTO.md", "MCP.md")
+)
 
 
 class PythonBlock(NamedTuple):

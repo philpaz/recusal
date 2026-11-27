@@ -216,30 +216,64 @@ guardrail cannot judge:
   descriptor (`cachetools.cached`, `cachetools.func.ttl_cache`, `cachetools.func.lru_cache`)
   hides the functions under it from inspection. Call the decorated function from a plain
   function and register that. `functools.lru_cache` and `functools.cache` are read
-  through and gated.
-- **A `functools.singledispatch` function with an implementation registered, or a
-  `singledispatchmethod`.** The implementation that runs is chosen by the type of an
-  argument, and each one has its own parameters and defaults. Register one plain
-  function and dispatch inside its body. The dispatcher is found wherever it stands
-  among the callables the call reaches: as the tool itself, as a method or a class
-  method (`function_tool(service.handle)`), and under `functools.wraps` wrappers or
-  `functools.lru_cache`. A `singledispatch` function with nothing registered is the
-  function it wraps, and is gated in each of those places; an implementation registered
-  after the tool was gated refuses its next call in a later model turn, but not in the
-  same turn: the SDK checks every call of a turn before any tool body runs, so an
-  implementation one call of a turn registers runs, unjudged, for a later call of that
-  turn. This is open; until it is closed, do not register implementations of a
-  dispatcher that is a tool while an agent runs. A wrapper that only carries a copy of
-  a dispatcher's attributes, and a callable object that happens to have a `dispatch`
-  method and a `registry` attribute, are not taken for one.
+  through and gated, except with `functools.wraps` written above the cache (open; see
+  Status).
+- **A `functools.singledispatch` function or a `singledispatchmethod`, with or without
+  an implementation registered.** The implementation that runs is chosen at call time by
+  the type of an argument, each one has its own parameters and defaults, and one can be
+  registered at any moment. The SDK checks every call of a model turn before any tool
+  body runs, so an implementation that one call of a turn registers (or that the tool
+  registers on its own first use) would run, unjudged, for a later call of that turn. So
+  every single-dispatch function is refused when the agent is built, whether or not
+  anything is registered. Register one plain function as the tool and branch on the type
+  inside its body (`if isinstance(...)`). Do not call a single-dispatch function from
+  that body in its place: a single-dispatch function called from the body is not read,
+  and the implementation it picks runs with its own defaults. The dispatcher is refused
+  wherever it stands among the callables the gate reads: as the tool itself, as a
+  method, a class method or a static method (`function_tool(service.handle)`), as a
+  callable object's `__call__`, under `functools.wraps` wrappers or
+  `functools.lru_cache`, and as the callable a `functools.partialmethod` holds. It is
+  recognised in three ways, any one of which is enough: by the code of the function
+  `functools.singledispatch` returns (as read when this package was imported, and as
+  `functools` stands when the tool is checked, so after `importlib.reload(functools)`
+  too); by how that function is built (its closure holds a `dispatch` function whose
+  closure holds a `registry` dict, a `dispatch_cache` and a `cache_token`, as
+  `functools` builds it on Python 3.10 to 3.15); and by its attributes (a `registry`
+  that is a `types.MappingProxyType` beside a callable `dispatch` and a callable
+  `register`, on any object, so a service object of your own that has all three is
+  refused too). A `functools.wraps` wrapper over a dispatcher carries a copy of those
+  attributes and is refused with it. Not taken for one: a callable object that happens
+  to have a `dispatch` method and a `registry` attribute that is not a mapping proxy,
+  and an event bus of your own whose function closes over a `dispatch` function and a
+  `registry` dict. A dispatcher that a wrapper calls from a closure, a global or an
+  attribute, and not through `__wrapped__`, is not found: see "What the gate does not
+  see" below.
+- **A `functools.partialmethod`.** What the tool calls is the callable the partialmethod
+  holds, and Python reads the tool's parameters from that callable without anything
+  reading what is under it: a single-dispatch function or a wrapper with a parameter of
+  its own there would run with a value no policy judged. So a function that is or
+  carries a partialmethod is refused, whatever it holds, a plain function too. That is
+  what you get when you read a partialmethod from the class (`Db.export`), and from an
+  object (`db.export`) when the callable it holds does not bind as a method: a
+  class-based decorator's instance, or a `functools.partial`. A partialmethod over
+  a plain function or method read from an object is a `functools.partial`, which the
+  SDK refuses itself (`function_tool` raises). Register a plain function that calls it;
+  the gate judges that function's parameters, and what its body calls is not read.
+- **A `weakref.proxy`**, as the tool's function or anywhere among the callables the gate
+  reads. A proxy shows the attributes of the object it stands for and is not that
+  object, so the gate cannot tell which callables a call to it runs. Register the
+  function itself, or a plain function that calls it.
 - **A sub-agent behind `agent.as_tool(...)` whose own tools are not gated.** Gate the
   sub-agent first, `gated_agent(sub, policy).as_tool(...)`, and the parent accepts it.
 - **An agent tool whose `parameters` type is not a data-only Pydantic model.** The gate
   works out what the sub-agent is given with the SDK's adapter for that type, and the
   SDK then validates the arguments again itself, so the two agree only for a model the
   SDK's own rule for data-only validation admits (`can_prepare_without_user_code`) and
-  that is written out with no code of its own. The refusal names the field and its
-  pydantic core type. Refused, with what to declare in its place:
+  that is written out with no code of its own. For a cause that lies in one field the
+  refusal names the field and what puts it outside: its pydantic core type, a string
+  pattern, what a list, a mapping or a union holds, a validator, or its default. For a
+  cause on the type as a whole (a `model_validator`, a dataclass, a private attribute)
+  it names that and no field. Refused, with what to declare in its place:
   - a `date`, `datetime`, `time` or `timedelta` field, a `UUID`, a `Path`, an `AnyUrl`,
     a `Decimal`, `bytes`: a `str` (or a `float` for the `Decimal`), read inside the
     sub-agent's own tools;
@@ -261,6 +295,12 @@ Refused call by call, before the policy runs, with a reason the model reads:
   `float` parameter reads as one). It is not JSON data: a policy cannot compare it and a
   record cannot fingerprint it;
 - arguments given to a tool that takes none;
+- a call to a tool whose function was changed after the tool was gated into one the
+  list above refuses. The guardrail asks the same questions again on every call, and
+  the SDK runs every guardrail of a model turn before any tool body of that turn. So a
+  change made before a run, or between runs, is seen by the next call; a change a tool
+  body makes during a run is seen from the next model turn, and not by the other calls
+  of the turn it was made in (see "What the gate does not see");
 - arguments that hold a value more than 64 levels below the arguments object. The limit
   is the gate's own and fixed: it is the same with and without an audit log, and does not
   move with the interpreter's recursion limit.
@@ -272,10 +312,30 @@ What the gate does not see:
   anything the tool reads from elsewhere, is not seen.
 - **A function a wrapper holds some other way than `__wrapped__`.** The gate reads the
   function, what its `__wrapped__` chain leads to, a bound method's function and a
-  callable object's `__call__`. A decorator that applies a second decorator inside itself
+  callable object's `__call__`, with the two exceptions under Status below (a
+  `functools.partial` that carries a `__wrapped__`, and `functools.wraps` written above
+  `functools.lru_cache`). A decorator that applies a second decorator inside itself
   and calls that one (the inner wrapper sits in a closure, and `functools.wraps` points
   past it), or a callable object that copies another function's `__wrapped__`, runs a
   wrapper the gate never read. A parameter that wrapper takes or adds is not judged.
+  The same holds for a single-dispatch function: a wrapper that names a plain function
+  as `__wrapped__` and calls a dispatcher it holds in a closure or a global is gated,
+  and an implementation registered on that dispatcher runs with its own defaults. So is
+  a plain function whose body calls a dispatcher.
+- **A change a tool body makes to another tool's function, for the calls of the same
+  model turn.** The SDK runs the guardrail of every call of a turn before any tool body
+  of that turn. A tool body that re-wraps the function of another tool (sets its
+  `__wrapped__` to a wrapper with a parameter of its own, say) is not seen by a call to
+  that tool in the same turn, which runs the new wrapper unjudged. A call in the next
+  model turn is refused.
+- **Code of your callables that runs while a tool is checked.** To find the callables a
+  call reaches, the gate reads `__wrapped__` the ordinary way, as Python and
+  `inspect.signature` do, so a `__wrapped__` property or a `__getattr__` of a callable
+  object runs when the tool is gated and again on every call. The tests that recognise a
+  single-dispatch function, a partialmethod and a weak proxy read the object's type, its
+  closure cells and its attributes with `inspect.getattr_static`, which runs no property
+  and no `__getattr__` of the object; the `isinstance` tests among them read an object's
+  `__class__`.
 - **Model settings given to a run.** Only the agent's own `model_settings` are read when
   it is gated. `RunConfig(model_settings=...)` is merged in when a run starts, and an
   `extra_body` there is not seen.
@@ -303,22 +363,53 @@ What the gate does not see:
   guardrail on a tool context of its own, so the arguments the gate pinned are not the
   ones that session executes, and this package has no test of a realtime session.
 
+**Beyond the gate.** This gate judges the tool calls the framework routes through it;
+the paths around it inside the framework are listed above. Like every Recusal gate, it
+does not stop an agent that can reach a resource another way: a credential with wider
+rights, a shell or network path outside the agent, or a file it can write that
+configures the gate. Use it as one layer of several: least-privilege credentials for the
+agent, a sandbox or container, limits on its network egress, and an audit anchor the
+writer cannot reach ([the limits in
+full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-knowing)).
+
 ## Status
 
-**In-depth review under way.** Its fixes so far are released in 0.2.0, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes so far are released in 0.2.1, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
-**Open from the latest review round**, not yet fixed, stated so you can judge them:
+**From the latest review rounds.** Rounds five and six found gaps that the 0.2.0 release
+has and 0.2.1 closes: a `functools.singledispatch` tool with nothing registered was
+accepted, so an implementation registered during a model turn ran unjudged for a later
+call of that turn; a dispatcher behind a callable object's `__call__` was not found; a
+dispatcher was recognised by one code object read at import; a `functools.partialmethod`
+hid the callable it holds; a `weakref.proxy` of a single-dispatch function was accepted;
+and an ordinary event bus was refused as a single-dispatch function. Every single-dispatch
+function, every partialmethod and every weak proxy is now refused as a tool (see the
+bullets above).
 
-- A `functools.singledispatch` tool with nothing registered is accepted, and an
-  implementation registered during a model turn runs unjudged for a later call of the
-  same turn (see the bullet on single dispatch above). The fix decided is to refuse every
-  single-dispatch function as a tool.
-- A dispatcher that is a callable object's `__call__`, under a `functools.wraps` wrapper,
-  is not found; and a dispatcher is recognised by one code object read at import, so
-  after `importlib.reload(functools)` a new one is not recognised.
+**Open from round seven**, not yet fixed, stated so you can judge them. Both are in how
+the kernel (`recusal` 0.15.0) reads a stack of decorators, both are also in 0.2.0, and a
+fix for both is in review in the kernel
+([#299](https://github.com/philpaz/recusal/pull/299)):
+
+- **A `functools.partial` that carries a `__wrapped__`.** A decorator written as
+  `functools.update_wrapper(functools.partial(helper, f), f)` (or
+  `functools.wraps(f)(functools.partial(helper, f))`) is read as a pass-through, and what
+  sits under it is not read. Stacked over a wrapper that adds a parameter of its own, that
+  parameter runs with a value the policy was not shown. Until it is fixed, write such a
+  decorator with a nested function and `functools.wraps`, which the gate reads.
+- **`functools.wraps(f)` written above `functools.lru_cache`.** The cache then names `f`
+  and calls the wrapper it was built over, which is not read: a parameter of that
+  wrapper's own runs with a value the policy was not shown. `functools.lru_cache` and
+  `functools.cache` applied to the function itself, or with the cache above
+  `functools.wraps`, are read. Until it is fixed, put the cache above `functools.wraps`.
+
+Four refusals advise calling the function from a plain function and registering that one
+(a weak proxy, a decorator that holds a second wrapper, a decorator the gate cannot read,
+too many wrappers). What that plain function's body calls is not read, as the first
+bullet of this section's list above says of every tool body.
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:

@@ -42,13 +42,22 @@ when you call them, naming the tool and the cause (:func:`_tool_refusal`):
 - a variadic parameter (``*args``, ``**kwargs``), whose values have no names to judge by;
 - a wrapper around the function that takes a parameter of its own, or takes one of the
   function's: it would run with a value no policy judged;
-- a ``functools.singledispatch`` function with an implementation registered, which picks
-  the code that runs by the type of an argument, a decorator whose signature cannot be
-  read, and a function under more wrappers than the walk reads.
+- a ``functools.singledispatch`` function or a ``singledispatchmethod``, with or without
+  an implementation registered, wherever it stands among the callables the call reaches:
+  it picks the code that runs at call time by the type of an argument, and an
+  implementation can be registered after a call was judged and before it runs;
+- a ``functools.partialmethod`` read from a class, or from an object when the callable
+  it holds has no ``__get__`` (a class-based decorator's instance; a ``functools.partial``
+  up to Python 3.13): what runs is the callable it holds, which ``inspect`` reads past;
+- a ``weakref.proxy``, which shows the attributes of the object it stands for and is not
+  that object;
+- a decorator whose signature cannot be read, and a function under more wrappers than
+  the walk reads.
 
 Which callables are read for that: the function, what its ``__wrapped__`` chain leads to,
-a bound method's function and a callable object's ``__call__``. A wrapper that calls a
-function it holds some other way (in a closure, in an attribute) is not read.
+a bound method's function, a callable object's ``__call__`` and the callable a
+``functools.partialmethod`` holds. A wrapper that calls a function it holds some other way
+(in a closure, in an attribute) is not read.
 
 ``gated_agent`` checks the agent when you call it. Build the agent completely, then gate
 it; a tool appended to the gated agent's list afterwards is not gated. The gated copy has
@@ -63,6 +72,7 @@ import functools
 import inspect
 import json
 import types
+import weakref
 from collections.abc import Mapping
 from typing import Any, Callable, List, Optional
 
@@ -270,10 +280,50 @@ def _mapping_keys_refusal(schema: FuncSchema) -> Optional[str]:
 _LRU_WRAPPER = type(functools.lru_cache(maxsize=None)(lambda: None))
 
 _SINGLEDISPATCH = (
-    "it is a `functools.singledispatch` function: the implementation that runs is chosen "
-    "by the type of an argument and each one has its own parameters, so the gate cannot "
-    "tell which would run or with what defaults. Register one plain function per tool and "
-    "dispatch inside its body."
+    "it runs a `functools.singledispatch` function: the implementation that runs is chosen "
+    "at call time by the type of an argument, one can be registered at any moment, and "
+    "each has its own parameters and defaults, so the gate cannot tie a call to the "
+    "function that will run. Register one plain function as the tool and branch on the "
+    "type inside its body; a single-dispatch function called from it is not read."
+)
+
+_DISPATCH_NOT_READ = (
+    "the gate could not read a callable the call reaches ({}), so it cannot tell whether "
+    "that is one it refuses (a `functools.singledispatch` function, a "
+    "`functools.partialmethod`, a weak proxy). Register one plain function as the tool."
+)
+
+_PARTIALMETHOD_REFUSED = (
+    "it runs a `functools.partialmethod`: the call goes to the callable the partialmethod "
+    "holds, and the tool's parameters are read from that callable without the gate "
+    "reading what is under it, so a wrapper or a single-dispatch function there could run "
+    "with a value no policy judged. Register a plain function that calls it; the gate "
+    "judges that function's parameters, and what its body calls is not read."
+)
+
+_WEAK_PROXY = (
+    "a callable the call reaches is a `weakref.proxy`: it shows the attributes of the "
+    "object it stands for and is not that object, so the gate cannot tell which callables "
+    "a call to it runs. Register the function itself, or a plain function that calls it."
+)
+
+#: The kernel walk's exception, in a kernel that has it, for a callable read through a
+#: ``functools.partialmethod``. A ``TypeError`` there, and known by name like the two below.
+_KERNEL_PARTIALMETHOD = "PartialMethodSignature"
+
+#: The kernel walk's exception, in a kernel that has it, for a single-dispatch function
+#: the walk itself finds. Known by name: the oldest kernel this package runs on has none.
+_KERNEL_DISPATCH = "DispatchedAtCallTime"
+
+#: The kernel walk's exception, in a kernel that has it, for a wrapper that holds a second
+#: wrapper of the function it wraps, which the walk does not follow. Known by name too.
+_KERNEL_HIDDEN = "HiddenWrapper"
+
+_HIDDEN_WRAPPER = (
+    "a decorator on the function it runs holds a second wrapper of it that the gate does "
+    "not follow, and that wrapper takes a parameter of its own ({}), so a value could run "
+    "that the policy never saw. Apply each decorator to the function directly, or call the "
+    "wrapped function from a plain function and register that."
 )
 
 #: The kernel walk's own message for a stack it stops reading.
@@ -293,36 +343,112 @@ _OPAQUE_DECORATOR = (
 )
 
 
-def _wrapped_chain(func: Any) -> list[Any]:
-    """``func`` and the callables its ``__wrapped__`` attributes lead to, outermost first;
-    a ``functools.partial`` is followed to its function and a bound method to the
-    function it binds (a method shows its function's ``__wrapped__`` as its own, which
-    would step past that function)."""
-    chain: list[Any] = []
-    while func is not None and len(chain) < 64 and not any(func is link for link in chain):
-        chain.append(func)
-        if isinstance(func, functools.partial):
-            func = func.func
-        elif inspect.ismethod(func):
-            func = func.__func__
-        else:
-            func = getattr(func, "__wrapped__", None)
-    return chain
+#: A ``__call__`` implemented in C (a slot wrapper or a bound one): nothing further in.
+_C_CALL = (types.WrapperDescriptorType, types.MethodWrapperType)
+
+#: How many callables :func:`_reached_callables` reads before it gives up. Far more than
+#: the kernel's walk accepts, so a tool this stops at is one that walk refuses as well.
+_MAX_REACHED = 512
+
+
+#: ``functools.partialmethod`` as it was when this module was imported.
+_PARTIALMETHOD: Any = getattr(functools, "partialmethod", None)
+
+#: The names under which the function ``functools`` hands out for a partialmethod carries
+#: it: ``_partialmethod`` up to Python 3.12, ``__partialmethod__`` from 3.13. The third is
+#: asked as well, so a spelling without underscores is not missed.
+_PARTIALMETHOD_NAMES = ("_partialmethod", "__partialmethod__", "partialmethod")
+
+
+def _is_partialmethod(value: Any) -> bool:
+    """Whether ``value`` is a ``functools.partialmethod``: its type is that class or a
+    subclass of it, as the class was at import or as ``functools`` has it now, or a class
+    of that name (one built by another copy of ``functools``). Asked of the type alone."""
+    for known in (_PARTIALMETHOD, getattr(functools, "partialmethod", None)):
+        if isinstance(known, type) and issubclass(type(value), known):
+            return True
+    return type(value).__name__ == "partialmethod"
+
+
+def _held_partialmethod(link: Any) -> Any:
+    """The ``functools.partialmethod`` that ``link`` is, or carries under one of
+    ``_PARTIALMETHOD_NAMES``, or None. Read with ``inspect.getattr_static``."""
+    if _is_partialmethod(link):
+        return link
+    for name in _PARTIALMETHOD_NAMES:
+        held = inspect.getattr_static(link, name, None)
+        if _is_partialmethod(held):
+            return held
+    return None
+
+
+def _steps(link: Any) -> list[Any]:
+    """The callables ``link`` may hand a call to. The four steps the walk of the kernel
+    this package was written beside takes (0.15.0, ``recusal.invocation._next_callables``):
+    a ``functools.partial``'s function, a bound method's function, what ``__wrapped__``
+    names (as the callable shows it, so a method's function's, a ``functools.lru_cache``
+    wrapper's and the function under a ``staticmethod`` or a ``classmethod`` are
+    followed) and the ``__call__`` of its type as the class holds it, unless that is
+    implemented in C, as a function's own is. And one that walk does not take: the
+    callable a ``functools.partialmethod`` holds, when ``link`` is one or carries one.
+
+    ``__wrapped__`` is read with ``getattr``, as Python and the kernel's walk read it, so
+    a ``__wrapped__`` property or a ``__getattr__`` of the callable runs here. ``__call__``
+    and the partialmethod are read with ``inspect.getattr_static``."""
+    found: list[Any] = []
+    if isinstance(link, functools.partial):
+        found.append(link.func)
+    if inspect.ismethod(link):
+        found.append(link.__func__)
+    wrapped = getattr(link, "__wrapped__", None)
+    if wrapped is not None:
+        found.append(wrapped)
+    call = inspect.getattr_static(type(link), "__call__", None)
+    if call is not None and not isinstance(call, _C_CALL):
+        found.append(call)
+    held = _held_partialmethod(link)
+    if held is not None:
+        found.append(inspect.getattr_static(held, "func", None))
+    return found
+
+
+def _reached_callables(func: Any) -> tuple[list[Any], bool]:
+    """``func`` and every callable :func:`_steps` leads to from it, each once, and
+    whether that is all of them (False when the walk stopped at ``_MAX_REACHED``)."""
+    reached: list[Any] = []
+    pending = [func]
+    while pending:
+        link = pending.pop()
+        if link is None or any(link is seen for seen in reached):
+            continue
+        if len(reached) >= _MAX_REACHED:
+            return reached, False
+        reached.append(link)
+        pending.extend(_steps(link))
+    return reached, True
 
 
 def _singledispatch_wrapper_code() -> Any:
-    """The code object of the function ``functools.singledispatch`` returns: the
-    ``wrapper`` nested in it. Every dispatcher is a plain function with exactly this code,
-    whatever attributes a ``functools.wraps`` wrapper over one has copied from it. None
-    on a Python where it is not found by that name."""
-    found = [
-        const
-        for const in functools.singledispatch.__code__.co_consts
-        if isinstance(const, types.CodeType) and const.co_name == "wrapper"
-    ]
+    """The code object of the function ``functools.singledispatch`` returns, as
+    ``functools`` stands when this is called: the one ``wrapper`` nested in it. None when
+    it is not found by that name, or when what stands at ``functools.singledispatch`` is
+    not a plain function (an instrumented or replaced one). Never raises."""
+    try:
+        code = functools.singledispatch.__code__
+        if type(code) is not types.CodeType:
+            return None
+        found = [
+            const
+            for const in code.co_consts
+            if type(const) is types.CodeType and const.co_name == "wrapper"
+        ]
+    except Exception:  # noqa: BLE001, whatever stands there, importing this module goes on
+        return None
     return found[0] if len(found) == 1 else None
 
 
+#: That code object as it was when this module was imported. One of three ways a
+#: dispatcher is known (:func:`_dispatch_function`), and never the only one.
 _SINGLEDISPATCH_WRAPPER = _singledispatch_wrapper_code()
 
 
@@ -334,53 +460,86 @@ def _closure_value(func: Any, name: str) -> Any:
         return None
 
 
-def _registered(link: Any) -> Optional[bool]:
-    """For the function ``functools.singledispatch`` returns: whether an implementation
-    other than the function it wraps is registered. None for anything else.
-
-    The dispatcher is known by its code, and its registry is read from the closure of
-    its own ``dispatch`` function, which is the mapping it dispatches by; the
-    ``registry`` attribute is a view any wrapper may carry a copy of."""
-    if type(link) is not types.FunctionType or link.__code__ is not _SINGLEDISPATCH_WRAPPER:
-        return None
-    dispatch = _closure_value(link, "dispatch")
-    registry = (
-        _closure_value(dispatch, "registry") if type(dispatch) is types.FunctionType else None
-    )
-    if type(registry) is not dict:
-        return True  # a dispatcher the gate cannot read is taken as one that dispatches
-    return len(registry) != 1 or registry.get(object) is not link.__dict__.get("__wrapped__")
+#: What the ``dispatch`` function inside a ``functools.singledispatch`` dispatcher closes
+#: over beside its ``registry``, on every Python from 3.10 to 3.15.
+_FUNCTOOLS_DISPATCH_STATE = frozenset({"dispatch_cache", "cache_token"})
 
 
-def _dispatches_by_type(link: Any) -> bool:
-    """A ``functools.singledispatch`` function with an implementation registered, or a
-    ``singledispatchmethod`` read from an object: what it runs depends on the type of an
-    argument.
+def _dispatch_function(link: Any) -> bool:
+    """Whether ``link`` is the function ``functools.singledispatch`` returns, with or
+    without an implementation registered. Yes if any one of three tests says so:
 
-    The dispatcher is identified exactly (:func:`_registered`): the plain function whose
-    code is ``functools.singledispatch``'s own ``wrapper``. A service object that happens
-    to have a ``dispatch`` method and a ``registry`` attribute is not one, and neither is
-    a ``functools.wraps`` wrapper over a dispatcher, which carries a copy of its
-    attributes: the chain leads on to the dispatcher itself, through a bound method too.
-    With nothing registered the function is the one it wraps (``registry[object]``),
-    which the walk reads like any other; anything else in the registry, or another
-    function under ``object``, is an implementation the walk does not read. Where the
-    dispatcher's code is not found (another Python), the function is known by a
-    ``registry`` that is exactly a ``types.MappingProxyType`` beside a ``dispatch``
-    callable, both read without running any code of the object's."""
-    if _SINGLEDISPATCH_WRAPPER is not None:
-        registered = _registered(link)
-        if registered is not None:
-            return registered
-    else:  # a Python whose dispatcher the gate does not know by its code
-        registry = inspect.getattr_static(link, "registry", None)
-        if type(registry) is types.MappingProxyType and callable(
-            inspect.getattr_static(link, "dispatch", None)
+    - its code is the ``wrapper`` nested in ``functools.singledispatch``, as read when
+      this module was imported or as ``functools`` stands now (after a reload);
+    - it is a plain function whose closure holds a ``dispatch`` function whose closure
+      holds a ``registry`` dict beside a ``dispatch_cache`` and a ``cache_token``, which
+      is how ``functools`` builds one (Python 3.10 to 3.15), whichever copy of
+      ``functools`` built it. A ``dispatch`` function over a ``registry`` dict alone, as
+      an event bus of your own might have, is not one;
+    - it has a ``registry`` that is exactly a ``types.MappingProxyType`` beside a callable
+      ``dispatch`` and a callable ``register``. A ``functools.wraps`` wrapper over a
+      dispatcher carries a copy of those and is taken for one, which is the same answer:
+      it leads to the dispatcher.
+
+    The attributes are read with ``inspect.getattr_static`` and the closure from its
+    cells, so this test runs no property and no ``__getattr__`` of the object. A service
+    object with a ``dispatch`` method and a ``registry`` that is not a mapping proxy is
+    not one."""
+    if type(link) is types.FunctionType:
+        code = link.__code__
+        if any(
+            code is known for known in (_SINGLEDISPATCH_WRAPPER, _singledispatch_wrapper_code())
         ):
-            base = inspect.getattr_static(link, "__wrapped__", None)
-            return len(registry) != 1 or registry.get(object) is not base
-    register = getattr(link, "register", None)
-    return isinstance(getattr(register, "__self__", None), functools.singledispatchmethod)
+            return True
+        dispatch = _closure_value(link, "dispatch")
+        if type(dispatch) is types.FunctionType:
+            if type(_closure_value(dispatch, "registry")) is dict and (
+                _FUNCTOOLS_DISPATCH_STATE <= set(dispatch.__code__.co_freevars)
+            ):
+                return True
+    return (
+        type(inspect.getattr_static(link, "registry", None)) is types.MappingProxyType
+        and callable(inspect.getattr_static(link, "dispatch", None))
+        and callable(inspect.getattr_static(link, "register", None))
+    )
+
+
+#: ``functools.singledispatchmethod`` as it was when this module was imported.
+_SINGLEDISPATCHMETHOD: Any = getattr(functools, "singledispatchmethod", None)
+
+
+def _dispatch_method_descriptor(value: Any) -> bool:
+    """Whether ``value`` is a ``functools.singledispatchmethod``: an instance of that
+    class as it was at import or as ``functools`` has it now, or an object of a class of
+    that name whose ``dispatcher`` is a dispatch function (:func:`_dispatch_function`)."""
+    for known in (_SINGLEDISPATCHMETHOD, getattr(functools, "singledispatchmethod", None)):
+        if isinstance(known, type) and isinstance(value, known):
+            return True
+    return type(value).__name__ == "singledispatchmethod" and _dispatch_function(
+        inspect.getattr_static(value, "dispatcher", None)
+    )
+
+
+def _dispatch_method(link: Any) -> bool:
+    """Whether ``link`` is a ``functools.singledispatchmethod`` or the callable one hands
+    out when it is read from an object or a class: up to Python 3.13 a function that
+    carries the descriptor's bound ``register``, from 3.14 an object that holds the
+    descriptor as ``_unbound``. The attributes are read with ``inspect.getattr_static``,
+    so no property and no ``__getattr__`` of the object runs; the ``isinstance`` tests
+    read the object's type and, when that is not the class, its ``__class__``."""
+    if _dispatch_method_descriptor(link):
+        return True
+    register = inspect.getattr_static(link, "register", None)
+    if inspect.ismethod(register) and _dispatch_method_descriptor(register.__self__):
+        return True
+    return _dispatch_method_descriptor(inspect.getattr_static(link, "_unbound", None))
+
+
+def _is_dispatcher(link: Any) -> bool:
+    """A callable that picks the code it runs at call time by the type of an argument: a
+    ``functools.singledispatch`` function or a ``singledispatchmethod``, registered or
+    not."""
+    return _dispatch_function(link) or _dispatch_method(link)
 
 
 def _opaque_decorator(link: Any) -> bool:
@@ -409,22 +568,56 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
     runs it at a default that is in no schema; one that takes a parameter of the function
     leaves the function at its own default; one that reorders them swaps the values.
 
-    The walk reads the callable, what ``__wrapped__`` leads to, a bound method's function
-    and a callable object's ``__call__``. A ``functools.singledispatch`` function with an
-    implementation registered is refused: which one runs depends on the type of an
-    argument, and the walk reads only the one ``__wrapped__`` names. A wrapper that calls
-    a function it holds in a closure or an attribute is not read, and is not refused."""
+    The walk reads the callable, what ``__wrapped__`` leads to, a bound method's function,
+    a callable object's ``__call__`` and the callable a ``functools.partialmethod`` holds
+    (:func:`_steps`). Three kinds of callable are refused wherever they stand among those:
+
+    - a ``functools.singledispatch`` function or a ``singledispatchmethod``, with or
+      without an implementation registered: which implementation runs is chosen at call
+      time, and one can be registered between the moment a call is judged and the moment
+      it runs (the SDK judges every call of a model turn before any tool body runs);
+    - a ``weakref.proxy``: reading ``__wrapped__`` from it reads the attribute of the
+      object it stands for, so the walk would step past that object, and a dispatcher
+      behind a proxy would not be asked;
+    - a callable that is or carries a ``functools.partialmethod``: ``inspect`` reads the
+      parameters of the callable the partialmethod holds as the tool's own, and neither
+      it nor the 0.15.0 kernel's walk reads what is under that callable. That is what
+      reading a partialmethod from a class gives, and from an object when the callable
+      it holds has no ``__get__``. Over a plain function read from an object it gives a
+      ``functools.partial``, which the SDK refuses itself.
+
+    The questions are asked of every callable :func:`_reached_callables` finds; a
+    callable they cannot be asked of is refused. A wrapper that calls a function it holds
+    in a closure or an attribute is not read, and is not refused."""
     get_callable = getattr(tool.on_invoke_tool, "_get_wrapped_callable", None)
     func = get_callable() if callable(get_callable) else None
-    chain = _wrapped_chain(func)
-    if any(_dispatches_by_type(link) for link in chain):
+    try:
+        reached, complete = _reached_callables(func)
+        dispatches = any(_is_dispatcher(link) for link in reached)
+        proxied = any(type(link) in weakref.ProxyTypes for link in reached)
+        partialmethod = any(_held_partialmethod(link) is not None for link in reached)
+    except Exception as exc:  # noqa: BLE001, a callable the gate cannot question is refused
+        return _DISPATCH_NOT_READ.format(type(exc).__name__)
+    if dispatches:
         return _SINGLEDISPATCH
+    if proxied:
+        return _WEAK_PROXY
+    if partialmethod:
+        return _PARTIALMETHOD_REFUSED
+    if not complete:
+        return _TOO_MANY_WRAPPERS
     try:
         if not callable(func):
             raise TypeError("the invoker does not expose the function it wraps")
         levels = _reached_parameters(func)
     except Exception as exc:  # noqa: BLE001, a callable the gate cannot read is refused
-        if type(exc) is ValueError and any(_opaque_decorator(link) for link in chain):
+        if type(exc).__name__ == _KERNEL_DISPATCH:
+            return _SINGLEDISPATCH
+        if type(exc).__name__ == _KERNEL_HIDDEN:
+            return _HIDDEN_WRAPPER.format(exc)
+        if type(exc).__name__ == _KERNEL_PARTIALMETHOD:
+            return _PARTIALMETHOD_REFUSED
+        if type(exc) is ValueError and any(_opaque_decorator(link) for link in reached):
             return _OPAQUE_DECORATOR
         if type(exc) is ValueError and str(exc) == _WALK_LIMIT:
             return _TOO_MANY_WRAPPERS
@@ -477,16 +670,50 @@ _AGENT_TOOL_DATA_ONLY = (
 )
 
 
-def _core_kind(schema: Any) -> str:
-    """The pydantic core type of a field, under its default and its ``Optional``."""
-    while type(schema) is dict and schema.get("type") in ("default", "nullable"):
-        schema = schema.get("schema")
-    return str(schema.get("type")) if type(schema) is dict else "unknown"
+def _data_only(schema: Any) -> bool:
+    """The SDK's rule for one core schema, for a node that may not be a schema at all."""
+    return type(schema) is dict and "type" in schema and _is_data_only_schema(schema)
+
+
+def _outside_cause(schema: Any) -> str:
+    """What puts a field's core schema outside the SDK's data-only set, read the way the
+    SDK's own rule reads it (``_is_data_only_schema``): under a default, an ``Optional``,
+    a list, a mapping and a union, down to the part the rule stops at. A ``str`` and a
+    ``list`` are in the set, so a string is named by its pattern and a list by what it
+    holds; anything else by its pydantic core type."""
+    kind = schema.get("type") if type(schema) is dict else None
+    if kind in ("default", "nullable"):
+        return _outside_cause(schema.get("schema"))
+    if kind == "str" and "pattern" in schema:
+        return "a string pattern"
+    if kind == "list" and not _data_only(schema.get("items_schema", {"type": "any"})):
+        return f"a list of {_outside_cause(schema.get('items_schema'))}"
+    if kind == "dict":
+        for key, part in (("keys_schema", "keys"), ("values_schema", "values")):
+            if not _data_only(schema.get(key, {"type": "any"})):
+                return f"a mapping with {part} of {_outside_cause(schema.get(key))}"
+    if kind == "union":
+        for choice in schema.get("choices") or ():
+            if not _data_only(choice):
+                return f"a union with {_outside_cause(choice)}"
+    if kind == "literal":
+        return "a `Literal` of values other than None, a bool, an int or a str"
+    if type(kind) is str and kind.startswith("function-"):
+        return f"a validator, pydantic core type `{kind}`"
+    return f"pydantic core type `{kind}`" if type(kind) is str else "pydantic core type unknown"
 
 
 def _agent_tool_parameters_reason(core: Any) -> str:
-    """Why a ``parameters`` type is not one the gate works out the sub-agent's input for,
-    naming the field and the pydantic core type that puts it outside the data-only set."""
+    """Why a ``parameters`` type is not one the gate works out the sub-agent's input for.
+    A cause that lies in one field names the field and what puts it outside the
+    data-only set (:func:`_outside_cause`); a cause on the type as a whole names that."""
+    kind = core.get("type") if type(core) is dict else None
+    if type(kind) is str and kind.startswith("function-"):
+        return (
+            "its `parameters` type has a validator of its own on the type as a whole (a "
+            f"`model_validator`, for one; its pydantic core type is `{kind}`). "
+            f"{_AGENT_TOOL_DATA_ONLY}"
+        )
     if type(core) is not dict or core.get("type") != "model":
         kind = core.get("type") if type(core) is dict else "unknown"
         return (
@@ -507,7 +734,7 @@ def _agent_tool_parameters_reason(core: Any) -> str:
                         "other than `list` or `dict`)"
                     )
                 else:
-                    named.append(f"`{name}` (pydantic core type `{_core_kind(own)}`)")
+                    named.append(f"`{name}` ({_outside_cause(own)})")
             elif _runs_code_to_serialize(field):
                 writes.append(f"`{name}`")
         computed = [f"`{each.get('property_name')}`" for each in inner.get("computed_fields") or ()]

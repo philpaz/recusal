@@ -11,13 +11,13 @@ type: software
 authors:
   - family-names: Paz
     given-names: Philip
-    affiliation: "NexiNexta (https://www.nexinexta.com)"
+    affiliation: "Recusal (https://recusal.io)"
     website: "https://www.linkedin.com/in/philippaz/"
 license: Apache-2.0
 repository-code: "https://github.com/philpaz/recusal"
-url: "https://github.com/philpaz/recusal"
-version: "0.15.0"
-date-released: "2026-11-21"
+url: "https://recusal.io"
+version: "0.16.0"
+date-released: "2026-11-26"
 keywords:
   - ai-agents
   - agent-governance

@@ -43,10 +43,12 @@ What each one gates, and what its hook cannot see, is in its own README. How the
 relate to the kernel is in
 [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md#adapter-packages).
 
-Every package ships inline types (`py.typed`). On every pull request the installed
-wheel is type-checked with mypy against its framework's own types, with function
-bodies checked whether or not they are annotated. Not every function is annotated, so
-some of what a package returns is typed as `Any`.
+Every package ships inline types (`py.typed`). On every pull request, each wheel is
+built once with the hash-locked release toolchain on Python 3.12, then the same wheel is
+installed, smoke-tested from outside the checkout, and type-checked with mypy against
+its framework's own types on Python 3.12 and the package's declared minimum Python.
+Function bodies are checked whether or not they are annotated. Not every function is
+annotated, so some of what a package returns is typed as `Any`.
 
 **Each is published to PyPI** and installs by name, for example
 `pip install recusal-langgraph`. A package that requires another brings it along.

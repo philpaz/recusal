@@ -51,6 +51,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LOCKS = ROOT / "requirements"
 ADAPTERS = ROOT / "adapters"
+#: Draft adapters: in the tree and tested on every pull request, not released.
+DRAFTS = ADAPTERS / "drafts"
 
 #: Days a release must have been public before a committed lock may take it.
 COOLING_OFF_DAYS = 7
@@ -73,10 +75,10 @@ COOLING_OFF_EXCEPTIONS: dict[str, tuple[tuple[str, ...], str, str]] = {
 #: Locks with fixed roots: a tool a job installs on its own. The value is the roots and
 #: the oldest Python the job that installs it runs on.
 TOOLS = {
-    "zizmor": (["zizmor==1.30.0"], "3.12"),
-    "sigstore": (["sigstore==4.4.0"], "3.12"),
+    "zizmor": (["zizmor==1.30.1"], "3.12"),
+    "sigstore": (["sigstore==4.5.1"], "3.12"),
     # the resolver --resolve runs, in the newest-release lane
-    "uv": (["uv==0.13.7"], "3.10"),
+    "uv": (["uv==0.13.9"], "3.10"),
     # the deliberately old release the GitHub Action's dogfood job preinstalls, to prove
     # the action replaces a conflicting package
     "recusal-0.3.0": (["recusal==0.3.0"], "3.12"),
@@ -118,6 +120,21 @@ def adapter_roots(directory: str) -> list[str]:
     return dev_roots() + pins
 
 
+def draft_directories() -> list[str]:
+    return sorted(path.parent.name for path in DRAFTS.glob("*/pyproject.toml"))
+
+
+def draft_python(directory: str) -> str:
+    project = _pyproject(DRAFTS / directory / "pyproject.toml")
+    return re.fullmatch(r">=(3\.\d+)", project["project"]["requires-python"]).group(1)
+
+
+def draft_roots(directory: str) -> list[str]:
+    """The dev tools plus the framework versions the draft adapter is tested with."""
+    pins = (DRAFTS / directory / "tested-with.txt").read_text(encoding="utf-8").split()
+    return dev_roots() + pins
+
+
 def definitions() -> dict[str, tuple[list[str], str]]:
     """Lock name -> (roots, oldest Python it is installed on)."""
     locks: dict[str, tuple[list[str], str]] = {"dev": (dev_roots(), kernel_python())}
@@ -126,6 +143,8 @@ def definitions() -> dict[str, tuple[list[str], str]]:
     locks["cookbook-mcp"] = (dev_roots() + ["mcp==2.3.0"], "3.12")
     for directory in adapter_directories():
         locks[f"adapter-{directory}"] = (adapter_roots(directory), adapter_python(directory))
+    for directory in draft_directories():
+        locks[f"draft-{directory}"] = (draft_roots(directory), draft_python(directory))
     return locks
 
 

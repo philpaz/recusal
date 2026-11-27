@@ -524,11 +524,15 @@ def test_what_the_sdk_does_with_an_unknown_tool_and_a_repeated_call_id(oa):
 
 
 def test_functools_builds_a_singledispatch_function_the_way_the_gate_knows_it():
-    """The gate knows a ``functools.singledispatch`` function by the code of the
-    ``wrapper`` function nested in ``functools.singledispatch``, and reads its registry
-    from the closure of that function's ``dispatch``. A Python that builds its dispatcher
-    another way fails here, and the gate falls back to reading the attributes."""
+    """The gate knows a ``functools.singledispatch`` function in three ways, any one of
+    which is enough: by the code of the ``wrapper`` function nested in
+    ``functools.singledispatch``, by the closure of that function (a ``dispatch``
+    function whose closure holds the ``registry`` dict), and by its attributes (a
+    ``registry`` that is a mapping proxy beside ``dispatch`` and ``register``). A Python
+    that builds its dispatcher another way fails here and says which of the three it
+    no longer has."""
     import functools
+    import inspect
     import types
 
     wrappers = [
@@ -552,6 +556,9 @@ def test_functools_builds_a_singledispatch_function_the_way_the_gate_knows_it():
     assert registry.cell_contents == {object: lookup.__wrapped__}
     lookup.register(int)(lambda key: "int")
     assert set(registry.cell_contents) == {object, int}
+    assert type(inspect.getattr_static(lookup, "registry")) is types.MappingProxyType
+    assert callable(inspect.getattr_static(lookup, "dispatch"))
+    assert callable(inspect.getattr_static(lookup, "register"))
 
     # a `functools.wraps` wrapper carries a copy of the attributes and is not the dispatcher
     @functools.wraps(lookup)
@@ -566,3 +573,28 @@ def test_functools_builds_a_singledispatch_function_the_way_the_gate_knows_it():
         handle = functools.singledispatch(lambda self, key="": key)
 
     assert Service().handle.__func__.__code__ is wrappers[0]
+
+
+def test_functools_hands_out_a_singledispatchmethod_the_way_the_gate_knows_it():
+    """What a ``functools.singledispatchmethod`` hands out when it is read from an object
+    is known by one of two things, read without running code: up to Python 3.13 a
+    function that carries the descriptor's bound ``register``, from 3.14 an object that
+    holds the descriptor as ``_unbound``. The descriptor holds its dispatcher as
+    ``dispatcher``."""
+    import functools
+    import inspect
+
+    class Service:
+        @functools.singledispatchmethod
+        def handle(self, key: str = "") -> str:
+            return key
+
+    descriptor = Service.__dict__["handle"]
+    assert type(descriptor) is functools.singledispatchmethod
+    assert type(descriptor).__name__ == "singledispatchmethod"
+    assert callable(inspect.getattr_static(descriptor, "dispatcher").dispatch)
+    for handed_out in (Service().handle, Service.handle):
+        register = inspect.getattr_static(handed_out, "register", None)
+        by_register = inspect.ismethod(register) and register.__self__ is descriptor
+        by_unbound = inspect.getattr_static(handed_out, "_unbound", None) is descriptor
+        assert by_register or by_unbound

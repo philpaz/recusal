@@ -443,7 +443,63 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
+
+      # Reuse the exact wheels built above on the adapter's declared Python floor.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install the same wheels and pinned framework on Python 3.11
+        run: |
+          python -m venv /tmp/adapter-py311
+          /tmp/adapter-py311/bin/pip install --quiet --require-hashes -r requirements/adapter-pydantic-ai.txt
+          /tmp/adapter-py311/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_pydantic_ai-*.whl
+          /tmp/adapter-py311/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.11
+        run: cd /tmp && /tmp/adapter-py311/bin/python "$GITHUB_WORKSPACE/adapters/pydantic-ai/smoke_test.py"
+      - name: Type-check the installed package on Python 3.11
+        run: |
+          cd /tmp && /tmp/adapter-py311/bin/python -m mypy --python-version 3.11 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_pydantic_ai
+
+  # A draft adapter (adapters/drafts/) is not released. Its own tests run here with its
+  # framework installed from its own lock, on its minimum Python and on 3.12.
+  draft-llamaindex-py310:
+    name: Draft LlamaIndex adapter (Python 3.10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install Recusal and the pinned LlamaIndex core
+        run: |
+          python -m pip install --require-hashes -r requirements/draft-llamaindex.txt
+          python -m pip install --no-deps -e .
+      - name: Test the draft adapter, and run its surface probe
+        run: |
+          pytest -q adapters/drafts/llamaindex/test_gate.py
+          python adapters/drafts/llamaindex/probe_function_tool.py
+
+  draft-llamaindex-py312:
+    name: Draft LlamaIndex adapter (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install Recusal and the pinned LlamaIndex core
+        run: |
+          python -m pip install --require-hashes -r requirements/draft-llamaindex.txt
+          python -m pip install --no-deps -e .
+      - name: Test the draft adapter, and run its surface probe
+        run: |
+          pytest -q adapters/drafts/llamaindex/test_gate.py
+          python adapters/drafts/llamaindex/probe_function_tool.py
 
   # The same proof for recusal-openai, the gate for a Responses or Chat Completions loop.
   adapter-openai-wheel:
@@ -476,7 +532,22 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install the same wheels and pinned framework on Python 3.10
+        run: |
+          python -m venv /tmp/adapter-py310
+          /tmp/adapter-py310/bin/pip install --quiet --require-hashes -r requirements/adapter-openai.txt
+          /tmp/adapter-py310/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_openai-*.whl
+          /tmp/adapter-py310/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.10
+        run: cd /tmp && /tmp/adapter-py310/bin/python "$GITHUB_WORKSPACE/adapters/openai/smoke_test.py"
+      - name: Type-check the installed package on Python 3.10
+        run: |
+          cd /tmp && /tmp/adapter-py310/bin/python -m mypy --python-version 3.10 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai
 
   # The same proof for recusal-google-adk.
   adapter-google-adk-wheel:
@@ -511,6 +582,23 @@ jobs:
         run: |
           cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
 
+      # Reuse the exact wheels built above on the adapter's declared Python floor.
+      # The hash-locked adapter environment includes the type checker and framework.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install the same wheels and pinned framework on Python 3.11
+        run: |
+          python -m venv /tmp/adapter-py311
+          /tmp/adapter-py311/bin/pip install --quiet --require-hashes -r requirements/adapter-google-adk.txt
+          /tmp/adapter-py311/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_google_adk-*.whl
+          /tmp/adapter-py311/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.11
+        run: cd /tmp && /tmp/adapter-py311/bin/python "$GITHUB_WORKSPACE/adapters/google-adk/smoke_test.py"
+      - name: Type-check the installed package on Python 3.11
+        run: |
+          cd /tmp && /tmp/adapter-py311/bin/python -m mypy --python-version 3.11 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_google_adk
+
   # The same proof for recusal-openai-agents.
   adapter-openai-agents-wheel:
     name: recusal-openai-agents wheel (build, install, smoke)
@@ -542,7 +630,22 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install the same wheels and pinned framework on Python 3.10
+        run: |
+          python -m venv /tmp/adapter-py310
+          /tmp/adapter-py310/bin/pip install --quiet --require-hashes -r requirements/adapter-openai-agents.txt
+          /tmp/adapter-py310/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl
+          /tmp/adapter-py310/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.10
+        run: cd /tmp && /tmp/adapter-py310/bin/python "$GITHUB_WORKSPACE/adapters/openai-agents/smoke_test.py"
+      - name: Type-check the installed package on Python 3.10
+        run: |
+          cd /tmp && /tmp/adapter-py310/bin/python -m mypy --python-version 3.10 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents
 
   # The same proof for recusal-langgraph.
   adapter-langgraph-wheel:
@@ -575,7 +678,22 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langgraph
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langgraph
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install the same wheels and pinned framework on Python 3.10
+        run: |
+          python -m venv /tmp/adapter-py310
+          /tmp/adapter-py310/bin/pip install --quiet --require-hashes -r requirements/adapter-langgraph.txt
+          /tmp/adapter-py310/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl
+          /tmp/adapter-py310/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.10
+        run: cd /tmp && /tmp/adapter-py310/bin/python "$GITHUB_WORKSPACE/adapters/langgraph/smoke_test.py"
+      - name: Type-check the installed package on Python 3.10
+        run: |
+          cd /tmp && /tmp/adapter-py310/bin/python -m mypy --python-version 3.10 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langgraph
 
   # The same proof for recusal-langchain.
   adapter-langchain-wheel:
@@ -609,7 +727,22 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langchain
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langchain
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install the same wheels and pinned framework on Python 3.10
+        run: |
+          python -m venv /tmp/adapter-py310
+          /tmp/adapter-py310/bin/pip install --quiet --require-hashes -r requirements/adapter-langchain.txt
+          /tmp/adapter-py310/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_langgraph-*.whl dist-adapters/recusal_langchain-*.whl
+          /tmp/adapter-py310/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.10
+        run: cd /tmp && /tmp/adapter-py310/bin/python "$GITHUB_WORKSPACE/adapters/langchain/smoke_test.py"
+      - name: Type-check the installed package on Python 3.10
+        run: |
+          cd /tmp && /tmp/adapter-py310/bin/python -m mypy --python-version 3.10 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_langchain
 
   # The same proof for recusal-crewai.
   adapter-crewai-wheel:
@@ -642,7 +775,22 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install the same wheels and pinned framework on Python 3.11
+        run: |
+          python -m venv /tmp/adapter-py311
+          /tmp/adapter-py311/bin/pip install --quiet --require-hashes -r requirements/adapter-crewai.txt
+          /tmp/adapter-py311/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_crewai-*.whl
+          /tmp/adapter-py311/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.11
+        run: cd /tmp && /tmp/adapter-py311/bin/python "$GITHUB_WORKSPACE/adapters/crewai/smoke_test.py"
+      - name: Type-check the installed package on Python 3.11
+        run: |
+          cd /tmp && /tmp/adapter-py311/bin/python -m mypy --python-version 3.11 --check-untyped-defs --disallow-untyped-defs --disallow-incomplete-defs --warn-unused-ignores --warn-redundant-casts -p recusal_crewai
 
   # The same proof for recusal-openai-agents-mcp.
   adapter-openai-agents-mcp-wheel:
@@ -676,7 +824,22 @@ jobs:
       # against the framework's own types, from outside the checkout.
       - name: Type-check the installed package
         run: |
-          cd /tmp && /tmp/adapter/bin/python -m mypy --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents_mcp
+          cd /tmp && /tmp/adapter/bin/python -m mypy --python-version 3.12 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents_mcp
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install the same wheels and pinned framework on Python 3.10
+        run: |
+          python -m venv /tmp/adapter-py310
+          /tmp/adapter-py310/bin/pip install --quiet --require-hashes -r requirements/adapter-openai-agents-mcp.txt
+          /tmp/adapter-py310/bin/pip install --quiet --no-deps dist-adapters/recusal-*.whl dist-adapters/recusal_openai_agents-*.whl dist-adapters/recusal_openai_agents_mcp-*.whl
+          /tmp/adapter-py310/bin/pip check
+      - name: Smoke test the installed wheel on Python 3.10
+        run: cd /tmp && /tmp/adapter-py310/bin/python "$GITHUB_WORKSPACE/adapters/openai-agents-mcp/smoke_test.py"
+      - name: Type-check the installed package on Python 3.10
+        run: |
+          cd /tmp && /tmp/adapter-py310/bin/python -m mypy --python-version 3.10 --check-untyped-defs --warn-unused-ignores --warn-redundant-casts -p recusal_openai_agents_mcp
 
   # Cookbook recipe 14 collects a remote server's tools/list with the MCP SDK, which is not
   # a Recusal dependency, so the test job above always skips it. This job installs the SDK
