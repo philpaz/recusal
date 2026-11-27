@@ -537,6 +537,319 @@ class TestGoogleAdkGate:
             in (responses["c1"]["error"])
         )
 
+    def test_the_walk_for_none_defaults_is_given_the_parameters_the_adk_injects(self, example):
+        """A decorator that holds a second wrapper taking ``tool_context`` is judged with
+        the names the ADK injects, at both places the gate walks the tool: the walk that
+        decides which ``None`` defaults to write must not refuse what the signature check
+        just accepted, or every ``None`` default is written for no reason."""
+        import functools
+
+        def lookup(topic: str, region: str = None, tool_context=None) -> str:  # type: ignore[assignment]
+            return topic
+
+        def with_context(function):
+            @functools.wraps(function)
+            def guarded(*args, tool_context=None, **kwargs):
+                return function(*args, tool_context=tool_context, **kwargs)
+
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                return guarded(*args, **kwargs)
+
+            return wrapper
+
+        adapter, tool, skip = _adapter(), with_context(lookup), ("tool_context",)
+        assert adapter._unsupported_signature(tool, skip) is None
+        assert adapter._none_defaults_to_write(tool, ["region"], skip) == []
+        # without the injected names the same walk refuses, and the conservative answer is
+        # to write them all
+        assert adapter._none_defaults_to_write(tool, ["region"]) == ["region"]
+
+    def test_the_walk_is_called_as_the_installed_kernel_takes_it(self, example, monkeypatch):
+        """The package allows ``recusal`` 0.15.0, whose ``reached_parameters`` takes the
+        callable alone. Handing it ``skip`` raised ``TypeError`` on every tool, and the
+        conservative answer to a walk that fails wrote every ``None`` default: a plain
+        tool with ``region: str = None`` was then refused under the ADK's own argument
+        validation. Whether the kernel takes ``skip`` is read once from its signature."""
+        from recusal.invocation import reached_parameters
+
+        def plain(topic: str, region: str = None) -> str:  # type: ignore[assignment]
+            return topic
+
+        def released(func):  # the walk as 0.15.0 declares it
+            calls.append(func)
+            return reached_parameters(func)
+
+        def current(func, skip=()):
+            calls.append((func, skip))
+            return reached_parameters(func, skip)
+
+        adapter, calls = _adapter(), []
+        assert adapter._takes_skip(reached_parameters) and adapter._WALK_TAKES_SKIP
+        assert not adapter._takes_skip(released) and adapter._takes_skip(current)
+        assert not adapter._takes_skip(len.__call__) and not adapter._takes_skip(None)
+
+        monkeypatch.setattr(adapter, "_reached_parameters", released)
+        monkeypatch.setattr(adapter, "_WALK_TAKES_SKIP", False)
+        assert adapter._none_defaults_to_write(plain, ["region"], ("tool_context",)) == []
+        assert calls == [plain]
+
+        del calls[:]
+        monkeypatch.setattr(adapter, "_reached_parameters", current)
+        monkeypatch.setattr(adapter, "_WALK_TAKES_SKIP", True)
+        assert adapter._none_defaults_to_write(plain, ["region"], ("tool_context",)) == []
+        assert calls == [(plain, ("tool_context",))]
+
+        # the defect itself: ``skip`` handed to the walk that does not take it
+        monkeypatch.setattr(adapter, "_reached_parameters", released)
+        assert adapter._none_defaults_to_write(plain, ["region"], ("tool_context",)) == ["region"]
+
+    # --- the refusals the kernel's walk makes by name carry what to do about them -----------
+    #
+    # ``recusal`` 0.15.0, the oldest kernel this package allows, has neither
+    # ``HiddenWrapper`` nor ``DispatchedAtCallTime``; a later kernel raises both, and its
+    # ``unsupported_signature`` gives their reasons. Each test holds both outcomes.
+
+    @staticmethod
+    def _hidden_wrapper(ran):
+        import functools
+
+        def with_timeout(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, timeout: int = 30, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def robust(fn):
+            inner = with_timeout(fn)  # not on the ``__wrapped__`` chain of what is returned
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return inner(*args, **kwargs)
+
+            return wrapper
+
+        @robust
+        def fetch(url: str, timeout: int = 5) -> str:
+            """Fetch a url."""
+            ran.append((url, timeout))
+            return "fetched"
+
+        return fetch
+
+    @staticmethod
+    def _dispatching(ran):
+        import functools
+
+        @functools.singledispatch
+        def lookup(key: str, deep: bool = False) -> str:
+            """Look a key up."""
+            ran.append(("base", key, deep))
+            return "found"
+
+        @lookup.register
+        def _(key: int, deep: bool = False, skip_review: bool = True) -> str:
+            ran.append(("int", key, deep, skip_review))
+            return "found"
+
+        return lookup
+
+    def test_a_decorator_that_holds_a_second_wrapper_is_refused_with_what_to_do(self, example):
+        """The kernel's reason names the parameter and never a value; the gate adds what
+        the kernel found and what to do about it."""
+        from recusal import invocation
+
+        ran, seen = [], []
+        responses, _ = example.run_calls(
+            [("fetch", {"url": "u", "timeout": 9999}, "c1")],
+            policy=lambda name, args: seen.append(dict(args)) or [],
+            tools=[example.FunctionTool(self._hidden_wrapper(ran))],
+        )
+        if not hasattr(invocation, "HiddenWrapper"):  # not found beside 0.15.0
+            assert seen == [{"url": "u", "timeout": 9999}] and ran == [("u", 5)]
+            return
+        assert seen == [] and ran == []
+        error = responses["c1"]["error"]
+        assert (
+            "its signature cannot be judged (`timeout` is taken by a wrapper and by the "
+            "function it wraps, which can then run with a value no policy judged: a "
+            "decorator on the tool holds a second wrapper of the function, in its closure "
+            "or on the decorator object, which is not reached through `__wrapped__`; call "
+            "the decorated function from a plain function and register that one)"
+        ) in error
+        assert "9999" not in error and "30" not in error
+
+    def test_a_single_dispatch_function_is_refused_with_what_to_do(self, example):
+        """An implementation registered beside the base runs for an argument of its type,
+        with a default of its own (``skip_review=True``) that no policy saw."""
+        from recusal import invocation
+
+        if not hasattr(invocation, "DispatchedAtCallTime"):
+            # beside 0.15.0 the gate does not refuse it; the call then fails in Python,
+            # which wants a single-dispatch function's first argument by position
+            return
+        ran, seen = [], []
+        responses, _ = example.run_calls(
+            [("lookup", {"key": "k"}, "c1")],
+            policy=lambda name, args: seen.append(dict(args)) or [],
+            tools=[example.FunctionTool(self._dispatching(ran))],
+        )
+        assert seen == [] and ran == []
+        assert (
+            "its signature cannot be judged (the function that runs is chosen at call time "
+            "by the type of an argument, which the walk cannot read: it is a "
+            "single-dispatch function (`functools.singledispatch` or "
+            "`singledispatchmethod`) with an implementation registered beside its base one "
+            "or in its place; call it from a plain function and register that one)"
+        ) in responses["c1"]["error"]
+
+    @staticmethod
+    def _unread_cache(monkeypatch):
+        """A cache named again for ``fetch`` whose function cannot be told: the listing is
+        handed over without its last entry, so it is laid out as neither known way."""
+        import functools
+
+        from recusal import invocation
+
+        def fetch(url: str, timeout: int = 5) -> str:
+            """Fetch a url."""
+            return "fetched"
+
+        cached = functools.lru_cache(maxsize=None)(lambda *args, **kwargs: fetch(*args, **kwargs))
+        tool = functools.update_wrapper(cached, fetch)
+        invocation.reached_parameters(fetch)  # the first walk has been made
+        real = invocation._referents
+        monkeypatch.setattr(invocation, "_referents", lambda value: real(value)[:-1])
+        return tool
+
+    def test_a_cache_whose_function_cannot_be_told_keeps_the_kernels_reason(
+        self, example, monkeypatch
+    ):
+        """It arrives as a ``HiddenWrapper`` (a kernel later than 0.15.1). The kernel's
+        reason for it says what it is and what to do, and the words for a decorator that
+        holds a second wrapper are not added to it."""
+        import importlib  # noqa: F401
+
+        from recusal import invocation
+
+        if not hasattr(invocation, "UnreadCache"):
+            return  # 0.15.0 reads such a cache by its name
+        tool = self._unread_cache(monkeypatch)
+        words = invocation.unsupported_signature(tool)
+        assert words.startswith("a `functools.lru_cache` wrapper names one function")
+        assert words.endswith("from a plain function and register that one")
+        adapter = _adapter()
+        assert adapter._with_remedy(tool, words) == words
+        assert adapter._with_remedy(tool, words, ("tool_context",)) == words
+        assert adapter._UnreadCache is invocation.UnreadCache
+        assert "holds a second wrapper" not in adapter._with_remedy(tool, words)
+
+    def test_the_remedy_is_added_only_to_the_reason_the_walk_raised(self, example, monkeypatch):
+        """Beside a kernel without the two exceptions the gate handles a stand-in that
+        nothing raises, and the kernel's reason is passed on as it is. A reason for
+        something else on the same tool is passed on as it is too, and the walk is called
+        as the installed kernel takes it."""
+        from recusal import invocation
+
+        adapter = _adapter()
+
+        class Released:  # 0.15.0 has neither name
+            pass
+
+        class Odd:
+            HiddenWrapper = "not an exception class"
+            DispatchedAtCallTime = int
+
+        for name in ("HiddenWrapper", "DispatchedAtCallTime"):
+            assert adapter._walk_refusal(Released, name) is adapter._NotInThisKernel
+            assert adapter._walk_refusal(Odd, name) is adapter._NotInThisKernel
+            expected = getattr(invocation, name, adapter._NotInThisKernel)
+            assert adapter._walk_refusal(invocation, name) is expected
+            assert getattr(adapter, "_" + name) is expected
+
+        fetch, lookup = self._hidden_wrapper([]), self._dispatching([])
+        other = "`url` is not annotated with a supported data type"
+        assert adapter._with_remedy(fetch, other) == other
+        assert adapter._with_remedy(lookup, other) == other
+        assert adapter._with_remedy(len, other) == other  # a walk that fails is no remedy
+
+        # the walk as 0.15.0 declares it: the callable alone
+        calls = []
+
+        def released(func):
+            calls.append(func)
+            return invocation.reached_parameters(func)
+
+        monkeypatch.setattr(adapter, "_reached_parameters", released)
+        monkeypatch.setattr(adapter, "_WALK_TAKES_SKIP", False)
+        assert adapter._with_remedy(fetch, other, ("tool_context",)) == other
+        assert calls == [fetch]
+        monkeypatch.undo()
+
+        monkeypatch.setattr(adapter, "_HiddenWrapper", adapter._NotInThisKernel)
+        monkeypatch.setattr(adapter, "_DispatchedAtCallTime", adapter._NotInThisKernel)
+        for func in (fetch, lookup):
+            why = invocation.unsupported_signature(func)
+            if hasattr(invocation, "HiddenWrapper"):
+                assert why is not None and adapter._with_remedy(func, why) == why
+                prepared, reason = adapter._prepared(example.FunctionTool(func), {})
+                assert prepared is None and reason == f"its signature cannot be judged ({why})"
+            else:
+                assert why is None
+
+    def test_a_partialmethod_over_a_callable_object_is_refused(self, example):
+        """``functools.partialmethod`` over a callable object shows the object's parameters
+        less what is bound, and nothing under the object was read. With a parameter left
+        the kernel refused such a tool before (the method ``functools`` builds carries no
+        annotations); with every parameter bound, the object ran with defaults of its
+        wrappers that no policy saw. A kernel later than 0.15.1 refuses that one too."""
+        import functools
+
+        from recusal import invocation
+
+        ran = []
+
+        def default_table(fn):
+            @functools.wraps(fn)
+            def wrapper(repo, table: str = "archive"):
+                return fn(repo, table)
+
+            return wrapper
+
+        class Audited:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __call__(self, repo):
+                return self.fn(repo)
+
+        def purge(repo, table: str) -> str:
+            ran.append(table)
+            return "purged"
+
+        class Fetcher:
+            def __call__(self, repo, table: str, limit: int = 10) -> str:
+                return "fetched"
+
+        class Repo:
+            purge_default = functools.partialmethod(Audited(default_table(purge)))
+            fetch = functools.partialmethod(Fetcher())
+
+        adapter = _adapter()
+        prepared, reason = adapter._prepared(example.FunctionTool(Repo().fetch), {"table": "t"})
+        assert prepared is None and reason.startswith("its signature cannot be judged")
+        words = "it is a `functools.partialmethod` over a callable that does not bind as a method (a callable object, a class-based decorator), or a wrapper of one: its signature shows the parameters of what the partialmethod binds, not its own, so what runs under it cannot be read; register a plain function that calls it, or put the partialmethod over a plain function"
+        if hasattr(invocation, "PartialMethodSignature"):
+            # the reason is the true one, not "`table` is not annotated"
+            assert reason == f"its signature cannot be judged ({words})"
+        prepared, reason = adapter._prepared(example.FunctionTool(Repo().purge_default), {})
+        if hasattr(invocation, "PartialMethodSignature"):  # the kernel that reads the mark
+            assert prepared is None
+            assert reason == f"its signature cannot be judged ({words})"
+        else:
+            assert prepared == {} and reason is None
+
     def test_arguments_the_validation_would_change_again_are_refused(self, example, monkeypatch):
         """``run_async`` validates the dict the gate writes once more. If that validation is
         not a fixed point the function would get a value the policy never saw; the gate

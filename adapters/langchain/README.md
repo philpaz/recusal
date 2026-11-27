@@ -248,11 +248,47 @@ hands on for execution. That decides what it sees:
   under a parameter the tool's function marks as injected: only the state, store and
   runtime the agent's `ToolNode` fills itself are left out of judgment. This is why the
   gate goes last.
-- **A decorator that applies another decorator inside itself**, with a kernel that does
-  not detect it. `functools.wraps(fn)` makes the outer wrapper point at `fn`, and the
-  gate follows that pointer, not what the wrapper calls, so a keyword the inner
-  decorator adds or keeps runs with a value the policy did not see. Apply each
-  decorator to the function directly, one above the other.
+- **A decorator that applies another decorator inside itself.** `functools.wraps(fn)`
+  makes the outer wrapper point at `fn`, and the kernel's walk follows that pointer,
+  not what the wrapper calls. Beside `recusal` 0.15.0 or 0.15.1 the inner wrapper is not read,
+  so a keyword it adds or keeps runs with a value the policy did not see. A kernel
+  later than 0.15.1 (0.15.1 is the newest release as this is written) refuses the
+  call before the policy runs when the inner wrapper is
+  itself a `functools.wraps` wrapper of the same function, held in the outer wrapper's
+  closure, in a module global it names or on a class-based decorator's instance, and
+  takes a parameter of its own.
+  Held any other way, it is not found by either kernel. Apply each decorator to the
+  function directly, one above the other.
+- **A single-dispatch function and a `partialmethod` over a callable object**, beside
+  `recusal` 0.15.0 or 0.15.1. A `functools.singledispatch` function with an implementation
+  registered beside its base one, behind a wrapper that passes its first argument by
+  position, runs that implementation, chosen by the type of the argument, with
+  defaults of its own (the bare function, called by keyword, fails in Python). A
+  `functools.partialmethod` over a callable
+  object is read one level deep, and what is under the object is not read. A kernel
+  later than 0.15.1 refuses a call to either before the policy runs. Call the function
+  from a plain function and give the tool that.
+- **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
+  0.15.0 or 0.15.1.** Each let a value run that the policy did not judge: a decorator written as
+  `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
+  its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
+  `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
+  read as `f`, and the wrapper it calls by nothing); a class-based decorator written
+  inside the decorator, whose `__call__` calls a second wrapper the decorator built, or
+  one at module level whose `__call__` names that wrapper as a global; and a method
+  that delegates to a free function under `functools.wraps` of it and keeps its object,
+  where the free function's first parameter has a default (that parameter ran at its
+  default and was in no signature), with or without decorators on the free function
+  that only pass their arguments on. The second is the same on a method as on a plain
+  function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
+  object, a second cache). A kernel later than 0.15.1 reads the first three
+  like the same decorator written with a nested function, so a wrapper with a parameter
+  of its own is refused, naming the parameter, and one that only passes its arguments
+  on is accepted; it refuses the fourth, naming both parameters. Not found by either
+  kernel: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. A cache whose
+  function cannot be told from what it refers to is refused, not read. For each, call
+  the function from a plain function and give the tool that.
 - **A function that names its parameters and then calls another function.** The gate
   reads signatures, not function bodies. The function that is called runs with its own
   defaults, and the policy is shown only the arguments of the first. A decorator built

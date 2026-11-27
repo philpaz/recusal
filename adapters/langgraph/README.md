@@ -527,13 +527,58 @@ gate has decided nothing, and no entry is written.
   server fills it from its own schema or code, and neither the adapter nor the gate sees
   that value. A policy that must bound such an argument has to refuse the call when the
   argument is absent.
-- With a kernel that does not detect it, a decorator that applies another decorator
-  inside itself is not read. `functools.wraps(fn)` makes the outer wrapper point at
-  `fn`, and the gate follows that pointer, not what the wrapper calls:
+- A decorator that applies another decorator inside itself.
+  `functools.wraps(fn)` makes the outer wrapper point at `fn`, and the kernel's walk
+  follows that pointer, not what the wrapper calls:
   `def resilient(fn): guarded = with_timeout(30)(fn)` with a `functools.wraps(fn)`
-  wrapper that calls `guarded`. A keyword the inner decorator adds, or keeps from the
-  function, then runs with a value the policy did not see. Apply each decorator to the
-  function directly, one above the other; the gate reads that stack.
+  wrapper that calls `guarded`. Beside `recusal` 0.15.0 or 0.15.1 the inner wrapper is not read,
+  and a keyword it adds, or keeps from the function, runs with a value the policy did
+  not see. A kernel later than 0.15.1 (0.15.1 is the newest release as this is
+  written) refuses the call before the policy runs in one case: the inner wrapper
+  is itself a `functools.wraps` wrapper of the same function,
+  it is held in the outer wrapper's closure, in a module global the outer wrapper
+  names or on a class-based decorator's instance,
+  and it takes a parameter of its own. The reason names the parameter. Held any other
+  way (a plain function or a lambda that names nothing as `__wrapped__`, a callable
+  object, a container), the inner wrapper is not found by either kernel. Apply
+  each decorator to the function directly, one above the other; the gate reads that
+  stack.
+- A `functools.singledispatch` function, or a `singledispatchmethod`, with an
+  implementation registered beside its base one or in its place. The implementation
+  that runs is chosen at call time by the type of an argument, and the walk reads the
+  base one only. Beside `recusal` 0.15.0 or 0.15.1 this is not detected. Called by keyword, as
+  a tool's function is, the bare function fails in Python (a single-dispatch function
+  takes its first argument by position); behind a wrapper that passes that argument by
+  position, a registered implementation runs with defaults of its own that the policy
+  did not see. A kernel later than 0.15.1 refuses the call before the policy runs.
+  Call the function from a plain function and give the tool that.
+- A `functools.partialmethod` over a callable object (a class-based decorator's
+  instance, for example) as a tool's function. Beside `recusal` 0.15.0 or 0.15.1 it is read one
+  level deep: what is under the object is not read, so a default there can run that
+  the policy did not see. A kernel later than 0.15.1 refuses it before the policy runs,
+  with a reason that says it is a `partialmethod` over such a callable. Give the tool a
+  plain function that calls it.
+- **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
+  0.15.0 or 0.15.1.** Each let a value run that the policy did not judge: a decorator written as
+  `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
+  its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
+  `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
+  read as `f`, and the wrapper it calls by nothing); a class-based decorator written
+  inside the decorator, whose `__call__` calls a second wrapper the decorator built, or
+  one at module level whose `__call__` names that wrapper as a global; and a method
+  that delegates to a free function under `functools.wraps` of it and keeps its object,
+  where the free function's first parameter has a default (that parameter ran at its
+  default and was in no signature), with or without decorators on the free function
+  that only pass their arguments on. The second is the same on a method as on a plain
+  function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
+  object, a second cache). A kernel later than 0.15.1 reads the first three
+  like the same decorator written with a nested function, so a wrapper with a parameter
+  of its own is refused, naming the parameter, and one that only passes its arguments
+  on is accepted; it refuses the fourth, naming both parameters. Not found by either
+  kernel: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. A cache whose
+  function cannot be told from what it refers to is refused, not read. For each, call
+  the function from a plain function and give the tool that.
 - A function that names its parameters and then calls another function. The gate reads
   signatures, not function bodies: the function it calls runs with its own defaults and
   with whatever values the first one hands it, and the policy is shown only the

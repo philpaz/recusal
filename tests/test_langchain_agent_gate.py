@@ -674,6 +674,82 @@ class TestLangChainAgentGate:
         example.run_calls(calls, gated=False, tools=[tool])
         assert ran == [("u", 999999)], "ungated, the function ran its own default, not the 5"
 
+    def test_the_kernels_named_refusals_are_reported_through_the_middleware(self, example):
+        """The middleware gates through ``recusal-langgraph``, so the two refusals the
+        kernel's walk makes by name (a kernel later than 0.15.1) reach the model as what
+        they are: a decorator that holds a second wrapper with a parameter of its own, and
+        a single-dispatch function that can run more than its base. Beside 0.15.0 neither
+        is found, and both outcomes are held here."""
+        import functools
+
+        from langchain_core.tools import tool
+
+        from recusal import invocation
+
+        ran, seen = [], []
+
+        def with_timeout(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, timeout: int = 30, **kwargs):
+                return fn(*args, **kwargs)  # keeps the judged timeout
+
+            return wrapper
+
+        def robust(fn):
+            inner = with_timeout(fn)  # not on the ``__wrapped__`` chain of what is returned
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return inner(*args, **kwargs)
+
+            return wrapper
+
+        @tool
+        @robust
+        def fetch(url: str, timeout: int = 5) -> str:
+            """Fetch a url."""
+            ran.append((url, timeout))
+            return "fetched"
+
+        @functools.singledispatch
+        def lookup(key: str, deep: bool = False) -> str:
+            """Look a key up."""
+            ran.append(("base", key, deep))
+            return "found"
+
+        @lookup.register
+        def _(key: int, deep: bool = False, skip_review: bool = True) -> str:
+            return "found"
+
+        def recording(name, args):
+            seen.append((name, dict(args)))
+            return []
+
+        calls = [self.call("fetch", {"url": "u", "timeout": 9999})]
+        messages, _ = example.run_calls(calls, policy=recording, tools=[fetch])
+        content = str(messages[0].content)
+        if hasattr(invocation, "HiddenWrapper"):
+            assert ran == [] and seen == []
+            assert "holds a second wrapper of that function" in content
+            assert "`timeout` is taken by a wrapper and by the function it wraps" in content
+            assert "call the decorated function from a plain function" in content
+            assert "cannot be inspected" not in content and "9999" not in content
+        else:
+            assert seen == [("fetch", {"url": "u", "timeout": 9999})] and ran == [("u", 5)]
+
+        if not hasattr(invocation, "DispatchedAtCallTime"):
+            # beside 0.15.0 the gate does not refuse it; the call then fails in Python,
+            # which wants a single-dispatch function's first argument by position
+            return
+        del ran[:], seen[:]
+        calls = [self.call("lookup", {"key": "k"})]
+        messages, _ = example.run_calls(calls, policy=recording, tools=[tool(lookup)])
+        content = str(messages[0].content)
+        assert ran == [] and seen == []
+        assert "is a single-dispatch function" in content
+        assert "chosen at call time, by the type of an argument" in content
+        assert "cannot be inspected" not in content
+
     def test_an_arun_that_hands_the_call_to_run_is_refused_under_ainvoke(self, example):
         from langchain_core.tools import BaseTool
 

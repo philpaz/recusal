@@ -66,6 +66,7 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.set_metadata import SetMetadataToolset
 
+import recusal.invocation as _invocation
 from recusal import Finding, decide
 from recusal.invocation import DeclaredSignature as _DeclaredSignature
 from recusal.invocation import detached as _detached
@@ -79,6 +80,37 @@ if TYPE_CHECKING:
 
 #: A Recusal policy: ``policy(tool_name, tool_input)`` returns a list of findings.
 Policy = Callable[[str, dict[str, Any]], list[Finding]]
+
+
+class _NotInThisKernel(Exception):
+    """Stands in for a refusal of the walk that the installed kernel does not have.
+    ``recusal`` 0.15.0, the oldest this package allows, has neither ``HiddenWrapper`` nor
+    ``DispatchedAtCallTime``. Nothing raises this class, so a handler for it never runs."""
+
+
+def _walk_refusal(kernel: Any, name: str) -> type[BaseException]:
+    """The exception class the kernel's walk raises under ``name``, or the stand-in where
+    the installed kernel has none of that name."""
+    found = getattr(kernel, name, None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return found
+    return _NotInThisKernel
+
+
+#: A callable on the way holds a second wrapper the walk does not read (a kernel later
+#: than 0.15.1).
+_HiddenWrapper = _walk_refusal(_invocation, "HiddenWrapper")
+#: A single-dispatch function on the way can run more than its base (the same kernels).
+_DispatchedAtCallTime = _walk_refusal(_invocation, "DispatchedAtCallTime")
+#: A callable on the way is read by ``inspect.signature`` as a ``functools.partialmethod``
+#: (the same kernels).
+_PartialMethodSignature = _walk_refusal(_invocation, "PartialMethodSignature")
+#: A bound argument is taken by a wrapper under another name than the parameter with a
+#: default it would fill on the function the wrapper names (the same kernels).
+_BoundArgumentKept = _walk_refusal(_invocation, "BoundArgumentKept")
+#: A cache on the way names one function and calls another that cannot be told (the same
+#: kernels). A ``HiddenWrapper`` there, so it is asked for first.
+_UnreadCache = _walk_refusal(_invocation, "UnreadCache")
 
 #: A deferred-call handler, as ``HandleDeferredToolCalls`` takes one: ``handler(ctx,
 #: requests)`` returns the results it has, or None. Sync or async.
@@ -951,6 +983,26 @@ def _dispatches(step: Any) -> bool:
 _CACHED = type(functools.lru_cache(maxsize=None)(len))
 
 
+def _without_its_own_wrapped(function: Any) -> Any:
+    """A tool that is a ``functools.partial`` carrying a ``__wrapped__`` of its own (it was
+    named with ``functools.update_wrapper`` or ``functools.wraps``), as the partial it is
+    without that name; anything else as it is.
+
+    A kernel later than 0.15.1 follows the name a partial carries, as one more level. This
+    gate has rules of its own for such a partial (``_bound_over_a_wrapper``,
+    ``_another_signature``: the signature Pydantic AI reads through that name is held
+    against the function the call reaches), and they are written against the levels of
+    the callables the call passes through. So the kernel is handed the same partial
+    without the name, and those rules judge the name. A partial that also declares a
+    ``__signature__`` is handed over as it is: the kernel refuses that first."""
+    if not isinstance(function, functools.partial):
+        return function
+    own = getattr(function, "__dict__", None)
+    if type(own) is not dict or "__wrapped__" not in own or "__signature__" in own:
+        return function
+    return functools.partial(function.func, *function.args, **function.keywords)
+
+
 def _next_callables(function: Any) -> list[Any]:
     """The callables ``function`` hands the call to, bound as it binds them, in the order
     the kernel's walk takes them: a method's and a partial's rebound, ``__wrapped__``, then a
@@ -986,7 +1038,7 @@ def _view(function: Any, validated: bool) -> tuple[list[Any], list[Any]]:
     A class or a builtin wraps nothing and the kernel does not walk it: for a validated
     tool it is one level, the signature Pydantic AI validates against."""
     try:
-        levels = _reached_parameters(function)
+        levels = _reached_parameters(_without_its_own_wrapped(function))
     except _DeclaredSignature:
         raise
     except Exception:
@@ -1207,14 +1259,7 @@ def _unreadable_step(
     bound = sum(map(_binds, steps))
     for index, step in enumerate(steps):
         if _dispatches(step):
-            return (
-                "the function this tool runs is a single-dispatch function "
-                "(`functools.singledispatch` or `singledispatchmethod`) with an "
-                "implementation registered beside its base one or in its place: the "
-                "implementation that runs is chosen at call time, by the type of an "
-                "argument, so its parameters and defaults cannot be read; call it from a "
-                "plain function and register that one"
-            )
+            return _DISPATCHED
         cause = _bound_over_a_wrapper(step)
         if cause is not None:
             return cause
@@ -1233,6 +1278,62 @@ def _unreadable_step(
             if cause is not None:
                 return cause
     return None
+
+
+_DISPATCHED = (
+    "the function this tool runs is a single-dispatch function "
+    "(`functools.singledispatch` or `singledispatchmethod`) with an "
+    "implementation registered beside its base one or in its place: the "
+    "implementation that runs is chosen at call time, by the type of an "
+    "argument, so its parameters and defaults cannot be read; call it from a "
+    "plain function and register that one"
+)
+
+
+_PARTIALMETHOD = (
+    "the function this tool runs is a `functools.partialmethod` over a callable that does "
+    "not bind as a method (a callable object, a class-based decorator), or a wrapper of "
+    "one: the signature it shows is that of what the partialmethod binds, not its own, so "
+    "what runs under it cannot be read; register a plain function that calls it, or put "
+    "the partialmethod over a plain function"
+)
+
+
+def _bound_partial_cause(function: Any) -> Optional[str]:
+    """This gate's own reason for a ``functools.partial`` that binds by position somewhere
+    on the way (``_bound_over_a_wrapper``), for a call the kernel's walk has refused
+    already; None where there is none or the callables cannot be read that far."""
+    try:
+        for step in _steps(function):
+            cause = _bound_over_a_wrapper(step)
+            if cause is not None:
+                return cause
+    except Exception:  # noqa: BLE001, the kernel's refusal stands as it is
+        return None
+    return None
+
+
+def _walk_reason(refused: BaseException) -> str:
+    """The reason a call is refused with when the kernel's walk raises one of the
+    refusals it names (``HiddenWrapper``, ``DispatchedAtCallTime``,
+    ``PartialMethodSignature``; a kernel later than 0.15.1 raises them). A
+    single-dispatch function gets the reason this gate gives one it finds itself. A
+    hidden wrapper gets the kernel's own words for it, which name a parameter and never a
+    value, and what to do. A partialmethod gets its cause and what to do."""
+    if isinstance(refused, _DispatchedAtCallTime):
+        return _DISPATCHED
+    if isinstance(refused, _PartialMethodSignature):
+        return _PARTIALMETHOD
+    if isinstance(refused, _BoundArgumentKept):
+        return f"the function this tool runs cannot be read: {refused}"
+    if isinstance(refused, _UnreadCache):
+        return f"a cache on the function this tool runs cannot be read: {refused}"
+    return (
+        "a decorator on the function this tool runs holds a second wrapper of that "
+        "function (in its closure or on the decorator object), which is not reached "
+        f"through `__wrapped__` and so is not read like one applied directly: {refused}; "
+        "call the decorated function from a plain function and register that one"
+    )
 
 
 def _another_signature(function: Any, inner: Any) -> Optional[str]:
@@ -1289,7 +1390,10 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     Refused as well: a default that is not plain data, which cannot be shown to a policy; a
     callable that declares a signature of its own (``__signature__``), which hides the
     parameters Python binds; a stack that cannot be walked; a single-dispatch function
-    that can run another implementation than its base one, picked at call time; a
+    that can run another implementation than its base one, picked at call time (found
+    here, ``_dispatches``, or by the kernel's walk); a decorator that holds a second
+    wrapper with a parameter of its own, where the kernel's walk finds one (a kernel later
+    than 0.15.1, ``_walk_reason``); a
     positional argument bound past a naming wrapper where keeping it would not fail the
     call (``_bound_past_a_wrapper``); a keyword a partial binds that does not reach the
     parameter it names (``_keyword_past_a_parameter``); a value for the function's
@@ -1315,10 +1419,25 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
             "a function this tool runs declares a signature of its own (`__signature__`), so "
             "the parameters Python binds, and their defaults, cannot be read"
         )
+    except _BoundArgumentKept as refused:
+        # this gate's own rule for a partial that binds by position says more about it
+        return args, _bound_partial_cause(function) or _walk_reason(refused)
+    except (_HiddenWrapper, _DispatchedAtCallTime, _PartialMethodSignature) as refused:
+        return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a callable the kernel does not walk
-        return args, unread
+        # a partial that binds by position and carries a name of its own, further in than
+        # the tool itself, is one this gate can say more about
+        return args, _bound_partial_cause(function) or unread
     try:
         unreadable = _unreadable_step(function, levels, callables, takes_ctx, validated)
+    except (
+        _HiddenWrapper,
+        _DispatchedAtCallTime,
+        _PartialMethodSignature,
+        _BoundArgumentKept,
+    ) as refused:
+        # the levels under a partial with keywords, walked without it
+        return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a step that cannot be read is not let through
         return args, unread
     if unreadable is not None:
