@@ -530,8 +530,10 @@ class _Work:
         self.reads: dict[int, tuple[str, frozenset[str]]] = {}
         #: what was met, in order, that two readings of the schema answer differently
         #: (:func:`_doubt`), and each keyword the gate could not decide for it
-        #: (:func:`_undecided`): what is worked out once is kept with the part of this
-        #: it added, and adds it again when it is used again
+        #: (:func:`_undecided`). Each note is ``(the kinds of doubt, the keyword not
+        #: decided or None)``. What is worked out once is kept with ONE note, the notes
+        #: it made gathered (:func:`_gathered`), and adds that one when it is used
+        #: again: the list grows by what is done, never by what a note stands for
         self.notes: list[tuple] = []
         #: what the listing worked out once for every call (:meth:`Listed._prepare`): the
         #: subschemas that hold no keyword the validation checks, and what each
@@ -728,7 +730,7 @@ def _doubt(kind: str) -> None:
     server (``pattern``, ``format``, ``patternProperties``)."""
     work = _WORK.get()
     if work is not None:
-        work.notes.append((kind,))
+        work.notes.append(((kind,), None))
 
 
 def _mark() -> int:
@@ -749,7 +751,31 @@ def _kinds(mark: int) -> tuple[str, ...]:
     work = _WORK.get()
     if work is None:
         return ()
-    return tuple(dict.fromkeys(note[0] for note in work.notes[mark:] if len(note) == 1))
+    return tuple(dict.fromkeys(kind for note in work.notes[mark:] for kind in note[0]))
+
+
+def _gathered(work: _Work, mark: int) -> tuple:
+    """The notes made since ``mark`` as one note, put in their place: every kind of
+    doubt among them, each once, and the last keyword that was not decided. Returned
+    as what is kept with an answer that is worked out once: no note, or that one.
+
+    A note stands for a doubt, and a reason needs to know which kinds of doubt there
+    were and which keyword was not decided, not how many times each was met. Kept one
+    by one, the notes of an answer were written into the list again every time the
+    answer was used again, and kept again by whatever used it: definitions that each
+    name the next one twice doubled them at every level (67 million notes and 4 GB
+    for a schema of 1,920 characters and an argument of one character), and one
+    definition of many doubts named many times multiplied them. Gathered, an answer
+    used again adds one note, so the list is no longer than what was done to make
+    it: a step, or one turn of a loop a step covers, for each note."""
+    made = work.notes[mark:]
+    if not made:
+        return ()
+    if len(made) > 1:
+        kinds = tuple(dict.fromkeys(kind for note in made for kind in note[0]))
+        last = next((note[1] for note in reversed(made) if note[1] is not None), None)
+        work.notes[mark:] = [(kinds, last)]
+    return (work.notes[mark],)
 
 
 def _undecided(position: str, kinds: tuple[str, ...], of: str = "{}") -> Any:
@@ -764,7 +790,7 @@ def _undecided(position: str, kinds: tuple[str, ...], of: str = "{}") -> Any:
     error.recusal_undecided = (position, kinds, of)
     work = _WORK.get()
     if work is not None:
-        work.notes.append(("", position, kinds, of))
+        work.notes.append(((), (position, kinds, of)))
     return error
 
 
@@ -779,8 +805,9 @@ def _failed(mark: int, of: str = "{}") -> Any:
     work = _WORK.get()
     if work is not None:
         for note in reversed(work.notes[mark:]):
-            if len(note) == 4:
-                return _undecided(note[1], note[2], of.format(note[3]))
+            if note[1] is not None:
+                position, kinds, inner = note[1]
+                return _undecided(position, kinds, of.format(inner))
     return _unmet()
 
 
@@ -790,7 +817,7 @@ def _moot(work: _Work, mark: int) -> None:
     cause of nothing, and a refusal further out must not name it. What the bounding
     readings noted stays."""
     if len(work.notes) > mark:
-        work.notes[mark:] = [note for note in work.notes[mark:] if len(note) == 1]
+        work.notes[mark:] = [(note[0], None) for note in work.notes[mark:] if note[0]]
 
 
 #: The keyword a value stands under that the gate could not decide, and what it could
@@ -1092,7 +1119,7 @@ def _condition(validator: Any, sides: dict, instance: Any, condition: Any) -> Op
         if answer is None:
             work = _WORK.get()
             if work is not None:
-                work.notes.append(("", "if", kinds, "{}"))
+                work.notes.append(((), ("if", kinds, "{}")))
         return answer
     mark = _mark()
     own = _passes(validator, instance, condition)
@@ -1365,7 +1392,9 @@ def _evaluated(
 
     And it counts: a step for each subschema it goes into that nothing else counted
     (what a ``$ref`` names, a member of ``dependentSchemas``, a condition and its
-    branches; an alternative that checks nothing, :func:`_silent`). The alternatives
+    branches; an alternative that checks nothing, :func:`_silent`), and with it a
+    step for each member or item of the value, since what is found evaluated there
+    is kept for the call. The alternatives
     themselves are validated, which counts their keywords, and the members and items
     are covered by the square the keyword counts first (:func:`_squared`).
 
@@ -1389,7 +1418,9 @@ def _evaluated(
 
     def within(subschema: Any, using: Any = validator) -> frozenset:
         if work is not None:
-            work.step()
+            # one step, and one for each member or item: what it finds evaluated is
+            # kept for the call, and can be as large as the value
+            work.step(1 + len(instance))
         return _evaluated(using, sides, modern, items, instance, subschema, memo)
 
     ref = schema.get("$ref")
@@ -1462,7 +1493,7 @@ def _evaluated(
         else:
             found |= met | unmet
     result = frozenset(found)
-    kept[key] = (schema, instance, result, tuple(work.notes[mark:]) if work is not None else ())
+    kept[key] = (schema, instance, result, _gathered(work, mark) if work is not None else ())
     return result
 
 
@@ -1552,7 +1583,7 @@ def _passes(validator: Any, instance: Any, schema: Any) -> bool:
     answer = _valid(validator, instance, schema)
     if answer and key[0] == _GATE:
         _moot(work, mark)
-    work.answers[key] = (schema, instance, answer, tuple(work.notes[mark:]))
+    work.answers[key] = (schema, instance, answer, _gathered(work, mark))
     return answer
 
 
@@ -1775,7 +1806,7 @@ def _measured(keyword: str, check: Any, reading: str) -> Any:
         if clean:
             if reading == _GATE:
                 _moot(work, mark)
-            work.valid[key] = (schema, instance, tuple(work.notes[mark:]))
+            work.valid[key] = (schema, instance, _gathered(work, mark))
 
     return measured
 

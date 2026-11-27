@@ -559,7 +559,9 @@ def gate_mcp_server(
         whole = whole_listing()
         # a ``tool_filter`` hides tools from one agent; the schemas are the server's, so
         # the gate keeps the whole listing and two agents with two filters share it.
-        # What was handed out is read beside it: the SDK's servers hand out a listing
+        # What was handed out is read beside it, to know when the kept one is not what
+        # an agent holds (the call is then judged by a fresh listing, or refused; never
+        # by picking one of the two): the SDK's servers hand out a listing
         # they do not keep (another fetch was published first, or the cache was
         # invalidated meanwhile), and the agent then holds a schema the kept one is not
         if whole is None:

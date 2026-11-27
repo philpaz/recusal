@@ -534,7 +534,7 @@ All notable changes to this project are documented here. The format follows
     each name the next one twice, through `$ref` and `dependentSchemas`, beside
     `unevaluatedProperties`: `jsonschema` followed each again every time it was named,
     two to the power of the depth (the review measured 125 s for 22 definitions,
-    1.5 KB of schema and 13 characters of arguments, 303 steps). What was evaluated is
+    1,796 characters of schema and 13 of arguments, 303 steps). What was evaluated is
     now worked out once for a schema and a value, a step for each subschema gone
     into that nothing else counted: the same call spends 370 steps and reads each
     definition twice for each reading, which a test counts. And a `$ref` of a
@@ -550,8 +550,8 @@ All notable changes to this project are documented here. The format follows
     old one (reproduced with the SDK's own server class, its page request replaced).
     The gate now reads what was handed out beside what is kept. Where the two differ
     for a tool it lists again when that tool is called and judges by the fresh
-    listing, and where none can be had it refuses the call and says the listings
-    differ.
+    listing, whatever that holds, and where none can be had it refuses the call and
+    says the listings differ.
   - Tenth round, smaller, and what round nine's entry did not say. A value under
     `contains`, `unevaluatedProperties` or `unevaluatedItems`, or a member name under
     `propertyNames`, that the gate could not decide was said to be the list or the
@@ -570,6 +570,31 @@ All notable changes to this project are documented here. The format follows
     a step for each value; and an object beside an `if` on a `pattern` and an
     `unevaluatedProperties` was refused by round nine whatever it held, and is now
     refused only where the two branches do not evaluate the same members.
+  - Eleventh round: a list no step counted. A call notes each doubt the two readings
+    meet, for the reason of a refusal, and an answer that is worked out once kept
+    every note it had made and wrote them all into the list again each time it was
+    used again. Definitions that each name the next one twice doubled the notes at
+    every level: a `not` over 26 of them ending in a `format`, 1,920 characters of
+    schema and an argument of one character, made 67,108,866 notes in 169 steps (the
+    review measured 4.1 s and a peak of 4.2 GB), and an `if` over 20 of them was
+    sent with 2,097,154. One definition of 20,000 doubts named 3,000 times under a
+    `not` made 60,000,002 (11 s, and as long for every later call). An answer now
+    keeps one note, the kinds of doubt and the last keyword not decided among the
+    notes it made, and adds that one when it is used again: the first two calls end
+    with 3 and 2 notes and the third with 3, and the steps are what they were. A
+    reason reads the kinds of doubt and the keyword, never their number, so no reason
+    changes, and no doubt is dropped. Looking for the same fault elsewhere, one more
+    collection of a call was found that a reference fills for one step: what the
+    keywords of a subschema evaluated, as large as the value. A step is now counted
+    for each member or item where such a subschema is gone into (the call of the
+    tenth round's bullet above spends 437 steps, where it spent 370).
+  - Eleventh round, the page. "The gate judges a call against the listing the agent
+    was handed" was not so: it judges by the most recent listing made through the
+    server object, and where that differs from what was handed out, by a fresh
+    listing, whatever that holds. The page says that, and that two agents on one
+    server object share its most recent listing. What is not counted when a listing
+    is read is stated with what it grows with. And the tenth round's bullet gave the
+    schema of its 125 s case as 1.5 KB: it is 1,796 characters.
   - What 0.2.1 requires. `recusal>=0.16.0` (0.2.0: 0.15.0), the first kernel whose
     `recusal.invocation.detached` does not call itself. And
     `recusal-openai-agents>=0.2.2` (0.2.0: 0.2.0): a hosted approval whose arguments

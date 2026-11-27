@@ -917,7 +917,7 @@ so an integer of more than 4,300 digits is now refused from its bits on every Py
 the gate's own readings of the arguments recursed, so their time moved with the depth
 the sender nested at; a call a little over the size ceiling was read almost to its
 end; the gate read a `$ref` its own way; and three exceptions left the gate
-uncaught) and of a ninth and a tenth round (below),
+uncaught) and of a ninth, a tenth and an eleventh round (below),
 are in the changelog entry for 0.2.1. 0.2.1 copies a call's arguments with the
 kernel's `recusal.invocation.detached`, as 0.2.0 does, and requires `recusal` 0.16.0,
 the first whose copy does not recurse.
@@ -1003,7 +1003,7 @@ Pydantic schema refused that 0.2.0 sends, and compared 1,213,330 calls with
   bound there. One place where the gate and `jsonschema` as it ships disagree and the
   gate is right: `uniqueItems`, which `jsonschema` checks by sorting. Two ways a small
   listed schema held the event loop: definitions that each name the next one twice
-  beside `unevaluatedProperties` (two minutes for 1.5 KB of schema), and a `$ref` of a
+  beside `unevaluatedProperties` (two minutes for 1.8 KB of schema), and a `$ref` of a
   million characters. A listing the SDK's server hands out and does not keep, which
   left the gate judging by the schema before it (suspected from the SDK's source,
   then reproduced). And sentences that said more than is so: what reaches Python's
@@ -1028,8 +1028,39 @@ Pydantic schema refused that 0.2.0 sends, and compared 1,213,330 calls with
   bounds; sentences outside the diff it reviewed; and the 2019-09 `unevaluatedItems`
   path where `jsonschema` raises `TypeError` on `items: true`.
 - **Still open after it.** No proof of the bounds: the evidence is the comparison.
-  Reading a listing is not counted in steps (once for a listing, in proportion to
-  its size). The time tables on the package page are of the code before round eight.
+  Reading a listing is not counted in steps (once for a listing; round eleven says
+  what it grows with). The time tables on the package page are of the code before
+  round eight. And what round eleven found.
+
+**Round eleven** (2026-11-27, of round ten's changes; the fixes are in the same
+changelog entry).
+
+- **What it confirmed.** The shape of round ten closed, over about 2.2 million calls on
+  grids built by hand, none of them sent although `jsonschema` rejects it; the handling
+  of a listing that is handed out and not kept; the longest reference; the step counts
+  the package page states; and no ordinary schema refused that was sent before.
+- **What it found.** A list no step counted. A call notes each doubt the two readings
+  meet, and an answer that is worked out once kept every note and wrote them all into
+  the list again each time it was used again: definitions that each name the next one
+  twice doubled them (67 million notes and a peak of 4.2 GB for 1,920 characters of
+  schema and an argument of one character, in 169 steps), and one definition of many
+  doubts named many times multiplied them. Present since round nine. One sentence of
+  the package page that was not so (the gate judges by the most recent listing, not
+  by the one an agent was handed), one about what is not counted that needed
+  checking again, and a figure in the changelog.
+- **What closed it.** An answer that is worked out once keeps one note, the kinds of
+  doubt and the last keyword not decided, and adds that one when it is used again; a
+  reason reads nothing else of the notes. Looking for the same fault elsewhere found
+  one more collection that a reference fills for one step, what the keywords of a
+  subschema evaluated, and a step is now counted for each member where one is gone
+  into. The sentences are corrected. Tests: `TestEleventhReview` in
+  `tests/test_openai_agents_mcp_gate.py`, which count the notes of a call and assert
+  that they do not grow with the depth and grow by one for each naming.
+- **What it did not cover**, by its own list: 21 of the 24 object parts and 14 of the
+  16 list parts of its grid; the race inside the SDK's own server classes; Python
+  3.10; real transports; a live zod server; `_audit.py`; and a proof of the bounds.
+- **Still open after it.** No proof of the bounds. Reading a listing is not counted in
+  steps. The time tables on the package page are of the code before round eight.
 
 **Where you can help.**
 

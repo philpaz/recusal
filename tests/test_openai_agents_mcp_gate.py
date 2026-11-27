@@ -9126,6 +9126,202 @@ class TestTenthReview:
             assert stated in readme, stated
 
 
+class TestEleventhReview:
+    """The eleventh review (2026-11-27). The notes a call keeps of what two readings
+    answer differently were a list that no step counted: an answer that is worked out
+    once kept every note it made, and wrote them all into the list again each time it
+    was used again. Definitions that each name the next one twice doubled them at
+    every level (67 million notes and 4 GB for 1,920 characters of schema and one
+    character of argument), and one definition of many doubts named many times
+    multiplied them."""
+
+    example = TestWhatIsSentIsWhatWasJudged.example
+    judged = TestTheWholeListedSchema.judged
+    Recording = TestWhatIsSentIsWhatWasJudged.Recording
+    schema_module = staticmethod(TestThirdReview.schema_module)
+
+    def noted(self, arguments, schema, monkeypatch):
+        """``(the most notes the call ever held, the notes it ends with, the most one
+        kept answer holds, steps, what was sent or the reason)`` for one call."""
+        module = self.schema_module()
+        made = []
+
+        class Counted(list):
+            most = 0
+
+            def append(self, note):
+                list.append(self, note)
+                Counted.most = max(Counted.most, len(self))
+
+            def extend(self, notes):
+                list.extend(self, notes)
+                Counted.most = max(Counted.most, len(self))
+
+        original = module._Work.__init__
+
+        def counting(work, allowed):
+            original(work, allowed)
+            work.notes = Counted()
+            made.append(work)
+
+        monkeypatch.setattr(module._Work, "__init__", counting)
+        try:
+            outcome = module.Listed(schema, 10**9).complete(arguments)[1]
+        except module.Refused as refused:
+            outcome = refused.reason
+        finally:
+            monkeypatch.undo()
+        work = made[-1]
+        kept = [entry[-1] for cache in (work.valid, work.answers) for entry in cache.values()]
+        kept += [entry[3] for entry in work.evaluated.values()]
+        return Counted.most, len(work.notes), max(map(len, kept), default=0), work.steps, outcome
+
+    @staticmethod
+    def doubling(depth, leaf):
+        """Definitions that each name the next one twice, the last of them ``leaf``."""
+        definitions = {
+            f"n{index}": {
+                "allOf": [{"$ref": f"#/$defs/n{index + 1}"}, {"$ref": f"#/$defs/n{index + 1}"}]
+            }
+            for index in range(depth)
+        }
+        definitions[f"n{depth}"] = leaf
+        return definitions
+
+    def test_definitions_that_name_the_next_one_twice_do_not_double_the_notes(
+        self, example, monkeypatch
+    ):
+        """The reviewer's schema: a ``not`` over such a chain, one doubt at its end.
+        The notes were two to the power of the depth; they are a handful, the same at
+        every depth, and the steps grow with the depth and not with its power."""
+        steps = {}
+        for depth in (6, 12, 24, 48):
+            schema = {
+                "type": "object",
+                "properties": {"s": {"not": {"$ref": "#/$defs/n0"}}},
+                "$defs": self.doubling(depth, {"type": "string", "format": "date"}),
+            }
+            most, left, kept, steps[depth], outcome = self.noted({"s": "x"}, schema, monkeypatch)
+            assert most <= 8 and left <= 8 and kept <= 1, (depth, most, left, kept)
+            assert "argument `s` stands under a `not`" in outcome
+            assert "a `format`, which the gate does not check" in outcome
+        assert steps[24] - steps[12] == (steps[48] - steps[24]) // 2 > 0
+
+    def test_a_call_that_is_sent_keeps_no_more_notes_either(self, example, monkeypatch):
+        """An ``if`` over the same chain ending in an integer, and ``5.0``: not decided,
+        valid whichever branch applies, and sent. It kept two million notes."""
+        for depth in (6, 24):
+            schema = {
+                "type": "object",
+                "properties": {"n": {"if": {"$ref": "#/$defs/n0"}, "then": {"minimum": 0}}},
+                "$defs": self.doubling(depth, {"type": "integer"}),
+            }
+            most, left, kept, _, outcome = self.noted({"n": 5.0}, schema, monkeypatch)
+            assert outcome == {"n": 5.0}
+            assert most <= 8 and left <= 8 and kept <= 1, (depth, most, left, kept)
+
+    def test_a_definition_named_many_times_does_not_multiply_its_notes(self, example, monkeypatch):
+        """One definition that meets a doubt for each of many strings, named K times
+        side by side under a ``not``: K times the notes. Now the notes of the one
+        reading of it, whatever K is, and the steps grow with K by the namings."""
+        strings = {"s": [[f"a{number}" for number in range(300)]]}
+        text = {"type": "string", "format": "date"}
+
+        def named(times):
+            return {
+                "type": "object",
+                "properties": {
+                    "s": {"not": {"allOf": [{"$ref": "#/$defs/d"} for _ in range(times)]}}
+                },
+                "$defs": {"d": {"type": "array", "items": {"type": "array", "items": text}}},
+            }
+
+        found = {times: self.noted(strings, named(times), monkeypatch) for times in (5, 50, 500)}
+        for times, (most, left, kept, _, outcome) in found.items():
+            # the one reading of the 300 strings, gathered where it ends, and one note
+            # for each naming after the first, which is a step each
+            assert most <= 300 + times + 8 and left <= 8 and kept <= 1, (times, most, left, kept)
+            assert "stands under a `not`" in outcome
+        assert found[5][0] == found[50][0] == 300 and found[500][0] <= 500 + 8
+        assert found[50][3] - found[5][3] == (found[500][3] - found[50][3]) // 10 > 0
+
+    def test_a_reason_still_names_every_kind_of_doubt_and_the_last_keyword_not_decided(
+        self, example, monkeypatch
+    ):
+        """What a gathered note keeps is what a reason reads: which kinds of doubt
+        there were, each once, and which keyword was not decided."""
+        module = self.schema_module()
+        both = {"not": {"allOf": [{"format": "date"}, {"const": 1}, {"format": "time"}]}}
+        schema = {"type": "object", "properties": {"x": both}}
+        outcome = self.noted({"x": True}, schema, monkeypatch)[4]
+        assert outcome.count("a `format`, which the gate does not check") == 1
+        assert "whether a value is equal to one of another JSON type" in outcome
+        work = module._Work(10**9)
+        token = module._WORK.set(work)
+        try:
+            module._doubt("format")
+            mark = module._mark()
+            module._doubt("pattern")
+            module._undecided("not", ("pattern",))
+            module._doubt("format")
+            module._undecided("if", ("format",), "an item of {}")
+            module._doubt("pattern")
+            kept = module._gathered(work, mark)
+            assert kept == ((("pattern", "format"), ("if", ("format",), "an item of {}")),)
+            assert work.notes == [(("format",), None), kept[0]]
+            assert module._kinds(0) == ("format", "pattern") and not module._settled(mark)
+            assert module._failed(mark).recusal_undecided == ("if", ("format",), "an item of {}")
+            # nothing noted is kept as nothing, and what is not decided can be dropped
+            # while the doubts stay
+            assert module._gathered(work, len(work.notes)) == ()
+            module._moot(work, mark)
+            assert work.notes[mark:] == [(("pattern", "format"), None)]
+            assert getattr(module._failed(mark), "recusal_undecided", None) is None
+        finally:
+            module._WORK.reset(token)
+
+    def test_what_is_found_evaluated_is_counted_by_the_members_it_holds(self, example, monkeypatch):
+        """The other collection a call keeps that a reference fills: what the keywords
+        of each subschema evaluated, as large as the value, for one step each. A step
+        is now counted for each member too, where the subschema is gone into."""
+        depth = 20
+        definitions = {
+            f"n{index}": {
+                "$ref": f"#/$defs/n{index + 1}",
+                "dependentSchemas": {"k0": {"$ref": f"#/$defs/n{index + 1}"}},
+            }
+            for index in range(depth)
+        }
+        definitions[f"n{depth}"] = {"additionalProperties": True}
+        schema = {
+            "type": "object",
+            "properties": {"o": {"$ref": "#/$defs/n0", "unevaluatedProperties": False}},
+            "$defs": definitions,
+        }
+
+        def members(count):
+            return {"o": {f"k{number}": 1 for number in range(count)}}
+
+        module = self.schema_module()
+        one = self.noted(members(1), schema, monkeypatch)[3]
+        many = self.noted(members(31), schema, monkeypatch)[3]
+        # 61 times in the call a subschema is gone into for what it evaluated, and each
+        # time now counts the 30 more members, beside the 4,020 steps the keywords and
+        # the square counted for them before
+        assert many - one == 4_020 + 61 * 30
+        work_sizes = []
+        original = module._Work.__init__
+
+        def remembering(work, allowed):
+            original(work, allowed)
+            work_sizes.append(work)
+
+        monkeypatch.setattr(module._Work, "__init__", remembering)
+        module.Listed(schema, 10**9).complete(members(31))
+        work = work_sizes[-1]
+        assert sum(len(entry[2]) for entry in work.evaluated.values()) <= work.steps
+
+
 class SimpleRequest:
     """The approval request the SDK hands ``on_approval_request``: the item under ``data``."""
 

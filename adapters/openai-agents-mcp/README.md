@@ -389,10 +389,14 @@ is worked out by the gate once for a schema and a value, with a step for each su
 it goes into that nothing else counted (`jsonschema` followed a `$ref` again each time
 it was named, so definitions that each name the next one twice were read two to the
 power of their number of times). And a `$ref` may be 1,024 characters at the most, since
-a reference is looked up again each time it is applied. One thing a listed schema can
-make long is still not counted: reading the listing itself, once, when the first call
-after it is checked (its check against the metaschema, and the gate's own reading),
-which costs in proportion to the size of the listed schema.
+a reference is looked up again each time it is applied. What a call notes of the
+doubts it meets (for the reason of a refusal) is one note for each answer that is worked
+out once, however many doubts it stands for, so those notes are no more than the steps.
+One thing a listed schema can make long is still not counted: reading the listing
+itself, once, when the first call after it is checked (its check against the
+metaschema, and the gate's own reading). That grows with the size of the listed schema,
+and with the number of places a `$ref` names outside the keywords that hold schemas,
+each of which is checked as a schema of its own.
 `unevaluatedProperties` and `unevaluatedItems` are counted as the square of the number
 of members or items they are applied to, because they are checked by comparing
 each with every other. Every step is
@@ -713,13 +717,18 @@ the gate call `list_tools()` itself, with no run context and no agent, once for 
 call. A tool that is still not listed, and a server whose tools cannot be listed that
 way, is refused.
 
-The gate judges a call against the listing the agent was handed. The SDK's own server
-classes hand out a listing they fetched without keeping it when another fetch was
-published first, or when the cache was invalidated while the fetch was in flight
-(`invalidate_tools_cache()`): the agent then holds one schema and the server object
-(`cached_tools`) another. Where the two differ for a tool, the gate lists the tools
-again when that tool is called and judges by the fresh listing; where that cannot be
-had, the call is refused, with a reason that says the two listings differ.
+The gate judges a call against the most recent listing made through the server
+object, and sends what it judged. That is not always the listing an agent was handed.
+The SDK's own server classes hand out a listing they fetched without keeping it when
+another fetch was published first, or when the cache was invalidated while the fetch
+was in flight (`invalidate_tools_cache()`): the agent then holds one schema and the
+server object (`cached_tools`) another. Where the two differ for a tool, the gate does
+not pick one: it lists the tools again when that tool is called and judges by that
+fresh listing, whatever it holds (a third schema, if the server changed again), and
+where no fresh listing can be had the call is refused, with a reason that says the two
+listings differ. And two agents that share one server object share its most recent
+listing: an agent that was handed an earlier one is judged, and refused or completed,
+by the later one.
 
 A `tool_filter` hides tools from one agent; the schemas are the server's. The SDK's own
 server classes keep the listing as it was fetched, before the filter (`cached_tools`),
