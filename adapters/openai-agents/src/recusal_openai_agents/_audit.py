@@ -20,7 +20,9 @@ What each entry is bound to:
   parameters, a prepared value that is not JSON data): the arguments as proposed;
 - a call whose arguments are not a JSON object, hold a non-finite number or are nested
   more than 64 levels deep: the argument text, or the JSON value it parsed to, under the
-  key ``input``.
+  key ``input``;
+- a call whose arguments did not arrive as text (a ``dict``, a list, a number): the name
+  of the type they arrived as, under the key ``arguments_type``. They are not read.
 
 When an entry is written: when the guardrail runs, which is when the tool is about to
 execute, after any approval, so a call a person rejected has no entry. Under the SDK's

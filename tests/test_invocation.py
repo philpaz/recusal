@@ -5011,6 +5011,12 @@ USERS = {
     "adapters/openai-agents-mcp/src/recusal_openai_agents_mcp/_gate.py": {"detached"},
     "adapters/openai-agents-mcp/src/recusal_openai_agents_mcp/_schema.py": {"detached"},
     "adapters/openai-agents/src/recusal_openai_agents/_gate.py": {
+        "BoundArgumentKept",
+        "DeclaredSignature",
+        "DispatchedAtCallTime",
+        "HiddenWrapper",
+        "PartialMethodSignature",
+        "UnreadCache",
         "detached",
         "reached_parameters",
     },

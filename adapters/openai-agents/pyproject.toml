@@ -33,9 +33,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.15.0 is the first release with `recusal.invocation.reached_parameters`, the walk
-    # this gate reads a wrapped tool function with.
-    "recusal>=0.15.0,<1",
+    # 0.16.0 is the first release whose `recusal.invocation` has the refusal classes this
+    # gate imports and gives a reason for (`HiddenWrapper`, `UnreadCache`,
+    # `DispatchedAtCallTime`, `PartialMethodSignature`, `BoundArgumentKept`).
+    "recusal>=0.16.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "openai-agents>=0.24.0,<1",

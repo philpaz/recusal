@@ -691,7 +691,10 @@ setup was found.
 rounds five and six, merged in [#308](https://github.com/philpaz/recusal/pull/308); 0.2.0
 (tag `recusal-openai-agents-v0.2.0`, 2026-11-22) has the fixes of the rounds before them,
 merged in [#297](https://github.com/philpaz/recusal/pull/297). The review continues: a
-seventh round found the open items below, which the package page states.
+seventh round found the open items below, which the package page states. 0.2.2 is not a
+review round: it requires `recusal` 0.16.0, whose walk closes the first two open items
+of round seven, and gives each refusal of that walk a reason of its own (the changelog
+entry for 0.2.2).
 [Package](../adapters/openai-agents/README.md).
 
 **The rounds.** `review-history/openai-agents` holds a first commit and the commits of
@@ -762,34 +765,96 @@ a seventh found the open items.
 - **Round seven**, on the changes that close round six, confirmed those closed and found
   no call a model can cause to run unjudged. It found two ordinary stacks of decorators
   that run a wrapper's own parameter unjudged. Both come from how the kernel's walk in
-  `recusal` 0.15.0 reads them, both are in 0.2.0 too, and neither is fixed in 0.2.1: the
-  fix is in the kernel, in review in [#299](https://github.com/philpaz/recusal/pull/299).
-  They are the first two open items below. It also found sentences that overstated what
-  the walk reads, which 0.2.1 corrects, and refusal reasons whose advice or wording is
-  the third and fourth open items.
+  `recusal` 0.15.0 and 0.15.1 reads them, both are in 0.2.0 too, and neither is fixed in
+  0.2.1: the fix is in the kernel, merged in
+  [#299](https://github.com/philpaz/recusal/pull/299) and released in `recusal` 0.16.0.
+  They are the first two items below. It also found sentences that overstated what the
+  walk reads, which 0.2.1 corrects, and refusal reasons whose advice or wording is the
+  third and fourth items.
 
 **Open items.**
 
 - A `functools.partial` that carries a `__wrapped__` (a decorator written with
-  `functools.update_wrapper` over a partial) is read as a pass-through, so a wrapper
-  under it with a parameter of its own runs that parameter unjudged. Open; stated on the
-  package page with what to write instead.
+  `functools.update_wrapper` over a partial) was read as a pass-through, so a wrapper
+  under it with a parameter of its own ran that parameter unjudged. Closed beside
+  `recusal` 0.16.0, which 0.2.2 requires; open in 0.2.0 and 0.2.1 beside `recusal`
+  0.15.0 or 0.15.1.
 - `functools.wraps` written above `functools.lru_cache`: the cache names one function and
-  calls the wrapper it was built over, which is not read. Open; stated on the package
-  page with what to write instead.
-- Four refusal reasons advise calling the function from a plain function and registering
-  that one, without saying that what its body calls is not read. The page says so; the
-  reasons do not yet.
-- Two refusals name only an exception class (`DeclaredSignature` for the `decorator`
+  calls the wrapper it was built over, which was not read. Closed and open as the item
+  above.
+- Four refusal reasons advised calling the function from a plain function and
+  registering that one, without saying that what its body calls is not read, and a
+  fifth, for a callable the gate cannot question, advised registering one plain
+  function. In 0.2.2 every reason that gives that advice says so, and a test holds
+  them to it.
+- Two refusals named only an exception class (`DeclaredSignature` for the `decorator`
   package, `TypeError` for a wrapper over `wrapt.ObjectProxy`), with no cause or advice.
+  In 0.2.2 a `DeclaredSignature` has a reason with both. The other is open.
 - A single-dispatch function that a wrapper calls from a closure, a global or an
   attribute, and not through `__wrapped__`, is not found, and neither is one a plain
   function's body calls. The README lists it under what the gate does not see.
 - A change a tool body makes to another tool's function is not seen by the other calls
   of the same model turn. The README lists it there too.
-- The reasons given for a later kernel's refusals (`DispatchedAtCallTime`,
-  `HiddenWrapper`, `PartialMethodSignature`) are tested with stand-in classes of those
-  names, not with that kernel, which is not merged.
+- The reasons given for the kernel's refusals (`DispatchedAtCallTime`, `HiddenWrapper`,
+  `PartialMethodSignature`) were tested with stand-in classes of those names. In 0.2.2
+  each class the walk of `recusal` 0.16.0 raises is tested with a real tool of that
+  shape and the kernel's own class (`TestKernelRefusals` in
+  [`tests/test_openai_agents_gate.py`](../tests/test_openai_agents_gate.py)). An
+  `UnreadCache` is raised there by shortening what the cache lists, as the kernel's own
+  test does: no supported interpreter gives one.
+- Found by the review of 0.2.2 before its release, in 0.2.1 too, and open. Each is on
+  the package page under what the gate does not see, and each is held by a test in
+  `TestStatedLimits` in the same file, which gates the tool and runs it:
+  - Behind a `functools.lru_cache` named again for another function, the gate's own
+    questions are not asked: its walk follows what the cache names. The kernel's walk
+    reads what the cache calls, and refuses a single-dispatch function there only once
+    an implementation is registered, and a weak proxy not at all. A single-dispatch
+    function with nothing registered is gated where the wrapper that reaches it carries
+    none of the dispatcher's attributes (`functools.partial(dispatcher)`, a
+    `functools.wraps(dispatcher, updated=())` wrapper, a class-based decorator that sets
+    only `__wrapped__`). An implementation registered after a call was judged runs for
+    it, and the judged call itself can register it. The declared parameters run with
+    the judged values; a parameter the implementation adds runs at its default.
+  - Behind such a cache, a `weakref.proxy` hides what stands behind it: a wrapper with
+    a parameter of its own, with no dispatcher anywhere, and a dispatcher with an
+    implementation registered before the tool is gated, which runs on every turn and is
+    never refused.
+  - A decorator that holds a `functools.wraps` wrapper which takes the tool's own
+    parameters in another order is gated, and the function runs with the values
+    swapped. The same wrapper on the `__wrapped__` chain is refused. This is in how the
+    kernel reads a held wrapper.
+  - A decorator that holds a `functools.wraps` wrapper with a parameter of its own is
+    gated where the way from that wrapper to the function passes a class-based
+    decorator, a callable object, a `functools.partial` that carries a `__wrapped__`, a
+    weak proxy, a cache named again or a second held wrapper. The kernel states these
+    as not found.
+- Refused although they run correctly beside `recusal` 0.16.0, and gated by 0.2.1
+  beside `recusal` 0.15.1: a decorator that holds a cache named again for the function
+  over anything but a plain function, a cache named again over a
+  `functools.partial` of a second cache or of a `staticmethod` object, and a
+  `functools.partial` of a `staticmethod` object under a decorator written with
+  `functools.update_wrapper` over a `functools.partial` (under an ordinary
+  `functools.wraps` decorator 0.2.1 refused that one too). The package page
+  and the changelog entry for 0.2.2 say so, with the two the kernel's own entries
+  state: a facade that does pass its bound argument on, and a declared signature that
+  matches the real parameters.
+- Found in review round nine of `recusal-openai-agents-mcp`, and closed in 0.2.2:
+  arguments that did not arrive as JSON text (a `dict`, a list, a number) left the gate
+  as a `TypeError`, on the hosted approval callback that package builds on this one's
+  `refusal`. Nothing was approved, but it was an exception and not a refusal. The one
+  place the package decodes arguments now refuses them before the policy runs, for the
+  hosted seam, a function tool and an agent tool alike, and an empty `dict` or list,
+  `0` and `False` are no longer read as no arguments. The type is asked exactly and the
+  value is never asked whether it is true, so an instance of a subclass of `str` or
+  `bytes` is refused too. Pinned by `TestArgumentsThatAreNotText` in the same file.
+- Found by the confirmation review of 0.2.2, in 0.2.1 too, and open, as part of what
+  stands behind a `weakref.proxy` behind a cache named again: a second cache named
+  again that calls a `functools.partialmethod` through a `functools.partial` or a
+  wrapper is gated, and the callable the partialmethod holds runs with a parameter of
+  its own at its default. Built directly over the method, that second cache is refused,
+  only because `functools.lru_cache` copies the partialmethod's mark onto it. Without a
+  proxy of a cache between, the kernel's walk reaches the partialmethod and refuses it.
+  Tests in `TestStatedLimits` hold both the refused and the gated shapes.
 
 **Where you can help.**
 
