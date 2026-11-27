@@ -8174,6 +8174,12 @@ def test_p_a_declared_signature_says_which_attribute():
         assert unsupported_signature(tool) == "it declares a signature that is not its own"
     bare = DeclaredSignature()  # as code written for 0.16.0 raises it
     assert bare.declared is None and str(bare) == "" and bare.args == ()
+    import copy
+    import pickle
+
+    told = DeclaredSignature("__text_signature__")
+    for again in (copy.copy(told), pickle.loads(pickle.dumps(told))):
+        assert again.declared == "__text_signature__" and str(again) == str(told)
 
 
 def test_p_the_callables_of_the_walk_stand_beside_its_levels():

@@ -300,13 +300,14 @@ All notable changes to this project are documented here. The format follows
     callable object a wrapper holds is read through its class and its instance
     dictionary, where 0.16.0 skipped it by its type. Nothing is kept between walks for
     it.
-  - *Beside the adapters as released.* An adapter that turns whatever the walk raises
-    into a refusal refuses these without a change. Each released adapter names the
-    kernel's classes it knows and gives any other a reason that names only the class,
-    so until an adapter is released that knows them, a `WeakProxy`, a `ProxiedCallable`
-    and an `OpenDispatch` are refused with that kind of reason
-    (`recusal-openai-agents` 0.2.2: "the function it runs cannot be inspected
-    (WeakProxy)"). No adapter is changed here.
+  - *Beside the adapters as released.* No adapter is changed here. An adapter that
+    turns whatever the walk raises into a refusal refuses these without a change, with
+    the reason it gives a function it cannot read, until a release of it names the
+    three new classes. Looked at for two: `recusal-openai-agents` 0.2.2 says "the
+    function it runs cannot be inspected (WeakProxy)", or "(OpenDispatch)", and
+    `recusal-pydantic-ai` says the function, or a decorator on it, cannot be inspected.
+    The tests of every adapter were run beside this walk; what the other adapters say
+    for the three classes was not looked at.
 - **`recusal-openai-agents-mcp` 0.2.1: no number the model chooses makes the check of
   its arguments cost more than the allowance counts, the check of one call stops at a
   ceiling of steps, JSON text past the limits of the gate's own Python is refused, the

@@ -213,11 +213,15 @@ class DeclaredSignature(Exception):
     declared: Optional[str] = None
 
     def __init__(self, declared: Optional[str] = None) -> None:
-        self.declared = declared
         if declared is None:
             super().__init__()
-        else:
+        elif type(declared) is str and declared in _DECLARED:
+            self.declared = declared
             super().__init__(_DECLARED[declared])
+        else:
+            # anything else is a message: an exception is built again from its message
+            # when it is copied or unpickled, and ``declared`` is then put back on it
+            super().__init__(declared)
 
 
 #: What a :class:`DeclaredSignature` says, by the attribute found.
