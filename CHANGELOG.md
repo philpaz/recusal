@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **The draft LlamaIndex adapter's minimum Python is 3.11.** It was 3.10, and its test
+  lock therefore pinned Pillow 12.3.0 for Python 3.10: Pillow, which `llama-index-core`
+  requires, supports Python 3.11 and later from 13.0.0, the release that fixes the open
+  advisories against 12.3.0. The lock now pins Pillow 13.0.0 alone, and the draft's two
+  jobs run on Python 3.11 and 3.12. The draft is not released, so no published package
+  changes.
 - **`recusal-openai-agents` 0.2.2: every refusal the kernel's walk makes by a class of
   its own has a reason that says what was found and what to do, and the package requires
   `recusal` 0.16.0.** No verdict changes beside `recusal` 0.16.0: a tool 0.2.1 refuses

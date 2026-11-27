@@ -7,7 +7,7 @@ name = "recusal-llamaindex"
 dynamic = ["version"]
 description = "Recusal gate for explicit LlamaIndex FunctionTool wrappers."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Philip Paz", email = "philip.paz@gmail.com" }]
 dependencies = [

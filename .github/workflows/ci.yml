@@ -463,8 +463,8 @@ jobs:
 
   # A draft adapter (adapters/drafts/) is not released. Its own tests run here with its
   # framework installed from its own lock, on its minimum Python and on 3.12.
-  draft-llamaindex-py310:
-    name: Draft LlamaIndex adapter (Python 3.10)
+  draft-llamaindex-py311:
+    name: Draft LlamaIndex adapter (Python 3.11)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -472,7 +472,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install Recusal and the pinned LlamaIndex core
         run: |
           python -m pip install --require-hashes -r requirements/draft-llamaindex.txt
