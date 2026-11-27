@@ -4606,7 +4606,7 @@ class TestKernelRefusals:
         assert "default" not in framing and "two parameters" not in framing
         assert "may run correctly" in framing
 
-    def test_every_reason_that_advises_a_plain_function_says_its_body_is_not_read(self):
+    def test_every_reason_that_advises_a_plain_function_says_its_body_is_not_read(self, example):
         """A plain function registered in the tool's place is judged by its parameters, and
         what its body calls is not read. Every reason that gives that advice says so."""
         adapter = _adapter()
