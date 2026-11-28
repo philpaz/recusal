@@ -142,9 +142,9 @@ type-checked function from a plain function and register that one. Also refused:
   `__text_signature__` that is not the interpreter's, or an object that shows a
   `__code__` while a call runs its `__call__`. `inspect.signature` can read each in
   place of the parameters Python binds, so those cannot be read. The reason names which
-  of the three was found (before 0.2.1 it named `__signature__` for all three). The decorators the
-  `decorator` library builds do this,
-  and so does Pydantic AI's own `tavily_search_tool` when it is given a search setting
+  of the three was found (before 0.2.1 it named `__signature__` for all three). The
+  decorators the `decorator` library builds do this, and so does Pydantic AI's own
+  `tavily_search_tool` when it is given a search setting
   to fix (`tavily_search_tool(client=client, include_domains=[...])`). Build that tool
   without the fixed setting and hold the model to the value in your policy, which is
   given each search argument the model can set, or call the Tavily client from a plain
