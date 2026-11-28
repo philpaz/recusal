@@ -6,8 +6,68 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-27
+
+A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation`, the module a
+gate uses to read the function a tool call runs, refuses a `weakref.proxy` on the way and
+a single-dispatch function with nothing registered, finds a wrapper a decorator holds on
+the ways two adapter reviews found it was missed, and holds such a wrapper to the order
+of the tool's parameters. It adds the public exception classes `ProxiedCallable`,
+`WeakProxy` and `OpenDispatch`, the public functions `cache_target` and
+`reached_callables`, and the attribute `DeclaredSignature.declared`. Each is under
+Security and Changed below. Nothing outside `recusal.invocation` changed: under
+`recusal/`, 0.17.0 differs from 0.16.0 in that module and the version string.
+
+**This release is stricter.** Some tools that 0.16.0 read are refused by 0.17.0, a few of
+them although they run correctly: the kernel entry under Security lists them under
+"Refused although it runs correctly", each with what to write instead, and says what is
+still not found under "Still not found, by design". A tool 0.16.0 refused can be refused
+under another class now, which changes the reason an adapter gives for it. Adapters
+released before 0.17.0 do not name the three new classes: a tool refused under one of
+them is refused with a reason that names only the class, or with a generic one.
+
+The adapter entries under this heading are not part of the `recusal` wheel: each adapter
+is a separate distribution on PyPI under its own version and tag.
+`recusal-openai-agents` 0.2.2 and `recusal-openai-agents-mcp` 0.2.1 were released on
+2026-11-27 under their own tags, and the draft LlamaIndex adapter is not released.
+
 ### Changed
 
+- **Kernel: `recusal.invocation` has a public walk of the callables beside their levels,
+  `reached_callables`, and a public reading of what a cache calls, `cache_target`.** Two adapters make a walk of their own beside the
+  kernel's, to ask a question of each callable or to lay rules of their own beside the
+  levels, and each fell behind it: the walk of `recusal-openai-agents` follows what a
+  `functools.lru_cache` wrapper names and never stood on what a cache named again
+  calls, and `recusal-pydantic-ai` counts its own callables against the kernel's levels
+  and refuses, beside `recusal` 0.16.0, a stack the kernel reads to the end and accepts
+  (a `functools.partial` that binds nothing, named with `functools.update_wrapper`,
+  under another wrapper: the kernel reads one more level of it than 0.15.1 did).
+  `reached_callables(func, skip=())` returns the callables whose parameters
+  `reached_parameters` returns, in the same order, each as the walk binds it, with the
+  same refusals. `cache_target(cache)` returns the function a `functools.lru_cache`
+  wrapper calls, which is not the one it names where `functools.wraps` was written
+  above the cache; it raises `UnreadCache` where that cannot be told and `TypeError`
+  for anything that is not such a wrapper by its own type. No adapter uses either yet.
+- **Kernel: a `DeclaredSignature` says which attribute declares the signature.** The
+  exception was raised with no message, and gates wrote "a `__signature__`" for a tool
+  refused for a `__text_signature__`. It now has `declared`, one of `"__signature__"`,
+  `"__text_signature__"` and `"__code__"`, and a message that says the same in a
+  sentence and names no value. Raised without an argument, or with any others, as code
+  written for 0.16.0 may raise it, it is what it was: `declared` is None and the
+  arguments are kept as given. The reason `unsupported_signature` returns for it is
+  unchanged.
+- **Kernel: the reason for a bound argument a wrapper may not hand on says only what
+  holds for the parameter.** Where the function that takes a bound place passes the
+  call on, 0.16.0 gave the reason written for another case: "`query`, the last they
+  would fill, runs at a default no policy judged", for a parameter the tool declares
+  that has no default and need not be the last. That case has a reason of its own now.
+  It says the parameter is left to a keyword of that name, which stops at the function
+  that takes it, where the tool declares it; that it runs at a default no policy
+  judged, where it has one; and both where both hold. No verdict changes. The reason
+  for the other two cases, where the last parameter the bound arguments would fill has
+  a default, is word for word what it was.
+- **Kernel: two private names of `recusal.invocation` are gone**, `_passes_on_to` and
+  `_BY_POSITION`; neither was used outside the module.
 - **The draft LlamaIndex adapter's minimum Python is 3.11.** It was 3.10, and its test
   lock therefore pinned Pillow 12.3.0 for Python 3.10: Pillow, which `llama-index-core`
   requires, supports Python 3.11 and later from 13.0.0, the release that fixes the open
@@ -138,6 +198,290 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- **Kernel: `recusal.invocation` refuses a proxy on the way and a single-dispatch function
+  with nothing registered, finds a held wrapper wherever its way to the function passes,
+  and refuses a held wrapper that takes the tool's parameters in another order.** Found by the review of `recusal-openai-agents` 0.2.2, by
+  a review of `recusal-pydantic-ai` beside `recusal` 0.16.0, and by a review of this
+  change itself. Every shape below is in 0.16.0, ran a value no policy judged there, and
+  was reproduced there before the change; each is held by a test in
+  `tests/test_invocation.py` whose name starts `test_o_`, `test_p_` or `test_v_`. Of
+  the first two groups each but one fails on the code of 0.16.0, and that one pins a
+  stated limit. The third group answers the review of the change itself: thirteen of
+  its cases fail on the change as it first stood, and five pin what is stated and did
+  not change. Four more, `test_w_`, are no fix: each holds a sentence of this entry to
+  what happens. Nothing that 0.16.0 refuses is accepted. The change adds public names, so 0.17.0 is a MINOR
+  release: the exception classes `ProxiedCallable`, `WeakProxy` and
+  `OpenDispatch`, the functions `cache_target` and `reached_callables`, and the
+  attribute `DeclaredSignature.declared` (under Changed).
+  - *A `weakref.proxy` on the way.* A proxy shows the class and the attributes of the
+    object it stands for and is not that object, and the walk tells three things by the
+    type of the callable itself: a `functools.lru_cache` wrapper named again for another
+    function, a single-dispatch function, and what a callable holds. So behind a proxy a
+    cache named again was read by its name and never as the wrapper it calls
+    (`force=True` of that wrapper ran unjudged), a dispatcher with an implementation
+    registered was read as its base, and a class-based decorator was stepped past:
+    `__wrapped__` is answered by the proxy for the object, and the `__call__` the walk
+    finds on a proxy is the C one, so a `__call__(self, force, sql)` that swaps the two
+    arguments, or one with a `dry_run=False` of its own, was never read. The walk now
+    raises the new `recusal.invocation.WeakProxy`, a `TypeError`, for a tool with a
+    `weakref.proxy` anywhere among the callables it stands on: the tool itself, the
+    function of a method or of a `functools.partial`, what a `__wrapped__` names, what a
+    cache calls. A proxy is told by `type()`, which it does not answer for, against the
+    two types `weakref.proxy` builds, found at the first walk. The walk still reads
+    through the proxy, as 0.16.0 did, and raises at its end, after every other refusal,
+    so a tool 0.16.0 refused keeps the class it was refused with; `unsupported_signature`
+    gives the proxy as its reason last, after a parameter of a wrapper's own. A proxy
+    whose object is gone raised `ReferenceError` out of the public functions, in 0.16.0
+    too. It is a `WeakProxy` now where it is the tool itself or what a wrapper names as
+    `__wrapped__`; where it is the function of a `functools.partial` or of a method,
+    it is refused with a plain `ValueError`.
+  - *An object that answers for `__wrapped__` without holding one.* The ordinary shape
+    is a class-based decorator that keeps the function it decorates in an attribute
+    (`self.fn = fn`) and hands every attribute it does not have on to it (`def
+    __getattr__(self, name): return getattr(self.fn, name)`). Over a function that
+    names a `__wrapped__` of its own (a `functools.wraps` decorator, a
+    `functools.lru_cache`) the decorator then answers `__wrapped__` with what THAT
+    function wraps, and the walk stepped from the decorator past the function it calls:
+    past a wrapper with a parameter of its own, past a dispatcher, past a cache named
+    again. A transparent proxy written in Python (a lazy object, a tracing shim) is the
+    same shape. Refused with the new `recusal.invocation.ProxiedCallable`, a
+    `TypeError` and the base class of `WeakProxy`: the lookup of `__wrapped__` answers,
+    and neither the dictionary of the object's class or of a base nor its instance
+    dictionary has the name. An attribute, a slot and a property of that name are each
+    in one of those, and such an object is read as before; a plain value held under
+    the name must be the very object the lookup gave, so a placeholder on the class
+    (`__wrapped__ = None`) beside a `__getattribute__` that answers does not count.
+    An instance dictionary that
+    is a subclass of `dict` is read through `dict.items` itself. Where the class
+    answers `__dict__` with a property, the instance dictionary cannot be read without
+    running code, nothing is told of the object, and it is read as 0.16.0 read it: the
+    proxy `wrapt` 2 builds in Python keeps `__wrapped__` exactly so. The walk makes
+    the lookup of `__wrapped__` once for each callable, as 0.16.0 did.
+  - *An object that shows another class than its own.* The walk tells a function, a
+    method and a `functools.partial` by `isinstance` and `inspect`, which ask
+    `__class__`, and a property can answer that. Such an object was read as the face
+    it showed (a function's code, a method's function, a partial's function) while a
+    call ran its own `__call__`. Refused as a `ProxiedCallable` where it holds no
+    `__wrapped__` of its own, and where it holds one and its own `__call__`, written
+    in Python, takes a parameter by name. A transparent proxy of `wrapt` shows the
+    class of what it wraps, holds a `__wrapped__` of its own and takes only
+    `*args, **kwargs`: it is read as before, in both of its builds (run with `wrapt`
+    1.17.2 and 2.5.2; the Python build of 2.5.2 keeps `__wrapped__` behind a
+    `__dict__` property, where nothing is told of it). That holds for the transparent
+    proxy alone. A subclass of `wrapt.CallableObjectProxy` with a `__call__` of its
+    own that names the parameters (`def __call__(self, sql, force=False): return
+    self.__wrapped__(sql, force)`) is the second refusal: refused in both builds of
+    1.17.2 and in the C build of 2.5.2, and read in the Python build of 2.5.2, where
+    what it holds cannot be read. 0.16.0 read it in all four. The tests by which the walk
+    tells a function, a method, a partial and a cache (`isinstance`, `inspect`)
+    believe `__class__`, here as in 0.16.0.
+  - *A single-dispatch function with nothing registered.* 0.16.0 read the registry at
+    the walk and accepted a dispatcher that could run only its base. That holds for the
+    moment of the walk and no longer. A `functools.wraps(dispatcher)` wrapper that
+    registers an implementation on its first use and then calls the dispatcher was
+    judged without `purge` and ran `purge=True` on the very call that was judged; the
+    same holds for an implementation another tool of the same model turn registers, and
+    behind a cache named again for the base. The walk now raises the new
+    `recusal.invocation.OpenDispatch`, a `ValueError`, for a `functools.singledispatch`
+    function or the callable a `singledispatchmethod` hands out whose registry is
+    exactly its base. A dispatcher with an implementation registered raises
+    `DispatchedAtCallTime`, as before. `OpenDispatch` is a class of its own and not a
+    subclass of that one, because the released adapters say of a
+    `DispatchedAtCallTime` that an implementation is registered. A dispatcher a wrapper
+    holds on a way to the function is refused as a `HiddenWrapper` whatever is
+    registered on it.
+  - *A tool that was refused can be refused by another class.* The walk refuses for
+    the first cause it meets, and `OpenDispatch` is met where 0.16.0 walked on. So a
+    tool 0.16.0 refused as a `DispatchedAtCallTime`, a `HiddenWrapper`, a
+    `DeclaredSignature`, a `BoundArgumentKept` or a plain `ValueError` is refused as
+    an `OpenDispatch` where a dispatcher with nothing registered stands before that
+    cause. One ordinary case: a single-dispatch function built over another, with an
+    implementation registered through the outer one. `functools.update_wrapper` copies
+    the inner dispatcher's `register` onto the outer, so the implementation lands on
+    the inner, the outer has nothing registered, and the outer is met first. A gate
+    that keys its reason on the class says something else for such a tool than it did.
+  - *A held wrapper that takes the tool's parameters in another order.* A decorator
+    holds `def second(force, sql)`, a `functools.wraps` wrapper of `f(sql, force)`, and
+    its own wrapper passes `(*args, **kwargs)` on to it. It names nothing the tool does
+    not declare, so 0.16.0 read it as passing them on, and a gate that hands the judged
+    values on by position ran the function with the two swapped (judged `sql=''`,
+    `force=True`; ran `sql=True`, `force=''`). The levels `reached_parameters` returns
+    carry their own order, and a gate that passes by position holds each to it; a held
+    wrapper is in no level returned. So its order is judged in the kernel: refused as a
+    `HiddenWrapper` when it takes, in a place an argument passed by position can fill,
+    another name than the tool declares in that place. The reason names the two
+    parameters and no value. Under an argument bound on the way (the receiver of a
+    method, a positional argument of a `functools.partial`), whether the decorator
+    hands that argument on to the held wrapper or keeps it cannot be read, and the
+    places are counted by the one piece of evidence there is, the name: a leading
+    place of the held wrapper named as the tool names one of its parameters is that
+    parameter's, and a place named otherwise (`self`, `cls`) is the bound argument's.
+    So under a method a held `def second(force, sql)` and a held `def second(self,
+    force, sql)` are both refused, and `def second(sql, force)` and `def second(self,
+    sql, force)` are both read, as 0.16.0 read them. As this change first stood it
+    took the first place under a method for the receiver's whatever its name: it read
+    the first of the four, which ran swapped, and refused the third for a place that
+    wrapper does not take. Its review found both.
+  - *A held wrapper whose way to the function passes anything but the closed set.*
+    0.16.0 followed a held value through a closed set of types and gave up at anything
+    else, so a held `functools.wraps` wrapper with a parameter of its own was not found,
+    and that parameter ran at its default, where the way from it to the function passed
+    a class-based decorator built with `functools.update_wrapper`, a callable object, a
+    `functools.partial` that carries a `__wrapped__`, a `weakref.proxy`, a cache named
+    again for ANOTHER function, or a second wrapper that is itself only held. Each is
+    followed now. An object of another type whose class has a plain function as
+    `__call__` is read through two things the interpreter keeps for it and no class
+    answers for, the dictionaries of its class and its own instance dictionary, and
+    passes on to what it holds; where it names a `__wrapped__` its `__call__` is judged
+    as a wrapper is, so a held class-based decorator whose `__call__` keeps an argument
+    is refused too. A partial is followed to the `__wrapped__` its own dictionary
+    names. A cache named again is followed to the function it calls, and so is a held
+    cache that names nothing. What a wrapper found on such a way holds in its own
+    closure and named globals is searched in its turn. A wrapper reached two ways,
+    with another count of bound arguments each (through a `functools.partial` of it
+    and through a method of it), is judged for each way; as this change first stood
+    it was judged for the first way found alone, and an attribute nothing calls could
+    hide a parameter of the wrapper's own. A held `weakref.proxy` of a callable the
+    walk stood on (a function, an object, and a method or a partial itself) is known
+    for it from the weak references the interpreter lists for that callable, without
+    the proxy being asked, and is followed; a held proxy of any other callable is
+    refused. Nothing held is run, called, compared or hashed, as before.
+  - *Three more callables the walk did not read to the end*, in 0.16.0 too. A subclass
+    of `functools.partial` with a `__call__` of its own was read for its function
+    alone; that `__call__` is what runs, and it is a level `reached_parameters`
+    returns now. A `functools.lru_cache` wrapper whose `__wrapped__` is None, or was
+    deleted, was read as nothing under it, and the deleted one raised
+    `AttributeError` out of the walk; it is read as the function it calls. And what
+    the code of a callable raises while it is read (a `__getattr__` that raises for
+    `__wrapped__`, a property) was passed on as it was: the public functions now raise
+    `ValueError` in its place, with the exception as its cause, and still pass on an
+    exception that is not an `Exception` (`KeyboardInterrupt`). The consequence is
+    stated: ANY `Exception` raised while the walk reads, one from a fault of the
+    kernel's own included, is reported as a `ValueError` refusal whose message names
+    the callable's hooks ("a callable on the way raised when the walk read it"). The
+    original exception is its `__cause__`, and that is where to look.
+  - **Refused although it runs correctly**, and read by 0.16.0. This is the whole list.
+    - A `weakref.proxy` of a plain function, as a tool or anywhere on the way. Register
+      the function itself.
+    - A class-based decorator that keeps the function in an attribute and answers every
+      other attribute from it with `__getattr__`, over a function that names a
+      `__wrapped__` (any `functools.wraps` decorator, any `functools.lru_cache`), and
+      any other proxy that answers `__wrapped__` only from `__getattr__`, also where
+      what it answers is the very object it calls. Call
+      `functools.update_wrapper(self, fn)` in its `__init__`, or give it a
+      `__wrapped__` attribute, slot or property that names the object it calls; it is
+      then read to the end.
+    - An object whose `__class__` is not its type and that holds no `__wrapped__` of
+      its own, whatever it calls. Register a plain function that calls it.
+    - An object whose `__class__` is not its type, that holds a `__wrapped__` of its
+      own, and whose own `__call__`, written in Python, takes parameters by name, also
+      where that `__call__` hands each of them on in order. The instance found: a
+      subclass of `wrapt.CallableObjectProxy` with `def __call__(self, sql,
+      force=False): return self.__wrapped__(sql, force)`, refused in both builds of
+      `wrapt` 1.17.2 and in the C build of 2.5.2, read in the Python build of 2.5.2.
+      Give that `__call__` only `*args, **kwargs`, or register a plain function that
+      calls the proxy.
+    - A single-dispatch function or method that nothing is ever registered on, as a
+      tool, under a wrapper, or held by a wrapper of the function. Register a plain
+      function that calls it.
+    - A decorator that holds a `functools.wraps` wrapper in another order than the
+      tool's and calls it by keyword or puts the values back, and one that holds a
+      wrapper which takes only a later parameter of the tool in the first place. Give
+      the held wrapper the tool's parameters in the tool's order, or by keyword only.
+    - A decorator that holds a `weakref.proxy` of a callable the walk did not stand on,
+      a helper among them. Hold the callable itself.
+    - A decorator that holds a cache named again for another function, or one that
+      names nothing, where the cache calls anything but a plain function (a
+      `functools.partial`, a callable object, a second cache) that leads to the
+      function; 0.16.0 refused that only for a cache named for the function itself.
+    - A decorator that holds a chain of callables, one behind the other, in which
+      something stands 32 links or more from what the decorator holds, and one whose
+      held values lead to more than 16,384 callables.
+
+    For each, a plain function that names every parameter the tool takes and calls
+    the decorated one is read to the end. Not on the list, because it is not refused:
+    a class-based decorator with hundreds of plain attributes, or a wrapper that holds
+    hundreds of harmless callable objects. As this change first stood a search stopped
+    at 512 values of any kind and refused both.
+  - *Still not found, by design.* A second wrapper that names nothing as `__wrapped__`
+    (a plain inner function, a lambda, a helper), and the `__call__` of a callable
+    object that names nothing, which is passed through and not judged. A wrapper built
+    on first use (`if "held" not in state: state["held"] = guarded(f)` in the body of
+    the wrapper that calls it): it does not exist when the walk is made, which is the
+    reason a dispatcher with nothing registered is refused, and this one is NOT
+    closed, because nothing marks a wrapper that will build another. A wrapper held by
+    an object that keeps it where no instance dictionary shows it: a slot or a C
+    structure, as a wrapper a C extension builds and both builds of `wrapt` 1.17.2
+    do, or a dictionary behind a `__dict__` property, as the Python build of `wrapt`
+    2.5.2 does, so the same decorator still gets the same verdict whichever way that
+    library was built. A wrapper held by an object that is not callable (a
+    settings object, a `types.SimpleNamespace`, an instance whose method the wrapper
+    calls), in a container, in a class attribute, in a function's own attribute, as an
+    argument a `functools.partial` binds, or behind a `weakref.ref` the wrapper calls
+    to get it. A subclass of `functools.partial` on a held way. A proxy that forwards
+    a call and names nothing as `__wrapped__`, over a `functools.partial` for one,
+    which is read as the callable object it is. An object whose class answers
+    `__dict__` with a property, where it answers for `__wrapped__` or shows another
+    class: what it holds cannot be read, so it is read as in 0.16.0, whatever it
+    forwards to. An object that shows another class,
+    holds a `__wrapped__` of its own and has a `__call__` that takes only `*args,
+    **kwargs`: read by what it holds, as a proxy of `wrapt` is, whatever its
+    `__call__` does. A proxy where `weakref` could not be imported or its two types
+    were not the interpreter's own at the first walk, and everything where the checks
+    are off: read as in 0.16.0. A dispatcher another library builds, and one reached
+    through a helper that names nothing as `__wrapped__`.
+  - *What the name rule for a bound place reads that runs otherwise*, in 0.16.0 too.
+    Under an argument bound on the way the places of a held wrapper are counted by
+    their names, and the holder is not read, so a holder that disagrees with the names
+    is read as if it agreed. Two shapes. A holder that hands its bound argument ON to
+    a held wrapper whose leading place is named as the tool names a parameter (a
+    method whose decorator returns `second(self, *args, **kwargs)` over `def
+    second(sql, force=False)`; the same under a `functools.partial` that binds the
+    leading argument; a receiver's place named like a parameter of the tool; a tool
+    that declares a parameter called `self`; a holder that names its receiver like a
+    parameter of the tool): a call that passes every declared parameter fails with
+    `TypeError`, and a call that leaves a defaulted parameter out runs with the bound
+    argument in the first parameter's place and the arguments shifted (`tool("S")` ran
+    `sql=<the receiver>`, `force='S'`). And a held wrapper with a REQUIRED parameter of
+    its own in the leading place, where the holder keeps the receiver (`def
+    second(mode, sql='x', force=False)`): the place is taken for the receiver's, and
+    `tool("S", True)` ran `sql=True`, `force=False`. Both are pinned by a test as what
+    happens.
+  - *What a `__class__` written to deceive still does*, in 0.16.0 too. The refusal of
+    an object that shows another class asks `__class__` once and compares it with the
+    object's type; the tests by which the walk tells a function, a method, a partial
+    and a cache (`isinstance`, `inspect`) believe `__class__`. So these are read, and each needs code written for the purpose: a
+    `__class__` property that answers the object's real type at the one lookup the
+    refusal makes and another type at the rest; one that answers by who asks (it
+    reads the caller's frame, or raises `AttributeError` to that one function); and an
+    object that shows another class, holds a `__wrapped__` of its own, and has
+    something other than a plain function as `__call__` (a `staticmethod`) with a
+    parameter of its own, which the same object without the lie is refused for.
+  - *A stated limit, unchanged.* The walk reads the tool and at most 31 callables
+    after it; a tool with a 32nd is refused with "too many wrappers to inspect", not
+    gated. A function decorator is one of them; a class-based decorator built with
+    `functools.update_wrapper` is two, what it names as `__wrapped__` and its own
+    `__call__`. So under one function wrapper a stack of function decorators is read
+    30 deep and a stack of class-based ones 15 deep. A test now holds both figures.
+  - *What it costs.* The search of what a wrapper holds reads more than it did: every
+    callable object a wrapper holds is read through its class and its instance
+    dictionary, where 0.16.0 skipped it by its type, and each plain value such an
+    object holds is told by its type and passed over. Nothing is kept between walks
+    for it. The bound of 16,384 callables is on ONE search, from one held value, and a
+    walk makes one search for each value its callables hold: the work is linear in the
+    number of held values, and there is no ceiling for the walk as a whole. The review
+    of the change measured a class-based decorator with 10, 40 and 160 callable
+    attributes, each leading to one shared graph of 16,000 callable objects, at 0.75 s,
+    3.1 s and 12.2 s on its machine. As this change first stood the bound was 512 for
+    each value.
+  - *Beside the adapters as released.* No adapter is changed here. An adapter that
+    turns whatever the walk raises into a refusal refuses these without a change, with
+    the reason it gives a function it cannot read, until a release of it names the
+    three new classes. Looked at for two: `recusal-openai-agents` 0.2.2 says "the
+    function it runs cannot be inspected (WeakProxy)", or "(OpenDispatch)", and
+    `recusal-pydantic-ai` says the function, or a decorator on it, cannot be inspected.
+    The tests of every adapter were run beside this walk; what the other adapters say
+    for the three classes was not looked at.
 - **`recusal-openai-agents-mcp` 0.2.1: no number the model chooses makes the check of
   its arguments cost more than the allowance counts, the check of one call stops at a
   ceiling of steps, JSON text past the limits of the gate's own Python is refused, the

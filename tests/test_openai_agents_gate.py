@@ -4600,7 +4600,11 @@ class TestKernelRefusals:
         with pytest.raises(invocation.BoundArgumentKept) as raised:
             invocation.reached_parameters(Required().search)
         found = str(raised.value)
-        assert "`query`, the last they would fill" in found
+        if hasattr(invocation, "ProxiedCallable"):  # the kernel after ``recusal`` 0.16.0
+            assert "`query` is left to a keyword of that name" in found
+            assert "default" not in found  # ``query`` has none, and the text says none
+        else:
+            assert "`query`, the last they would fill" in found
         self.refused_when_gated(example, Required().search, self.BOUND.format(found), ran)
 
         framing = self.BOUND.format("")
@@ -4647,10 +4651,39 @@ class TestStatedLimits:
     """What the package page states as open or as refused although correct, beside
     ``recusal`` 0.16.0, each as a tool that is gated and run, or refused. Found by the
     review of 0.2.2 before its release. These tests hold the page to what happens: one
-    that fails because a limit was closed means the page has to change with it."""
+    that fails because a limit was closed means the page has to change with it.
+
+    The kernel's walk as it stands in this repository after 0.16.0 closes the open
+    items that are the kernel's: it refuses a ``weakref.proxy`` on the way, a
+    single-dispatch function with nothing registered, a held wrapper in another order
+    and a held wrapper on a way 0.16.0 did not follow. Each of those tests holds both
+    outcomes, by the kernel it runs beside (``kernel_closes``): gated and run unjudged
+    beside 0.16.0, refused beside the later walk."""
 
     example = TestJudgedIsWhatRuns.example
     Recording = TestEffectiveArguments.Recording
+
+    #: The reason 0.2.2 gives for a refusal of the kernel's walk by a class it does not name.
+    UNREAD = "the function it runs cannot be inspected ({})"
+
+    @staticmethod
+    def kernel_closes():
+        """Whether the kernel these tests run beside has the walk that closes the open
+        items that are the kernel's (it is later than ``recusal`` 0.16.0, and has
+        ``ProxiedCallable``)."""
+        from recusal import invocation
+
+        return hasattr(invocation, "ProxiedCallable")
+
+    def refused(self, example, func, reason, events):
+        """``func`` is refused when it is gated, with ``reason``; no policy is asked and
+        nothing runs."""
+        tool = example.function_tool(func, name_override="run_sql", strict_mode=False)
+        policy = self.Recording(lambda name, args: [])
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], policy)
+        assert str(refusal.value) == f"Recusal cannot gate 'run_sql': {reason}"
+        assert policy.seen == [] and events == []
 
     @staticmethod
     def named(events):
@@ -4717,6 +4750,9 @@ class TestStatedLimits:
         events: list = []
         inner = self.again(self.reviewed(events, self.fetch(events)), self.named(events))
         tool = self.again(weakref.proxy(inner), self.named(events))
+        if self.kernel_closes():
+            self.refused(example, tool, self.UNREAD.format("WeakProxy"), events)
+            return
         outputs, seen = self.run(example, tool, {"sql": "x"})
         assert outputs == {"c1": "recorded"}
         assert seen == [("run_sql", {"sql": "x", "force": False})]
@@ -4746,6 +4782,9 @@ class TestStatedLimits:
             return "registered"
 
         tool = self.again(functools.partial(weakref.proxy(export)), self.named(events))
+        if self.kernel_closes():
+            self.refused(example, tool, self.UNREAD.format("WeakProxy"), events)
+            return
         outputs, seen = self.run(example, tool, {"sql": "x"}, turns=2)
         assert outputs == {"c1": "registered", "c2": "registered"}
         assert seen == [("run_sql", {"sql": "x", "force": False})] * 2
@@ -4784,6 +4823,11 @@ class TestStatedLimits:
             load()
             return export(*args, **kwargs)
 
+        if self.kernel_closes():
+            # refused before the wrapper has registered anything
+            reason = self.UNREAD.format("OpenDispatch")
+            self.refused(example, self.again(lazy, base), reason, events)
+            return
         outputs, seen = self.run(example, self.again(lazy, base), {"sql": "x"}, turns=2)
         assert outputs["c1"] == "registered"
         assert outputs["c2"].startswith(
@@ -4819,6 +4863,9 @@ class TestStatedLimits:
         tool = self.again(wrapper, self.named(events))
         reached, complete = _adapter()._reached_callables(tool)
         assert complete and not any(_adapter()._is_dispatcher(link) for link in reached)
+        if self.kernel_closes():
+            self.refused(example, tool, self.UNREAD.format("OpenDispatch"), events)
+            return
         outputs, seen = self.run(example, tool, {"sql": "x"})
         assert outputs == {"c1": "recorded"} and events == [("fetch", "x", False)]
 
@@ -4840,6 +4887,12 @@ class TestStatedLimits:
         def outer(*args, **kwargs):
             return flipped(*args, **kwargs)
 
+        if self.kernel_closes():
+            from recusal import invocation
+
+            cause = invocation._HELD_IN_ANOTHER_PLACE.format(name="force", declared="sql")
+            self.refused(example, outer, TestKernelRefusals.HIDDEN.format(cause), events)
+            return
         outputs, seen = self.run(example, outer, {"sql": "", "force": True})
         assert outputs == {"c1": "recorded"}
         assert seen == [("run_sql", {"sql": "", "force": True})]
@@ -4871,6 +4924,13 @@ class TestStatedLimits:
         def outer(*args, **kwargs):
             return reviewed(*args, **kwargs)
 
+        if self.kernel_closes():
+            cause = (
+                "`skip_review` is a parameter of a function the call reaches that the tool "
+                "does not declare, so it would run with a value no policy judged"
+            )
+            self.refused(example, outer, TestKernelRefusals.HIDDEN.format(cause), events)
+            return
         outputs, seen = self.run(example, outer, {"sql": "x"})
         assert outputs == {"c1": "recorded"}
         assert seen == [("run_sql", {"sql": "x", "force": False})]
@@ -5075,6 +5135,9 @@ class TestStatedLimits:
         reached, complete = _adapter()._reached_callables(tool)
         assert complete
         assert not any(_adapter()._held_partialmethod(link) is not None for link in reached)
+        if self.kernel_closes():
+            self.refused(example, tool, self.UNREAD.format("WeakProxy"), events)
+            return
         outputs, seen = self.run(example, tool, {"sql": "x"})
         assert outputs == {"c1": "recorded"}
         assert seen == [("run_sql", {"sql": "x", "force": False})]

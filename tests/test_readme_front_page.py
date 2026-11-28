@@ -50,7 +50,9 @@ def test_the_note_names_the_released_version_of_the_kernel():
     anchor = f"CHANGELOG.md#{version.replace('.', '')}---{heading.group(2)})"
     assert anchor in note, "the note links the section of the release it names"
     section = changelog.split(heading.group(0), 1)[1].split("\n## [", 1)[0]
-    assert "### Added" in section, "the section the note links has entries"
+    assert re.search(r"^### (Added|Changed|Fixed|Security)$", section, re.M), (
+        "the section the note links has entries"
+    )
 
 
 def test_the_opening_counts_the_adapters_that_exist():
@@ -63,48 +65,43 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
     note = _callout()
     flat = " ".join(line.lstrip("> ") for line in note.splitlines())
     for claim, evidence in (
-        ("refuses what its walk cannot follow to the end", ROOT / "recusal" / "invocation.py"),
+        ("refuses a proxy and an open dispatcher", ROOT / "recusal" / "invocation.py"),
         ("This release is stricter", ROOT / "CHANGELOG.md"),
     ):
         assert claim in flat, claim
         assert evidence.is_file(), evidence
     # the refusals the note names have a public class each in the tree
     import functools
+    import weakref
 
     from recusal import invocation
 
     for name, base in (
-        ("HiddenWrapper", ValueError),
-        ("UnreadCache", invocation.HiddenWrapper),
-        ("DispatchedAtCallTime", ValueError),
-        ("PartialMethodSignature", TypeError),
-        ("BoundArgumentKept", ValueError),
+        ("ProxiedCallable", TypeError),
+        ("WeakProxy", invocation.ProxiedCallable),
+        ("OpenDispatch", ValueError),
     ):
         assert issubclass(getattr(invocation, name), base), name
 
-    # the first one the note names is refused: a decorator that holds a second wrapper,
-    # whose own `force=True` no policy would have judged
-    def holding(function):
-        @functools.wraps(function)
-        def held(*args, force: bool = True, **kwargs):
-            return function(*args, **kwargs)
-
-        @functools.wraps(function)
-        def shown(*args, **kwargs):
-            return held(*args, **kwargs)
-
-        return shown
-
-    @holding
+    # the first two the note names are refused: a proxy on the way, and a single-dispatch
+    # function with nothing registered, which an implementation registered after the
+    # walk would change
     def pay(amount: int) -> int:
         return amount
 
-    with pytest.raises(invocation.HiddenWrapper):
-        invocation.reached_parameters(pay)
+    with pytest.raises(invocation.WeakProxy):
+        invocation.reached_parameters(weakref.proxy(pay))
+
+    @functools.singledispatch
+    def charge(amount: int) -> int:
+        return amount
+
+    with pytest.raises(invocation.OpenDispatch):
+        invocation.reached_parameters(charge)
     # what the note says the changelog lists is there, in the section it links
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     section = changelog.split(f"## [{_version()}]", 1)[1].split("\n## [", 1)[0]
-    assert "Refused although it runs correctly" in " ".join(section.split())
+    assert "refused although it runs correctly" in " ".join(section.lower().split())
     assert "Still not found, by design" in section
     # what the note says of the kernel diff is what the kernel diff is
     assert "in `recusal.invocation` and the version string" in flat
