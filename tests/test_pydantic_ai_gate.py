@@ -53,21 +53,35 @@ def test_pinned_version_is_explicit_in_example_docs_and_ci():
 
 
 def test_the_package_requires_the_kernel_that_walks_every_callable():
-    """The gate reads a decorated tool with the kernel's walk (``reached_parameters``) and
-    refuses a declared signature by the kernel's ``DeclaredSignature``. The package allowed
-    ``recusal>=0.14.0``, which has neither: installed beside it, the adapter failed at
-    import. The floor is the first kernel with both, stated in the package and in its
-    README, and the kernel in this tree is at or past it."""
+    """The gate reads a decorated tool with the kernel's walk (``reached_parameters``, and
+    ``reached_callables`` beside it) and gives a reason of its own for each refusal the
+    walk makes by a class of its own. ``OpenDispatch``, ``ProxiedCallable``,
+    ``WeakProxy``, ``reached_callables`` and ``DeclaredSignature.declared`` are new in
+    ``recusal`` 0.17.0, and beside 0.16.0 the walk does not refuse a weak proxy or a
+    single-dispatch function with nothing registered, which ran a value no policy judged
+    (review round thirteen). The floor is 0.17.0, stated in the package and in its README,
+    and the kernel in this tree is at or past it."""
     import recusal
     from recusal import invocation
 
-    floor = "0.15.0"
+    floor = "0.17.0"
     pyproject = (ROOT / "adapters" / "pydantic-ai" / "pyproject.toml").read_text(encoding="utf-8")
     readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
     assert f'"recusal>={floor},<1"' in pyproject
-    assert "recusal>=0.14" not in pyproject and "recusal>=0.14" not in readme
+    for older in ("0.14", "0.15", "0.16"):
+        assert f"recusal>={older}" not in pyproject and f"recusal>={older}" not in readme
     assert f"`recusal>={floor}`" in readme
-    assert hasattr(invocation, "reached_parameters") and hasattr(invocation, "DeclaredSignature")
+    for name in (
+        "reached_parameters",
+        "reached_callables",
+        "cache_target",
+        "DeclaredSignature",
+        "OpenDispatch",
+        "ProxiedCallable",
+        "WeakProxy",
+    ):
+        assert hasattr(invocation, name), name
+    assert hasattr(invocation.DeclaredSignature("__signature__"), "declared")
 
     def parts(version):
         return tuple(int(part) for part in version.split("."))
@@ -2925,11 +2939,11 @@ class TestPydanticAiGate:
         the first argument, at call time, and the walk ends at the base function: a
         registered implementation's own ``skip_review=True`` ran unjudged. Refused wherever
         it stands in a stack, for the function and for ``singledispatchmethod``. With only
-        its base implementation, a kernel up to ``recusal`` 0.16.0 reads it, and the
-        function that runs is the one that was read; the kernel's walk as it stands in
-        this repository after 0.16.0 refuses it (``OpenDispatch``: an implementation can
-        be registered between the walk and the call), and this adapter then gives the
-        reason it gives a function it cannot read. Both outcomes are held here."""
+        its base implementation, a kernel up to ``recusal`` 0.16.0 read it; ``recusal``
+        0.17.0, this package's floor, refuses it (``OpenDispatch``: an implementation can
+        be registered between the walk and the call), and the reason is one of its own,
+        which never says that an implementation is registered (0.2.0 gave the reason for a
+        function it cannot read)."""
         import functools
         import types
 
@@ -2959,15 +2973,11 @@ class TestPydanticAiGate:
 
         chosen = "the implementation that runs is chosen at call time"
         sent = {"key": "k"}
-        cannot_read = "cannot be inspected"
-        refuses_only_base = hasattr(sys.modules["recusal.invocation"], "OpenDispatch")
 
         def with_only_its_base(function):
             reason = adapter._with_defaults(self._ctx_for(function), "t", dict(sent))[1]
-            if refuses_only_base:
-                assert cannot_read in reason and chosen not in reason, (function, reason)
-            else:
-                assert reason is None, (function, reason)
+            assert reason == adapter._OPEN_DISPATCH, (function, reason)
+            assert chosen not in reason and "cannot be inspected" not in reason
 
         with_only_its_base(lookup)
 
@@ -3101,24 +3111,23 @@ class TestPydanticAiGate:
             tools=[only_base],
             capabilities=[example.RecusalGate(policy)],
         )
-        agent.run_sync("go")
-        if refuses_only_base:
-            assert seen == [] and ran == []
-        else:
-            assert seen == [{"key": 1, "deep": False}] and ran == [("only", 1, False)]
+        answers = example.responses_of(agent.run_sync("go"))
+        assert seen == [] and ran == [] and answers["c1"][1].endswith(adapter._OPEN_DISPATCH)
 
         # a stack with more callables than the gate reads, or one it cannot read, is refused
         monkeypatch.setattr(adapter, "_STEP_LIMIT", 2)
-        stacked = d.forwards(d.forwards(only_base))
+
+        def plain(key: int, deep: bool = False) -> str:
+            return "plain"
+
+        stacked = d.forwards(d.forwards(plain))
         reason = adapter._with_defaults(self._ctx_for(stacked), "t", dict(sent))[1]
         assert "cannot be inspected" in reason
         with_only_its_base(only_base)
 
     # --- the refusals the kernel's walk makes by name are reported as what they are ---------
     #
-    # ``recusal`` 0.15.0, the oldest kernel this package allows, has neither
-    # ``HiddenWrapper`` nor ``DispatchedAtCallTime``; a later kernel raises both. Each
-    # test holds both outcomes, so it runs beside either kernel.
+    # ``recusal`` 0.17.0, the oldest kernel this package allows, has every class named here.
 
     @staticmethod
     def _hidden_wrapper(ran):
@@ -3169,18 +3178,12 @@ class TestPydanticAiGate:
         """A decorator that applies another wrapper inside itself: the policy would judge
         ``timeout=9999`` and the function run with its own ``5``. The reason says what the
         kernel found, names the parameter and never a value, and says what to do."""
-        from recusal import invocation
-
         ran, seen = [], []
         fetch = self._hidden_wrapper(ran)
         sent = {"url": "u", "timeout": 9999}
         for validated in (True, False):
             ctx = self._ctx_for(fetch, validated=validated)
             same, reason = adapter._with_defaults(ctx, "t", dict(sent))
-            if not hasattr(invocation, "HiddenWrapper"):  # the README's limit beside 0.15.0
-                # (a tool given its schema by hand is refused for its `*args` wrapper)
-                assert reason is None if validated else "second wrapper" not in reason
-                continue
             assert same == sent
             assert "holds a second wrapper of that function" in reason
             assert "`timeout` is taken by a wrapper and by the function it wraps" in reason
@@ -3198,10 +3201,7 @@ class TestPydanticAiGate:
             capabilities=[example.RecusalGate(policy)],
         )
         agent.run_sync("go")
-        if hasattr(invocation, "HiddenWrapper"):
-            assert seen == [] and ran == []
-        else:
-            assert seen == [sent] and ran == [("u", 5)]
+        assert seen == [] and ran == []
 
     def test_a_dispatcher_only_the_kernel_finds_gets_the_same_reason(
         self, example, adapter, monkeypatch
@@ -3211,20 +3211,15 @@ class TestPydanticAiGate:
         the one for a single-dispatch function, not for a function that cannot be
         inspected; with the gate's own check off, the kernel's finding is reported the
         same."""
-        from recusal import invocation
-
         lookup = self._dispatching()
         chosen = "the implementation that runs is chosen at call time"
         for own_check in (True, False):
             if not own_check:
                 monkeypatch.setattr(adapter, "_dispatches", lambda step: False)
             reason = adapter._with_defaults(self._ctx_for(lookup), "t", {"key": "k"})[1]
-            if own_check or hasattr(invocation, "DispatchedAtCallTime"):
-                assert chosen in reason and "single-dispatch function" in reason
-                assert "call it from a plain function and register that one" in reason
-                assert "cannot be inspected" not in reason
-            else:
-                assert reason is None
+            assert chosen in reason and "single-dispatch function" in reason
+            assert "call it from a plain function and register that one" in reason
+            assert "cannot be inspected" not in reason
 
     @staticmethod
     def _unread_cache(monkeypatch):
@@ -3252,8 +3247,6 @@ class TestPydanticAiGate:
         as a decorator that holds a second wrapper, which is not what happened."""
         from recusal import invocation
 
-        if not hasattr(invocation, "UnreadCache"):
-            return  # 0.15.0 reads such a cache by its name
         tool = self._unread_cache(monkeypatch)
         reason = adapter._with_defaults(self._ctx_for(tool), "t", {"url": "u"})[1]
         assert reason.startswith(
@@ -3264,33 +3257,35 @@ class TestPydanticAiGate:
         assert "holds a second wrapper" not in reason
         assert adapter._UnreadCache is invocation.UnreadCache
 
-    def test_beside_a_kernel_without_the_named_refusals_the_walk_still_refuses(
+    def test_the_walk_refusals_are_the_kernels_own_classes_and_an_unknown_one_still_refuses(
         self, example, adapter, monkeypatch
     ):
-        """The package allows ``recusal`` 0.15.0, which has neither exception: the adapter
-        then handles a stand-in that nothing raises. And an adapter that does not know a
-        refusal by name still refuses it, as any other failure of the walk."""
+        """The gate imports the kernel's classes and asks with ``isinstance``; 0.2.0 looked
+        them up by name, beside a stand-in for ``recusal`` 0.15.0, which had none of them,
+        and the floor is now 0.17.0. And a refusal the gate does not know by its class still
+        refuses, as any other failure of the walk."""
         from recusal import invocation
 
-        class Released:  # the names 0.15.0 has
-            DeclaredSignature = invocation.DeclaredSignature
+        for name in (
+            "BoundArgumentKept",
+            "DeclaredSignature",
+            "DispatchedAtCallTime",
+            "HiddenWrapper",
+            "OpenDispatch",
+            "PartialMethodSignature",
+            "ProxiedCallable",
+            "UnreadCache",
+            "WeakProxy",
+        ):
+            assert getattr(adapter, "_" + name) is getattr(invocation, name), name
+        assert not hasattr(adapter, "_walk_refusal") and not hasattr(adapter, "_NotInThisKernel")
+        # ``OpenDispatch`` is not a ``DispatchedAtCallTime`` in the kernel, and the reason for
+        # it does not say that an implementation is registered
+        assert not issubclass(invocation.OpenDispatch, invocation.DispatchedAtCallTime)
+        assert "registered beside its base" not in adapter._OPEN_DISPATCH
 
-        class Odd:
-            HiddenWrapper = "not an exception class"
-            DispatchedAtCallTime = int
-
-        for name in ("HiddenWrapper", "DispatchedAtCallTime"):
-            assert adapter._walk_refusal(Released, name) is adapter._NotInThisKernel
-            assert adapter._walk_refusal(Odd, name) is adapter._NotInThisKernel
-            expected = getattr(invocation, name, adapter._NotInThisKernel)
-            assert adapter._walk_refusal(invocation, name) is expected
-            assert getattr(adapter, "_" + name) is expected
-
-        monkeypatch.setattr(adapter, "_HiddenWrapper", adapter._NotInThisKernel)
-        monkeypatch.setattr(adapter, "_DispatchedAtCallTime", adapter._NotInThisKernel)
+        monkeypatch.setattr(adapter, "_NAMED_REFUSALS", ())
         monkeypatch.setattr(adapter, "_dispatches", lambda step: False)
-        if not hasattr(invocation, "HiddenWrapper"):
-            return
         for function, sent in (
             (self._hidden_wrapper([]), {"url": "u", "timeout": 9999}),
             (self._dispatching(), {"key": "k"}),
@@ -3370,16 +3365,11 @@ class TestPydanticAiGate:
             for validated in (True, False):
                 ctx = self._ctx_for(function, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", dict(sent))
-                if hasattr(invocation, "PartialMethodSignature"):  # the kernel that reads it
-                    assert same == sent and reason == adapter._PARTIALMETHOD, (function, reason)
-                    assert "is a `functools.partialmethod` over a callable" in reason
-                    assert "register a plain function that calls it, or put the" in reason
-                    assert unread not in reason
-                else:
-                    assert reason is None or unread not in reason
-        assert adapter._PartialMethodSignature is getattr(
-            invocation, "PartialMethodSignature", adapter._NotInThisKernel
-        )
+                assert same == sent and reason == adapter._PARTIALMETHOD, (function, reason)
+                assert "is a `functools.partialmethod` over a callable" in reason
+                assert "register a plain function that calls it, or put the" in reason
+                assert unread not in reason
+        assert adapter._PartialMethodSignature is invocation.PartialMethodSignature
 
         # over a plain function: read in full, completed, not refused
         assert type(repo.plain) is functools.partial
@@ -3391,6 +3381,565 @@ class TestPydanticAiGate:
             self._ctx_for(repo.plain_bound, validated=False), "t", {}
         )
         assert reason is None and completed == {"limit": 10}
+
+    # --- review round thirteen, beside recusal 0.16.0, and what 0.2.1 does about it -------
+
+    def _run_tool(self, example, tool, args, name=None, policy=None):
+        """Run one call of ``tool`` through a real agent with the gate: what the policy was
+        handed, and the model's answer to the call."""
+        from pydantic_ai import Tool
+
+        seen = []
+
+        def judged(tool_name, tool_input):
+            seen.append(dict(tool_input))
+            return policy(tool_name, tool_input) if policy is not None else []
+
+        if not isinstance(tool, Tool):
+            tool = Tool(tool, name=name or "f")
+        agent = example.Agent(
+            self._model_calling(example, tool.name, args),
+            tools=[tool],
+            capabilities=[example.RecusalGate(judged)],
+        )
+        return seen, example.responses_of(agent.run_sync("go")).get("c1")
+
+    def test_r13_a_weak_proxy_on_the_way_is_refused_with_a_reason_of_its_own(
+        self, example, adapter
+    ):
+        """Beside ``recusal`` 0.16.0 a tool registered as ``weakref.proxy(x)`` was gated
+        where ``x`` itself is refused: a class-based decorator that takes the tool's two
+        parameters swapped ran them swapped, one with a ``dry_run=False`` of its own ran it,
+        and a cache named again over a wrapper with a parameter of its own ran that
+        parameter at its default. 0.17.0 refuses a proxy anywhere on the way, and 0.2.0 said
+        of it that the function "cannot be inspected". The reason says what was found and
+        what to register, also for a proxy of a plain function, which runs correctly."""
+        import functools
+        import weakref
+
+        ran = []
+
+        def two(sql: str, force: bool = False) -> str:
+            ran.append(("two", sql, force))
+            return "ok"
+
+        class Swap:
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+            def __call__(self, force, sql):
+                return self.fn(force, sql)
+
+        class Extra:
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+            def __call__(self, *args, dry_run=False, **kwargs):
+                ran.append(("dry_run", dry_run))
+                return self.fn(*args, **kwargs)
+
+        def own_mode(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, mode="unsafe", **kwargs):
+                ran.append(("mode", mode))
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        named_again = functools.wraps(two)(functools.lru_cache(maxsize=None)(own_mode(two)))
+
+        @functools.singledispatch
+        def lookup(sql: str, force: bool = False) -> str:
+            return "base"
+
+        @lookup.register(int)
+        def _number(sql: int, force: bool = False, purge: bool = True) -> str:
+            return "number"
+
+        held = [Swap(two), Extra(two), named_again, two, lookup]
+        for direct, args in (
+            (held[0], {"sql": "", "force": True}),
+            (held[1], {"sql": "s"}),
+            (held[2], {"sql": "s"}),
+            (two, {"sql": "s"}),
+        ):
+            ran.clear()
+            seen, answer = self._run_tool(example, weakref.proxy(direct), args, name="two")
+            assert seen == [] and ran == [], (direct, seen, ran)
+            assert answer[0] == "failed" and answer[1].endswith(adapter._WEAK_PROXY), answer
+            assert "cannot be inspected" not in answer[1]
+        # and the registered dispatcher behind a partial of a proxy
+        shapes = (functools.partial(weakref.proxy(lookup)), weakref.proxy(lookup))
+        for shape in shapes:
+            reason = adapter._with_defaults(self._ctx_for(shape), "t", {"sql": "s"})[1]
+            assert reason == adapter._WEAK_PROXY, (shape, reason)
+        assert "register the function itself" in adapter._WEAK_PROXY
+        assert "a proxy of a plain function runs correctly" in adapter._WEAK_PROXY
+
+    def test_r13_a_dispatcher_given_an_implementation_after_the_check_is_refused(
+        self, example, adapter
+    ):
+        """A wrapper registers an implementation on its first use and then calls the
+        dispatcher, so the implementation's ``purge=True`` ran for the very call that was
+        judged without it (p4 b1). 0.17.0 refuses a single-dispatch function with nothing
+        registered (``OpenDispatch``) before anything can be registered, and the reason
+        says so; 0.2.0 said "cannot be inspected". The call is refused on every turn."""
+        import functools
+
+        ran = []
+
+        @functools.singledispatch
+        def lookup(table, /, limit=10):
+            ran.append(("base", table, limit))
+            return "base"
+
+        registered = []
+
+        @functools.wraps(lookup)
+        def tool(*args, **kwargs):
+            if not registered:
+                registered.append(True)
+
+                @lookup.register(str)
+                def _text(table, /, limit=10, purge=True):
+                    ran.append(("text", table, limit, purge))
+                    return "text"
+
+            return lookup(*args, **kwargs)
+
+        for _turn in range(2):
+            seen, answer = self._run_tool(example, tool, {"table": "t"}, name="lookup")
+            assert seen == [] and ran == [] and registered == [], (seen, ran)
+            assert answer[1].endswith(adapter._OPEN_DISPATCH), answer
+        assert "registered beside its base" not in adapter._OPEN_DISPATCH
+        assert "nothing registered but its base" in adapter._OPEN_DISPATCH
+
+    def test_r13_a_callable_that_answers_for_another_object_is_refused(self, example, adapter):
+        """A class-based decorator that keeps the function in an attribute and answers every
+        other attribute from it (``__getattr__``) answers ``__wrapped__`` with what the
+        function it keeps wraps, so the walk would step past that function. 0.17.0 refuses
+        it (``ProxiedCallable``); 0.2.0 said "cannot be inspected". It runs correctly over
+        a forwarding wrapper and is refused all the same; the reason passes the kernel's
+        words on and says what makes it readable: with ``functools.update_wrapper(self,
+        fn)`` it is read to the end and runs as judged."""
+        import functools
+
+        ran = []
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def f(table: str, limit: int = 10) -> str:
+            ran.append((table, limit))
+            return "ok"
+
+        class Forwards:
+            def __init__(self, fn):
+                self.fn = fn
+                self.__name__ = fn.__name__
+
+            def __getattr__(self, name):
+                return getattr(self.fn, name)
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        class Named(Forwards):
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+        tool = Forwards(logged(f))
+        reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "t"})[1]
+        assert reason.startswith(adapter._PROXIED), reason
+        assert "answers for `__wrapped__` without holding one" in reason
+        assert "`functools.update_wrapper(self, fn)` in its `__init__`" in reason
+        assert "cannot be inspected" not in reason
+        seen, answer = self._run_tool(example, Forwards(logged(f)), {"table": "t"})
+        assert seen == [] and ran == [] and answer[0] == "failed"
+        seen, answer = self._run_tool(example, Named(logged(f)), {"table": "t"})
+        assert seen == [{"table": "t", "limit": 10}] and ran == [("t", 10)], (seen, ran)
+
+    def test_r13_a_held_wrapper_found_on_every_way_and_held_to_the_tools_order(
+        self, example, adapter
+    ):
+        """Beside ``recusal`` 0.16.0 a held ``functools.wraps`` wrapper that takes the tool's
+        parameters swapped ran them swapped (judged ``sql=''``, ``force=True``; ran
+        ``sql=True``, ``force=''``), and one with a parameter of its own ran it at its
+        default where the way from it to the function passed a class-based decorator, a
+        callable object, a partial that carries a ``__wrapped__``, a weak proxy, a cache
+        named again or a second held wrapper (p1 rows 10a, 10c and 11). The kernel's walk
+        in 0.17.0 refuses each, and the gate says a decorator holds a second wrapper."""
+        import functools
+        import weakref
+
+        ran = []
+
+        def held_swapped():
+            def f(sql: str, force: bool = False) -> str:
+                ran.append((sql, force))
+                return "ok"
+
+            @functools.wraps(f)
+            def second(force, sql):
+                return f(force, sql)
+
+            @functools.wraps(f)
+            def first(*args, **kwargs):
+                return second(*args, **kwargs)
+
+            return first
+
+        keep = []
+
+        def held_via(how):
+            def f(sql: str, force: bool = False) -> str:
+                ran.append((sql, force))
+                return "ok"
+
+            @functools.wraps(f)
+            def second(*args, mode="unsafe", **kwargs):
+                ran.append(("mode", mode))
+                return f(*args, **kwargs)
+
+            if how == "class":
+
+                class Decorator:
+                    def __init__(self, fn):
+                        functools.update_wrapper(self, fn)
+                        self.fn = fn
+
+                    def __call__(self, *a, **k):
+                        return self.fn(*a, **k)
+
+                mid = Decorator(second)
+            elif how == "object":
+
+                class Calls:
+                    def __call__(self, *a, **k):
+                        return second(*a, **k)
+
+                mid = Calls()
+            elif how == "partial":
+                mid = functools.wraps(f)(functools.partial(second))
+            elif how == "proxy":
+                keep.append(second)
+                mid = weakref.proxy(second)
+            elif how == "cache":
+                mid = functools.wraps(f)(functools.lru_cache(maxsize=None)(second))
+            else:
+
+                @functools.wraps(f)
+                def mid(*a, **k):
+                    return second(*a, **k)
+
+            @functools.wraps(f)
+            def first(*args, **kwargs):
+                return mid(*args, **kwargs)
+
+            return first
+
+        tools = [(held_swapped(), {"sql": "", "force": True})]
+        for how in ("class", "object", "partial", "proxy", "cache", "held"):
+            tools.append((held_via(how), {"sql": "s"}))
+        for tool, args in tools:
+            ran.clear()
+            seen, answer = self._run_tool(example, tool, args, name="f")
+            assert seen == [] and ran == [], (tool, seen, ran)
+            assert "holds a second wrapper of that function" in answer[1], answer
+
+    def test_r13_the_reason_for_a_declared_signature_names_what_is_declared(self, example, adapter):
+        """0.2.0 refused a function with a ``__text_signature__`` as one that "declares a
+        signature of its own (`__signature__`)" (p1 row 5b, p8 b), and an object that shows
+        a ``__code__`` the same way. ``recusal`` 0.17.0 names the attribute it found
+        (``DeclaredSignature.declared``), and the reason names it."""
+        import functools
+
+        def text(table, limit=10, purge=True):
+            return "ok"
+
+        text.__text_signature__ = "(table, limit=10)"
+
+        def signed(table, limit=10):
+            return "ok"
+
+        signed.__signature__ = __import__("inspect").signature(lambda table: None)
+
+        def plain(table, limit=10):
+            return "ok"
+
+        class Shows:
+            def __init__(self, fn):
+                self.fn = fn
+                self.__name__ = fn.__name__
+
+            def __getattr__(self, name):
+                return getattr(self.fn, name)
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        for tool, declared in (
+            (text, "`__text_signature__`"),
+            (signed, "`__signature__`"),
+            (Shows(plain), "`__code__`"),
+            (functools.partial(text), "`__text_signature__`"),
+        ):
+            reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "t"})[1]
+            assert declared in reason, (tool, reason)
+            others = {"`__text_signature__`", "`__signature__`", "`__code__`"} - {declared}
+            assert not any(other in reason for other in others), (tool, reason)
+            assert reason.endswith("call it from a plain function and register that one")
+        # raised as code written for 0.16.0 raises it: no attribute is named
+        bare = adapter._declared_reason(adapter._DeclaredSignature())
+        assert "declares a signature of its own, so" in bare
+        seen, answer = self._run_tool(example, text, {"table": "t"}, name="text")
+        assert seen == [] and "`__text_signature__`" in answer[1]
+
+    def test_r13_the_callables_beside_the_levels_are_the_kernels(self, example, adapter):
+        """0.2.0 laid a walk of its own beside the kernel's levels and refused a stack where
+        the counts differed: beside 0.16.0, ``logged(functools.update_wrapper(
+        functools.partial(f), f))`` was refused as "cannot be inspected" (p9), although the
+        kernel reads it to the end and it runs as judged. The callables are now the kernel's
+        own, ``reached_callables``, made with the argument ``reached_parameters`` is, and
+        every rule of the gate is asked of the stacks that this lets through: each is read
+        or refused for what it is, and none runs a value the policy was not handed."""
+        import functools
+
+        from recusal import invocation
+
+        ran = []
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def own_mode(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, mode="unsafe", **kwargs):
+                ran.append(("mode", mode))
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def f(table, limit=10):
+            ran.append((table, limit))
+            return "ok"
+
+        named = functools.update_wrapper(functools.partial(f), f)
+        assert not hasattr(adapter, "_next_callables")
+        levels, callables = adapter._view(logged(named), True)
+        reached = invocation.reached_callables(logged(named))
+        assert [type(c) for c in callables] == [type(c) for c in reached]
+        assert len(callables) == len(levels) == 3
+
+        # read to the end, and run as judged
+        for tool in (logged(named), functools.wraps(f)(functools.lru_cache()(logged(f)))):
+            ran.clear()
+            seen, answer = self._run_tool(example, tool, {"table": "t"})
+            assert seen == [{"table": "t", "limit": 10}] and ran == [("t", 10)], (seen, ran)
+        # refused by the gate's own rules, naming what each does
+        for tool, cause in (
+            (logged(functools.update_wrapper(functools.partial(f, limit=7), f)), "keyword-only"),
+            (own_mode(functools.update_wrapper(functools.partial(f), f)), "takes `mode`"),
+            (functools.wraps(f)(functools.lru_cache()(own_mode(f))), "takes `mode`"),
+            (functools.wraps(f)(functools.lru_cache()(logged(own_mode(f)))), "takes `mode`"),
+        ):
+            ran.clear()
+            seen, answer = self._run_tool(example, tool, {"table": "t"})
+            assert seen == [] and ran == [] and cause in answer[1], (tool, answer)
+
+        class Calls(functools.partial):
+            def __call__(self, *args, mode="unsafe", **kwargs):
+                ran.append(("mode", mode))
+                return super().__call__(*args, **kwargs)
+
+        sub = Calls(f)
+        sub.__name__ = sub.__qualname__ = "f"
+        ran.clear()
+        seen, answer = self._run_tool(example, sub, {"table": "t"})
+        assert seen == [] and ran == [] and answer[0] == "failed"
+        # what the gate's own rules ask of each callable is asked of what a cache named
+        # again calls, and of what a partial's own ``__wrapped__`` names further in
+        called = own_mode(f)
+        steps = adapter._steps(functools.wraps(f)(functools.lru_cache()(called)))
+        assert any(step is called for step in steps) and any(step is f for step in steps)
+
+        def helper(*args, **kwargs):
+            return f(*args, **kwargs)
+
+        inner = functools.partial(f, "x")
+        outer = functools.partial(helper)
+        outer.__wrapped__ = inner
+        assert any(step is inner for step in adapter._steps(logged(outer)))
+
+    def test_r13_a_value_a_partial_binds_by_position_is_not_shown_to_the_policy(self, example):
+        """Stated, not changed (p4 c22). A value a ``functools.partial`` binds by position
+        is the application's own constant: the policy is handed the parameters left to the
+        model, and the function runs with the bound value too (judged ``{'limit': 10}``,
+        ran ``table='fixed'``). It cannot be shown without handing the tool a dict it would
+        refuse as a second value for the parameter. A keyword the partial binds is the
+        default of the parameter it names, and is shown. The page says both."""
+        import functools
+
+        ran = []
+
+        def plain(table: str, limit: int = 10) -> str:
+            ran.append((table, limit))
+            return "ok"
+
+        by_position = functools.partial(plain, "fixed")
+        by_position.__name__ = by_position.__qualname__ = "pp"
+        seen, _ = self._run_tool(example, by_position, {}, name="pp")
+        assert seen == [{"limit": 10}] and ran == [("fixed", 10)]
+        by_keyword = functools.partial(plain, limit=7)
+        by_keyword.__name__ = by_keyword.__qualname__ = "kp"
+        ran.clear()
+        seen, _ = self._run_tool(example, by_keyword, {"table": "t"}, name="kp")
+        assert seen == [{"table": "t", "limit": 7}] and ran == [("t", 7)]
+        readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+        flat = " ".join(readme.split())
+        assert "A value a `functools.partial` binds by position is not shown to the policy" in flat
+
+    def test_r13_a_refused_output_function_ends_a_stream(self, example):
+        """Under ``run_stream`` Pydantic AI runs an output function on partial output as it
+        arrives, and each call is judged. A refusal asks the model again under ``run``;
+        under ``run_stream`` there are no retries, and the stream ends with
+        ``UnexpectedModelBehavior`` ("retries are not supported in `run_stream()`", p5 3b).
+        The refused function does not run; the page says so."""
+        import asyncio
+
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+        from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+        from recusal import Finding
+
+        ran, seen = [], []
+
+        def finish(summary: str, table: str = "none") -> str:
+            ran.append((summary, table))
+            return summary
+
+        def policy(name, args):
+            seen.append(dict(args))
+            if args.get("table") == "prod":
+                return [Finding.fail("no_prod", severity="CRITICAL", message="no prod")]
+            return []
+
+        async def stream(messages, info):
+            name = info.output_tools[0].name
+            yield {0: DeltaToolCall(name=name, json_args='{"summary": "a', tool_call_id="o1")}
+            yield {0: DeltaToolCall(json_args='b", "table": "pr')}
+            yield {0: DeltaToolCall(json_args='od"}')}
+
+        agent = example.Agent(
+            FunctionModel(stream_function=stream),
+            output_type=finish,
+            capabilities=[example.RecusalGate(policy)],
+        )
+
+        async def consume():
+            async with agent.run_stream("go") as result:
+                async for _ in result.stream_output(debounce_by=None):
+                    pass
+
+        with pytest.raises(UnexpectedModelBehavior, match="retries are not supported"):
+            asyncio.run(consume())
+        assert {"summary": "ab", "table": "prod"} in seen
+        assert ("ab", "prod") not in ran
+        readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+        assert "`UnexpectedModelBehavior`" in " ".join(readme.split())
+
+    def test_r13_an_external_call_with_no_arguments_is_handed_on_as_sent(self, example):
+        """Stated, not changed (p5b). A call handed to the application with no arguments
+        (the model sent none, or the empty string) is judged as ``{}`` and handed on as the
+        model sent it, ``None`` or ``''``, which is what the page says now."""
+        from pydantic_ai import DeferredToolRequests
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.toolsets import ExternalToolset
+
+        seen = []
+        external = ExternalToolset(
+            [ToolDefinition(name="ship", parameters_json_schema={"type": "object"})]
+        )
+
+        def fn(messages, info):
+            from pydantic_ai.messages import ModelResponse, ToolCallPart
+
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="ship", args=None, tool_call_id="c1"),
+                    ToolCallPart(tool_name="ship", args="", tool_call_id="c2"),
+                ]
+            )
+
+        from pydantic_ai.models.function import FunctionModel
+
+        agent = example.Agent(
+            FunctionModel(fn),
+            toolsets=[external],
+            capabilities=[example.RecusalGate(lambda n, a: seen.append(dict(a)) or [])],
+            output_type=[str, DeferredToolRequests],
+        )
+        output = agent.run_sync("go").output
+        assert seen == [{}, {}]
+        assert [(c.tool_call_id, c.args) for c in output.calls] == [("c1", None), ("c2", "")]
+        readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+        assert "is judged as `{}` and handed on as the model sent it" in " ".join(readme.split())
+
+    def test_r13_class_based_decorators_are_read_fifteen_deep(self, example, adapter):
+        """The page says how deep a stack is read: the kernel reads the tool and at most 31
+        callables after it, a function decorator is one and a class-based decorator built
+        with ``functools.update_wrapper`` two. Under one function wrapper, 15 class-based
+        decorators are read and 16 refused (p8 a)."""
+        import functools
+
+        class Logged:
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        def forwards(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def f(table: str, limit: int = 10) -> str:
+            return "ok"
+
+        def stacked(count):
+            tool = f
+            for _ in range(count):
+                tool = Logged(tool)
+            return forwards(tool)
+
+        def functions(count):
+            tool = f
+            for _ in range(count):
+                tool = forwards(tool)
+            return tool
+
+        for read, refused in ((stacked(15), stacked(16)), (functions(31), functions(32))):
+            assert adapter._with_defaults(self._ctx_for(read), "t", {"table": "t"})[1] is None
+            reason = adapter._with_defaults(self._ctx_for(refused), "t", {"table": "t"})[1]
+            assert "cannot be inspected" in reason
+        readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+        flat = " ".join(readme.split())
+        assert "30 function decorators deep" in flat and "15 class-based ones" in flat
 
     def test_a_value_bound_by_position_past_a_naming_wrapper_is_refused(self, example, adapter):
         """A ``functools.partial`` with a positional argument, and a bound method, hand a
@@ -3513,11 +4062,10 @@ class TestPydanticAiGate:
                 ctx = self._ctx_for(function, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", {"limit": 5})
                 assert same == {"limit": 5}, function
-                # a kernel later than 0.15.1 refuses a bound object a wrapper takes under
-                # another name before this gate's own rule is asked, in its own words
+                # the kernel refuses a bound object a wrapper takes under another name
+                # before this gate's own rule is asked, in its own words
                 kernels = (
-                    adapter._BoundArgumentKept is not adapter._NotInThisKernel
-                    and cause.startswith(reaches.split("{}")[0])
+                    cause.startswith(reaches.split("{}")[0])
                     and "an argument bound on the way" in reason
                     and "runs at a default no policy judged" in reason
                 )

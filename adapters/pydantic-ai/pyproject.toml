@@ -33,9 +33,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.15.0 is the first release whose `recusal.invocation` walks every callable a call
-    # reaches (`reached_parameters`, `DeclaredSignature`), which the gate imports.
-    "recusal>=0.15.0,<1",
+    # 0.17.0 is the first release whose `recusal.invocation` refuses a `weakref.proxy` on
+    # the way and a single-dispatch function with nothing registered, and has the walk of
+    # the callables beside their levels (`reached_callables`), the classes `OpenDispatch`,
+    # `ProxiedCallable` and `WeakProxy`, and `DeclaredSignature.declared`, which the gate
+    # imports and gives reasons for. Beside 0.16.0 those two shapes ran a value no policy
+    # judged (review round thirteen).
+    "recusal>=0.17.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "pydantic-ai-slim>=2.67.0,<3",
