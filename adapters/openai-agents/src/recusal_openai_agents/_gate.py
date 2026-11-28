@@ -334,13 +334,15 @@ _BODY_NOT_READ = (
 )
 
 #: For a reason that quotes the kernel's text: that text ends with the kernel's own advice,
-#: which in ``recusal`` 0.17.0 can be to register a plain function that calls the refused
-#: one; this says which plain function is meant. The kernel's advice is under revision on
-#: its own branch (kernel-0.17.1); once the floor is a kernel whose advice removes the
-#: cause, this note and the tests that hold it can go.
+#: which in ``recusal`` 0.17.0 can be to call the refused function from a plain function
+#: and register that. This note comes before the kernel's text, so that the reader meets
+#: it first, and says plainly not to follow that part. The kernel's advice is under
+#: revision on its own branch (kernel-0.17.1); once the floor is a kernel whose advice
+#: removes the cause, this note and the tests that hold it can go.
 _KERNEL_ADVICE = (
-    "Where that report advises a plain function, write one that does the work itself and "
-    "does not call the refused one."
+    "The kernel's report below ends with advice of its own, which can be to call the "
+    "refused function from a plain function and register that: do not follow that part. "
+    + _BODY_NOT_READ
 )
 
 _SINGLEDISPATCH = (
@@ -363,10 +365,11 @@ _PARTIALMETHOD_REFUSED = (
     "it runs a `functools.partialmethod`: the call goes to the callable the partialmethod "
     "holds, and the tool's parameters are read from that callable without the gate "
     "reading what is under it, so a wrapper or a single-dispatch function there could run "
-    "with a value no policy judged. Write the method out in place of the partialmethod, "
-    "with the values it binds as defaults of its own parameters (`def export(self, sql, "
-    "force=False)` in place of `export = functools.partialmethod(run, force=False)`), "
-    "and register that. " + _BODY_NOT_READ
+    "with a value no policy judged. Write the method out in place of the partialmethod: "
+    "the work of the callable it holds in the method's own body, and the values it binds "
+    "as defaults of the method's own parameters (`def export(self, sql, force=False)` in "
+    "place of `export = functools.partialmethod(run, force=False)`), with no call to that "
+    "callable, and register that. " + _BODY_NOT_READ
 )
 
 _WEAK_PROXY = (
@@ -408,13 +411,12 @@ _PROXIED_CALLABLE = (
     "for `__wrapped__` without holding one, as a proxy or a class-based decorator that "
     "hands every attribute on with `__getattr__` does, or it shows another class than its "
     "own), so the gate cannot tell what a call to it runs. A tool refused for this may run "
-    "correctly. The kernel's walk reports: {}. A class-based decorator that keeps the "
-    "function in an attribute and hands the other attributes on with `__getattr__` is read "
-    "once it holds `__wrapped__` itself: call `functools.update_wrapper(self, fn)` in its "
-    "`__init__`. For any other such object, register the function it calls itself. "
+    "correctly. A class-based decorator that keeps the function in an attribute and hands "
+    "the other attributes on with `__getattr__` is read once it holds `__wrapped__` "
+    "itself: call `functools.update_wrapper(self, fn)` in its `__init__`. For any other "
+    "such object, register the function it calls itself. "
     + _KERNEL_ADVICE
-    + " "
-    + _BODY_NOT_READ
+    + " The kernel's walk reports: {}."
 )
 
 #: For the kernel walk's ``HiddenWrapper``. The kernel's own text goes in the braces. It
@@ -428,12 +430,13 @@ _PROXIED_CALLABLE = (
 _HIDDEN_WRAPPER = (
     "a decorator on the function it runs holds a second wrapper of it that the gate does "
     "not follow (in its closure, a global it names or an attribute of the decorator "
-    "object, and not reached through `__wrapped__`): {}. Remove the cause from the "
-    "wrapper the decorator holds: give it no parameter of its own (pass such a value "
-    "explicitly in its body), give it the tool's parameters in the tool's order or as "
-    "keyword-only ones, and hold no single-dispatch function, weak proxy or cache named "
-    "again on its way to the function; or register the function itself, without the "
-    "decorator. " + _KERNEL_ADVICE + " " + _BODY_NOT_READ
+    "object, and not reached through `__wrapped__`). Remove the cause from the wrapper "
+    "the decorator holds: give it no parameter of its own (pass such a value explicitly "
+    "in its body), give it the tool's parameters in the tool's order or as keyword-only "
+    "ones, and hold no single-dispatch function, weak proxy or cache named again on its "
+    "way to the function; or register the function itself, without the decorator. "
+    + _KERNEL_ADVICE
+    + " The kernel's walk reports: {}."
 )
 
 #: For the kernel walk's ``UnreadCache``, which is a ``HiddenWrapper`` and is asked for
@@ -457,31 +460,40 @@ _BOUND_ARGUMENT_KEPT = (
     "of a method, or a positional argument of a `functools.partial`), and the gate cannot "
     "tell from the wrapper's signature whether it passes that argument on, keeps it or "
     "passes a value of its own in its place, so it cannot tell which parameter of the "
-    "function each judged value fills. A tool refused for this may run correctly. The "
-    "kernel's walk reports: {}. Register the function itself; or write the method without "
-    "`functools.wraps`, naming the parameters the tool takes in its own signature, and pass "
-    "them on to the function by keyword. " + _KERNEL_ADVICE + " " + _BODY_NOT_READ
+    "function each judged value fills. A tool refused for this may run correctly. "
+    "Register the function itself; or write the method without `functools.wraps`, naming "
+    "the parameters the tool takes in its own signature, and pass them on to the function "
+    "by keyword. " + _KERNEL_ADVICE + " The kernel's walk reports: {}."
 )
 
-#: For a method whose function is a wrapper of a function that was not written to take the
-#: object (its first parameter is not named ``self`` or ``cls``). This SDK reads the tool's
-#: parameters with ``inspect.signature``, which leaves that first parameter out as the
-#: object's, and calls the tool with every declared parameter by position
-#: (``FuncSchema.to_call_args``). The wrapper's signature does not show whether it hands
-#: the object on, and where it does not, every value runs one place off: the first judged
-#: value fills the first parameter. ``recusal`` 0.17.0 refuses such a facade only where
-#: the parameter the object would fill has a default (``BoundArgumentKept``), so the gate
-#: refuses the rest itself (:func:`_kept_receiver`). Names a parameter, never a value.
+#: For a method whose function is a wrapper of a function whose first parameter is not
+#: named ``self`` or ``cls``, and a ``functools.partial`` that binds positional arguments
+#: to such a wrapper in the place of parameters so named (:func:`_kept_receiver`). Whether
+#: the wrapper hands what is bound on cannot be read from its signature. Where the SDK
+#: reads the tool's parameters through that method or partial, ``inspect.signature``
+#: leaves the place out and the SDK passes every declared parameter by position
+#: (``FuncSchema.to_call_args``), so a wrapper that drops what is bound runs every value
+#: one place off. ``recusal`` 0.17.0 refuses such a facade only where the parameter the
+#: object would fill has a default (``BoundArgumentKept``). True of every tool it is given
+#: for: it says "where", because behind a cache named again for a function that shows the
+#: whole signature the SDK reads that signature instead, and dropping what is bound can be
+#: what makes the call correct. A method's object place named ``self`` or ``cls`` is not
+#: refused, and a decorator that drops it is not found: that is stated as open. Names a
+#: parameter, never a value.
 _KEPT_RECEIVER = (
     "a wrapper on the way to the function it runs (it names `__wrapped__`) is handed an "
     "argument bound on the way (the object of a method, or a positional argument of a "
     "`functools.partial`) in the place of `{name}`, a parameter of the function it wraps "
-    "that is not named as an object's (`self` or `cls`). The SDK leaves that parameter "
-    "out of the tool's parameters and passes the judged values on by position, so where "
-    "the wrapper does not hand the bound argument on, every value runs one parameter off "
-    "(the first as `{name}`). Whether it does cannot be read from the wrapper's signature, "
-    "so the tool is refused, and one that does hand it on is refused too. Register the "
-    "function itself, not the method or the partial that wraps it. " + _BODY_NOT_READ
+    "that is not named as an object's (`self` or `cls`). Whether the wrapper hands that "
+    "argument on, or drops it so that the values it is given fill the function's "
+    "parameters from `{name}` on, cannot be read from its signature, so the tool is "
+    "refused, whichever it does. Where the SDK reads the tool's parameters through that "
+    "method or partial, it leaves `{name}` out of them and passes the judged values on by "
+    "position, and a wrapper that drops the bound argument runs every value one parameter "
+    "off (the first as `{name}`). Register the function itself, not the method or the "
+    "partial that wraps it; or, where `{name}` is the object's place of a method of your "
+    "own under another name, name it `self`, and the method is read as any decorated "
+    "method is. " + _BODY_NOT_READ
 )
 
 #: For the kernel walk's ``DeclaredSignature``: a ``__signature__``, a

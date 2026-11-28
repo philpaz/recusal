@@ -315,10 +315,16 @@ guardrail cannot judge:
   parameter is not named `self` or `cls`, however the wrapper takes the object (as
   `self`, in `*args`, under the function's own first name, under a
   `functools.lru_cache`), and a `functools.partial` that binds a positional argument to
-  such a wrapper in the place of a parameter so named. One that does hand the object on
-  is refused too, since the signature does not show it. A decorated method of an
-  ordinary class (`def run_sql(self, sql)`) is read as before. Register the function
-  itself, not the method or the partial that wraps it.
+  such a wrapper in the place of a parameter so named. The rule is by name: where the
+  dropped place is named `self` or `cls`, it is the ordinary decorated method, and a
+  decorator that forgets to pass the object on is not found (stated under Open below).
+  Refused although it runs correctly: one that does hand the object on, since the
+  signature does not show it; a correct decorated method whose object's place has
+  another name (`this`): name it `self`; and two such facades, one over the other,
+  behind a cache named again for a function that shows the whole signature, where the
+  SDK reads that signature and each drop is what makes the call correct. A decorated
+  method of an ordinary class (`def run_sql(self, sql)`) is read as before. Register the
+  function itself, not the method or the partial that wraps it.
 - **A `functools.singledispatch` function or a `singledispatchmethod`, with or without
   an implementation registered.** The implementation that runs is chosen at call time by
   the type of an argument, each one has its own parameters and defaults, and one can be
@@ -371,10 +377,11 @@ guardrail cannot judge:
   object (`db.export`) when the callable it holds does not bind as a method: a
   class-based decorator's instance, or a `functools.partial`. A partialmethod over
   a plain function or method read from an object is a `functools.partial`, which the
-  SDK refuses itself (`function_tool` raises). Write the method out in its place, with
-  the values the partialmethod binds as defaults of its own parameters (`def export(self,
-  sql, force=False)` for `export = functools.partialmethod(run, force=False)`), and
-  register that. A plain function that calls the partialmethod is gated with the cause
+  SDK refuses itself (`function_tool` raises). Write the method out in its place: the
+  work of the callable it holds in the method's own body, and the values the
+  partialmethod binds as defaults of the method's own parameters (`def export(self, sql,
+  force=False)` for `export = functools.partialmethod(run, force=False)`), with no call
+  to that callable; and register that. A plain function that calls the partialmethod is gated with the cause
   still inside it: the gate reads its parameters and never its body.
   Behind a cache named again for another function the gate's own walk follows what the
   cache calls (since 0.2.3), and a partialmethod there is refused; where a
@@ -630,24 +637,27 @@ told, met by the gate's own walk, is refused with the reason for one, not with t
 for a callable the gate cannot question. The tests in `TestStatedLimits` hold each closed
 item as refused, before any policy is asked and before anything runs.
 
-The review of 0.2.3 before its release found three more things, closed here as well:
+The reviews of 0.2.3 before its release found more, answered here:
 
 - **A method facade that drops its object**, over a function whose first parameter has
   no default, was gated and ran with every value one place off (the bullet on a method
   over a wrapper of a function not written to take what is bound, above). The kernel's
-  walk of 0.17.0 reads it; the gate refuses it itself, and the same shape through a
-  `functools.partial`.
+  walk of 0.17.0 reads it; the gate refuses it itself where the dropped place is not
+  named `self` or `cls`, and the same shape through a `functools.partial`. Where the
+  place is named `self` or `cls` the shape is a decorator that forgets the object, and
+  it is open (below).
 - **The advice of the reasons.** Followed literally, 11 of 15 reasons gave a gated tool
   that ran the cause: most advised calling the refused function from a plain function and
   registering that, and the gate reads a plain function's parameters and never its body.
   Every reason now advises removing the cause (drop a wrapper's own parameter or pass it
   explicitly, keep a held wrapper in the tool's order or keyword-only, register the
   function itself, call `functools.update_wrapper(self, fn)`, write the method out in
-  place of a partialmethod, branch on the type in one plain function's body), and ends by
-  saying why the other way does not. A reason that quotes the kernel's text, whose own
-  advice can be to register a plain function, says that such a function must do the work
-  itself and not call the refused one. `TestReasonAdvice` follows each piece of advice
-  and runs the result.
+  place of a partialmethod with the held callable's work in its own body, branch on the
+  type in one plain function's body), and ends by saying why the other way does not. A
+  reason that quotes the kernel's text, whose own advice can be to call the refused
+  function from a plain function, says first not to follow that part, and gives the
+  kernel's text last. `TestReasonAdvice` follows each piece of advice and runs the
+  result.
 - **A false refusal**: a callable object whose class has a member named `partialmethod`,
   behind a cache named again, was refused as running a `functools.partialmethod`. That
   name is no name Python reads; it now counts only where the object itself holds it.
@@ -685,7 +695,12 @@ list of refused tools above.
   - A method, or a `functools.partial` with positional arguments, over a wrapper of a
     function whose first parameter is not named `self` or `cls`, where the wrapper does
     hand the bound argument on. Register the function itself. This one is refused by the
-    gate's own rule, not the kernel's.
+    gate's own rule, not the kernel's, as are the next two.
+  - A correct decorated method whose object's place is named otherwise than `self`
+    (`this`). Name it `self`.
+  - Two method facades that drop their object, one over the other, behind a cache named
+    again for a function that shows the whole signature: the SDK reads that signature,
+    and each drop is what makes the call correct. Register the function itself.
 
   The kernel's entry for 0.17.0 in the changelog has the whole list for its walk, each
   with what to write instead; the rest of it (an object whose `__class__` is not its
@@ -712,6 +727,18 @@ see" or above:
   method decorator that keeps the object, is gated, and the function runs with the
   judged values one place off. The kernel states this as what its name rule reads. It
   is in 0.2.2 too, and this page did not state it before 0.2.3.
+- **A method decorator that forgets to pass the object on.** Over a method of an ordinary
+  class, `@functools.wraps(m) def method(self, *args, **kwargs): return m(*args, **kwargs)`
+  over `def run_sql(self, sql, force=False)`, as `Tools().run_sql`. It is gated, and every
+  judged value runs one place off: the policy judged `sql="S"` and `force=True`, and the
+  method ran with `self="S"`, `sql=True` and `force=False`. The same holds for a class
+  method (`cls`). From the signature the gate cannot tell whether a method decorator
+  passes the object on: one that does is the ordinary decorated method, and only the
+  body differs. The mistake is in the application's decorator, and the same call misruns
+  without the gate. Pass `self` on in the decorator (`return m(self, *args, **kwargs)`),
+  or register the method without that decorator. Found by the confirmation review of 0.2.3, in 0.2.2
+  too; `test_open_a_method_decorator_that_forgets_the_object` holds it as gated and run
+  one place off.
 - A change a tool body makes to another tool's function is seen from the next model
   turn, not by the other calls of the same turn.
 - A bounded `functools.lru_cache` named again over a callable that cannot be weakly

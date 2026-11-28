@@ -24,8 +24,9 @@ BODY_NOT_READ = (
     "that calls the refused one is gated with the cause still inside it."
 )
 KERNEL_ADVICE = (
-    "Where that report advises a plain function, write one that does the work itself and "
-    "does not call the refused one."
+    "The kernel's report below ends with advice of its own, which can be to call the "
+    "refused function from a plain function and register that: do not follow that part. "
+    + BODY_NOT_READ
 )
 SINGLEDISPATCH_REASON = (
     "it runs a `functools.singledispatch` function: the implementation that runs is chosen "
@@ -45,10 +46,11 @@ PARTIALMETHOD_REASON = (
     "it runs a `functools.partialmethod`: the call goes to the callable the partialmethod "
     "holds, and the tool's parameters are read from that callable without the gate "
     "reading what is under it, so a wrapper or a single-dispatch function there could run "
-    "with a value no policy judged. Write the method out in place of the partialmethod, "
-    "with the values it binds as defaults of its own parameters (`def export(self, sql, "
-    "force=False)` in place of `export = functools.partialmethod(run, force=False)`), "
-    "and register that. " + BODY_NOT_READ
+    "with a value no policy judged. Write the method out in place of the partialmethod: "
+    "the work of the callable it holds in the method's own body, and the values it binds "
+    "as defaults of the method's own parameters (`def export(self, sql, force=False)` in "
+    "place of `export = functools.partialmethod(run, force=False)`), with no call to that "
+    "callable, and register that. " + BODY_NOT_READ
 )
 WEAK_PROXY_REASON = (
     "a callable the call reaches is a `weakref.proxy`: it shows the attributes of the "
@@ -73,23 +75,23 @@ PROXIED_REASON = (
     "for `__wrapped__` without holding one, as a proxy or a class-based decorator that "
     "hands every attribute on with `__getattr__` does, or it shows another class than its "
     "own), so the gate cannot tell what a call to it runs. A tool refused for this may run "
-    "correctly. The kernel's walk reports: {}. A class-based decorator that keeps the "
-    "function in an attribute and hands the other attributes on with `__getattr__` is read "
-    "once it holds `__wrapped__` itself: call `functools.update_wrapper(self, fn)` in its "
-    "`__init__`. For any other such object, register the function it calls itself. "
+    "correctly. A class-based decorator that keeps the function in an attribute and hands "
+    "the other attributes on with `__getattr__` is read once it holds `__wrapped__` "
+    "itself: call `functools.update_wrapper(self, fn)` in its `__init__`. For any other "
+    "such object, register the function it calls itself. "
     + KERNEL_ADVICE
-    + " "
-    + BODY_NOT_READ
+    + " The kernel's walk reports: {}."
 )
 HIDDEN_REASON = (
     "a decorator on the function it runs holds a second wrapper of it that the gate does "
     "not follow (in its closure, a global it names or an attribute of the decorator "
-    "object, and not reached through `__wrapped__`): {}. Remove the cause from the "
-    "wrapper the decorator holds: give it no parameter of its own (pass such a value "
-    "explicitly in its body), give it the tool's parameters in the tool's order or as "
-    "keyword-only ones, and hold no single-dispatch function, weak proxy or cache named "
-    "again on its way to the function; or register the function itself, without the "
-    "decorator. " + KERNEL_ADVICE + " " + BODY_NOT_READ
+    "object, and not reached through `__wrapped__`). Remove the cause from the wrapper "
+    "the decorator holds: give it no parameter of its own (pass such a value explicitly "
+    "in its body), give it the tool's parameters in the tool's order or as keyword-only "
+    "ones, and hold no single-dispatch function, weak proxy or cache named again on its "
+    "way to the function; or register the function itself, without the decorator. "
+    + KERNEL_ADVICE
+    + " The kernel's walk reports: {}."
 )
 UNREAD_CACHE_REASON = (
     "a `functools.lru_cache` wrapper on the way to the function it runs cannot be read: "
@@ -103,21 +105,25 @@ BOUND_REASON = (
     "of a method, or a positional argument of a `functools.partial`), and the gate cannot "
     "tell from the wrapper's signature whether it passes that argument on, keeps it or "
     "passes a value of its own in its place, so it cannot tell which parameter of the "
-    "function each judged value fills. A tool refused for this may run correctly. The "
-    "kernel's walk reports: {}. Register the function itself; or write the method without "
-    "`functools.wraps`, naming the parameters the tool takes in its own signature, and pass "
-    "them on to the function by keyword. " + KERNEL_ADVICE + " " + BODY_NOT_READ
+    "function each judged value fills. A tool refused for this may run correctly. "
+    "Register the function itself; or write the method without `functools.wraps`, naming "
+    "the parameters the tool takes in its own signature, and pass them on to the function "
+    "by keyword. " + KERNEL_ADVICE + " The kernel's walk reports: {}."
 )
 KEPT_RECEIVER_REASON = (
     "a wrapper on the way to the function it runs (it names `__wrapped__`) is handed an "
     "argument bound on the way (the object of a method, or a positional argument of a "
     "`functools.partial`) in the place of `{name}`, a parameter of the function it wraps "
-    "that is not named as an object's (`self` or `cls`). The SDK leaves that parameter "
-    "out of the tool's parameters and passes the judged values on by position, so where "
-    "the wrapper does not hand the bound argument on, every value runs one parameter off "
-    "(the first as `{name}`). Whether it does cannot be read from the wrapper's signature, "
-    "so the tool is refused, and one that does hand it on is refused too. Register the "
-    "function itself, not the method or the partial that wraps it. " + BODY_NOT_READ
+    "that is not named as an object's (`self` or `cls`). Whether the wrapper hands that "
+    "argument on, or drops it so that the values it is given fill the function's "
+    "parameters from `{name}` on, cannot be read from its signature, so the tool is "
+    "refused, whichever it does. Where the SDK reads the tool's parameters through that "
+    "method or partial, it leaves `{name}` out of them and passes the judged values on by "
+    "position, and a wrapper that drops the bound argument runs every value one parameter "
+    "off (the first as `{name}`). Register the function itself, not the method or the "
+    "partial that wraps it; or, where `{name}` is the object's place of a method of your "
+    "own under another name, name it `self`, and the method is read as any decorated "
+    "method is. " + BODY_NOT_READ
 )
 DECLARED_REASON = (
     "the function it runs, or a callable on the way to it, carries a declared signature (a "
@@ -4872,7 +4878,7 @@ class TestKernelRefusals:
             name: value
             for name, value in vars(adapter).items()
             if name.isupper()
-            and name != "_BODY_NOT_READ"
+            and name not in ("_BODY_NOT_READ", "_KERNEL_ADVICE")
             and type(value) is str
             and BODY_NOT_READ in value
         }
@@ -4895,15 +4901,20 @@ class TestKernelRefusals:
         assert adapter._KERNEL_ADVICE == KERNEL_ADVICE
         quoting = {"_BOUND_ARGUMENT_KEPT", "_HIDDEN_WRAPPER", "_PROXIED_CALLABLE"}
         for name, value in reasons.items():
-            assert value.endswith(BODY_NOT_READ), name
             assert (KERNEL_ADVICE in value) == (name in quoting), name
+            if name in quoting:
+                # the gate's note comes before the kernel's text, whose advice is last
+                assert value.endswith(KERNEL_ADVICE + " The kernel's walk reports: {}."), name
+            else:
+                assert value.endswith(BODY_NOT_READ), name
             for old in (
                 "from a plain function and register",
                 "a plain function that calls it",
                 "Register a plain function that names",
                 "what its body calls is not read",
             ):
-                assert old not in value, (name, old)
+                # the note names that advice in order to say not to follow it
+                assert old not in value.replace(KERNEL_ADVICE, ""), (name, old)
 
 
 @pytest.mark.skipif(
@@ -4929,8 +4940,9 @@ class TestStatedLimits:
     ``test_open_``): the fourth item, narrower; the held wrappers the kernel's walk does
     not find, in eight of the ways the page lists (a wrapper in a C structure, in a
     dictionary behind a ``__dict__`` property or in a class attribute is stated and not
-    held here); and the held wrapper whose leading place the kernel takes for the
-    object's, stated from 0.2.3. Of the page's other open items, a change a tool body
+    held here); the held wrapper whose leading place the kernel takes for the object's,
+    stated from 0.2.3; and a method decorator that forgets to pass the object on, found by
+    the confirmation review of 0.2.3. Of the page's other open items, a change a tool body
     makes in the same turn is held by ``TestSixthReview``; a dispatcher a tool body
     calls, and the cost of listing a cache, are stated and not tested."""
 
@@ -5604,6 +5616,34 @@ class TestStatedLimits:
         assert events.pop() == ("execute", "SELECT 1", "DELETE FROM audit_log", "")
         self.refused(example, tool, self.kept_or_bound(tool), events)
 
+    def test_refused_although_correct_two_dropping_methods_behind_a_cache_named_again(
+        self, example
+    ):
+        """Found by the confirmation review of 0.2.3: two method facades that each drop
+        their object, one over the other, behind a cache named again for a function that
+        shows the whole signature. The SDK reads that signature, not the methods', and
+        each drop is what makes the call correct, so it runs as judged. The gate's rule
+        refuses it, naming ``force``; the reason says "where the SDK reads the tool's
+        parameters through that method", which is not so here, and does not say it is."""
+        import functools
+
+        def facade(inner):
+            @functools.wraps(inner)
+            def first(self, *args, **kwargs):
+                return inner(*args, **kwargs)
+
+            class Holder:
+                m = first
+
+            return Holder().m
+
+        def make(events):
+            return self.again(facade(facade(self.fetch(events))), self.named(events))
+
+        self.refused_although_correct(
+            example, make, TestKernelRefusals.KEPT_RECEIVER.format(name="force")
+        )
+
     def test_a_class_member_named_partialmethod_is_not_a_mark(self, example):
         """Found by the review of 0.2.3: the gate also asks for a partialmethod's mark under
         the name ``partialmethod``, which Python never reads, and found a class member of
@@ -5659,6 +5699,53 @@ class TestStatedLimits:
         assert events == [("run_sql", "S", "n")]
 
     # --- open: what 0.2.2 stated and 0.2.3 does not close, and what 0.2.3 states --------------
+
+    @pytest.mark.parametrize("receiver", ["self", "cls-of-a-classmethod"])
+    def test_open_a_method_decorator_that_forgets_the_object(self, example, receiver):
+        """Found by the confirmation review of 0.2.3, in 0.2.2 too, and stated as open. A
+        method decorator written as ``def method(self, *a, **k): return m(*a, **k)`` over
+        a method of an ordinary class, ``def run_sql(self, sql, force=False)``, forgets
+        to pass the object on. From the signature the gate cannot tell it from one that
+        passes it on, which is the ordinary decorated method; only the body differs. It
+        is gated, and the SDK's call runs every judged value one place off: judged
+        ``sql="S"``, ``force=True``; ran ``self="S"``, ``sql=True``, ``force=False``. The
+        same call misruns without the gate: the mistake is in the decorator."""
+        import functools
+
+        events: list = []
+
+        def forgets(m):
+            @functools.wraps(m)
+            def method(self, *args, **kwargs):
+                return m(*args, **kwargs)
+
+            return method
+
+        if receiver == "self":
+
+            class Tools:
+                @forgets
+                def run_sql(self, sql: str, force: bool = False) -> str:
+                    """Record SQL text without connecting to a database."""
+                    events.append(("run_sql", self, sql, force))
+                    return "recorded"
+
+            tool = Tools().run_sql
+        else:
+
+            class Tools:  # type: ignore[no-redef]
+                @classmethod
+                @forgets
+                def run_sql(cls, sql: str, force: bool = False) -> str:
+                    """Record SQL text without connecting to a database."""
+                    events.append(("run_sql", cls, sql, force))
+                    return "recorded"
+
+            tool = Tools.run_sql
+        outputs, seen = self.run(example, tool, {"sql": "S", "force": True})
+        assert outputs == {"c1": "recorded"}
+        assert seen == [("run_sql", {"sql": "S", "force": True})]
+        assert events == [("run_sql", "S", True, False)]
 
     @staticmethod
     def not_found(events, where):
@@ -6173,6 +6260,42 @@ class TestReasonAdvice:
             [("search", "t", "Q", 5)],
             {"tenant": "t", "query": "Q", "limit": 5},
         )
+
+    def test_a_decorated_method_whose_object_place_has_another_name(self, example):
+        """Found by the confirmation review of 0.2.3: a correct decorated method whose
+        object's place is named ``this`` is refused by the gate's name rule, and
+        registering the function itself gives another refusal (``this`` is then a
+        parameter of the tool). The reason says to name it ``self``; so named, the method
+        is gated and runs as judged."""
+        import functools
+
+        events: list = []
+
+        def logged(m):
+            @functools.wraps(m)
+            def method(self, *args, **kwargs):
+                return m(self, *args, **kwargs)
+
+            return method
+
+        class Named:
+            @logged
+            def run_sql(this, sql: str, force: bool = False) -> str:  # noqa: N805
+                """Record SQL text without connecting to a database."""
+                events.append(("fetch", sql, force))
+                return "recorded"
+
+        self.refused(example, Named().run_sql, KEPT_RECEIVER_REASON.format(name="this"))
+        assert "name it `self`" in KEPT_RECEIVER_REASON
+
+        class Renamed:
+            @logged
+            def run_sql(self, sql: str, force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                events.append(("fetch", sql, force))
+                return "recorded"
+
+        self.runs_as_judged(example, Renamed().run_sql, events, [("fetch", "S", True)])
 
     def test_a_method_that_wraps_a_function_not_written_to_take_the_object(self, example):
         """The gate's own refusal for a method facade over a function whose first

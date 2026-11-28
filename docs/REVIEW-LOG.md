@@ -1003,17 +1003,22 @@ a seventh found the open items.
   of a helper; and a decorator that holds a cache named again for another function
   over a `functools.partial`. The package page and the changelog entry for 0.2.3 list
   them with what to write instead.
-- Found by the review of 0.2.3 before its release, and closed in it:
+- Found by the reviews of 0.2.3 before its release, and answered in it:
   - A method facade that drops its object, over a function whose first parameter has no
     default, was gated (in 0.2.2 too) and ran with every value one place off, because
     the SDK passes every declared parameter by position. The kernel's walk of 0.17.0
-    reads it; the gate refuses it itself, and the same shape through a
-    `functools.partial`. Held by `test_closed_a_method_facade_that_drops_its_object` and
+    reads it. The gate refuses it itself where the dropped place is not named `self` or
+    `cls`, and the same shape through a `functools.partial`. Where it is so named, a
+    method decorator that forgets to pass the object on is gated and runs every value
+    one place off (judged `sql="S"`, `force=True`; ran `self="S"`, `sql=True`,
+    `force=False`): the signature cannot tell it from the ordinary decorated method. That
+    is open, found by the confirmation review, and stated on the package page; held by
+    `test_open_a_method_decorator_that_forgets_the_object`. Held by `test_closed_a_method_facade_that_drops_its_object` and
     `test_closed_a_partial_that_binds_an_argument_a_wrapper_drops` in `TestStatedLimits`.
   - Followed literally, the advice of 11 of 15 reasons gave a gated tool that ran the
     cause: it was to call the refused function from a plain function, whose body the
     gate never reads. Every reason now advises removing the cause, and
-    `TestReasonAdvice` follows each piece of advice and runs the result.
+    `TestReasonAdvice` (14 tests) follows each piece of advice and runs the result.
   - A callable object whose class has a member named `partialmethod`, behind a cache
     named again, was refused, which 0.2.2 gated: the gate asks that name, which Python
     never reads, and now only of what the object itself holds.

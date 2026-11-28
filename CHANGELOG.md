@@ -73,17 +73,20 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     give a held wrapper no parameter of its own (pass the value explicitly in its body)
     and the tool's parameters in the tool's order or as keyword-only ones; put the object
     a proxy stands for in its place; call `functools.update_wrapper(self, fn)`; write the
-    method out in place of a partialmethod, with the values it binds as defaults; take
+    method out in place of a partialmethod, with the work of the callable it holds in the
+    method's own body, the values it binds as defaults and no call to that callable; take
     wrappers off; remove a declared signature; register the function itself; for
     dispatch, one plain function with each implementation's code under a branch on the
     type. Every reason that says what to write ends with "The gate reads a plain
     function's parameters and never its body, so a plain function that calls the refused
     one is gated with the cause still inside it." A reason that quotes the kernel's text
     (a held wrapper, a bound argument, a callable that answers for another object)
-    quotes its advice too, which can be to register a plain function, and adds: "Where
-    that report advises a plain function, write one that does the work itself and does
-    not call the refused one." `TestReasonAdvice` follows each reason's advice on a real
-    tool, and the result is gated and runs as judged.
+    quotes its advice too, which can be to call the refused function from a plain
+    function. The gate's own advice and a note come first, and the kernel's text last:
+    "The kernel's report below ends with advice of its own, which can be to call the
+    refused function from a plain function and register that: do not follow that part."
+    followed by the sentence above. `TestReasonAdvice` (14 tests) follows each reason's
+    advice on a real tool, and the result is gated and runs as judged.
   - **A method facade that drops its object is refused.** Found by the same review, in
     0.2.2 too: the SDK passes every declared parameter by position
     (`FuncSchema.to_call_args`), and a method whose function is a `functools.wraps`
@@ -92,12 +95,22 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     note="")`, ran with every value one place off: the policy judged `sql="SELECT 1"` and
     `note="DELETE FROM audit_log"`, and `execute` ran `database="SELECT 1"` and
     `sql="DELETE FROM audit_log"`. The walk of `recusal` 0.17.0 refuses such a facade
-    only where the parameter the object would fill has a default. The gate refuses the
-    rest itself: a method whose function names `__wrapped__` and wraps a function whose
-    first parameter is not named `self` or `cls`, and a `functools.partial` that binds a
-    positional argument to such a wrapper in the place of a parameter so named, with a
-    reason that names that parameter. **This refuses what 0.2.2 gated** although it runs
-    correctly: such a facade that does hand the object on. A decorated method of an
+    only where the parameter the object would fill has a default. The gate refuses, by
+    name, the facades whose dropped place is not named as an object's: a method whose
+    function names `__wrapped__` and wraps a function whose first parameter is not named
+    `self` or `cls`, and a `functools.partial` that binds a positional argument to such a
+    wrapper in the place of a parameter so named, with a reason that names that parameter.
+    Where the dropped place is named `self` or `cls` the shape is a decorator that forgets
+    to pass the object on, which the signature cannot tell from the ordinary decorated
+    method: found by the confirmation review of this release, in 0.2.2 too, it is gated
+    and runs every value one place off (judged `sql="S"`, `force=True`; ran `self="S"`,
+    `sql=True`, `force=False`), and the package page states it as open. **This refuses
+    what 0.2.2 gated** although it runs correctly: such a facade that does hand the object
+    on; a correct decorated method whose object's place is named otherwise (`this`),
+    whose reason says to name it `self`; and two dropping facades, one over the other,
+    behind a cache named again for a function that shows the whole signature, which the
+    SDK reads in their place. The reason says where the SDK reads the tool's parameters
+    through such a method, and does not say it always does. A decorated method of an
     ordinary class (`def run_sql(self, ...)`) is gated as before.
   - **A false refusal of 0.2.3 as first written.** The gate asks for a partialmethod's
     mark under the name `partialmethod` too, which Python never reads, and found a class
@@ -139,7 +152,7 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     `__wrapped__`, one built on first use, one in a slot, a container, a settings
     object or a function's own attribute, one a `functools.partial` binds as an
     argument, one behind a `weakref.ref`) are gated, each run here with a parameter of
-    its own at its default, and tests in `TestStatedLimits` hold six of them; so is a
+    its own at its default, and tests in `TestStatedLimits` hold eight of them; so is a
     dispatcher of another function a wrapper holds or reaches through a helper. One
     shape the page did not state before, found while this release was prepared, in 0.2.2
     too: a held wrapper with a required parameter of its own in the leading place, under
