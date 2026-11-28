@@ -928,28 +928,30 @@ a seventh found the open items.
   refuses them as well; the last two by that walk alone. Each is held as refused by a
   test named `test_closed_` in `TestStatedLimits` in the same file:
   - Behind a `functools.lru_cache` named again for another function, the gate's own
-    questions are not asked: its walk follows what the cache names. The kernel's walk
-    reads what the cache calls, and refuses a single-dispatch function there only once
-    an implementation is registered, and a weak proxy not at all. A single-dispatch
-    function with nothing registered is gated where the wrapper that reaches it carries
-    none of the dispatcher's attributes (`functools.partial(dispatcher)`, a
-    `functools.wraps(dispatcher, updated=())` wrapper, a class-based decorator that sets
-    only `__wrapped__`). An implementation registered after a call was judged runs for
-    it, and the judged call itself can register it. The declared parameters run with
-    the judged values; a parameter the implementation adds runs at its default.
-  - Behind such a cache, a `weakref.proxy` hides what stands behind it: a wrapper with
-    a parameter of its own, with no dispatcher anywhere, and a dispatcher with an
-    implementation registered before the tool is gated, which runs on every turn and is
-    never refused.
+    questions were not asked in 0.2.2: its walk followed what the cache names. The
+    kernel's walk of 0.16.0 read what the cache calls, and refused a single-dispatch
+    function there only once an implementation was registered, and a weak proxy not at
+    all. A single-dispatch function with nothing registered was gated where the wrapper
+    that reaches it carries none of the dispatcher's attributes
+    (`functools.partial(dispatcher)`, a `functools.wraps(dispatcher, updated=())`
+    wrapper, a class-based decorator that sets only `__wrapped__`). An implementation
+    registered after a call was judged ran for it, and the judged call itself could
+    register it. The declared parameters ran with the judged values; a parameter the
+    implementation adds ran at its default.
+  - Behind such a cache, a `weakref.proxy` hid what stood behind it beside 0.16.0: a
+    wrapper with a parameter of its own, with no dispatcher anywhere, and a dispatcher
+    with an implementation registered before the tool was gated, which ran on every
+    turn and was never refused.
   - A decorator that holds a `functools.wraps` wrapper which takes the tool's own
-    parameters in another order is gated, and the function runs with the values
-    swapped. The same wrapper on the `__wrapped__` chain is refused. This is in how the
-    kernel reads a held wrapper.
-  - A decorator that holds a `functools.wraps` wrapper with a parameter of its own is
-    gated where the way from that wrapper to the function passes a class-based
-    decorator, a callable object, a `functools.partial` that carries a `__wrapped__`, a
-    weak proxy, a cache named again or a second held wrapper. The kernel states these
-    as not found.
+    parameters in another order was gated beside 0.16.0, and the function ran with the
+    values swapped. The same wrapper on the `__wrapped__` chain was refused. This was in
+    how the kernel read a held wrapper.
+  - A decorator that holds a `functools.wraps` wrapper with a parameter of its own was
+    gated beside 0.16.0 where the way from that wrapper to the function passes a
+    class-based decorator, a callable object, a `functools.partial` that carries a
+    `__wrapped__`, a weak proxy, a cache named again or a second held wrapper. The
+    kernel's entries for 0.16.0 stated these as not found; its walk of 0.17.0 follows
+    them.
 - Refused although they run correctly beside `recusal` 0.16.0, and gated by 0.2.1
   beside `recusal` 0.15.1: a decorator that holds a cache named again for the function
   over anything but a plain function, a cache named again over a
@@ -1001,6 +1003,22 @@ a seventh found the open items.
   of a helper; and a decorator that holds a cache named again for another function
   over a `functools.partial`. The package page and the changelog entry for 0.2.3 list
   them with what to write instead.
+- Found by the review of 0.2.3 before its release, and closed in it:
+  - A method facade that drops its object, over a function whose first parameter has no
+    default, was gated (in 0.2.2 too) and ran with every value one place off, because
+    the SDK passes every declared parameter by position. The kernel's walk of 0.17.0
+    reads it; the gate refuses it itself, and the same shape through a
+    `functools.partial`. Held by `test_closed_a_method_facade_that_drops_its_object` and
+    `test_closed_a_partial_that_binds_an_argument_a_wrapper_drops` in `TestStatedLimits`.
+  - Followed literally, the advice of 11 of 15 reasons gave a gated tool that ran the
+    cause: it was to call the refused function from a plain function, whose body the
+    gate never reads. Every reason now advises removing the cause, and
+    `TestReasonAdvice` follows each piece of advice and runs the result.
+  - A callable object whose class has a member named `partialmethod`, behind a cache
+    named again, was refused, which 0.2.2 gated: the gate asks that name, which Python
+    never reads, and now only of what the object itself holds.
+  - Stated, not changed: a bounded cache named again over a callable that cannot be
+    weakly referenced is listed on every check, once more by the gate than by 0.2.2.
 
 **Where you can help.**
 

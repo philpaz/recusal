@@ -12,8 +12,9 @@ The adapter entry under this heading is not part of the `recusal` wheel:
 ### Security
 
 - **`recusal-openai-agents` 0.2.3: the gate's own walk follows what a cache named again
-  calls, the three refusals `recusal` 0.17.0 adds have reasons of their own, and the
-  package requires `recusal` 0.17.0.** The package page of 0.2.2 stated four items as
+  calls, the three refusals `recusal` 0.17.0 adds have reasons of their own, every
+  reason advises removing the cause, a method facade that drops its object is refused,
+  and the package requires `recusal` 0.17.0.** The package page of 0.2.2 stated four items as
   open beside `recusal` 0.16.0; the first three are closed here, and the fourth is
   narrower. Each closed item was gated by 0.2.2 beside 0.16.0 and ran a value no policy
   judged, and each is refused now when the tool is gated, before any policy is asked
@@ -50,29 +51,66 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     that base now, that an implementation registered after the check would run for the
     judged call with any parameter of its own at a default no policy judged, that a
     tool refused for this runs correctly as long as nothing is ever registered on it,
-    and what to register: the base function itself, or one plain function that
-    branches on the type inside its body. A `ProxiedCallable` says that a callable on
-    the way answers for another object, that a tool refused for this may run correctly,
-    that a class-based decorator which hands its attributes on with `__getattr__` is
-    read once it calls `functools.update_wrapper(self, fn)` in its `__init__`, and
-    passes the kernel's text on, whole, as what the walk reports: that text says which
-    shape was found and names no value. A `WeakProxy` gets the reason the gate gives a
-    weak proxy its own walk finds. Both new reasons end, as every reason that advises a
-    plain function does, by saying that the gate judges that function's parameters and
-    does not read what its body calls. The gate's own walk can now meet an
+    and what to register: the base function itself, or one plain function with the code
+    of each implementation under a branch on the type. No tool is known that gets it: a
+    dispatcher a decorator holds is refused by the kernel as a `HiddenWrapper`, and the
+    gate's own walk finds every other one first. A `ProxiedCallable` says that a
+    callable on the way answers for another object, that a tool refused for this may run
+    correctly, passes the kernel's text on, whole, as what the walk reports (it says
+    which shape was found and names no value), and says that a class-based decorator
+    which hands its attributes on with `__getattr__` is read once it calls
+    `functools.update_wrapper(self, fn)` in its `__init__`. A `WeakProxy` gets the reason
+    the gate gives a weak proxy its own walk finds. The gate's own walk can now meet an
     `UnreadCache`, from `cache_target`; it is refused with the reason for one, and not
     with the reason for a callable the gate cannot question. The kernel's classes are
     imported and asked with `isinstance`, as before.
-  - *Beside `recusal` 0.17.0.* The verdicts of 0.2.3 are those of 0.2.2 on the tools of
-    the adapter's tests, of the probes of the review of 0.2.2 and of the kernel change,
-    and on every stack of up to four of sixteen decorator idioms over one tool function
-    (69,904 stacks, none of them gated and run other than as judged); what changes for
-    those is the reason. One verdict change was found: behind a cache named again the
-    gate's own questions now refuse what they refuse anywhere else its walk reaches, so
-    an object of your own with the attributes the gate takes for a dispatcher's (a
-    `registry` that is a `types.MappingProxyType` beside a callable `dispatch` and a
-    callable `register`) is refused there, where 0.2.2 beside 0.17.0 gated it, as the
-    package page has said of such an object since 0.2.1.
+  - **Every reason advises removing the cause.** Found by the review of this release
+    before it was made: followed literally, the advice of 11 of 15 reasons gave a gated
+    tool that ran the cause. Most advised calling the refused function from a plain
+    function and registering that, and the gate reads a plain function's parameters and
+    never its body, so a wrapper's own parameter, a later-registered implementation, or
+    values in another order ran as before. Each reason now says what removes the cause:
+    give a held wrapper no parameter of its own (pass the value explicitly in its body)
+    and the tool's parameters in the tool's order or as keyword-only ones; put the object
+    a proxy stands for in its place; call `functools.update_wrapper(self, fn)`; write the
+    method out in place of a partialmethod, with the values it binds as defaults; take
+    wrappers off; remove a declared signature; register the function itself; for
+    dispatch, one plain function with each implementation's code under a branch on the
+    type. Every reason that says what to write ends with "The gate reads a plain
+    function's parameters and never its body, so a plain function that calls the refused
+    one is gated with the cause still inside it." A reason that quotes the kernel's text
+    (a held wrapper, a bound argument, a callable that answers for another object)
+    quotes its advice too, which can be to register a plain function, and adds: "Where
+    that report advises a plain function, write one that does the work itself and does
+    not call the refused one." `TestReasonAdvice` follows each reason's advice on a real
+    tool, and the result is gated and runs as judged.
+  - **A method facade that drops its object is refused.** Found by the same review, in
+    0.2.2 too: the SDK passes every declared parameter by position
+    (`FuncSchema.to_call_args`), and a method whose function is a `functools.wraps`
+    wrapper of a function not written to take the object, `def method(self, *args,
+    **kwargs): return fn(*args, **kwargs)` over `def execute(database, sql="SELECT 1",
+    note="")`, ran with every value one place off: the policy judged `sql="SELECT 1"` and
+    `note="DELETE FROM audit_log"`, and `execute` ran `database="SELECT 1"` and
+    `sql="DELETE FROM audit_log"`. The walk of `recusal` 0.17.0 refuses such a facade
+    only where the parameter the object would fill has a default. The gate refuses the
+    rest itself: a method whose function names `__wrapped__` and wraps a function whose
+    first parameter is not named `self` or `cls`, and a `functools.partial` that binds a
+    positional argument to such a wrapper in the place of a parameter so named, with a
+    reason that names that parameter. **This refuses what 0.2.2 gated** although it runs
+    correctly: such a facade that does hand the object on. A decorated method of an
+    ordinary class (`def run_sql(self, ...)`) is gated as before.
+  - **A false refusal of 0.2.3 as first written.** The gate asks for a partialmethod's
+    mark under the name `partialmethod` too, which Python never reads, and found a class
+    member of that name on a callable object behind a cache named again: a tool that runs
+    correctly was refused there, which 0.2.2 gated. That name counts now only where the
+    object itself holds it.
+  - *Beside `recusal` 0.17.0.* On the tools of the adapter's tests and of the review
+    probes, the verdicts of 0.2.3 are those of 0.2.2 but for the facade above, which is
+    refused, and an object of your own with the attributes the gate takes for a
+    dispatcher's (a `registry` that is a `types.MappingProxyType` beside a callable
+    `dispatch` and a callable `register`) behind a cache named again, which is refused
+    there now as the package page has said of such an object anywhere since 0.2.1.
+    Otherwise what changes is the reason.
   - **The floor is `recusal>=0.17.0`** (it was `>=0.16.0`). 0.17.0 is the first release
     with `cache_target` and the three classes. 0.2.2 installed beside 0.16.0 has the
     three open items above, and installed beside 0.17.0 it refuses each, with the class
@@ -82,14 +120,16 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     function behind a cache named again for another function (register the function
     itself), and a single-dispatch function that nothing is ever registered on behind
     such a cache (register the base function itself): refused by the gate's own walk,
-    as elsewhere since 0.2.1. A class-based decorator that hands every attribute on with
-    `__getattr__` over a function that names a `__wrapped__` (call
-    `functools.update_wrapper(self, fn)`); a decorator that holds a wrapper in another
-    order than the tool's and calls it by keyword or puts the values back (give the
-    held wrapper the tool's order); a decorator that holds a `weakref.proxy` of a helper
-    (hold the helper itself); and a decorator that holds a cache named again for another
-    function over a `functools.partial` (register a plain function that calls the
-    decorated one): refused by the kernel's walk of 0.17.0. The kernel's entry for
+    as elsewhere since 0.2.1. A method facade, or a `functools.partial`, that does hand
+    its bound argument on to a wrapper of a function not written to take it (register
+    the function itself): refused by the gate's own rule. A class-based decorator that
+    hands every attribute on with `__getattr__` over a function that names a
+    `__wrapped__` (call `functools.update_wrapper(self, fn)`); a decorator that holds a
+    wrapper in another order than the tool's and calls it by keyword or puts the values
+    back (give the held wrapper the tool's order); a decorator that holds a
+    `weakref.proxy` of a helper (hold the helper itself); and a decorator that holds a
+    cache named again for another function over a `functools.partial` (hold a cache of
+    the function itself): refused by the kernel's walk of 0.17.0. The kernel's entry for
     0.17.0 below has its whole list.
   - **Stated as open on the package page.** Anything the kernel's walk raises for a
     callable it cannot read, other than by a class of its own, is still refused with the
@@ -99,14 +139,18 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     `__wrapped__`, one built on first use, one in a slot, a container, a settings
     object or a function's own attribute, one a `functools.partial` binds as an
     argument, one behind a `weakref.ref`) are gated, each run here with a parameter of
-    its own at its default; so is a dispatcher of another function a wrapper holds or
-    reaches through a helper. And one shape the page did not state before, found while
-    this release was prepared, in 0.2.2 too: a held wrapper with a required parameter
-    of its own in the leading place, under a method decorator that keeps the object
-    (`def second(mode, sql="x", force=False)`), is gated, and the function runs with
-    the judged values one place off (judged `sql="S"`, `force=True`; ran `sql=True`,
-    `force=False`). The kernel's entry for 0.17.0 states it as what its name rule for a
-    bound place reads.
+    its own at its default, and tests in `TestStatedLimits` hold six of them; so is a
+    dispatcher of another function a wrapper holds or reaches through a helper. One
+    shape the page did not state before, found while this release was prepared, in 0.2.2
+    too: a held wrapper with a required parameter of its own in the leading place, under
+    a method decorator that keeps the object (`def second(mode, sql="x", force=False)`),
+    is gated, and the function runs with the judged values one place off (judged
+    `sql="S"`, `force=True`; ran `sql=True`, `force=False`). The kernel's entry for
+    0.17.0 states it as what its name rule for a bound place reads. And a cost: a
+    bounded cache named again over a callable that cannot be weakly referenced is listed
+    on every check, by the kernel's walk twice and by the gate's once more since 0.2.3
+    (400,000 entries: 52 ms a check on the review's machine, 35 ms beside 0.2.2); the
+    gate keeps nothing between checks, as the kernel keeps nothing it cannot hold weakly.
   - The tests in `TestStatedLimits` no longer hold both outcomes by the kernel they run
     beside: the package installs beside 0.17.0 alone, and no lane runs its tests beside
     an older kernel. `TestKernelRefusals` holds each new reason with the kernel's own

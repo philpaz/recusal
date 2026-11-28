@@ -219,12 +219,14 @@ guardrail cannot judge:
   binds, and which ones it reads differs between Python versions. The kernel's walk
   relies on none. It refuses each one, also where this Python would not read it (a
   `__signature__` of `None`) and where it matches the real parameters, so a tool refused
-  for this may run correctly. Register a plain function that names its own parameters
-  and calls it.
+  for this may run correctly. Remove the declaration, so that the parameters Python
+  binds are what is read.
 - **A decorator whose signature cannot be read.** A class-based decorator that is also a
   descriptor (`cachetools.cached`, `cachetools.func.ttl_cache`, `cachetools.func.lru_cache`)
-  hides the functions under it from inspection. Call the decorated function from a plain
-  function and register that. A `staticmethod` object that something other than a class
+  hides the functions under it from inspection. Register the function without that
+  decorator, or use one the gate reads (a `functools.wraps` function decorator, or a
+  class-based decorator with no `__get__` that calls `functools.update_wrapper(self,
+  fn)`). A `staticmethod` object that something other than a class
   holds (`functools.partial(staticmethod(f))` under a decorator) is such an object too:
   Python shows no signature for it, so the tool is refused with the same reason,
   although it runs correctly. 0.2.1 beside `recusal` 0.15.1 refused it as well under an
@@ -282,18 +284,41 @@ guardrail cannot judge:
   argument on, keeps it or passes a value of its own in its place cannot be read from
   its signature, so the kernel's walk cannot tell which parameter of the function each
   judged value fills. A facade that takes its object in `*args` is refused the same way.
-  Which signatures are refused is the kernel's rule (`BoundArgumentKept` in
+  Which signatures the kernel refuses is its rule (`BoundArgumentKept` in
   `recusal.invocation`): a parameter the bound arguments could leave open that nothing
-  is known to fill with a judged value. That includes a parameter the tool declares,
-  where a wrapper on the way takes that name itself, and a parameter that has no
-  default. A wrapper of such a signature that runs correctly is refused with it,
-  because the two cannot be told apart. The reason carries the kernel's text, which
-  names the parameter that could be left open and, where a wrapper took the bound
-  argument under a name, that name too. That text is the kernel's and is quoted whole.
-  In `recusal` 0.16.0 it could say a parameter "runs at a default no policy judged"
-  where the parameter has no default; the text of 0.17.0, which 0.2.3 requires, says
-  only what holds for the parameter. Register a plain function that names every
-  parameter the tool takes and calls the facade.
+  is known to fill with a judged value, where that parameter has a default, or where
+  the tool declares it and a wrapper on the way takes that name itself. Where it has no
+  default and the tool does not declare it, the walk of `recusal` 0.17.0 reads the
+  facade, because a call by keyword would then fail; this SDK calls by position, so the
+  gate refuses that shape itself (the next bullet). A wrapper of a refused signature
+  that runs correctly is refused with it, because the two cannot be told apart. The
+  reason carries the kernel's text, which names the parameter that could be left open
+  and, where a wrapper took the bound argument under a name, that name too. That text
+  is the kernel's and is quoted whole. In `recusal` 0.16.0 it could say a parameter
+  "runs at a default no policy judged" where the parameter has no default; the text of
+  0.17.0, which 0.2.3 requires, says only what holds for the parameter. Register the
+  function itself; or write the method without `functools.wraps`, naming the
+  parameters the tool takes in its own signature, and pass them on to the function by
+  keyword.
+- **A method, or a `functools.partial` with positional arguments, over a wrapper of a
+  function not written to take what is bound (since 0.2.3).** A decorator written with
+  `functools.wraps` that exposes a module function as a method,
+  `def method(self, *args, **kwargs): return fn(*args, **kwargs)` over
+  `def execute(database, sql="SELECT 1", note="")`, as `Warehouse().run_sql`:
+  `inspect.signature` reads the method as `execute` and leaves `database` out as the
+  object's place, and the SDK passes every declared parameter by position
+  (`FuncSchema.to_call_args`), so the method's call drops the object and `execute` runs
+  with each value one place off. 0.2.2 and 0.2.3 as first written gated it: the policy
+  judged `sql="SELECT 1"` and `note="DELETE FROM audit_log"`, and the function ran
+  `database="SELECT 1"` and `sql="DELETE FROM audit_log"`. The gate now refuses a method
+  whose function is a wrapper (it names `__wrapped__`) of a function whose first
+  parameter is not named `self` or `cls`, however the wrapper takes the object (as
+  `self`, in `*args`, under the function's own first name, under a
+  `functools.lru_cache`), and a `functools.partial` that binds a positional argument to
+  such a wrapper in the place of a parameter so named. One that does hand the object on
+  is refused too, since the signature does not show it. A decorated method of an
+  ordinary class (`def run_sql(self, sql)`) is read as before. Register the function
+  itself, not the method or the partial that wraps it.
 - **A `functools.singledispatch` function or a `singledispatchmethod`, with or without
   an implementation registered.** The implementation that runs is chosen at call time by
   the type of an argument, each one has its own parameters and defaults, and one can be
@@ -301,8 +326,8 @@ guardrail cannot judge:
   body runs, so an implementation that one call of a turn registers (or that the tool
   registers on its own first use) would run, unjudged, for a later call of that turn. So
   a single-dispatch function is refused when the agent is built, whether or not
-  anything is registered, wherever the gate's own walk reaches it. Register one plain function as the tool and branch on the type
-  inside its body (`if isinstance(...)`). Do not call a single-dispatch function from
+  anything is registered, wherever the gate's own walk reaches it. Register one plain function as the tool, with the code of each implementation in its own
+  body under a branch on the type (`if isinstance(...)`). Do not call a single-dispatch function from
   that body in its place: a single-dispatch function called from the body is not read,
   and the implementation it picks runs with its own defaults. The dispatcher is refused
   wherever it stands among the callables the gate reads: as the tool itself, as a
@@ -327,11 +352,15 @@ guardrail cannot judge:
   a wrapper of the function the walk reads (`functools.singledispatch(f)` held by a
   decorator of `f`), whatever is registered on it. One built over another function, and
   one reached through a helper that names nothing as `__wrapped__`, are not found: see
-  "What the gate does not see" below. A single-dispatch function that only the kernel's
-  walk finds, with nothing registered (`OpenDispatch` in `recusal.invocation`), is
-  refused with a reason of its own, which says that it runs its base now, that an
-  implementation registered after the check would run for the judged call, and to
-  register the base function itself where nothing is to be registered.
+  "What the gate does not see" below. A dispatcher a decorator holds is refused with
+  the reason for a held wrapper, whose advice is to hold no single-dispatch function
+  there or to register the function itself. The kernel's walk also refuses a
+  single-dispatch function with nothing registered that it stands on
+  (`OpenDispatch` in `recusal.invocation`), and the gate has a reason of its own for
+  that: it runs its base now, an implementation registered after the check would run
+  for the judged call, and the base function itself is what to register where nothing
+  is to be registered. Since 0.2.3 the gate's own walk stands wherever the kernel's
+  does and finds such a dispatcher first, so no tool is known that gets this reason.
 - **A `functools.partialmethod`.** What the tool calls is the callable the partialmethod
   holds, and Python reads the tool's parameters from that callable without anything
   reading what is under it: a single-dispatch function or a wrapper with a parameter of
@@ -342,8 +371,11 @@ guardrail cannot judge:
   object (`db.export`) when the callable it holds does not bind as a method: a
   class-based decorator's instance, or a `functools.partial`. A partialmethod over
   a plain function or method read from an object is a `functools.partial`, which the
-  SDK refuses itself (`function_tool` raises). Register a plain function that calls it;
-  the gate judges that function's parameters, and what its body calls is not read.
+  SDK refuses itself (`function_tool` raises). Write the method out in its place, with
+  the values the partialmethod binds as defaults of its own parameters (`def export(self,
+  sql, force=False)` for `export = functools.partialmethod(run, force=False)`), and
+  register that. A plain function that calls the partialmethod is gated with the cause
+  still inside it: the gate reads its parameters and never its body.
   Behind a cache named again for another function the gate's own walk follows what the
   cache calls (since 0.2.3), and a partialmethod there is refused; where a
   `weakref.proxy` stands on the way it is refused as a proxy. 0.2.2 gated a
@@ -353,8 +385,8 @@ guardrail cannot judge:
 - **A `weakref.proxy`**, as the tool's function or anywhere among the callables the
   gate's own walk reaches, behind a cache named again for another function too (since
   0.2.3). A proxy shows the attributes of the object it stands for and is not that
-  object, so the gate cannot tell which callables a call to it runs. Register the
-  function itself, or a plain function that calls it. A proxy of a plain function is
+  object, so the gate cannot tell which callables a call to it runs. Put the
+  object the proxy stands for in its place. A proxy of a plain function is
   refused although it runs correctly. A proxy a decorator holds, and does not reach
   through `__wrapped__`, is refused by the kernel's walk unless it stands for a callable
   that walk read (see the bullet on a decorator that holds a second wrapper).
@@ -369,8 +401,8 @@ guardrail cannot judge:
   The reason quotes the kernel's text, which says which was found. Such a decorator
   ordinarily runs correctly, and is refused all the same: call
   `functools.update_wrapper(self, fn)` in its `__init__`, and it is read like any other
-  wrapper, so one that only forwards is gated; or register a plain function that calls
-  it.
+  wrapper, so one that only forwards is gated. For another such object, register the
+  function it calls itself.
 - **A sub-agent behind `agent.as_tool(...)` whose own tools are not gated.** Gate the
   sub-agent first, `gated_agent(sub, policy).as_tool(...)`, and the parent accepts it.
 - **An agent tool whose `parameters` type is not a data-only Pydantic model.** The gate
@@ -598,6 +630,28 @@ told, met by the gate's own walk, is refused with the reason for one, not with t
 for a callable the gate cannot question. The tests in `TestStatedLimits` hold each closed
 item as refused, before any policy is asked and before anything runs.
 
+The review of 0.2.3 before its release found three more things, closed here as well:
+
+- **A method facade that drops its object**, over a function whose first parameter has
+  no default, was gated and ran with every value one place off (the bullet on a method
+  over a wrapper of a function not written to take what is bound, above). The kernel's
+  walk of 0.17.0 reads it; the gate refuses it itself, and the same shape through a
+  `functools.partial`.
+- **The advice of the reasons.** Followed literally, 11 of 15 reasons gave a gated tool
+  that ran the cause: most advised calling the refused function from a plain function and
+  registering that, and the gate reads a plain function's parameters and never its body.
+  Every reason now advises removing the cause (drop a wrapper's own parameter or pass it
+  explicitly, keep a held wrapper in the tool's order or keyword-only, register the
+  function itself, call `functools.update_wrapper(self, fn)`, write the method out in
+  place of a partialmethod, branch on the type in one plain function's body), and ends by
+  saying why the other way does not. A reason that quotes the kernel's text, whose own
+  advice can be to register a plain function, says that such a function must do the work
+  itself and not call the refused one. `TestReasonAdvice` follows each piece of advice
+  and runs the result.
+- **A false refusal**: a callable object whose class has a member named `partialmethod`,
+  behind a cache named again, was refused as running a `functools.partialmethod`. That
+  name is no name Python reads; it now counts only where the object itself holds it.
+
 **Refused although it runs correctly.** The kernel's walk reads parameters and not
 bodies, so it refuses some signatures a correct tool can have. Each is described in the
 list of refused tools above.
@@ -626,8 +680,12 @@ list of refused tools above.
     parameters in the tool's order, or by keyword only.
   - A decorator that holds a `weakref.proxy` of a helper. Hold the helper itself.
   - A decorator that holds a cache named again for another function over anything but
-    a plain function (a `functools.partial`). Register a plain function that names
-    every parameter the tool takes and calls the decorated one.
+    a plain function (a `functools.partial`). Hold a cache of the function itself,
+    or register the function itself.
+  - A method, or a `functools.partial` with positional arguments, over a wrapper of a
+    function whose first parameter is not named `self` or `cls`, where the wrapper does
+    hand the bound argument on. Register the function itself. This one is refused by the
+    gate's own rule, not the kernel's.
 
   The kernel's entry for 0.17.0 in the changelog has the whole list for its walk, each
   with what to write instead; the rest of it (an object whose `__class__` is not its
@@ -656,6 +714,12 @@ see" or above:
   is in 0.2.2 too, and this page did not state it before 0.2.3.
 - A change a tool body makes to another tool's function is seen from the next model
   turn, not by the other calls of the same turn.
+- A bounded `functools.lru_cache` named again over a callable that cannot be weakly
+  referenced (an object with `__slots__`) is listed on every check, because the kernel
+  cannot keep what it found: twice by the kernel's walk and, since 0.2.3, once by the
+  gate's. On the review's machine a check of one with 400,000 entries took 52 ms, and 35 ms
+  beside 0.2.2. Keeping the answer between checks would need a strong reference the
+  kernel avoids on purpose.
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
