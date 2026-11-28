@@ -948,6 +948,47 @@ file (`recusal audit verify audit.jsonl --expect-head "N:<hash>"`) with the head
 somewhere the agent cannot write. Appends are lock-serialized, so parallel tool calls
 extend one chain.
 
+## 23. Bind HTTP destinations to the active tenant
+
+Use the same trusted active-subject context as recipe 4 to select the hosts an
+agent may contact for the current tenant. The model's URL arguments cannot change
+that binding. The [runnable policy](../examples/tenant_http_policy.py) reuses
+recipe 5's HTTP URL parser and takes an exact-host snapshot when it is built.
+
+```python
+from examples.tenant_http_policy import make_tenant_http_policy
+
+policy = make_tenant_http_policy(
+    active_id="C1001",  # supplied by the host's trusted session context
+    hosts_by_tenant={
+        "C1001": {"a.example.com"},
+        "C2002": {"b.example.com"},
+    },
+    http_tools=("WebFetch", "http_get"),
+)
+assert policy("WebFetch", {"url": "https://a.example.com/tickets"}) == []
+assert policy("WebFetch", {"url": "https://b.example.com/tickets"})
+```
+
+A missing active tenant, unknown tenant, missing URL, or host outside that tenant's
+set refuses. Host matching is case-insensitive and permits a trailing DNS dot;
+subdomains must be listed separately. Backslashes, userinfo, control characters,
+IP literals and numeric-address spellings refuse. Configure ASCII DNS names,
+using their ASCII punycode spelling when needed. Rebuild the policy when the
+trusted active tenant or its approved destinations change.
+
+Run `python examples/tenant_http_policy.py` offline. Copy both example modules
+into the hook project when using an installed wheel: they are repository examples,
+not installed package APIs. Tests cover cross-tenant destinations, URL ambiguity,
+unbound sessions, configuration snapshots and uninspected-tool negative controls;
+the code block above also runs in the cookbook CI tests.
+
+This gate only checks literal URL hosts for the tools named in `http_tools`.
+Ports, URL paths, redirects, DNS changes, HTTP response data and requests made
+inside other tools remain application or transport responsibilities. Shared hosts
+whose tenants are separated by path need another tenant check. A clean result
+defers to the host's existing permissions; it does not authorize the request.
+
 ---
 
 **These are starting points, not turnkey security.** Read each one, tune the lists and
