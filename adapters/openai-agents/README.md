@@ -590,6 +590,20 @@ too:
   class of its own, is refused with the name of the exception class alone, with no
   cause and no advice.
 
+The first three are open beside `recusal` 0.16.0. `recusal` 0.17.0 closes them, and
+0.2.2 installs beside it (it requires `recusal>=0.16.0`): its walk refuses
+a `weakref.proxy` anywhere among the callables it reads, a single-dispatch function
+with nothing registered, a held wrapper that takes, in a place an argument passed by
+position can fill, another name than the tool declares there, and a held wrapper with
+a parameter of its own on each of the ways listed.
+0.2.2 is not changed for it. Beside that kernel it refuses a proxy and a dispatcher
+with nothing registered, behind a cache named again, with the name of the kernel's
+exception class alone ("the function it runs cannot be inspected (WeakProxy)", or
+"(OpenDispatch)"), which is the fourth item. The tests in `TestStatedLimits` hold each
+of the three both ways, by the kernel they run beside. The kernel's entry for
+0.17.0 in the changelog says what that walk refuses although it runs correctly
+and what it still does not find.
+
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
 [how to contribute](https://github.com/philpaz/recusal/blob/main/CONTRIBUTING.md), [open issues](https://github.com/philpaz/recusal/issues).
