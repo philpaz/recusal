@@ -16,6 +16,143 @@ EXAMPLE = ROOT / "examples" / "openai_agents_gate.py"
 SELECT = "SELECT * FROM audit_log"
 DELETE = "DELETE FROM audit_log"
 
+#: How every reason that says what to write ends, and the note on the kernel's own advice
+#: in a reason that quotes the kernel's text. The reasons are held word for word here, apart
+#: from the adapter's constants, so that a change of one is a change of a test too.
+BODY_NOT_READ = (
+    "The gate reads a plain function's parameters and never its body, so a plain function "
+    "that calls the refused one is gated with the cause still inside it."
+)
+KERNEL_ADVICE = (
+    "The kernel's report below ends with advice of its own, which can be to call the "
+    "refused function from a plain function and register that: do not follow that part. "
+    + BODY_NOT_READ
+)
+SINGLEDISPATCH_REASON = (
+    "it runs a `functools.singledispatch` function: the implementation that runs is chosen "
+    "at call time by the type of an argument, one can be registered at any moment, and "
+    "each has its own parameters and defaults, so the gate cannot tie a call to the "
+    "function that will run. Register one plain function as the tool, with the code of "
+    "each implementation in its own body under a branch on the type of the argument "
+    "(`if isinstance(...)`), and no single-dispatch function. " + BODY_NOT_READ
+)
+NOT_READ_REASON = (
+    "the gate could not read a callable the call reaches ({}), so it cannot tell whether "
+    "that is one it refuses (a `functools.singledispatch` function, a "
+    "`functools.partialmethod`, a weak proxy). Register the function the tool is to run "
+    "itself, without the callable that could not be read on the way to it. " + BODY_NOT_READ
+)
+PARTIALMETHOD_REASON = (
+    "it runs a `functools.partialmethod`: the call goes to the callable the partialmethod "
+    "holds, and the tool's parameters are read from that callable without the gate "
+    "reading what is under it, so a wrapper or a single-dispatch function there could run "
+    "with a value no policy judged. Write the method out in place of the partialmethod: "
+    "the work of the callable it holds in the method's own body, and the values it binds "
+    "as defaults of the method's own parameters (`def export(self, sql, force=False)` in "
+    "place of `export = functools.partialmethod(run, force=False)`), with no call to that "
+    "callable, and register that. " + BODY_NOT_READ
+)
+WEAK_PROXY_REASON = (
+    "a callable the call reaches is a `weakref.proxy`: it shows the attributes of the "
+    "object it stands for and is not that object, so the gate cannot tell which callables "
+    "a call to it runs. Put the object the proxy stands for in its place, so that nothing "
+    "on the way to the function is a proxy. " + BODY_NOT_READ
+)
+OPEN_DISPATCH_REASON = (
+    "it runs a single-dispatch function (`functools.singledispatch`, or the callable a "
+    "`singledispatchmethod` hands out) that has nothing registered but its base. It runs "
+    "that base now, but an implementation can be registered on it at any moment, also "
+    "after the gate checked a call and before it runs (by another call of the same model "
+    "turn, or by a wrapper on its first use), and that implementation would then run for "
+    "the judged call, with any parameter of its own at a default no policy judged. A tool "
+    "refused for this runs correctly as long as nothing is ever registered on it. Where "
+    "nothing is to be registered, register the base function itself; otherwise register "
+    "one plain function as the tool, with the code of each implementation in its own body "
+    "under a branch on the type of the argument. " + BODY_NOT_READ
+)
+PROXIED_REASON = (
+    "a callable on the way to the function it runs answers for another object (it answers "
+    "for `__wrapped__` without holding one, as a proxy or a class-based decorator that "
+    "hands every attribute on with `__getattr__` does, or it shows another class than its "
+    "own), so the gate cannot tell what a call to it runs. A tool refused for this may run "
+    "correctly. A class-based decorator that keeps the function in an attribute and hands "
+    "the other attributes on with `__getattr__` is read once it holds `__wrapped__` "
+    "itself: call `functools.update_wrapper(self, fn)` in its `__init__`. For any other "
+    "such object, register the function it calls itself. "
+    + KERNEL_ADVICE
+    + " The kernel's walk reports: {}."
+)
+HIDDEN_REASON = (
+    "a decorator on the function it runs holds a second wrapper of it that the gate does "
+    "not follow (in its closure, a global it names or an attribute of the decorator "
+    "object, and not reached through `__wrapped__`). Remove the cause from the wrapper "
+    "the decorator holds: give it no parameter of its own (pass such a value explicitly "
+    "in its body), give it the tool's parameters in the tool's order or as keyword-only "
+    "ones, and hold no single-dispatch function, weak proxy or cache named again on its "
+    "way to the function; or register the function itself, without the decorator. "
+    + KERNEL_ADVICE
+    + " The kernel's walk reports: {}."
+)
+UNREAD_CACHE_REASON = (
+    "a `functools.lru_cache` wrapper on the way to the function it runs cannot be read: "
+    "which function the cache calls could not be told from what the cache refers to, and "
+    "that need not be the function it names as `__wrapped__`, so a wrapper with a "
+    "parameter of its own could run under the cache with a value no policy judged. "
+    "Register the function itself, without the cache. " + BODY_NOT_READ
+)
+BOUND_REASON = (
+    "a wrapper on the way to the function it runs is handed a bound argument (the object "
+    "of a method, or a positional argument of a `functools.partial`), and the gate cannot "
+    "tell from the wrapper's signature whether it passes that argument on, keeps it or "
+    "passes a value of its own in its place, so it cannot tell which parameter of the "
+    "function each judged value fills. A tool refused for this may run correctly. "
+    "Register the function itself; or write the method without `functools.wraps`, naming "
+    "the parameters the tool takes in its own signature, and pass them on to the function "
+    "by keyword. " + KERNEL_ADVICE + " The kernel's walk reports: {}."
+)
+KEPT_RECEIVER_REASON = (
+    "a wrapper on the way to the function it runs (it names `__wrapped__`) is handed an "
+    "argument bound on the way (the object of a method, or a positional argument of a "
+    "`functools.partial`) in the place of `{name}`, a parameter of the function it wraps "
+    "that is not named as an object's (`self` or `cls`). Whether the wrapper hands that "
+    "argument on, or drops it so that the values it is given fill the function's "
+    "parameters from `{name}` on, cannot be read from its signature, so the tool is "
+    "refused, whichever it does. Where the SDK reads the tool's parameters through that "
+    "method or partial, it leaves `{name}` out of them and passes the judged values on by "
+    "position, and a wrapper that drops the bound argument runs every value one parameter "
+    "off (the first as `{name}`). Register the function itself, not the method or the "
+    "partial that wraps it; or, where `{name}` is the object's place of a method of your "
+    "own under another name, name it `self`, and the method is read as any decorated "
+    "method is. " + BODY_NOT_READ
+)
+DECLARED_REASON = (
+    "the function it runs, or a callable on the way to it, carries a declared signature (a "
+    "`__signature__` attribute, whatever its value, a `__text_signature__`, or a code "
+    "object a callable object shows). `inspect.signature` can read such a declaration in "
+    "place of the parameters Python binds, and which ones it reads differs between Python "
+    "versions, so the kernel's walk does not rely on any: it refuses each one, also where "
+    "this Python would not read it and where it matches the real parameters. A tool "
+    "refused for this may run correctly. Remove the declaration (delete the "
+    "`__signature__` or the `__text_signature__`, or the `__code__` the object shows), so "
+    "that the parameters Python binds are what is read. " + BODY_NOT_READ
+)
+TOO_MANY_REASON = (
+    "the function it runs is under more wrappers than the gate reads (a stack of more than "
+    "31 wrappers, or more than eight `functools.lru_cache` layers one on another), so the "
+    "functions under them cannot be read. Take wrappers off the function until the gate "
+    "reads them all, or register the function itself. " + BODY_NOT_READ
+)
+OPAQUE_REASON = (
+    "a callable on the way to the function cannot be inspected: it is an object whose "
+    "class defines `__get__`, for which Python shows no signature (a class-based decorator "
+    "that is also a descriptor, such as `cachetools.cached`, or a `staticmethod` object "
+    "that something other than a class holds), so the functions under it cannot be read. "
+    "Register the function itself, without that decorator, or use one the gate reads (a "
+    "function decorator written with `functools.wraps`, or a class-based decorator with no "
+    "`__get__` that calls `functools.update_wrapper(self, fn)`); hold a function where a "
+    "`staticmethod` object stands. " + BODY_NOT_READ
+)
+
 
 def _adapter():
     """The package module the gate's code lives in. Every test that calls this has loaded
@@ -1362,15 +1499,7 @@ class TestSecondReview:
         tool = example.function_tool(func, name_override="run_sql")
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
-        assert str(refusal.value) == (
-            "Recusal cannot gate 'run_sql': a callable on the way to the function cannot be "
-            "inspected: it is an object whose class defines `__get__`, for which Python shows "
-            "no signature (a class-based decorator that is also a descriptor, such as "
-            "`cachetools.cached`, or a `staticmethod` object that something other than a "
-            "class holds), so the functions under it cannot be read. Call the decorated "
-            "function from a plain function and register that; the gate judges that "
-            "function's parameters, and what its body calls is not read."
-        )
+        assert str(refusal.value) == "Recusal cannot gate 'run_sql': " + OPAQUE_REASON
 
     def test_a_decorator_that_calls_the_decorated_function_from_a_plain_one_is_gated(self, example):
         ran: list = []
@@ -1421,13 +1550,7 @@ class TestSecondReview:
         inspected (ValueError)" would say what is wrong with it."""
         import functools
 
-        expected = (
-            "Recusal cannot gate 'run_sql': the function it runs is under more wrappers than "
-            "the gate reads (a stack of more than 31 wrappers, or more than eight "
-            "`functools.lru_cache` layers one on another), so the functions under them cannot "
-            "be read. Call the wrapped function from a plain function and register that; "
-            "the gate judges that function's parameters, and what its body calls is not read."
-        )
+        expected = "Recusal cannot gate 'run_sql': " + TOO_MANY_REASON
         cache = functools.lru_cache(maxsize=None)
         refused = [
             self.forwarding_stack(32),
@@ -2762,14 +2885,7 @@ class TestFifthReview:
         )
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
-        assert str(refusal.value) == (
-            "Recusal cannot gate 'handle': it runs a `functools.singledispatch` function: the "
-            "implementation that runs is chosen at call time by the type of an argument, one "
-            "can be registered at any moment, and each has its own parameters and defaults, "
-            "so the gate cannot tie a call to the function that will run. Register one plain "
-            "function as the tool and branch on the type inside its body; a single-dispatch "
-            "function called from it is not read."
-        )
+        assert str(refusal.value) == "Recusal cannot gate 'handle': " + SINGLEDISPATCH_REASON
 
     def test_the_guardrail_asks_again_on_every_call(self, example):
         """A tool that was gated and whose function is then changed so that it reaches a
@@ -2886,12 +3002,8 @@ class TestFifthReview:
         monkeypatch.setattr(_adapter(), "_is_dispatcher", broken)
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
-        assert str(refusal.value) == (
-            "Recusal cannot gate 'run_sql': the gate could not read a callable the call "
-            "reaches (RuntimeError), so it cannot tell whether that is one it refuses (a "
-            "`functools.singledispatch` function, a `functools.partialmethod`, a weak proxy). "
-            "Register one plain function as the tool; the gate judges that function's "
-            "parameters, and what its body calls is not read."
+        assert str(refusal.value) == "Recusal cannot gate 'run_sql': " + NOT_READ_REASON.format(
+            "RuntimeError"
         )
 
     def test_a_kernel_that_refuses_a_dispatcher_itself_gets_the_same_reason(
@@ -3534,14 +3646,7 @@ class TestSixthReview:
         )
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
-        assert str(refusal.value) == (
-            "Recusal cannot gate 'handle': it runs a `functools.partialmethod`: the call "
-            "goes to the callable the partialmethod holds, and the tool's parameters are "
-            "read from that callable without the gate reading what is under it, so a "
-            "wrapper or a single-dispatch function there could run with a value no policy "
-            "judged. Register a plain function that calls it; the gate judges that "
-            "function's parameters, and what its body calls is not read."
-        )
+        assert str(refusal.value) == "Recusal cannot gate 'handle': " + PARTIALMETHOD_REASON
 
     def test_how_a_partialmethod_is_known(self, example, monkeypatch):
         """By its class (a subclass too) as it was at import and as ``functools`` has it
@@ -3690,10 +3795,7 @@ class TestSixthReview:
             example.gate_tools([tool], example.sql_scope_policy)
         reason = str(refusal.value)
         assert reason.startswith(f"Recusal cannot gate 'run_sql': {self.PARTIALMETHOD}")
-        assert reason.endswith(
-            "Register a plain function that calls it; the gate judges that function's "
-            "parameters, and what its body calls is not read."
-        )
+        assert reason == "Recusal cannot gate 'run_sql': " + PARTIALMETHOD_REASON
         assert "cannot be inspected" not in reason
 
         def other(func):
@@ -3755,13 +3857,7 @@ class TestSixthReview:
         tool = example.function_tool(func, name_override="handle", strict_mode=False)
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], example.sql_scope_policy)
-        assert str(refusal.value) == (
-            "Recusal cannot gate 'handle': a callable the call reaches is a `weakref.proxy`: "
-            "it shows the attributes of the object it stands for and is not that object, so "
-            "the gate cannot tell which callables a call to it runs. Register the function "
-            "itself, or a plain function that calls it; the gate judges that function's "
-            "parameters, and what its body calls is not read."
-        )
+        assert str(refusal.value) == "Recusal cannot gate 'handle': " + WEAK_PROXY_REASON
         with pytest.raises(TypeError, match=f"cannot gate 'handle': {self.PROXY}"):
             example.gated_agent(example.Agent(name="a", tools=[tool]), example.sql_scope_policy)
         assert events == [] and keep
@@ -4040,8 +4136,14 @@ class TestKernelRefusals:
     declared signature as "cannot be inspected (DeclaredSignature)", and a hidden wrapper
     with a sentence that was not true of every one ("takes a parameter of its own").
 
+    0.2.3, beside ``recusal`` 0.17.0, which adds ``OpenDispatch``, ``ProxiedCallable`` and
+    ``WeakProxy``: beside 0.2.2 each was "cannot be inspected" with the class's name.
+    Each has a reason now, and the gate's own walk follows what a cache named again calls.
+
     One test for each class. The tool is a real one of that shape and the kernel's own
-    walk raises; nothing stands in for the kernel. Each is refused twice: when it is
+    walk raises; nothing stands in for the kernel. Where the gate's own walk finds the
+    shape first (a dispatcher, a weak proxy), its question is turned off to reach the
+    kernel's refusal, and the test says so. Each is refused twice: when it is
     gated, before any call, and by the guardrail, for a tool whose function is changed
     into that shape after it was gated. Both times the policy is not asked and no body
     runs, and the reason holds no default and no argument value."""
@@ -4051,55 +4153,16 @@ class TestKernelRefusals:
 
     #: A default of every wrapper below and the argument of every call: never in a reason.
     SECRET = "SECRET-VALUE-93417"
-    #: How every reason that advises a plain function ends.
-    NOT_READ = "the gate judges that function's parameters, and what its body calls is not read."
+    #: How every reason that says what to write ends.
+    NOT_READ = BODY_NOT_READ
 
-    HIDDEN = (
-        "a decorator on the function it runs holds a second wrapper of it that the gate does "
-        "not follow (in its closure, a global it names or an attribute of the decorator "
-        "object, and not reached through `__wrapped__`): {}. Call the decorated function "
-        "from a plain function and register that; " + NOT_READ
-    )
-    UNREAD_CACHE = (
-        "a `functools.lru_cache` wrapper on the way to the function it runs cannot be read: "
-        "which function the cache calls could not be told from what the cache refers to, "
-        "and that need not be the function it names as `__wrapped__`, so a wrapper with a "
-        "parameter of its own could run under the cache with a value no policy judged. "
-        "Call the cached function from a plain function and register that; " + NOT_READ
-    )
-    BOUND = (
-        "a wrapper on the way to the function it runs is handed a bound argument (the object "
-        "of a method, or a positional argument of a `functools.partial`), and the gate "
-        "cannot tell from the wrapper's signature whether it passes that argument on, keeps "
-        "it or passes a value of its own in its place, so it cannot tell which parameter of "
-        "the function each judged value fills. A tool refused for this may run correctly. "
-        "The kernel's walk reports: {}; " + NOT_READ
-    )
-    DECLARED = (
-        "the function it runs, or a callable on the way to it, carries a declared signature "
-        "(a `__signature__` attribute, whatever its value, a `__text_signature__`, or a code "
-        "object a callable object shows). `inspect.signature` can read such a declaration in "
-        "place of the parameters Python binds, and which ones it reads differs between "
-        "Python versions, so the kernel's walk does not rely on any: it refuses each one, "
-        "also where this Python would not read it and where it matches the real parameters. "
-        "A tool refused for this may run correctly. Register a plain function that names its "
-        "own parameters and calls it; " + NOT_READ
-    )
-    DISPATCH = (
-        "it runs a `functools.singledispatch` function: the implementation that runs is "
-        "chosen at call time by the type of an argument, one can be registered at any "
-        "moment, and each has its own parameters and defaults, so the gate cannot tie a "
-        "call to the function that will run. Register one plain function as the tool and "
-        "branch on the type inside its body; a single-dispatch function called from it is "
-        "not read."
-    )
-    PARTIALMETHOD = (
-        "it runs a `functools.partialmethod`: the call goes to the callable the "
-        "partialmethod holds, and the tool's parameters are read from that callable without "
-        "the gate reading what is under it, so a wrapper or a single-dispatch function "
-        "there could run with a value no policy judged. Register a plain function that "
-        "calls it; " + NOT_READ
-    )
+    HIDDEN = HIDDEN_REASON
+    UNREAD_CACHE = UNREAD_CACHE_REASON
+    BOUND = BOUND_REASON
+    DECLARED = DECLARED_REASON
+    DISPATCH = SINGLEDISPATCH_REASON
+    PARTIALMETHOD = PARTIALMETHOD_REASON
+    KEPT_RECEIVER = KEPT_RECEIVER_REASON
 
     # --- the tools ------------------------------------------------------------------------------
 
@@ -4354,6 +4417,11 @@ class TestKernelRefusals:
             invocation.reached_parameters(cache())
         assert isinstance(raised.value, invocation.HiddenWrapper)
         assert "holds a second wrapper" not in self.UNREAD_CACHE
+        # since 0.2.3 the gate's own walk asks the kernel's ``cache_target`` what the cache
+        # calls, and meets the refusal first; it is the same reason, not the one for a
+        # callable the gate cannot question
+        with pytest.raises(invocation.UnreadCache):
+            _adapter()._reached_callables(cache())
         self.refused_when_gated(example, cache(), self.UNREAD_CACHE, ran)
         self.refused_when_called(example, self.wrapping(cache()), self.UNREAD_CACHE, ran)
 
@@ -4408,14 +4476,17 @@ class TestKernelRefusals:
         self.refused_when_gated(example, fetch, self.DECLARED, ran)
         self.refused_when_called(example, declare, self.DECLARED, ran)
 
-    # --- DispatchedAtCallTime -------------------------------------------------------------------
+    # --- DispatchedAtCallTime and OpenDispatch -------------------------------------------------
 
-    def test_a_dispatcher_only_the_kernel_finds_gets_the_gates_own_reason(self, example):
-        """``DispatchedAtCallTime``: a single-dispatch function with an implementation
-        registered, behind a cache that was named again for another function. The gate's
-        own walk follows what the cache names and reaches no dispatcher; the kernel's
-        walk reads what the cache calls and refuses it. The reason is the one the gate
-        gives a dispatcher it finds itself."""
+    def test_a_dispatcher_behind_a_cache_named_again_is_found_by_the_gates_own_walk(self, example):
+        """0.2.3. A single-dispatch function behind a cache that was named again for
+        another function. The walk of 0.2.2 followed what the cache names and reached no
+        dispatcher, so one with nothing registered was gated beside ``recusal`` 0.16.0. The
+        gate's own walk now also follows what the cache calls (the kernel's
+        ``cache_target``), finds the dispatcher, registered or not, and refuses it with the
+        reason it gives every dispatcher it finds. The kernel's walk refuses the same tool,
+        as a ``DispatchedAtCallTime`` or an ``OpenDispatch``, and the reason for the first
+        is the gate's own as well."""
         from recusal import invocation
 
         adapter = _adapter()
@@ -4426,30 +4497,206 @@ class TestKernelRefusals:
             export, register_now = self.dispatcher(ran, register)
             return self.named_again(self.bare(export), fetch), register_now
 
-        func, _ = tool(register=True)
-        reached, complete = adapter._reached_callables(func)
-        assert complete and not any(adapter._is_dispatcher(link) for link in reached)
-        with pytest.raises(invocation.DispatchedAtCallTime) as raised:
+        for register, kernel_class in (
+            (True, invocation.DispatchedAtCallTime),
+            (False, invocation.OpenDispatch),
+        ):
+            func, _ = tool(register)
+            reached, complete = adapter._reached_callables(func)
+            assert complete and any(adapter._is_dispatcher(link) for link in reached)
+            with pytest.raises(kernel_class) as raised:
+                invocation.reached_parameters(func)
+            if register:
+                assert adapter._unread_reason(raised.value, reached) == self.DISPATCH
+            self.refused_when_gated(example, func, self.DISPATCH, ran)
+
+        # a dispatcher with nothing registered is refused at the next call, before anything
+        # is registered on it
+        func, _ = tool(register=False)
+        self.refused_when_called(example, self.wrapping(func), self.DISPATCH, ran)
+
+    OPEN_DISPATCH = OPEN_DISPATCH_REASON
+
+    def test_an_open_dispatcher_only_the_kernel_finds_has_a_reason_of_its_own(
+        self, example, monkeypatch
+    ):
+        """``OpenDispatch`` (``recusal`` 0.17.0): a single-dispatch function with nothing
+        registered but its base. Beside 0.2.2 it was "the function it runs cannot be
+        inspected (OpenDispatch)". The gate's own walk refuses every dispatcher it reaches
+        before the kernel's walk is asked, and since 0.2.3 it stands wherever the kernel's
+        does, so no tool is known for which only the kernel finds one. The gate's own
+        question is turned off here to stand for such a tool; the dispatcher, the walk and
+        the class raised are the real ones."""
+        import functools
+
+        from recusal import invocation
+
+        adapter = _adapter()
+        ran: list = []
+        export, register_now = self.dispatcher(ran, register=False)
+        with pytest.raises(invocation.OpenDispatch) as raised:
+            invocation.reached_parameters(export)
+        assert not isinstance(raised.value, invocation.DispatchedAtCallTime)
+        assert adapter._unread_reason(raised.value, []) == self.OPEN_DISPATCH
+        monkeypatch.setattr(adapter, "_is_dispatcher", lambda link: False)
+
+        @functools.wraps(export)
+        def tool(*args, **kwargs):
+            return export(*args, **kwargs)
+
+        self.refused_when_gated(example, tool, self.OPEN_DISPATCH, ran)
+        self.refused_when_called(example, self.wrapping(tool), self.OPEN_DISPATCH, ran)
+        ran.clear()
+        assert "nothing registered" in self.OPEN_DISPATCH
+        assert "would then run for the judged call" in self.OPEN_DISPATCH
+        # once an implementation is registered it is a ``DispatchedAtCallTime``
+        register_now()
+        with pytest.raises(invocation.DispatchedAtCallTime):
+            invocation.reached_parameters(export)
+        self.refused_when_gated(example, tool, self.DISPATCH, ran)
+
+    # --- WeakProxy and ProxiedCallable ----------------------------------------------------------
+
+    def test_a_weak_proxy_only_the_kernel_finds_gets_the_gates_own_reason(
+        self, example, monkeypatch
+    ):
+        """``WeakProxy`` (``recusal`` 0.17.0, a ``ProxiedCallable``): beside 0.2.2 it was
+        "the function it runs cannot be inspected (WeakProxy)". It gets the reason the
+        gate gives a weak proxy its own walk finds. As for a dispatcher, the gate's own
+        walk finds every proxy it reaches first, so its question is turned off here."""
+        import types
+        import weakref
+
+        from recusal import invocation
+
+        adapter = _adapter()
+        ran: list = []
+        fetch = self.fetch(ran)
+        with pytest.raises(invocation.WeakProxy) as raised:
+            invocation.reached_parameters(weakref.proxy(fetch))
+        assert adapter._unread_reason(raised.value, []) == self.WEAK_PROXY
+        monkeypatch.setattr(adapter, "weakref", types.SimpleNamespace(ProxyTypes=()))
+        tool = self.bare(weakref.proxy(fetch))
+        self.refused_when_gated(example, tool, self.WEAK_PROXY, ran)
+        self.refused_when_called(example, self.wrapping(tool), self.WEAK_PROXY, ran)
+
+    WEAK_PROXY = WEAK_PROXY_REASON
+    PROXIED = PROXIED_REASON
+
+    class Forwards:
+        """A class-based decorator that keeps the function in an attribute and hands every
+        attribute it does not have on to it."""
+
+        def __init__(self, fn):
+            self.fn = fn
+
+        def __getattr__(self, name):
+            return getattr(self.fn, name)
+
+        def __call__(self, *args, **kwargs):
+            return self.fn(*args, **kwargs)
+
+    def test_a_decorator_that_answers_for_wrapped_has_a_reason_of_its_own(self, example):
+        """``ProxiedCallable`` (``recusal`` 0.17.0): a class-based decorator that hands every
+        attribute on with ``__getattr__``, over a ``functools.wraps`` wrapper, answers
+        ``__wrapped__`` with what THAT wrapper wraps. Beside 0.2.2 it was "the function it
+        runs cannot be inspected (ProxiedCallable)". It runs correctly; the reason says it
+        may, and that ``functools.update_wrapper(self, fn)`` gets it read: with that the
+        same tool is gated and runs."""
+        import functools
+
+        from recusal import invocation
+
+        ran: list = []
+
+        def tool(cls):
+            return self.bare(cls(self.bare_wraps(self.fetch(ran))))
+
+        func = tool(self.Forwards)
+        assert func("q") == "recorded" and ran.pop() == ("fetch", "q", 10)  # it runs correctly
+        with pytest.raises(invocation.ProxiedCallable) as raised:
             invocation.reached_parameters(func)
-        assert adapter._unread_reason(raised.value, reached) == self.DISPATCH
-        self.refused_when_gated(example, func, self.DISPATCH, ran)
+        assert type(raised.value) is invocation.ProxiedCallable
+        found = str(raised.value)
+        assert found == invocation._ANSWERS_FOR_WRAPPED
+        assert found.endswith("register a plain function that calls it")
+        self.refused_when_gated(example, func, self.PROXIED.format(found), ran)
+        self.refused_when_called(
+            example, self.wrapping(tool(self.Forwards)), self.PROXIED.format(found), ran
+        )
+        ran.clear()
 
-        # gated with nothing registered, which the kernel reads as its base function;
-        # an implementation registered afterwards is refused at the next call
-        func, register_now = tool(register=False)
+        class Updated(self.Forwards):
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
 
-        def change(function):
-            function.__wrapped__ = func
-            register_now()
+        gated = example.gate_tools(
+            [example.function_tool(tool(Updated), name_override="handle", strict_mode=False)],
+            self.Recording(lambda name, args: []),
+        )
+        outputs, _ = example.run_calls(
+            [("handle", {"sql": SELECT}, "c1")], gated=False, tools=gated
+        )
+        assert outputs == {"c1": "recorded"} and ran == [("fetch", SELECT, 10)]
 
-        self.refused_when_called(example, change, self.DISPATCH, ran)
+    @staticmethod
+    def bare_wraps(inner):
+        import functools
+
+        @functools.wraps(inner)
+        def wrapper(*args, **kwargs):
+            return inner(*args, **kwargs)
+
+        return wrapper
+
+    def test_an_object_that_shows_another_class_has_the_same_reason(self, example):
+        """``ProxiedCallable`` for its other shape: an object whose ``__class__`` is not its
+        type and that holds no ``__wrapped__`` of its own. The kernel's text says which
+        shape was found, and the gate's words hold for both."""
+        import types
+
+        from recusal import invocation
+
+        ran: list = []
+        fetch = self.fetch(ran)
+
+        class Shows:
+            """Shows the class of a function, and a function's face: that of ``fetch``."""
+
+            def __init__(self, fn):
+                self.fn = fn
+                for name in ("__code__", "__defaults__", "__kwdefaults__", "__annotations__"):
+                    setattr(self, name, getattr(fn, name))
+                self.__name__ = fn.__name__
+
+            @property
+            def __class__(self):
+                return types.FunctionType
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        shows = Shows(fetch)
+        assert isinstance(shows, types.FunctionType) and type(shows) is Shows
+        func = self.bare(shows)
+        with pytest.raises(invocation.ProxiedCallable) as raised:
+            invocation.reached_parameters(func)
+        found = str(raised.value)
+        assert found == invocation._SHOWS_ANOTHER_CLASS
+        assert found.endswith("register a plain function that calls it")
+        self.refused_when_called(example, self.wrapping(func), self.PROXIED.format(found), ran)
 
     # --- PartialMethodSignature -----------------------------------------------------------------
 
-    def test_a_partialmethod_only_the_kernel_finds_gets_the_gates_own_reason(self, example):
+    def test_a_partialmethod_behind_a_cache_named_again_is_found_by_the_gates_own_walk(
+        self, example
+    ):
         """``PartialMethodSignature``: the method of a ``functools.partialmethod`` behind a
-        cache that was named again for another function. The gate's own walk reaches no
-        partialmethod there; the kernel's walk does and refuses it."""
+        cache that was named again for another function. The walk of 0.2.2 reached no
+        partialmethod there and the kernel's walk refused it; 0.2.3 follows what the cache
+        calls and finds it itself. The kernel's walk still refuses it, and the reason for
+        that is the gate's own too."""
         from recusal import invocation
 
         adapter = _adapter()
@@ -4461,7 +4708,7 @@ class TestKernelRefusals:
 
         reached, complete = adapter._reached_callables(tool())
         assert complete
-        assert not any(adapter._held_partialmethod(link) is not None for link in reached)
+        assert any(adapter._held_partialmethod(link) is not None for link in reached)
         with pytest.raises(invocation.PartialMethodSignature) as raised:
             invocation.reached_parameters(tool())
         assert adapter._unread_reason(raised.value, reached) == self.PARTIALMETHOD
@@ -4471,7 +4718,7 @@ class TestKernelRefusals:
     # --- known by class, not by name ------------------------------------------------------------
 
     def test_the_refusals_are_the_kernels_own_classes(self, example, monkeypatch):
-        """The gate imports the kernel's classes (``recusal`` 0.16.0 is the floor) and asks
+        """The gate imports the kernel's classes (``recusal`` 0.17.0 is the floor) and asks
         ``isinstance``. An exception that only has the NAME of one, raised by other code
         on the way, is not taken for it: its text is not the kernel's, so it is not passed
         on, and the refusal names its class alone."""
@@ -4483,8 +4730,12 @@ class TestKernelRefusals:
             "DeclaredSignature",
             "DispatchedAtCallTime",
             "HiddenWrapper",
+            "OpenDispatch",
             "PartialMethodSignature",
+            "ProxiedCallable",
             "UnreadCache",
+            "WeakProxy",
+            "cache_target",
         ):
             assert getattr(adapter, f"_{name}") is getattr(invocation, name), name
         for name in ("_KERNEL_DISPATCH", "_KERNEL_HIDDEN", "_KERNEL_PARTIALMETHOD"):
@@ -4496,8 +4747,11 @@ class TestKernelRefusals:
             ("DeclaredSignature", Exception),
             ("DispatchedAtCallTime", ValueError),
             ("HiddenWrapper", ValueError),
+            ("OpenDispatch", ValueError),
             ("PartialMethodSignature", TypeError),
+            ("ProxiedCallable", TypeError),
             ("UnreadCache", ValueError),
+            ("WeakProxy", TypeError),
         ):
             lookalike = type(name, (base,), {})
 
@@ -4528,8 +4782,9 @@ class TestKernelRefusals:
         adapter_root = ROOT / "adapters" / "openai-agents"
         pyproject = (adapter_root / "pyproject.toml").read_text(encoding="utf-8")
         readme = (adapter_root / "README.md").read_text(encoding="utf-8")
-        assert '"recusal>=0.16.0,<1"' in pyproject and "`recusal>=0.16.0`" in readme
-        assert "recusal>=0.15" not in pyproject and "recusal>=0.15" not in readme
+        assert '"recusal>=0.17.0,<1"' in pyproject and "`recusal>=0.17.0`" in readme
+        for older in ("recusal>=0.15", "recusal>=0.16"):
+            assert older not in pyproject and older not in readme, older
 
     # --- what each reason says holds for every tool it is given for -----------------------------
 
@@ -4607,80 +4862,103 @@ class TestKernelRefusals:
         with pytest.raises(invocation.BoundArgumentKept) as raised:
             invocation.reached_parameters(Required().search)
         found = str(raised.value)
-        if hasattr(invocation, "ProxiedCallable"):  # the kernel after ``recusal`` 0.16.0
-            assert "`query` is left to a keyword of that name" in found
-            assert "default" not in found  # ``query`` has none, and the text says none
-        else:
-            assert "`query`, the last they would fill" in found
+        # ``recusal`` 0.16.0 said "`query`, the last they would fill, runs at a default";
+        # the floor is 0.17.0, whose text says what holds
+        assert "`query` is left to a keyword of that name" in found
+        assert "default" not in found  # ``query`` has none, and the text says none
         self.refused_when_gated(example, Required().search, self.BOUND.format(found), ran)
 
         framing = self.BOUND.format("")
         assert "default" not in framing and "two parameters" not in framing
         assert "may run correctly" in framing
 
-    def test_every_reason_that_advises_a_plain_function_says_its_body_is_not_read(self, example):
-        """A plain function registered in the tool's place is judged by its parameters, and
-        what its body calls is not read. Every reason that gives that advice says so. The
-        one for a bound argument gives it in the kernel's text, which it quotes whole,
-        and does not repeat it."""
+    def test_every_reason_says_how_to_remove_the_cause_and_that_a_body_is_not_read(self, example):
+        """0.2.3, after its review. Up to 0.2.2 most reasons advised calling the refused
+        function from a plain function and registering that, which the gate gates and
+        whose body it never reads, so the cause ran as before. Every reason now advises
+        removing the cause, and ends by saying why the other way does not. None of the
+        gate's own sentences advises calling the refused function from a plain function;
+        a reason that quotes the kernel's text, whose advice can, says which plain
+        function is meant. ``TestReasonAdvice`` follows each piece of advice."""
         adapter = _adapter()
         reasons = {
             name: value
             for name, value in vars(adapter).items()
             if name.isupper()
+            and name not in ("_BODY_NOT_READ", "_KERNEL_ADVICE")
             and type(value) is str
-            and ("plain function" in value or "what its body calls" in value)
+            and BODY_NOT_READ in value
         }
         assert sorted(reasons) == [
             "_BOUND_ARGUMENT_KEPT",
             "_DECLARED_SIGNATURE",
             "_DISPATCH_NOT_READ",
             "_HIDDEN_WRAPPER",
+            "_KEPT_RECEIVER",
             "_OPAQUE_DECORATOR",
+            "_OPEN_DISPATCH",
             "_PARTIALMETHOD_REFUSED",
+            "_PROXIED_CALLABLE",
             "_SINGLEDISPATCH",
             "_TOO_MANY_WRAPPERS",
             "_UNREAD_CACHE",
             "_WEAK_PROXY",
         ]
-        own_note = "a single-dispatch function called from it is not read."
+        assert adapter._BODY_NOT_READ == BODY_NOT_READ
+        assert adapter._KERNEL_ADVICE == KERNEL_ADVICE
+        quoting = {"_BOUND_ARGUMENT_KEPT", "_HIDDEN_WRAPPER", "_PROXIED_CALLABLE"}
         for name, value in reasons.items():
-            if name == "_SINGLEDISPATCH":  # it says which call from the body is not read
-                assert value.endswith(own_note), name
+            assert (KERNEL_ADVICE in value) == (name in quoting), name
+            if name in quoting:
+                # the gate's note comes before the kernel's text, whose advice is last
+                assert value.endswith(KERNEL_ADVICE + " The kernel's walk reports: {}."), name
             else:
-                assert value.endswith(self.NOT_READ), name
+                assert value.endswith(BODY_NOT_READ), name
+            for old in (
+                "from a plain function and register",
+                "a plain function that calls it",
+                "Register a plain function that names",
+                "what its body calls is not read",
+            ):
+                # the note names that advice in order to say not to follow it
+                assert old not in value.replace(KERNEL_ADVICE, ""), (name, old)
 
 
 @pytest.mark.skipif(
     sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
 )
 class TestStatedLimits:
-    """What the package page states as open or as refused although correct, beside
-    ``recusal`` 0.16.0, each as a tool that is gated and run, or refused. Found by the
-    review of 0.2.2 before its release. These tests hold the page to what happens: one
-    that fails because a limit was closed means the page has to change with it.
+    """What the package page states as closed, as open or as refused although correct,
+    each as a tool that is gated and run, or refused. Found by the review of 0.2.2 before
+    its release. These tests hold the page to what happens: one that fails because a
+    limit was closed or opened means the page has to change with it.
 
-    The kernel's walk as it stands in this repository after 0.16.0 closes the open
-    items that are the kernel's: it refuses a ``weakref.proxy`` on the way, a
-    single-dispatch function with nothing registered, a held wrapper in another order
-    and a held wrapper on a way 0.16.0 did not follow. Each of those tests holds both
-    outcomes, by the kernel it runs beside (``kernel_closes``): gated and run unjudged
-    beside 0.16.0, refused beside the later walk."""
+    0.2.2 stated four items as open beside ``recusal`` 0.16.0. The first three are closed
+    in 0.2.3, which requires ``recusal`` 0.17.0 (no lane runs these tests beside an
+    older kernel): the gate's own walk follows what a cache named again calls, so it
+    asks its own questions there and refuses a ``weakref.proxy`` and a single-dispatch
+    function with nothing registered behind such a cache, and the kernel's walk of 0.17.0
+    refuses a held wrapper in another order and a held wrapper on a way 0.16.0 did not
+    follow. Each test named ``test_closed_`` holds one of those, with the tool that ran a
+    value no policy judged beside 0.16.0, now refused before any policy is asked and
+    before anything runs. Two more found by the review of 0.2.3 are closed the same way.
+
+    What is still open is held as it happens, gated and run (the tests named
+    ``test_open_``): the fourth item, narrower; the held wrappers the kernel's walk does
+    not find, in eight of the ways the page lists (a wrapper in a C structure, in a
+    dictionary behind a ``__dict__`` property or in a class attribute is stated and not
+    held here); the held wrapper whose leading place the kernel takes for the object's,
+    stated from 0.2.3; and a method decorator that forgets to pass the object on, found by
+    the confirmation review of 0.2.3. Of the page's other open items, a change a tool body
+    makes in the same turn is held by ``TestSixthReview``; a dispatcher a tool body
+    calls, and the cost of listing a cache, are stated and not tested."""
 
     example = TestJudgedIsWhatRuns.example
     Recording = TestEffectiveArguments.Recording
 
-    #: The reason 0.2.2 gives for a refusal of the kernel's walk by a class it does not name.
-    UNREAD = "the function it runs cannot be inspected ({})"
-
-    @staticmethod
-    def kernel_closes():
-        """Whether the kernel these tests run beside has the walk that closes the open
-        items that are the kernel's (it is later than ``recusal`` 0.16.0, and has
-        ``ProxiedCallable``)."""
-        from recusal import invocation
-
-        return hasattr(invocation, "ProxiedCallable")
+    #: The reasons the gate gives a weak proxy and a single-dispatch function it finds.
+    WEAK_PROXY = TestKernelRefusals.WEAK_PROXY
+    DISPATCH = TestKernelRefusals.DISPATCH
 
     def refused(self, example, func, reason, events):
         """``func`` is refused when it is gated, with ``reason``; no policy is asked and
@@ -4745,33 +5023,44 @@ class TestStatedLimits:
         asyncio.run(example.run_agent(agent))
         return example.tool_outputs(model), policy.seen
 
-    # --- open: gated, and something no policy judged runs ---------------------------------------
+    def reached_by_the_gates_walk(self, tool, question):
+        """Whether the gate's own walk reaches a callable ``question`` says yes to."""
+        reached, complete = _adapter()._reached_callables(tool)
+        assert complete
+        return any(question(link) for link in reached)
 
-    def test_open_a_weak_proxy_behind_a_cache_named_again_hides_a_wrappers_parameter(self, example):
+    @staticmethod
+    def a_proxy(link):
+        import weakref
+
+        return type(link) in weakref.ProxyTypes
+
+    # --- closed: open beside 0.2.2 and recusal 0.16.0, refused by 0.2.3 -------------------------
+
+    def test_closed_a_weak_proxy_behind_a_cache_named_again_over_a_wrappers_parameter(
+        self, example
+    ):
         """No single-dispatch function anywhere. A cache named again for another function
         calls a ``weakref.proxy`` of a second such cache over a wrapper with a parameter
-        of its own. The gate's own walk follows what the caches name and meets no proxy;
-        the kernel's walk does not refuse a proxy. ``skip_review`` runs at its default."""
+        of its own. Beside 0.16.0 the tool was gated and ``skip_review`` ran at its
+        default: the gate's own walk followed what the caches name, and the kernel's walk
+        did not refuse a proxy. The gate's own walk now follows what the outer cache
+        calls, meets the proxy and refuses it."""
         import weakref
 
         events: list = []
         inner = self.again(self.reviewed(events, self.fetch(events)), self.named(events))
         tool = self.again(weakref.proxy(inner), self.named(events))
-        if self.kernel_closes():
-            self.refused(example, tool, self.UNREAD.format("WeakProxy"), events)
-            return
-        outputs, seen = self.run(example, tool, {"sql": "x"})
-        assert outputs == {"c1": "recorded"}
-        assert seen == [("run_sql", {"sql": "x", "force": False})]
-        assert events == [("reviewed", True), ("fetch", "x", False)]
+        assert self.reached_by_the_gates_walk(tool, self.a_proxy)
+        self.refused(example, tool, self.WEAK_PROXY, events)
 
-    def test_open_a_weak_proxy_behind_a_cache_named_again_hides_a_registered_dispatcher(
+    def test_closed_a_weak_proxy_behind_a_cache_named_again_over_a_registered_dispatcher(
         self, example
     ):
         """An implementation registered BEFORE the tool is gated, on a dispatcher behind a
-        ``weakref.proxy`` behind a cache named again. It is gated, and the implementation
-        runs on every turn with a parameter of its own that no policy judged; the call is
-        never refused."""
+        ``weakref.proxy`` behind a cache named again. Beside 0.16.0 it was gated, and the
+        implementation ran on every turn with a parameter of its own that no policy
+        judged; the call was never refused. Refused now, as a weak proxy."""
         import functools
         import weakref
 
@@ -4789,23 +5078,19 @@ class TestStatedLimits:
             return "registered"
 
         tool = self.again(functools.partial(weakref.proxy(export)), self.named(events))
-        if self.kernel_closes():
-            self.refused(example, tool, self.UNREAD.format("WeakProxy"), events)
-            return
-        outputs, seen = self.run(example, tool, {"sql": "x"}, turns=2)
-        assert outputs == {"c1": "registered", "c2": "registered"}
-        assert seen == [("run_sql", {"sql": "x", "force": False})] * 2
-        assert events == [("registered", "x", False, True)]  # the cache answers the second
+        assert self.reached_by_the_gates_walk(tool, self.a_proxy)
+        self.refused(example, tool, self.WEAK_PROXY, events)
 
-    def test_open_a_dispatcher_behind_a_cache_named_again_registered_by_the_same_call(
+    def test_closed_a_dispatcher_behind_a_cache_named_again_registered_by_the_same_call(
         self, example
     ):
         """A single-dispatch function with nothing registered, behind a cache named again
         (here for the dispatcher's own base function), reached by a wrapper that carries
         none of the dispatcher's attributes. The wrapper registers an implementation on
-        its first use, so the very call that was judged runs it: the declared parameters
-        with the judged values, the parameter the implementation adds at its default. The
-        next turn is refused."""
+        its first use. Beside 0.16.0 the very call that was judged ran it, with the
+        parameter the implementation adds at its default. Refused now when the tool is
+        gated, before anything is registered: the gate's own walk follows what the cache
+        calls and finds the dispatcher."""
         import functools
 
         events: list = []
@@ -4830,23 +5115,17 @@ class TestStatedLimits:
             load()
             return export(*args, **kwargs)
 
-        if self.kernel_closes():
-            # refused before the wrapper has registered anything
-            reason = self.UNREAD.format("OpenDispatch")
-            self.refused(example, self.again(lazy, base), reason, events)
-            return
-        outputs, seen = self.run(example, self.again(lazy, base), {"sql": "x"}, turns=2)
-        assert outputs["c1"] == "registered"
-        assert outputs["c2"].startswith(
-            "Recusal refused `run_sql`: it runs a `functools.singledispatch` function"
-        )
-        assert seen == [("run_sql", {"sql": "x", "force": False})]
-        assert events == [("registered", "x", False, True)]
+        tool = self.again(lazy, base)
+        assert self.reached_by_the_gates_walk(tool, _adapter()._is_dispatcher)
+        self.refused(example, tool, self.DISPATCH, events)
+        assert export.dispatch(str) is base  # nothing was registered
 
     @pytest.mark.parametrize("how", ["partial", "wraps-updated-nothing", "object-wrapped-only"])
-    def test_open_wrappers_that_carry_none_of_a_dispatchers_attributes(self, example, how):
+    def test_closed_wrappers_that_carry_none_of_a_dispatchers_attributes(self, example, how):
         """Three ordinary wrappers through which a dispatcher with nothing registered,
-        behind a cache named again, is gated."""
+        behind a cache named again, was gated beside 0.16.0. None of them carries the
+        dispatcher's attributes, and the gate's own walk reaches the dispatcher through
+        what the cache calls."""
         import functools
 
         events: list = []
@@ -4868,20 +5147,19 @@ class TestStatedLimits:
             "object-wrapped-only": WrappedOnly(export),
         }[how]
         tool = self.again(wrapper, self.named(events))
-        reached, complete = _adapter()._reached_callables(tool)
-        assert complete and not any(_adapter()._is_dispatcher(link) for link in reached)
-        if self.kernel_closes():
-            self.refused(example, tool, self.UNREAD.format("OpenDispatch"), events)
-            return
-        outputs, seen = self.run(example, tool, {"sql": "x"})
-        assert outputs == {"c1": "recorded"} and events == [("fetch", "x", False)]
+        assert self.reached_by_the_gates_walk(tool, _adapter()._is_dispatcher)
+        self.refused(example, tool, self.DISPATCH, events)
 
-    def test_open_a_held_wrapper_that_takes_the_tools_parameters_in_another_order(self, example):
+    def test_closed_a_held_wrapper_that_takes_the_tools_parameters_in_another_order(self, example):
         """A decorator holds a ``functools.wraps`` wrapper that takes the tool's own two
-        parameters the other way round. It names no parameter the tool does not declare,
-        so the kernel does not refuse it held, and the function runs with the two values
-        swapped. The same wrapper on the ``__wrapped__`` chain is refused."""
+        parameters the other way round. Beside 0.16.0 it named no parameter the tool does
+        not declare, so the kernel did not refuse it held, and the function ran with the
+        two values swapped. The kernel's walk of 0.17.0 refuses it, naming the two
+        parameters. The same wrapper on the ``__wrapped__`` chain is refused by the
+        gate's own rule, as before."""
         import functools
+
+        from recusal import invocation
 
         events: list = []
         fetch = self.fetch(events)
@@ -4894,25 +5172,19 @@ class TestStatedLimits:
         def outer(*args, **kwargs):
             return flipped(*args, **kwargs)
 
-        if self.kernel_closes():
-            from recusal import invocation
-
-            cause = invocation._HELD_IN_ANOTHER_PLACE.format(name="force", declared="sql")
-            self.refused(example, outer, TestKernelRefusals.HIDDEN.format(cause), events)
-            return
-        outputs, seen = self.run(example, outer, {"sql": "", "force": True})
-        assert outputs == {"c1": "recorded"}
-        assert seen == [("run_sql", {"sql": "", "force": True})]
-        assert events == [("fetch", True, "")]
+        cause = invocation._HELD_IN_ANOTHER_PLACE.format(name="force", declared="sql")
+        assert "`force`" in cause and "`sql`" in cause
+        self.refused(example, outer, TestKernelRefusals.HIDDEN.format(cause), events)
         tool = example.function_tool(flipped, name_override="run_sql", strict_mode=False)
         with pytest.raises(TypeError, match="takes `force` in a way the tool does not declare"):
             example.gate_tools([tool], example.sql_scope_policy)
 
-    def test_open_a_held_wrapper_whose_way_passes_a_class_based_decorator(self, example):
+    def test_closed_a_held_wrapper_whose_way_passes_a_class_based_decorator(self, example):
         """A decorator holds a ``functools.wraps`` wrapper with a parameter of its own, and
-        that wrapper wraps a class-based decorator of the function. The way from the held
-        wrapper to the function passes an object the kernel does not read on a held way,
-        so the tool is gated and ``skip_review`` runs at its default."""
+        that wrapper wraps a class-based decorator of the function. Beside 0.16.0 the way
+        from the held wrapper to the function passed an object the kernel did not read on
+        a held way, so the tool was gated and ``skip_review`` ran at its default. The
+        kernel's walk of 0.17.0 follows it and names the parameter."""
         import functools
 
         events: list = []
@@ -4931,17 +5203,11 @@ class TestStatedLimits:
         def outer(*args, **kwargs):
             return reviewed(*args, **kwargs)
 
-        if self.kernel_closes():
-            cause = (
-                "`skip_review` is a parameter of a function the call reaches that the tool "
-                "does not declare, so it would run with a value no policy judged"
-            )
-            self.refused(example, outer, TestKernelRefusals.HIDDEN.format(cause), events)
-            return
-        outputs, seen = self.run(example, outer, {"sql": "x"})
-        assert outputs == {"c1": "recorded"}
-        assert seen == [("run_sql", {"sql": "x", "force": False})]
-        assert events == [("reviewed", True), ("fetch", "x", False)]
+        cause = (
+            "`skip_review` is a parameter of a function the call reaches that the tool "
+            "does not declare, so it would run with a value no policy judged"
+        )
+        self.refused(example, outer, TestKernelRefusals.HIDDEN.format(cause), events)
 
     # --- refused although it runs correctly -----------------------------------------------------
 
@@ -4983,9 +5249,12 @@ class TestStatedLimits:
     @pytest.mark.parametrize("under", ["a-cache", "a-staticmethod"])
     def test_refused_although_correct_a_partial_under_a_cache_named_again(self, example, under):
         """A cache named again calls a ``functools.partial`` of a second
-        ``functools.lru_cache`` wrapper, or of a ``staticmethod`` object. The walk reads
-        what the cache calls, and ``inspect.signature`` shows no signature for that
-        partial, so the tool is refused with the name of the exception class alone."""
+        ``functools.lru_cache`` wrapper, or of a ``staticmethod`` object. The kernel's walk
+        reads what the cache calls, and ``inspect.signature`` shows no signature for that
+        partial. Under a second cache the tool is refused with the name of the exception
+        class alone, which is the item still open. Under a ``staticmethod`` object the
+        gate's own walk now reaches that object through what the cache calls, and the
+        reason says what it is (beside 0.2.2 it named the exception class alone)."""
         import functools
 
         def make(events):
@@ -4997,9 +5266,116 @@ class TestStatedLimits:
             )
             return self.again(functools.partial(inner), self.named(events))
 
-        self.refused_although_correct(
-            example, make, "the function it runs cannot be inspected (ValueError)"
+        reason = (
+            "the function it runs cannot be inspected (ValueError)"
+            if under == "a-cache"
+            else self.OPAQUE
         )
+        self.refused_although_correct(example, make, reason)
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "proxy-of-a-plain-function-behind-a-cache-named-again",
+            "open-dispatcher-behind-a-cache-named-again",
+            "held-wrapper-in-another-order-called-by-keyword",
+            "held-weak-proxy-of-a-helper",
+            "held-cache-named-again-for-another-function-over-a-partial",
+            "dispatcher-lookalike-behind-a-cache-named-again",
+        ],
+    )
+    def test_refused_although_correct_beside_the_kernel_0_17_0(self, example, shape):
+        """Tools that run correctly, that 0.2.2 gated beside ``recusal`` 0.16.0, and that
+        0.2.3 refuses: the first two by the gate's own walk, which follows what a cache
+        named again calls, the next three by the kernel's walk of 0.17.0. The package
+        page lists them, each with what to write instead. The kernel's changelog entry
+        for 0.17.0 has the whole list for its walk.
+
+        The last is the one verdict 0.2.3 changes beside 0.17.0 too: an object of your
+        own with the attributes the gate takes for a dispatcher's, which the gate refuses
+        wherever its own walk reaches it, now behind a cache named again as well."""
+        import functools
+        import types
+        import weakref
+
+        from recusal import invocation
+
+        keep: list = []
+
+        def make(events):
+            fetch = self.fetch(events)
+            if shape == "dispatcher-lookalike-behind-a-cache-named-again":
+
+                class Service:
+                    registry = types.MappingProxyType({})
+
+                    def dispatch(self, cls):
+                        return fetch
+
+                    def register(self, cls, func=None):
+                        return func
+
+                    def __call__(self, *args, **kwargs):
+                        return fetch(*args, **kwargs)
+
+                return self.again(Service(), self.named(events))
+            if shape == "proxy-of-a-plain-function-behind-a-cache-named-again":
+                keep.append(fetch)
+                return self.again(weakref.proxy(fetch), self.named(events))
+            if shape == "open-dispatcher-behind-a-cache-named-again":
+                export = functools.singledispatch(fetch)
+                return self.again(functools.partial(export), self.named(events))
+            if shape == "held-wrapper-in-another-order-called-by-keyword":
+
+                @functools.wraps(fetch)
+                def second(force, sql):
+                    return fetch(sql, force)
+
+                @functools.wraps(fetch)
+                def outer(*args, **kwargs):
+                    # the values are put back by name: it runs correctly
+                    values = dict(zip(("sql", "force"), args), **kwargs)
+                    return second(force=values.get("force", False), sql=values["sql"])
+
+                return outer
+            if shape == "held-weak-proxy-of-a-helper":
+
+                def audit(*args, **kwargs):
+                    return None
+
+                keep.append(audit)
+                audited = weakref.proxy(audit)
+
+                @functools.wraps(fetch)
+                def outer(*args, **kwargs):
+                    audited(*args, **kwargs)
+                    return fetch(*args, **kwargs)
+
+                return outer
+            held = self.again(functools.partial(fetch), self.named(events))
+
+            @functools.wraps(fetch)
+            def outer(*args, **kwargs):
+                return held(*args, **kwargs)
+
+            return outer
+
+        hidden = TestKernelRefusals.HIDDEN.format
+        reason = {
+            "proxy-of-a-plain-function-behind-a-cache-named-again": self.WEAK_PROXY,
+            "open-dispatcher-behind-a-cache-named-again": self.DISPATCH,
+            "held-wrapper-in-another-order-called-by-keyword": hidden(
+                invocation._HELD_IN_ANOTHER_PLACE.format(name="force", declared="sql")
+            ),
+            "held-weak-proxy-of-a-helper": hidden(invocation._HELD_WEAK_PROXY),
+            "held-cache-named-again-for-another-function-over-a-partial": hidden(
+                invocation._HIDDEN_WRAPPER
+            ),
+            "dispatcher-lookalike-behind-a-cache-named-again": self.DISPATCH,
+        }[shape]
+        self.refused_although_correct(example, make, reason)
+
+    OPAQUE = OPAQUE_REASON
 
     def test_refused_although_correct_a_staticmethod_object_under_a_partial(self, example):
         """A ``functools.partial`` of a ``staticmethod`` object, under a decorator written
@@ -5023,17 +5399,7 @@ class TestStatedLimits:
 
         reached, _ = _adapter()._reached_callables(make([]))
         assert any(type(link) is staticmethod for link in reached)
-        self.refused_although_correct(
-            example,
-            make,
-            "a callable on the way to the function cannot be inspected: it is an object "
-            "whose class defines `__get__`, for which Python shows no signature (a "
-            "class-based decorator that is also a descriptor, such as `cachetools.cached`, "
-            "or a `staticmethod` object that something other than a class holds), so the "
-            "functions under it cannot be read. Call the decorated function from a plain "
-            "function and register that; the gate judges that function's parameters, and "
-            "what its body calls is not read.",
-        )
+        self.refused_although_correct(example, make, self.OPAQUE)
 
     @pytest.mark.parametrize(
         "how",
@@ -5046,13 +5412,13 @@ class TestStatedLimits:
         ],
     )
     def test_a_partialmethod_behind_a_cache_named_again_is_refused(self, example, how):
-        """The shapes of a partialmethod behind a cache named again that ARE refused. In
-        four the kernel's walk reads what the cache calls and finds the mark, through a
-        ``weakref.proxy`` of a function too. In the fifth, a proxy of a second cache
-        named again, the kernel reads nothing behind the proxy, and the tool is refused
-        only because ``functools.lru_cache`` copied the mark from the method onto the
-        cache built directly over it, where the gate's own walk finds it. The next test
-        holds the shapes where nothing copies it."""
+        """A partialmethod behind a cache named again, refused in each shape. Beside 0.2.2
+        all five were refused with the reason for a partialmethod: in four the kernel's
+        walk found the mark through what the cache calls, and in the fifth the gate's
+        own walk found it on the second cache, onto which ``functools.lru_cache`` copied
+        it. The gate's own walk now follows what the outer cache calls, so where a
+        ``weakref.proxy`` stands there it meets the proxy first and gives the reason for
+        one. The next test holds the shapes that 0.2.2 gated."""
         import functools
         import weakref
 
@@ -5098,20 +5464,19 @@ class TestStatedLimits:
         policy = self.Recording(lambda name, args: [])
         with pytest.raises(TypeError) as refusal:
             example.gate_tools([tool], policy)
-        assert str(refusal.value).startswith(
-            "Recusal cannot gate 'run_sql': it runs a `functools.partialmethod`"
-        )
+        expected = TestKernelRefusals.PARTIALMETHOD if how == "the-method" else self.WEAK_PROXY
+        assert str(refusal.value) == f"Recusal cannot gate 'run_sql': {expected}"
         assert policy.seen == [] and events == []
 
     @pytest.mark.parametrize("between", ["a-partial", "a-wrapper-naming-it"])
-    def test_open_a_partialmethod_behind_a_proxy_of_a_cache_named_again(self, example, between):
-        """Open, part of what stands behind a ``weakref.proxy`` behind a cache named
-        again: a cache named again calls a proxy of a second cache named again, and that
-        one calls the partialmethod's method through a ``functools.partial`` or through a
-        wrapper that names it as ``__wrapped__``. Nothing copies the mark onto a cache,
-        the kernel's walk reads nothing behind the proxy, and the tool is gated: the
-        callable the partialmethod holds runs with a parameter of its own at its
-        default."""
+    def test_closed_a_partialmethod_behind_a_proxy_of_a_cache_named_again(self, example, between):
+        """Part of what stood behind a ``weakref.proxy`` behind a cache named again: a
+        cache named again calls a proxy of a second cache named again, and that one calls
+        the partialmethod's method through a ``functools.partial`` or through a wrapper
+        that names it as ``__wrapped__``. Beside 0.2.2 and ``recusal`` 0.16.0 nothing
+        copied the mark onto a cache, the kernel's walk read nothing behind the proxy,
+        and the tool was gated: the callable the partialmethod holds ran with a parameter
+        of its own at its default. Refused now, as a weak proxy, by the gate's own walk."""
         import functools
         import weakref
 
@@ -5139,16 +5504,820 @@ class TestStatedLimits:
             functools.partial(method) if between == "a-partial" else naming, self.named(events)
         )
         tool = self.again(weakref.proxy(inner), self.named(events))
-        reached, complete = _adapter()._reached_callables(tool)
-        assert complete
-        assert not any(_adapter()._held_partialmethod(link) is not None for link in reached)
-        if self.kernel_closes():
-            self.refused(example, tool, self.UNREAD.format("WeakProxy"), events)
-            return
-        outputs, seen = self.run(example, tool, {"sql": "x"})
+        assert self.reached_by_the_gates_walk(tool, self.a_proxy)
+        self.refused(example, tool, self.WEAK_PROXY, events)
+
+    # --- closed by the gate itself after the review of 0.2.3 -----------------------------------
+
+    @staticmethod
+    def warehouse(events, how):
+        """A module function exposed as a method by a decorator written with
+        ``functools.wraps``, as ``Warehouse.run_sql``. ``inspect.signature`` reads the
+        method as the function and leaves its first parameter, ``database``, out as the
+        object's place. ``how`` is how the decorator takes the object it drops: as
+        ``self`` ("drops"), in ``*args`` ("in-args"), under the function's own first name
+        ("same-name"), or as "drops" under a ``functools.lru_cache`` ("cached")."""
+        import functools
+
+        def execute(database: str, sql: str = "SELECT 1", note: str = "") -> str:
+            """Run SQL against a named database (here: only records it)."""
+            events.append(("execute", database, sql, note))
+            return "recorded"
+
+        def drops(fn):
+            @functools.wraps(fn)
+            def method(self, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return method
+
+        def in_args(fn):
+            @functools.wraps(fn)
+            def method(*args, **kwargs):
+                return fn(*args[1:], **kwargs)
+
+            return method
+
+        def same_name(fn):
+            @functools.wraps(fn)
+            def method(database, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return method
+
+        class Updated:
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+
+            def __call__(self, *args, **kwargs):
+                return self.__wrapped__(*args, **kwargs)
+
+        decorate = {
+            "drops": drops,
+            "in-args": in_args,
+            "same-name": same_name,
+            "cached": lambda fn: functools.lru_cache(maxsize=None)(drops(fn)),
+            # what the review's differential found once the first form was refused: the
+            # function is a partial of a class-based decorator, and `inspect.signature`
+            # reads through both to `execute`
+            "over-a-partial": lambda fn: drops(functools.partial(Updated(fn))),
+        }[how]
+
+        class Warehouse:
+            run_sql = decorate(execute)
+
+        return execute, Warehouse
+
+    @staticmethod
+    def kept_or_bound(tool):
+        """The reason for a facade that may drop what is bound, over ``execute``. The
+        gate's own rule gives it beside ``recusal`` 0.17.0, whose walk reads the facade; a
+        kernel whose walk refuses the facade itself as a ``BoundArgumentKept`` is asked
+        first, and its reason is that one."""
+        from recusal import invocation
+
+        try:
+            invocation.reached_parameters(tool)
+        except invocation.BoundArgumentKept as raised:
+            return TestKernelRefusals.BOUND.format(raised)
+        return TestKernelRefusals.KEPT_RECEIVER.format(name="database")
+
+    @pytest.mark.parametrize("how", ["drops", "in-args", "same-name", "cached", "over-a-partial"])
+    def test_closed_a_method_facade_that_drops_its_object(self, example, how):
+        """Found by the review of 0.2.3, in 0.2.2 too: the SDK passes every declared
+        parameter by position, and a method whose function is a wrapper of a function not
+        written to take the object ran with every value one place off. The policy judged
+        ``sql="SELECT 1"`` and ``note="DELETE FROM audit_log"``; the function ran
+        ``database="SELECT 1"``, ``sql="DELETE FROM audit_log"``. The kernel's walk of
+        ``recusal`` 0.17.0 reads it, because the parameter the object would fill has no
+        default; the gate refuses it itself, naming that parameter."""
+        events: list = []
+        _, Warehouse = self.warehouse(events, how)
+        tool = Warehouse().run_sql
+        assert "database" not in __import__("inspect").signature(tool).parameters
+        tool("SELECT 1", "DELETE FROM audit_log")  # as the SDK calls it
+        assert events.pop() == ("execute", "SELECT 1", "DELETE FROM audit_log", "")
+        self.refused(example, tool, self.kept_or_bound(tool), events)
+
+    def test_closed_a_partial_that_binds_an_argument_a_wrapper_drops(self, example):
+        """The same shape with a ``functools.partial`` in place of the method: it binds a
+        positional argument to a wrapper of ``execute``, which drops it. Gated by 0.2.2 and
+        by 0.2.3 as first written, and run one place off."""
+        import functools
+
+        events: list = []
+        execute, _ = self.warehouse(events, "drops")
+
+        @functools.wraps(execute)
+        def drops(first, *args, **kwargs):
+            return execute(*args, **kwargs)
+
+        bound = functools.partial(drops, "the-object")
+
+        @functools.wraps(execute)
+        def tool(*args, **kwargs):
+            return bound(*args, **kwargs)
+
+        tool.__wrapped__ = bound  # type: ignore[attr-defined]
+        tool("SELECT 1", "DELETE FROM audit_log")  # as the SDK calls it
+        assert events.pop() == ("execute", "SELECT 1", "DELETE FROM audit_log", "")
+        self.refused(example, tool, self.kept_or_bound(tool), events)
+
+    def test_refused_although_correct_two_dropping_methods_behind_a_cache_named_again(
+        self, example
+    ):
+        """Found by the confirmation review of 0.2.3: two method facades that each drop
+        their object, one over the other, behind a cache named again for a function that
+        shows the whole signature. The SDK reads that signature, not the methods', and
+        each drop is what makes the call correct, so it runs as judged. The gate's rule
+        refuses it, naming ``force``; the reason says "where the SDK reads the tool's
+        parameters through that method", which is not so here, and does not say it is."""
+        import functools
+
+        def facade(inner):
+            @functools.wraps(inner)
+            def first(self, *args, **kwargs):
+                return inner(*args, **kwargs)
+
+            class Holder:
+                m = first
+
+            return Holder().m
+
+        def make(events):
+            return self.again(facade(facade(self.fetch(events))), self.named(events))
+
+        self.refused_although_correct(
+            example, make, TestKernelRefusals.KEPT_RECEIVER.format(name="force")
+        )
+
+    def test_a_class_member_named_partialmethod_is_not_a_mark(self, example):
+        """Found by the review of 0.2.3: the gate also asks for a partialmethod's mark under
+        the name ``partialmethod``, which Python never reads, and found a class member of
+        that name on a callable object behind a cache named again, so a tool that runs
+        correctly was refused there, where 0.2.2 gated it. That name now counts only where
+        the object itself holds it; the two names ``inspect`` reads count as before."""
+        import functools
+
+        events: list = []
+        fetch = self.fetch(events)
+
+        class Exporter:
+            def export(self, sql, force=False):
+                return fetch(sql, force)
+
+            partialmethod = functools.partialmethod(export, force=False)
+
+            def __call__(self, sql, force=False):
+                return fetch(sql, force)
+
+        exporter = Exporter()
+        assert _adapter()._held_partialmethod(exporter) is None
+        exporter.partialmethod = functools.partialmethod(fetch)  # the object's own
+        assert _adapter()._held_partialmethod(exporter) is exporter.partialmethod
+        del exporter.partialmethod
+        outputs, seen = self.run(example, self.again(exporter, fetch), {"sql": "S"})
+        assert outputs == {"c1": "recorded"} and events == [("fetch", "S", False)]
+
+    def test_a_decorated_method_written_to_take_its_object_is_gated(self, example):
+        """The same decorator over a method of an ordinary class, whose first parameter is
+        ``self``: gated, and it runs as judged."""
+        import functools
+
+        events: list = []
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def method(self, *args, **kwargs):
+                return fn(self, *args, **kwargs)
+
+            return method
+
+        class Warehouse:
+            @logged
+            def run_sql(self, sql: str = "SELECT 1", note: str = "") -> str:
+                """Run SQL (here: only records it)."""
+                events.append(("run_sql", sql, note))
+                return "recorded"
+
+        outputs, seen = self.run(example, Warehouse().run_sql, {"sql": "S", "note": "n"})
+        assert outputs == {"c1": "recorded"}
+        assert seen == [("run_sql", {"sql": "S", "note": "n"})]
+        assert events == [("run_sql", "S", "n")]
+
+    # --- open: what 0.2.2 stated and 0.2.3 does not close, and what 0.2.3 states --------------
+
+    @pytest.mark.parametrize("receiver", ["self", "cls-of-a-classmethod"])
+    def test_open_a_method_decorator_that_forgets_the_object(self, example, receiver):
+        """Found by the confirmation review of 0.2.3, in 0.2.2 too, and stated as open. A
+        method decorator written as ``def method(self, *a, **k): return m(*a, **k)`` over
+        a method of an ordinary class, ``def run_sql(self, sql, force=False)``, forgets
+        to pass the object on. From the signature the gate cannot tell it from one that
+        passes it on, which is the ordinary decorated method; only the body differs. It
+        is gated, and the SDK's call runs every judged value one place off: judged
+        ``sql="S"``, ``force=True``; ran ``self="S"``, ``sql=True``, ``force=False``. The
+        same call misruns without the gate: the mistake is in the decorator."""
+        import functools
+
+        events: list = []
+
+        def forgets(m):
+            @functools.wraps(m)
+            def method(self, *args, **kwargs):
+                return m(*args, **kwargs)
+
+            return method
+
+        if receiver == "self":
+
+            class Tools:
+                @forgets
+                def run_sql(self, sql: str, force: bool = False) -> str:
+                    """Record SQL text without connecting to a database."""
+                    events.append(("run_sql", self, sql, force))
+                    return "recorded"
+
+            tool = Tools().run_sql
+        else:
+
+            class Tools:  # type: ignore[no-redef]
+                @classmethod
+                @forgets
+                def run_sql(cls, sql: str, force: bool = False) -> str:
+                    """Record SQL text without connecting to a database."""
+                    events.append(("run_sql", cls, sql, force))
+                    return "recorded"
+
+            tool = Tools.run_sql
+        outputs, seen = self.run(example, tool, {"sql": "S", "force": True})
+        assert outputs == {"c1": "recorded"}
+        assert seen == [("run_sql", {"sql": "S", "force": True})]
+        assert events == [("run_sql", "S", True, False)]
+
+    @staticmethod
+    def not_found(events, where):
+        """A decorator of ``fetch`` that calls a wrapper with a parameter of its own,
+        ``skip_review=True``, which the kernel's walk of 0.17.0 does not find: ``where``
+        says how the decorator reaches it."""
+        import functools
+        import types
+        import weakref
+
+        fetch = TestStatedLimits.fetch(events)
+
+        def guarded(fn):
+            @functools.wraps(fn)
+            def guarded(*args, skip_review=True, **kwargs):
+                events.append(("guarded", skip_review))
+                return fn(*args, **kwargs)
+
+            return guarded
+
+        if where == "names-nothing":
+
+            def inner(*args, skip_review=True, **kwargs):
+                events.append(("guarded", skip_review))
+                return fetch(*args, **kwargs)
+
+            reach = lambda: inner  # noqa: E731
+        elif where == "built-on-first-use":
+            state: dict = {}
+
+            def reach():
+                if "held" not in state:
+                    state["held"] = guarded(fetch)
+                return state["held"]
+
+        elif where == "container":
+            held = [guarded(fetch)]
+            reach = lambda: held[0]  # noqa: E731
+        elif where == "settings-object":
+            settings = types.SimpleNamespace(run=guarded(fetch))
+            reach = lambda: settings.run  # noqa: E731
+        elif where == "slot":
+
+            class Slotted:
+                __slots__ = ("held",)
+
+            slotted = Slotted()
+            slotted.held = guarded(fetch)
+            reach = lambda: slotted.held  # noqa: E731
+        elif where == "function-attribute":
+
+            def holder():
+                return None
+
+            holder.held = guarded(fetch)  # type: ignore[attr-defined]
+            reach = lambda: holder.held  # noqa: E731
+        elif where == "weakref-ref":
+            kept = guarded(fetch)
+            TestStatedLimits._KEEP.append(kept)  # alive for as long as the tests run
+            reference = weakref.ref(kept)
+            reach = lambda: reference()  # noqa: E731
+        else:
+            assert where == "partial-argument", where
+
+            def helper(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            bound = functools.update_wrapper(functools.partial(helper, guarded(fetch)), fetch)
+            reach = lambda: bound  # noqa: E731
+
+        @functools.wraps(fetch)
+        def outer(*args, **kwargs):
+            return reach()(*args, **kwargs)
+
+        if where == "partial-argument":
+            outer.__wrapped__ = bound  # the partial is on the chain, and binds the wrapper
+        return outer
+
+    _KEEP: list = []
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "names-nothing",
+            "built-on-first-use",
+            "container",
+            "settings-object",
+            "slot",
+            "function-attribute",
+            "weakref-ref",
+            "partial-argument",
+        ],
+    )
+    def test_open_a_held_wrapper_the_kernel_does_not_find(self, example, where):
+        """Stated on the package page under what the gate does not see, and by the
+        kernel's entry for 0.17.0 as not found by design: a held wrapper reached in one of
+        these ways is gated, and its own parameter runs at its default."""
+        events: list = []
+        func = self.not_found(events, where)
+        outputs, seen = self.run(example, func, {"sql": "x"})
         assert outputs == {"c1": "recorded"}
         assert seen == [("run_sql", {"sql": "x", "force": False})]
-        assert events == [("reviewed", "x", False, True)]
+        assert events == [("guarded", True), ("fetch", "x", False)]
+
+    def test_open_a_held_wrapper_whose_leading_place_is_taken_for_the_objects(self, example):
+        """Stated from 0.2.3, in 0.2.2 too: the kernel's name rule for a bound place, which
+        its entry for 0.17.0 states. A method decorator keeps the object and calls a held
+        wrapper that has a required parameter of its own in the leading place. The kernel
+        takes that place for the object's and finds nothing to refuse; the SDK hands the
+        judged values on by position, so the function runs with them one place off."""
+        import functools
+
+        events: list = []
+
+        def run(self, sql: str = "x", force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            events.append(("run", sql, force))
+            return "recorded"
+
+        @functools.wraps(run)
+        def with_its_own(mode, sql="x", force=False):
+            return run(None, sql, force)
+
+        def keeping(method):
+            @functools.wraps(method)
+            def first(self, *args, **kwargs):
+                return with_its_own(*args, **kwargs)
+
+            return first
+
+        class Tools:
+            kept = keeping(run)
+
+        outputs, seen = self.run(example, Tools().kept, {"sql": "S", "force": True})
+        assert outputs == {"c1": "recorded"}
+        assert seen == [("run_sql", {"sql": "S", "force": True})]
+        assert events == [("run", True, False)]  # judged sql="S", force=True
+
+    def test_open_what_the_walk_raises_for_a_callable_it_cannot_read_names_its_class(self, example):
+        """The fourth item 0.2.2 stated as open, narrower now. The kernel's walk raises a
+        plain ``ValueError`` or ``TypeError`` for a callable it cannot read, and the gate
+        names the exception class alone, with no cause and no advice: here a cache named
+        again over a ``functools.partial`` of a second cache, which runs correctly. The
+        three classes ``recusal`` 0.17.0 adds each have a reason now
+        (``TestKernelRefusals``)."""
+        import functools
+
+        events: list = []
+        fetch = self.fetch(events)
+        tool = self.again(
+            functools.partial(functools.lru_cache(maxsize=None)(fetch)), self.named(events)
+        )
+        self.refused(example, tool, "the function it runs cannot be inspected (ValueError)", events)
+        assert tool("x", force=True) == "recorded" and events == [("fetch", "x", True)]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="the OpenAI Agents SDK requires Python 3.10+"
+)
+class TestReasonAdvice:
+    """Found by the review of 0.2.3: following the advice of a reason literally gave, in 11
+    of 15 cases, a gated tool that ran the cause. The advice was to call the refused
+    function from a plain function and register that, and the gate reads a plain
+    function's parameters and never its body. Each reason now advises removing the cause.
+
+    For each reason: a tool refused with it, and the tool the reason's advice says to
+    write, which is gated and runs as judged, through a real agent run. Where the cause
+    lies under another (a wrapper with a parameter of its own under a proxy), following
+    the advice for the first meets the second, and that is refused too: it is never
+    gated with the cause inside it."""
+
+    example = TestJudgedIsWhatRuns.example
+    Recording = TestEffectiveArguments.Recording
+    ARGS = {"sql": "S", "force": True}
+
+    @staticmethod
+    def fetch(events):
+        def fetch(sql: str, force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            events.append(("fetch", sql, force))
+            return "recorded"
+
+        return fetch
+
+    @staticmethod
+    def forwarding(inner):
+        import functools
+
+        @functools.wraps(inner)
+        def forwarding(*args, **kwargs):
+            return inner(*args, **kwargs)
+
+        return forwarding
+
+    @staticmethod
+    def reviewed(events, inner):
+        import functools
+
+        @functools.wraps(inner)
+        def reviewed(*args, skip_review=True, **kwargs):
+            events.append(("UNJUDGED skip_review", skip_review))
+            return inner(*args, **kwargs)
+
+        return reviewed
+
+    @staticmethod
+    def again(called, named):
+        import functools
+
+        return functools.update_wrapper(functools.lru_cache(maxsize=None)(called), named)
+
+    def refused(self, example, func, reason):
+        tool = example.function_tool(func, name_override="run_sql", strict_mode=False)
+        with pytest.raises(TypeError) as refusal:
+            example.gate_tools([tool], self.Recording(lambda name, args: []))
+        assert str(refusal.value) == f"Recusal cannot gate 'run_sql': {reason}"
+
+    def runs_as_judged(self, example, func, events, ran, arguments=None):
+        """``func`` is gated, and a call of it runs exactly ``ran`` and nothing else."""
+        arguments = dict(self.ARGS) if arguments is None else arguments
+        policy = self.Recording(lambda name, args: [])
+        tool = example.function_tool(func, name_override="run_sql", strict_mode=False)
+        (gated,) = example.gate_tools([tool], policy)
+        del events[:]
+        outputs, _ = example.run_calls([("run_sql", arguments, "c1")], gated=False, tools=[gated])
+        assert outputs == {"c1": "recorded"}, outputs
+        assert policy.seen == [("run_sql", arguments)]
+        assert events == ran
+
+    def test_a_held_wrapper_with_a_parameter_of_its_own(self, example):
+        """``HiddenWrapper``: give the held wrapper no parameter of its own, passing the
+        value explicitly in its body; or register the function itself."""
+        import functools
+
+        events: list = []
+        fetch = self.fetch(events)
+        held = self.reviewed(events, fetch)
+
+        @functools.wraps(fetch)
+        def holding(*args, **kwargs):
+            return held(*args, **kwargs)
+
+        found = (
+            "`skip_review` is a parameter of a function the call reaches that the tool does "
+            "not declare, so it would run with a value no policy judged"
+        )
+        self.refused(example, holding, HIDDEN_REASON.format(found))
+
+        @functools.wraps(fetch)
+        def explicit(*args, **kwargs):
+            skip_review = True  # the value, written in the body
+            events.append(("reviewed", skip_review))
+            return fetch(*args, **kwargs)
+
+        @functools.wraps(fetch)
+        def holding_explicit(*args, **kwargs):
+            return explicit(*args, **kwargs)
+
+        self.runs_as_judged(
+            example, holding_explicit, events, [("reviewed", True), ("fetch", "S", True)]
+        )
+        self.runs_as_judged(example, fetch, events, [("fetch", "S", True)])
+
+    def test_a_held_wrapper_in_another_order(self, example):
+        """``HiddenWrapper`` for the order: give the held wrapper the tool's parameters in
+        the tool's order. The old advice, a plain function that calls the decorated one by
+        position, ran ``fetch(sql=True, force='S')``."""
+        import functools
+
+        from recusal import invocation
+
+        events: list = []
+        fetch = self.fetch(events)
+
+        @functools.wraps(fetch)
+        def flipped(force, sql):
+            return fetch(sql=sql, force=force)
+
+        @functools.wraps(fetch)
+        def holding(*args, **kwargs):
+            return flipped(*args, **kwargs)
+
+        cause = invocation._HELD_IN_ANOTHER_PLACE.format(name="force", declared="sql")
+        self.refused(example, holding, HIDDEN_REASON.format(cause))
+
+        @functools.wraps(fetch)
+        def in_order(sql, force=False):
+            return fetch(sql=sql, force=force)
+
+        @functools.wraps(fetch)
+        def holding_in_order(*args, **kwargs):
+            return in_order(*args, **kwargs)
+
+        @functools.wraps(fetch)
+        def keyword_only(*, sql, force=False):
+            return fetch(sql=sql, force=force)
+
+        @functools.wraps(fetch)
+        def holding_by_keyword(*args, **kwargs):
+            return keyword_only(**dict(zip(("sql", "force"), args), **kwargs))
+
+        for rewrite in (holding_in_order, holding_by_keyword):
+            self.runs_as_judged(example, rewrite, events, [("fetch", "S", True)])
+
+    def test_a_held_dispatcher(self, example):
+        """``HiddenWrapper`` for a dispatcher a decorator holds: hold no single-dispatch
+        function, or register the function itself. The old advice gated a plain function
+        that called the decorated one, and an implementation registered afterwards ran."""
+        import functools
+
+        from recusal import invocation
+
+        events: list = []
+        fetch = self.fetch(events)
+        export = functools.singledispatch(fetch)
+
+        @functools.wraps(fetch)
+        def holding(*args, **kwargs):
+            return export(*args, **kwargs)
+
+        self.refused(example, holding, HIDDEN_REASON.format(invocation._HIDDEN_WRAPPER))
+        self.runs_as_judged(example, fetch, events, [("fetch", "S", True)])
+
+    def test_a_weak_proxy(self, example):
+        """``WeakProxy``: put the object the proxy stands for in its place. Over a wrapper
+        that only forwards the result is gated and runs; over one with a parameter of its
+        own it is refused for that, where the old advice gated it."""
+        import weakref
+
+        events: list = []
+        fetch = self.fetch(events)
+        inner = self.again(self.forwarding(fetch), fetch)
+        tool = self.again(weakref.proxy(inner), fetch)
+        self.refused(example, tool, WEAK_PROXY_REASON)
+        self.runs_as_judged(example, self.again(inner, fetch), events, [("fetch", "S", True)])
+
+        under = self.again(self.reviewed(events, fetch), fetch)
+        self.refused(example, self.again(weakref.proxy(under), fetch), WEAK_PROXY_REASON)
+        with pytest.raises(TypeError, match="`skip_review`"):
+            example.gate_tools(
+                [example.function_tool(self.again(under, fetch), strict_mode=False)],
+                example.sql_scope_policy,
+            )
+
+    def test_a_decorator_that_answers_for_wrapped(self, example):
+        """``ProxiedCallable``: call ``functools.update_wrapper(self, fn)`` in the
+        decorator's ``__init__``."""
+        import functools
+
+        from recusal import invocation
+
+        events: list = []
+        fetch = self.fetch(events)
+        Forwards = TestKernelRefusals.Forwards
+
+        class Updated(Forwards):
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+        bare = TestKernelRefusals.bare
+        self.refused(
+            example,
+            bare(Forwards(self.forwarding(fetch))),
+            PROXIED_REASON.format(invocation._ANSWERS_FOR_WRAPPED),
+        )
+        self.runs_as_judged(
+            example, bare(Updated(self.forwarding(fetch))), events, [("fetch", "S", True)]
+        )
+
+    def test_a_partialmethod(self, example):
+        """``functools.partialmethod``: write the method out, with the bound values as its
+        own defaults. The old advice, a plain function that calls the method, ran what
+        stood under the callable the partialmethod holds."""
+        import functools
+
+        events: list = []
+
+        class Recorder:
+            def __call__(self, owner, sql="", force=False):
+                events.append(("fetch", sql, force))
+                return "recorded"
+
+        class Db:
+            export = functools.partialmethod(Recorder(), force=False)
+
+        self.refused(example, Db().export, PARTIALMETHOD_REASON)
+
+        class Written:
+            def export(self, sql: str = "", force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                events.append(("fetch", sql, force))
+                return "recorded"
+
+        self.runs_as_judged(example, Written().export, events, [("fetch", "S", True)])
+
+    def test_too_many_wrappers(self, example):
+        """Take wrappers off until the gate reads them all, or register the function."""
+        events: list = []
+        fetch = self.fetch(events)
+        tool = fetch
+        for _ in range(40):
+            tool = self.forwarding(tool)
+        self.refused(example, tool, TOO_MANY_REASON)
+        fewer = fetch
+        for _ in range(5):
+            fewer = self.forwarding(fewer)
+        self.runs_as_judged(example, fewer, events, [("fetch", "S", True)])
+
+    def test_a_decorator_whose_signature_cannot_be_read(self, example):
+        """Register the function without that decorator, or use one the gate reads."""
+        events: list = []
+        fetch = self.fetch(events)
+        self.refused(example, _DescriptorDecorator(fetch), OPAQUE_REASON)
+        self.runs_as_judged(example, self.forwarding(fetch), events, [("fetch", "S", True)])
+
+    def test_a_single_dispatch_function(self, example):
+        """Register one plain function with each implementation's code under a branch on
+        the type."""
+        import functools
+
+        events: list = []
+
+        @functools.singledispatch
+        def export(sql, force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            return "recorded"
+
+        @export.register(str)
+        def _(sql, force=False):
+            events.append(("fetch", sql, force))
+            return "recorded"
+
+        self.refused(example, export, SINGLEDISPATCH_REASON)
+
+        def branching(sql: str, force: bool = False) -> str:
+            """Record SQL text without connecting to a database."""
+            if isinstance(sql, str):
+                events.append(("fetch", sql, force))
+            return "recorded"
+
+        self.runs_as_judged(example, branching, events, [("fetch", "S", True)])
+        self.runs_as_judged(example, self.fetch(events), events, [("fetch", "S", True)])
+
+    def test_a_cache_whose_function_cannot_be_told(self, example, monkeypatch):
+        """``UnreadCache``: register the function itself, without the cache. The listing
+        is shortened as in ``TestKernelRefusals``."""
+        from recusal import invocation
+
+        events: list = []
+        fetch = self.fetch(events)
+        invocation.reached_parameters(fetch)
+        listing = invocation._referents
+        monkeypatch.setattr(invocation, "_referents", lambda value: listing(value)[:-1])
+        self.refused(example, self.again(self.forwarding(fetch), fetch), UNREAD_CACHE_REASON)
+        self.runs_as_judged(example, fetch, events, [("fetch", "S", True)])
+
+    def test_a_declared_signature(self, example):
+        """Remove the declaration."""
+        import inspect
+
+        events: list = []
+        fetch = self.fetch(events)
+        fetch.__signature__ = inspect.signature(fetch)
+        self.refused(example, fetch, DECLARED_REASON)
+        del fetch.__signature__
+        self.runs_as_judged(example, fetch, events, [("fetch", "S", True)])
+
+    def test_a_bound_argument(self, example):
+        """``BoundArgumentKept``: register the function, or write the method without
+        ``functools.wraps``, naming the parameters, and pass them on by keyword. The old
+        advice ran ``search(tenant="Q", query=5, limit=10)``."""
+        import functools
+
+        events: list = []
+
+        def search(tenant: str = "default", query: str = "", limit: int = 10) -> str:
+            """Record a search without contacting anything."""
+            events.append(("search", tenant, query, limit))
+            return "recorded"
+
+        function = search
+
+        class Facade:
+            tenant = "acme"
+
+            @functools.wraps(function)
+            def search(self, *args, **kwargs):
+                return function(*args, **kwargs)
+
+        with pytest.raises(TypeError, match="handed a bound argument"):
+            example.gate_tools(
+                [example.function_tool(Facade().search, strict_mode=False)],
+                example.sql_scope_policy,
+            )
+
+        class Written:
+            tenant = "acme"
+
+            def search(self, query: str = "", limit: int = 10) -> str:
+                """Record a search without contacting anything."""
+                return function(tenant=self.tenant, query=query, limit=limit)
+
+        arguments = {"query": "Q", "limit": 5}
+        self.runs_as_judged(
+            example, Written().search, events, [("search", "acme", "Q", 5)], arguments
+        )
+        self.runs_as_judged(
+            example,
+            search,
+            events,
+            [("search", "t", "Q", 5)],
+            {"tenant": "t", "query": "Q", "limit": 5},
+        )
+
+    def test_a_decorated_method_whose_object_place_has_another_name(self, example):
+        """Found by the confirmation review of 0.2.3: a correct decorated method whose
+        object's place is named ``this`` is refused by the gate's name rule, and
+        registering the function itself gives another refusal (``this`` is then a
+        parameter of the tool). The reason says to name it ``self``; so named, the method
+        is gated and runs as judged."""
+        import functools
+
+        events: list = []
+
+        def logged(m):
+            @functools.wraps(m)
+            def method(self, *args, **kwargs):
+                return m(self, *args, **kwargs)
+
+            return method
+
+        class Named:
+            @logged
+            def run_sql(this, sql: str, force: bool = False) -> str:  # noqa: N805
+                """Record SQL text without connecting to a database."""
+                events.append(("fetch", sql, force))
+                return "recorded"
+
+        self.refused(example, Named().run_sql, KEPT_RECEIVER_REASON.format(name="this"))
+        assert "name it `self`" in KEPT_RECEIVER_REASON
+
+        class Renamed:
+            @logged
+            def run_sql(self, sql: str, force: bool = False) -> str:
+                """Record SQL text without connecting to a database."""
+                events.append(("fetch", sql, force))
+                return "recorded"
+
+        self.runs_as_judged(example, Renamed().run_sql, events, [("fetch", "S", True)])
+
+    def test_a_method_that_wraps_a_function_not_written_to_take_the_object(self, example):
+        """The gate's own refusal for a method facade over a function whose first
+        parameter is not the object's: register the function itself."""
+        events: list = []
+        execute, Warehouse = TestStatedLimits.warehouse(events, "drops")
+        self.refused(example, Warehouse().run_sql, KEPT_RECEIVER_REASON.format(name="database"))
+        arguments = {"database": "d", "sql": "SELECT 1", "note": "n"}
+        policy = self.Recording(lambda name, args: [])
+        (gated,) = example.gate_tools(
+            [example.function_tool(execute, name_override="run_sql", strict_mode=False)], policy
+        )
+        outputs, _ = example.run_calls([("run_sql", arguments, "c1")], gated=False, tools=[gated])
+        assert outputs == {"c1": "recorded"} and policy.seen == [("run_sql", arguments)]
+        assert events == [("execute", "d", "SELECT 1", "n")]
 
 
 @pytest.mark.skipif(

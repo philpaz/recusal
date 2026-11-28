@@ -33,10 +33,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.16.0 is the first release whose `recusal.invocation` has the refusal classes this
-    # gate imports and gives a reason for (`HiddenWrapper`, `UnreadCache`,
-    # `DispatchedAtCallTime`, `PartialMethodSignature`, `BoundArgumentKept`).
-    "recusal>=0.16.0,<1",
+    # 0.17.0 is the first release whose `recusal.invocation` has `cache_target`, which this
+    # gate's own walk takes the step from a cache to what it calls with, and the refusal
+    # classes it imports and gives a reason for beside those of 0.16.0 (`OpenDispatch`,
+    # `ProxiedCallable`, `WeakProxy`); its walk refuses a weak proxy, a single-dispatch
+    # function with nothing registered and the held wrappers 0.16.0 did not find.
+    "recusal>=0.17.0,<1",
     # The lower bound is the version the pinned CI lane tests; the weekly latest lane
     # (.github/workflows/compat.yml) tests the newest release.
     "openai-agents>=0.24.0,<1",
