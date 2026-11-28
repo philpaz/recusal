@@ -2257,7 +2257,10 @@ class TestPydanticAiGate:
             )
             answers = example.responses_of(agent.run_sync("go"))
             assert ran == [] and seen == []
-            assert "or a decorator on it, cannot be inspected" in answers["c1"][1]
+            # the cause, not "cannot be inspected" (review of 0.2.1, F8)
+            assert "an object whose class defines `__get__`" in answers["c1"][1]
+            assert "give its class no `__get__`" in answers["c1"][1]
+            assert "cannot be inspected" not in answers["c1"][1]
 
     def test_a_function_that_declares_its_own_signature_is_refused(self, example, adapter):
         """A callable with a ``__signature__`` shows parameters other than the ones Python
@@ -2331,7 +2334,7 @@ class TestPydanticAiGate:
         def unreadable(function, **kwargs):
             raise ValueError("no signature")
 
-        monkeypatch.setattr(adapter, "_reached_parameters", unreadable)
+        monkeypatch.setattr(adapter, "_reached_callables", unreadable)
         same, reason = adapter._with_defaults(self._ctx_for(tool), "t", {"table": "x"})
         assert same == {"table": "x"} and "cannot be inspected" in reason
 
@@ -3187,7 +3190,7 @@ class TestPydanticAiGate:
             assert same == sent
             assert "holds a second wrapper of that function" in reason
             assert "`timeout` is taken by a wrapper and by the function it wraps" in reason
-            assert "call the decorated function from a plain function and register" in reason
+            assert reason.endswith(adapter._PLAIN)
             assert "cannot be inspected" not in reason
             assert "30" not in reason and "9999" not in reason
 
@@ -3218,7 +3221,7 @@ class TestPydanticAiGate:
                 monkeypatch.setattr(adapter, "_dispatches", lambda step: False)
             reason = adapter._with_defaults(self._ctx_for(lookup), "t", {"key": "k"})[1]
             assert chosen in reason and "single-dispatch function" in reason
-            assert "call it from a plain function and register that one" in reason
+            assert reason.endswith(adapter._BRANCH)
             assert "cannot be inspected" not in reason
 
     @staticmethod
@@ -3367,7 +3370,8 @@ class TestPydanticAiGate:
                 same, reason = adapter._with_defaults(ctx, "t", dict(sent))
                 assert same == sent and reason == adapter._PARTIALMETHOD, (function, reason)
                 assert "is a `functools.partialmethod` over a callable" in reason
-                assert "register a plain function that calls it, or put the" in reason
+                assert "put the partialmethod over a plain function" in reason
+                assert reason.endswith(adapter._PLAIN)
                 assert unread not in reason
         assert adapter._PartialMethodSignature is invocation.PartialMethodSignature
 
@@ -3695,7 +3699,7 @@ class TestPydanticAiGate:
             assert declared in reason, (tool, reason)
             others = {"`__text_signature__`", "`__signature__`", "`__code__`"} - {declared}
             assert not any(other in reason for other in others), (tool, reason)
-            assert reason.endswith("call it from a plain function and register that one")
+            assert reason.endswith(adapter._PLAIN)
         # raised as code written for 0.16.0 raises it: no attribute is named
         bare = adapter._declared_reason(adapter._DeclaredSignature())
         assert "declares a signature of its own, so" in bare
@@ -3941,6 +3945,436 @@ class TestPydanticAiGate:
         flat = " ".join(readme.split())
         assert "30 function decorators deep" in flat and "15 class-based ones" in flat
 
+    # --- the review of 0.2.1 before its release ---------------------------------------------
+
+    def test_r13b_a_cache_named_again_over_a_method_wrapper_counts_as_that_wrapper(
+        self, example, adapter
+    ):
+        """F1, in 0.2.0 too. A method decorated with ``functools.wraps(fn)`` above
+        ``functools.lru_cache`` above ``def wrapper(self, table, limit=10): return
+        fn(table, limit)``: the policy saw ``{'table': 't', 'limit': 5}`` and the method
+        ran ``self='t'``, ``table=5``, ``limit=10``. The same wrapper without the cache is
+        refused, because a bound object past a wrapper that names a positional parameter
+        may be kept. The gate left a cache's level out of the wrappers it counts, as a copy
+        of the level under it; for a cache named again that level is the wrapper the cache
+        calls. It counts now, and a cache that calls the function it names still does not
+        (an ``@lru_cache`` method runs as judged)."""
+        import functools
+
+        ran = []
+
+        def keeps_self(fn):
+            @functools.wraps(fn)
+            @functools.lru_cache
+            def wrapper(self, table, limit=10):
+                return fn(table, limit)
+
+            return wrapper
+
+        class Service:
+            @keeps_self
+            def query(self, table: str, limit: int = 10) -> str:
+                """Query."""
+                ran.append((type(self).__name__, table, limit))
+                return "ok"
+
+            @functools.lru_cache(maxsize=None)
+            def cached(self, table: str, limit: int = 10) -> str:
+                """Query."""
+                ran.append((type(self).__name__, table, limit))
+                return "ok"
+
+        service = Service()
+        seen, answer = self._run_tool(example, service.query, {"table": "t", "limit": 5})
+        assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
+        assert "a bound method hands its object in by position" in answer[1]
+        seen, answer = self._run_tool(example, service.cached, {"table": "t", "limit": 5})
+        assert seen == [{"table": "t", "limit": 5}] and ran == [("Service", "t", 5)]
+        readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+        flat = " ".join(readme.split())
+        assert "counts as the wrapper it calls" in flat
+
+    def test_r13b_a_forwarding_object_at_the_end_of_the_walk_is_refused(self, example, adapter):
+        """F2, in 0.2.0 too. A class-based decorator that keeps the function in an attribute
+        and answers every other attribute from it (``__getattr__``), over a callable that
+        names no ``__wrapped__`` (a ``functools.partial``, a partial subclass), on a tool
+        that takes the run context: Pydantic AI reads the object's ``(*args, **kwargs)``,
+        takes ``*args`` for the context and the model's keys into ``**kwargs``, and the
+        kernel's walk ends at that ``__call__``. Judged ``{'table': 'prod'}``, it ran
+        ``dry_run=True``, a keyword the partial binds, and a partial subclass's own
+        ``force=True``. Refused: the walk ends in a callable object's own ``__call__`` that
+        takes ``*args`` or ``**kwargs``. The two remedies the reason gives, followed, run
+        as judged."""
+        import functools
+
+        from pydantic_ai import RunContext, Tool
+
+        ran = []
+
+        class Traced:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __getattr__(self, name):
+                return getattr(self.fn, name)
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        class Named(Traced):
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+        class Scoped(functools.partial):
+            def __call__(self, *args, force=True, **kwargs):
+                ran.append(("force", force))
+                return super().__call__(*args, **kwargs)
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        def purge(ctx: RunContext[None], table: str, limit: int = 10, dry_run: bool = True):
+            """Purge rows."""
+            ran.append(("purge", table, limit, dry_run))
+            return "ok"
+
+        def untyped(ctx, table, limit=10, dry_run=True):
+            """Purge rows."""
+            ran.append(("purge", table, limit, dry_run))
+            return "ok"
+
+        def named(p, like):
+            p.__name__, p.__qualname__, p.__doc__ = like.__name__, like.__qualname__, like.__doc__
+            return p
+
+        def run(fn):
+            ran.clear()
+            return self._run_tool(example, Tool(fn, name="q", takes_ctx=True), {"table": "prod"})
+
+        for fn in (
+            logged(Traced(named(functools.partial(purge), purge))),
+            logged(Traced(named(functools.partial(purge, dry_run=False), purge))),
+            logged(Traced(named(Scoped(purge), purge))),
+        ):
+            seen, answer = run(fn)
+            assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
+            assert "reached through a callable object whose own `__call__` takes" in answer[1]
+            assert "`*args` and `**kwargs`" in answer[1]
+            assert "`functools.update_wrapper(self, fn)`" in answer[1]
+        # the same object reached through the name a partial of a forwarding helper carries,
+        # which the gate hands the kernel without (the review's generator: limit ran 7)
+        target = Traced(named(functools.partial(purge, limit=7), purge))
+
+        def helper(*args, **kwargs):
+            return target(*args, **kwargs)
+
+        carrying = named(functools.partial(helper), purge)
+        carrying.__wrapped__ = target
+        seen, answer = run(carrying)
+        assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
+        assert "reached through a callable object whose own `__call__` takes" in answer[1]
+        # remedy one: the object names what it calls
+        seen, _ = run(logged(Named(named(functools.partial(untyped, dry_run=False), untyped))))
+        assert seen == [{"table": "prod", "limit": 10, "dry_run": False}]
+        assert ran == [("purge", "prod", 10, False)]
+        # remedy two: a plain function that declares every parameter and passes each on
+        hidden = Traced(named(functools.partial(purge), purge))
+
+        def plain(ctx: RunContext[None], table: str, limit: int = 10, dry_run: bool = True):
+            """Purge rows."""
+            return hidden(ctx, table=table, limit=limit, dry_run=dry_run)
+
+        seen, _ = run(plain)
+        assert seen == [{"table": "prod", "limit": 10, "dry_run": True}]
+        assert ran == [("purge", "prod", 10, True)]
+
+    def test_r13b_a_name_a_partial_fills_by_position_is_refused_not_raised(self, example):
+        """F3, in 0.2.0 too. ``functools.partial(extra, "fixed")`` over ``def extra(table,
+        limit=10, **more)``: the model's ``{'table': 'evil'}`` was validated into ``**more``,
+        judged, and the call raised ``TypeError`` (a second value for ``table``) out of
+        ``run_sync``. The same for a name a bound method's object fills (``self``). Each is
+        refused now, as an answer the model reads, before the policy is asked; another key
+        is still judged and runs."""
+        import functools
+        from typing import Any
+
+        ran = []
+
+        def extra(table: str, limit: int = 10, **more: Any) -> str:
+            """Extra."""
+            ran.append((table, limit, dict(more)))
+            return "ok"
+
+        class Service:
+            def lookup(self, table: str, **more: Any) -> str:
+                """Lookup."""
+                ran.append((table, dict(more)))
+                return "ok"
+
+        fixed = functools.partial(extra, "fixed")
+        fixed.__name__ = fixed.__qualname__ = "q"
+        for tool, sent, name in (
+            (fixed, {"table": "evil"}, "table"),
+            (Service().lookup, {"table": "t", "self": 1}, "self"),
+        ):
+            ran.clear()
+            seen, answer = self._run_tool(example, tool, sent, name="q")
+            assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran, answer)
+            assert f"the arguments name `{name}`" in answer[1]
+            assert "a second value for the parameter" in answer[1]
+        ran.clear()
+        seen, answer = self._run_tool(example, fixed, {"zzz": 1}, name="q")
+        assert seen == [{"limit": 10, "zzz": 1}] and ran == [("fixed", 10, {"zzz": 1})]
+
+    def test_r13b_the_walk_is_made_once_for_a_view(self, example, adapter, monkeypatch):
+        """F4. The levels are ``own_parameters`` of each callable the kernel's walk returns
+        (``reached_callables``), by the kernel's contract the levels ``reached_parameters``
+        returns, so a view makes one walk and not two."""
+        import functools
+
+        from recusal import invocation
+
+        calls = []
+        real = adapter._reached_callables
+
+        def counting(function, *args, **kwargs):
+            calls.append(function)
+            return real(function, *args, **kwargs)
+
+        monkeypatch.setattr(adapter, "_reached_callables", counting)
+        assert not hasattr(adapter, "_reached_parameters")
+
+        def f(table, limit=10):
+            return "ok"
+
+        tool = functools.wraps(f)(functools.lru_cache()(functools.wraps(f)(lambda *a, **k: 1)))
+        for function in (f, tool, functools.partial(f, limit=5)):
+            calls.clear()
+            levels, callables = adapter._view(function, True)
+            assert len(calls) == 1
+            assert [list(level) for level in levels] == [
+                list(level) for level in invocation.reached_parameters(function)
+            ]
+
+    def test_r13b_every_remedy_a_reason_gives_followed_literally_is_judged_or_refused(
+        self, example, adapter
+    ):
+        """F5. A reason that says to call what was refused from a plain function and
+        register that one moves it into a body the gate does not read: followed literally,
+        a later-registered implementation ran ``purge=True``, a held wrapper
+        ``dry_run=False``, a declared signature's hidden ``cascade=True`` and a proxied
+        wrapper ``mode='unsafe'``, each allowed. Every reason now gives the remedies that
+        are read (register the function itself, ``functools.update_wrapper(self, fn)``,
+        delete the declaration, bind by keyword, set ``__name__`` and ``__qualname__``,
+        branch on the type in one plain function), and where it names a plain function it
+        says the gate judges that function's parameters and does not read its body, and
+        that the function must declare every parameter the call can run with. Each remedy
+        below is followed as written and runs as judged."""
+        import functools
+        import inspect
+
+        ran = []
+        for text in (
+            adapter._PLAIN,
+            adapter._BRANCH,
+            adapter._KERNEL_REMEDY,
+            adapter._DISPATCHED,
+            adapter._OPEN_DISPATCH,
+            adapter._PARTIALMETHOD,
+            adapter._PROXIED_REMEDY,
+            adapter._DESCRIPTOR,
+            adapter._WEAK_PROXY,
+        ):
+            assert "call it from a plain function" not in text
+            assert "register that one" not in text
+            if "a plain function that" in text or "plain function as the tool" in text:
+                assert "does not read its body" in text or "its body, and what it calls" in text
+
+        # A: single-dispatch; the remedy is one plain function that branches on the type
+        @functools.singledispatch
+        def lookup(key: int | str, limit: int = 10) -> str:
+            return "base"
+
+        @lookup.register
+        def _(key: int, limit: int = 10, purge: bool = True) -> str:
+            ran.append(("int", key, limit, purge))
+            return "ok"
+
+        def branching(key: int | str, limit: int = 10, purge: bool = True) -> str:
+            """Look up."""
+            if isinstance(key, int):
+                ran.append(("int", key, limit, purge))
+            return "ok"
+
+        seen, _ = self._run_tool(example, branching, {"key": 3}, name="q")
+        assert seen == [{"key": 3, "limit": 10, "purge": True}] and ran == [("int", 3, 10, True)]
+
+        # B: a held wrapper; the remedy is a plain function declaring its parameter too
+        def audited(fn):
+            @functools.wraps(fn)
+            def inner(*args, dry_run=False, **kwargs):
+                ran.append(("dry_run", dry_run))
+                return fn(*args, **kwargs)
+
+            @functools.wraps(fn)
+            def outer(*args, **kwargs):
+                return inner(*args, **kwargs)
+
+            return outer
+
+        @audited
+        def wipe(table: str, limit: int = 10) -> str:
+            ran.append(("wipe", table, limit))
+            return "ok"
+
+        def wipe_tool(table: str, limit: int = 10, dry_run: bool = False) -> str:
+            """Wipe."""
+            return wipe(table=table, limit=limit, dry_run=dry_run)
+
+        ran.clear()
+        reason = adapter._with_defaults(self._ctx_for(wipe), "t", {"table": "t"})[1]
+        assert reason.endswith(adapter._PLAIN)
+        seen, _ = self._run_tool(example, wipe_tool, {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 10, "dry_run": False}]
+        assert ran == [("dry_run", False), ("wipe", "t", 10)]
+
+        # C: a declared signature; the remedy is to delete it
+        def drop(table: str, limit: int = 10, cascade: bool = True) -> str:
+            """Drop."""
+            ran.append(("drop", table, limit, cascade))
+            return "ok"
+
+        drop.__signature__ = inspect.Signature(
+            list(inspect.signature(drop).parameters.values())[:2]
+        )
+        reason = adapter._with_defaults(self._ctx_for(drop), "t", {"table": "t"})[1]
+        assert "delete the `__signature__`" in reason
+        del drop.__signature__
+        ran.clear()
+        seen, _ = self._run_tool(example, drop, {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 10, "cascade": True}]
+        assert ran == [("drop", "t", 10, True)]
+
+        # D: a callable that answers for another object; update_wrapper, or a plain function
+        def mode(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, mode="unsafe", **kwargs):
+                ran.append(("mode", mode))
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        class Answers:
+            def __init__(self, fn):
+                self.fn = fn
+                self.__name__ = fn.__name__
+
+            def __getattr__(self, name):
+                return getattr(self.fn, name)
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        class Named(Answers):
+            def __init__(self, fn):
+                functools.update_wrapper(self, fn)
+                self.fn = fn
+
+        def fetch(table: str, limit: int = 10) -> str:
+            """Fetch."""
+            ran.append(("fetch", table, limit))
+            return "ok"
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        reason = adapter._with_defaults(self._ctx_for(Answers(logged(fetch))), "t", {"table": "t"})[
+            1
+        ]
+        assert reason.startswith(adapter._PROXIED)
+        assert "functools.update_wrapper(self, fn)" in reason and adapter._PLAIN in reason
+        reason = adapter._with_defaults(self._ctx_for(Answers(mode(fetch))), "t", {"table": "t"})[1]
+        assert reason.endswith(adapter._PLAIN)
+        ran.clear()
+        seen, answer = self._run_tool(example, Named(mode(fetch)), {"table": "t"}, name="q")
+        assert seen == [] and ran == [] and "takes `mode`" in answer[1]
+        answered = Answers(mode(fetch))
+
+        def fetch_tool(table: str, limit: int = 10, mode: str = "unsafe") -> str:
+            """Fetch."""
+            return answered(table=table, limit=limit, mode=mode)
+
+        seen, _ = self._run_tool(example, fetch_tool, {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 10, "mode": "unsafe"}]
+        assert ran == [("mode", "unsafe"), ("fetch", "t", 10)]
+
+        # E: an object that shows a `__code__`; the remedy is update_wrapper(self, fn)
+        ran.clear()
+        reason = adapter._with_defaults(self._ctx_for(Answers(fetch)), "t", {"table": "t"})[1]
+        assert "`__code__`" in reason and "functools.update_wrapper(self, fn)" in reason
+        seen, _ = self._run_tool(example, Named(fetch), {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 10}] and ran == [("fetch", "t", 10)]
+
+        # F: a descriptor class decorator; the remedy is a class without `__get__`
+        class Counted:
+            def __init__(self, function):
+                functools.update_wrapper(self, function)
+                self.function = function
+
+            def __call__(self, *args, **kwargs):
+                return self.function(*args, **kwargs)
+
+        class Bound(Counted):
+            def __get__(self, instance, owner=None):
+                return self if instance is None else functools.partial(self, instance)
+
+        reason = adapter._with_defaults(self._ctx_for(Bound(fetch)), "t", {"table": "t"})[1]
+        assert reason == adapter._DESCRIPTOR
+        ran.clear()
+        seen, _ = self._run_tool(example, Counted(fetch), {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 10}] and ran == [("fetch", "t", 10)]
+
+        # G: a keyword that does not reach a positional-only parameter; make it ordinary
+        def listed(table, limit=10, /, **extra):
+            return "ok"
+
+        def ordinary(table, limit=10, **extra):
+            ran.append(("ordinary", table, limit, extra))
+            return "ok"
+
+        reason = adapter._with_defaults(
+            self._ctx_for(functools.partial(listed, limit=77)), "t", {"table": "t"}
+        )[1]
+        assert "make that parameter positional-or-keyword" in reason
+        made = functools.partial(ordinary, limit=77)
+        made.__name__ = made.__qualname__ = "q"
+        ran.clear()
+        seen, _ = self._run_tool(example, made, {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 77}] and ran == [("ordinary", "t", 77, {})]
+
+        # H: a weak proxy; the remedy is the function itself
+        import weakref
+
+        reason = adapter._with_defaults(self._ctx_for(weakref.proxy(fetch)), "t", {"table": "t"})[1]
+        assert reason == adapter._WEAK_PROXY and "register the function itself" in reason
+        ran.clear()
+        seen, _ = self._run_tool(example, fetch, {"table": "t"}, name="q")
+        assert seen == [{"table": "t", "limit": 10}] and ran == [("fetch", "t", 10)]
+
+        readme = (ROOT / "adapters" / "pydantic-ai" / "README.md").read_text(encoding="utf-8")
+        flat = " ".join(readme.split())
+        assert "calls the decorated one is read to the end" not in flat
+        assert "call it from a plain function and register that one" not in flat.lower()
+
     def test_a_value_bound_by_position_past_a_naming_wrapper_is_refused(self, example, adapter):
         """A ``functools.partial`` with a positional argument, and a bound method, hand a
         value in by position, and it is read as bound to the innermost function's first
@@ -4031,8 +4465,7 @@ class TestPydanticAiGate:
         over = (
             "a `functools.partial` binds a value by position past a wrapper that names a "
             "parameter (`{}`): which parameter the value fills, and what each wrapper then "
-            "keeps, cannot be read; bind it by keyword, or call the wrapped function from a "
-            "plain function and register that one"
+            "keeps, cannot be read; bind it by keyword, or " + adapter._PLAIN
         )
         # the reason says what is true of the parameter it names: the bound value may not
         # reach it, or it is one more parameter taken by position
@@ -4868,8 +5301,7 @@ class TestPydanticAiGate:
         over = (
             "a `functools.partial` binds a value by position past a wrapper that names a "
             "parameter (`{}`): which parameter the value fills, and what each wrapper then "
-            "keeps, cannot be read; bind it by keyword, or call the wrapped function from a "
-            "plain function and register that one"
+            "keeps, cannot be read; bind it by keyword, or " + adapter._PLAIN
         )
         tagged = functools.partial(scoped(default_table(purge)), "acme")
         tagged.note = "an attribute keeps functools from merging two partials"

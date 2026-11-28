@@ -83,8 +83,8 @@ from recusal.invocation import WeakProxy as _WeakProxy
 from recusal.invocation import cache_target as _cache_target
 from recusal.invocation import detached as _detached
 from recusal.invocation import json_data as _json_data
+from recusal.invocation import own_parameters as _own_parameters
 from recusal.invocation import reached_callables as _reached_callables
-from recusal.invocation import reached_parameters as _reached_parameters
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -102,6 +102,23 @@ _NAMED_REFUSALS = (
     _OpenDispatch,
     _PartialMethodSignature,
     _ProxiedCallable,
+)
+
+#: The remedy a reason gives where the only one is to register another function. Taken
+#: literally it moves what was refused into a body the gate does not read, so it says that,
+#: and what the function must declare for its call to be judged.
+_PLAIN = (
+    "register in its place a plain function that declares every parameter the call can "
+    "run with, defaults included, and passes each on by name; the gate judges that "
+    "function's parameters and does not read its body or what it calls"
+)
+
+#: The remedy for a single-dispatch function, registered or not.
+_BRANCH = (
+    "register one plain function as the tool, declaring every parameter any implementation "
+    "takes, and branch on the type inside its body; the gate judges that function's "
+    "parameters and does not read its body, so a single-dispatch function called from it "
+    "is not read"
 )
 
 #: A deferred-call handler, as ``HandleDeferredToolCalls`` takes one: ``handler(ctx,
@@ -1022,11 +1039,11 @@ def _a_class_or_builtin(function: Any) -> bool:
 
 def _view(function: Any, validated: bool) -> tuple[list[Any], list[Any]]:
     """The parameters of every callable a call to ``function`` reaches, and beside each
-    level the callable it is the level of: both are the kernel's walk,
-    ``reached_parameters`` and ``reached_callables``, made with the same argument, so the
-    two lists are in the same order by the kernel's own contract and no walk of this
-    gate's is counted against the kernel's levels. Raises what the kernel's walk raises,
-    and ``ValueError`` where the two lists differ in length.
+    level the callable it is the level of. The callables are the kernel's walk,
+    ``reached_callables``, and each level is ``own_parameters`` of the callable beside it,
+    which is what ``reached_parameters`` returns for it by the kernel's own contract: one
+    walk, and no walk of this gate's counted against the kernel's levels. Raises what the
+    kernel's walk raises.
 
     (Before 0.2.1 this gate laid the callables of a walk of its own beside the kernel's
     levels and refused a stack where the two counts differed, which refused, beside
@@ -1039,8 +1056,8 @@ def _view(function: Any, validated: bool) -> tuple[list[Any], list[Any]]:
     kernel's walk raised for it is raised."""
     walked = _without_its_own_wrapped(function)
     try:
-        levels = _reached_parameters(walked)
         callables = _reached_callables(walked)
+        levels = [_own_parameters(callable_) for callable_ in callables]
     except _DeclaredSignature:
         raise
     except Exception:
@@ -1049,23 +1066,91 @@ def _view(function: Any, validated: bool) -> tuple[list[Any], list[Any]]:
         if getattr(function, "__wrapped__", None) is not None:
             raise
         return [inspect.signature(function).parameters], [function]
-    if len(callables) != len(levels):
-        raise ValueError("the callables of this stack cannot be laid beside its levels")
     return levels, callables
 
 
 def _cached(function: Any) -> bool:
-    """True for the level of a cache wrapper, bound to an object or not."""
+    """True for the level of a cache wrapper that is a copy of the level under it, bound to
+    an object or not: a ``functools.lru_cache`` wrapper that calls the function it names.
+    A cache named again for another function (``functools.wraps(f)`` above the cache)
+    calls a wrapper ``f`` is not, and its level is that wrapper's own parameters, so it is
+    not such a level; nor is one whose function cannot be told."""
     while inspect.ismethod(function):
         function = function.__func__
-    return isinstance(function, _CACHED)
+    if not isinstance(function, _CACHED):
+        return False
+    try:
+        return _cache_target(function) is getattr(function, "__wrapped__", None)
+    except Exception:  # noqa: BLE001, a cache that cannot be told counts as a wrapper
+        return False
 
 
 def _written(levels: list[Any], callables: list[Any]) -> list[Any]:
     """The levels of the callables that have parameters of their own: the level the walk
-    shows for a cache wrapper, which is a copy of the one under it, is left out. It is
-    told by its place in the walk, the callable beside it, and never by what it holds."""
+    shows for a cache wrapper that calls the function it names, which is a copy of the
+    one under it, is left out (``_cached``). It is told by the callable beside it and by
+    what the cache calls, and never by what it holds."""
     return [level for level, function in zip(levels, callables) if not _cached(function)]
+
+
+def _calls_through_an_object(callables: list[Any], levels: list[Any]) -> Optional[str]:
+    """Why the walk ends in a callable object's own ``__call__`` that takes ``*args`` or
+    ``**kwargs``, or None.
+
+    The kernel's walk passes through a callable object that names nothing as
+    ``__wrapped__`` and reads its ``__call__``, which is then the last level: what that
+    ``__call__`` hands the call to (a function the object keeps in an attribute, as a
+    class-based decorator does) is not read. With named parameters only, the arguments are
+    those parameters and the gate completes them. With ``*args`` or ``**kwargs`` the
+    function the object keeps can run with defaults of its own that nothing showed: a
+    class-based decorator that keeps the function and answers every other attribute from
+    it (``__getattr__``), over a ``functools.partial``, on a tool that takes the run
+    context, was judged ``{'table': 'prod'}`` while the function ran ``dry_run=True``
+    (Pydantic AI takes ``*args`` for the context and puts the model's keys in
+    ``**kwargs``)."""
+    last = callables[-1]
+    if not inspect.ismethod(last) or isinstance(last.__self__, type):
+        return None
+    if last.__func__ is not inspect.getattr_static(type(last.__self__), "__call__", None):
+        return None
+    variadic = [
+        ("`*" if parameter.kind is parameter.VAR_POSITIONAL else "`**") + f"{name}`"
+        for name, parameter in levels[-1].items()
+        if _variadic(parameter)
+    ]
+    if not variadic:
+        return None
+    return (
+        "the function this tool runs is reached through a callable object whose own "
+        f"`__call__` takes {' and '.join(variadic)} and that names nothing it wraps (no "
+        "`__wrapped__`), so what it hands the call to, and the defaults that runs with, "
+        "cannot be read; this is refused although such an object may run correctly; give the "
+        "object a `__wrapped__` that names the function it calls "
+        f"(`functools.update_wrapper(self, fn)` in its `__init__`), or {_PLAIN}"
+    )
+
+
+def _carried_cause(function: Any, validated: bool, unread: str) -> Optional[str]:
+    """For a tool that is a ``functools.partial`` carrying a ``__wrapped__`` of its own
+    (``_without_its_own_wrapped`` hands the kernel the partial without it): why what that
+    name leads to cannot be read, or None. Pydantic AI reads the tool's signature through
+    the name, and the kernel's walk, handed the partial as it is, would follow it. So it is
+    walked too, and refused for what the walk refuses there and for a callable object at
+    its end (``_calls_through_an_object``): a partial of a forwarding helper named for a
+    class-based decorator that answers every attribute from a ``functools.partial`` ran
+    that partial's ``limit=7`` with the policy handed ``{'table': 't'}``."""
+    if function is _without_its_own_wrapped(function):
+        return None
+    carried = function.__dict__["__wrapped__"]
+    try:
+        levels, callables = _view(carried, validated)
+    except _DeclaredSignature as refused:
+        return _declared_reason(refused)
+    except (*_NAMED_REFUSALS, _BoundArgumentKept) as refused:
+        return _walk_reason(refused)
+    except Exception:  # noqa: BLE001, what the name leads to cannot be walked
+        return _descriptor_cause(carried) or unread
+    return _calls_through_an_object(callables, levels)
 
 
 def _binds(step: Any) -> int:
@@ -1161,7 +1246,7 @@ def _bound_over_a_wrapper(step: Any) -> Optional[str]:
     ``**kwargs`` while the function runs the bound value)."""
     if not (isinstance(step, functools.partial) and step.args):
         return None
-    advice = "or call the wrapped function from a plain function and register that one"
+    advice = f"or {_PLAIN}"
     if inspect.getattr_static(step, "__wrapped__", None) is not None:
         return (
             "a `functools.partial` that binds a value by position was named with "
@@ -1219,8 +1304,8 @@ def _keyword_past_a_parameter(step: Any, levels: list[Any]) -> Optional[str]:
                     f"a `functools.partial` binds `{key}` by keyword, and {whose} takes "
                     f"`{key}` as a {parameter.kind.description} parameter, which a keyword "
                     "does not reach: the value that parameter runs with cannot be read "
-                    "through the partial; call the function from a plain function and "
-                    "register that one"
+                    "through the partial; make that parameter positional-or-keyword or "
+                    f"keyword-only, or {_PLAIN}"
                 )
     return None
 
@@ -1265,8 +1350,8 @@ def _unreadable_step(
         if cause is not None:
             return (
                 "a bound method hands its object in by position past a wrapper that names "
-                f"a positional parameter: {cause}; "
-                "call it from a plain function and register that one"
+                f"a positional parameter: {cause}; give that wrapper only `*args` and "
+                f"`**kwargs`, or {_PLAIN}"
             )
         if index in unbound:
             under = unbound[index][0]
@@ -1283,8 +1368,7 @@ _DISPATCHED = (
     "(`functools.singledispatch` or `singledispatchmethod`) with an "
     "implementation registered beside its base one or in its place: the "
     "implementation that runs is chosen at call time, by the type of an "
-    "argument, so its parameters and defaults cannot be read; call it from a "
-    "plain function and register that one"
+    f"argument, so its parameters and defaults cannot be read; {_BRANCH}"
 )
 
 
@@ -1292,8 +1376,8 @@ _PARTIALMETHOD = (
     "the function this tool runs is a `functools.partialmethod` over a callable that does "
     "not bind as a method (a callable object, a class-based decorator), or a wrapper of "
     "one: the signature it shows is that of what the partialmethod binds, not its own, so "
-    "what runs under it cannot be read; register a plain function that calls it, or put "
-    "the partialmethod over a plain function"
+    "what runs under it cannot be read; put the partialmethod over a plain function, "
+    f"which is read in full, or {_PLAIN}"
 )
 
 
@@ -1318,7 +1402,7 @@ _OPEN_DISPATCH = (
     "check and the call (by another tool of the same turn, or by a wrapper that registers "
     "one on its first use), and would then run with parameters and defaults no policy "
     "read; this is refused although a single-dispatch function that nothing is ever "
-    "registered on runs correctly; call it from a plain function and register that one"
+    f"registered on runs correctly; {_BRANCH}"
 )
 
 
@@ -1342,9 +1426,29 @@ _PROXIED_REMEDY = (
     "The ordinary case is a class-based decorator that keeps the function in an attribute "
     "and hands every other attribute on to it (`__getattr__`), over a function that names "
     "a `__wrapped__` of its own; it runs correctly and is refused all the same. Call "
-    "`functools.update_wrapper(self, fn)` in its `__init__` and it is read to the end, or "
-    "call the decorated function from a plain function and register that one"
+    "`functools.update_wrapper(self, fn)` in its `__init__` and it is read to the end. "
+    f"Otherwise {_PLAIN}"
 )
+
+#: Said after the kernel's own words, which end with the kernel's remedy; where that is to
+#: register a plain function, this is what the gate does with one.
+_KERNEL_REMEDY = (
+    "a plain function registered in its place is judged by its own parameters, and its "
+    "body, and what it calls, is not read: declare on it every parameter the call can run "
+    "with, defaults included"
+)
+
+#: The remedy for a declared signature, by the attribute the kernel found.
+_UNDECLARE = {
+    "__signature__": "delete the `__signature__` so the parameters Python binds are read",
+    "__text_signature__": (
+        "delete the `__text_signature__` so the parameters Python binds are read"
+    ),
+    "__code__": (
+        "give the object a `__wrapped__` that names the function it calls "
+        "(`functools.update_wrapper(self, fn)` in its `__init__`)"
+    ),
+}
 
 
 #: What each declared signature is, by the attribute the kernel's walk found
@@ -1366,13 +1470,14 @@ def _declared_reason(refused: Any) -> str:
     raised without it (as code written for ``recusal`` 0.16.0 raises it) is a declared
     signature of no named kind."""
     declared = getattr(refused, "declared", None)
-    what = "declares a signature of its own"
+    what, undo = "declares a signature of its own", None
     if isinstance(declared, str):
-        what = _DECLARED.get(declared, what)
+        what, undo = _DECLARED.get(declared, what), _UNDECLARE.get(declared)
+    remedy = f"{undo}, or {_PLAIN}" if undo is not None else _PLAIN
     return (
         f"a callable this tool runs {what}, so the parameters Python binds, and their "
         "defaults, cannot be read; this is refused also where the declaration matches "
-        "them; call it from a plain function and register that one"
+        f"them; {remedy}"
     )
 
 
@@ -1398,15 +1503,77 @@ def _walk_reason(refused: BaseException) -> str:
     if isinstance(refused, _ProxiedCallable):
         return f"{_PROXIED} (the kernel's walk reports: {refused}). {_PROXIED_REMEDY}"
     if isinstance(refused, _BoundArgumentKept):
-        return f"the function this tool runs cannot be read: {refused}"
+        return f"the function this tool runs cannot be read: {refused}; {_KERNEL_REMEDY}"
     if isinstance(refused, _UnreadCache):
-        return f"a cache on the function this tool runs cannot be read: {refused}"
+        return f"a cache on the function this tool runs cannot be read: {refused}; {_KERNEL_REMEDY}"
     return (
         "a decorator on the function this tool runs holds a second wrapper of that "
         "function (in its closure or on the decorator object), which is not reached "
         f"through `__wrapped__` and so is not read like one applied directly: {refused}; "
-        "call the decorated function from a plain function and register that one"
+        f"{_PLAIN}"
     )
+
+
+_DESCRIPTOR = (
+    "a decorator on the function this tool runs is an object whose class defines `__get__` "
+    "(a class-based decorator that binds as a method, such as `cachetools.cached`, or a "
+    "`staticmethod` object called as a method): `inspect.signature` reads such an object as "
+    "a built-in and shows no parameters for it, so what it runs cannot be read; give its "
+    f"class no `__get__`, or {_PLAIN}"
+)
+
+
+def _descriptor_cause(function: Any) -> Optional[str]:
+    """The reason for a stack the kernel's walk could not read because a callable on it is
+    an object ``inspect`` takes for a method descriptor (its class defines ``__get__`` and
+    no ``__set__``) called through a ``__call__`` written in Python, or a ``staticmethod``
+    object: the test ``inspect`` itself makes, and the kernel after it. None where there
+    is none or the callables cannot be read that far."""
+    try:
+        for step in _steps(function):
+            if inspect.isfunction(step) or inspect.ismethod(step) or isinstance(step, type):
+                continue
+            if not inspect.ismethoddescriptor(step):
+                continue
+            call = inspect.getattr_static(type(step), "__call__", None)
+            if isinstance(step, staticmethod) or inspect.isfunction(call):
+                return _DESCRIPTOR
+    except Exception:  # noqa: BLE001, the refusal stands with the generic reason
+        return None
+    return None
+
+
+def _filled_by_position(function: Any, args: dict[str, Any]) -> Optional[str]:
+    """Why the arguments name a parameter that a ``functools.partial`` or the object of a
+    bound method already fills by position, or None.
+
+    Such a parameter is not in the signature Pydantic AI validates against, so a name the
+    model sends for it is refused there, unless the function takes ``**kwargs``: then it
+    is validated into them, judged, and the call fails with a second value for the
+    parameter (``TypeError``), which left the run as an exception. It is refused here, as
+    an answer the model reads."""
+    try:
+        for step in _steps(function):
+            if isinstance(step, functools.partial) and step.args:
+                inner, count = _view(step.func, False)[0][-1], len(step.args)
+            elif inspect.ismethod(step):
+                inner, count = _view(step.__func__, False)[0][-1], 1
+            else:
+                continue
+            taken = [name for name, p in inner.items() if _positional(p)][:count]
+            sent = sorted(set(taken) & set(args))
+            if sent:
+                return (
+                    f"the arguments name `{sent[0]}`, a parameter of the function this tool "
+                    "runs that a `functools.partial` or the object of a method already fills "
+                    "by position, so the call cannot run with a value under that name as "
+                    "well (Python refuses it as a second value for the parameter, or as a "
+                    "positional-only parameter passed by keyword); leave "
+                    f"`{sent[0]}` out of the arguments"
+                )
+    except Exception:  # noqa: BLE001, the walk has been read once already
+        return None
+    return None
 
 
 def _another_signature(function: Any, inner: Any) -> Optional[str]:
@@ -1421,7 +1588,7 @@ def _another_signature(function: Any, inner: Any) -> Optional[str]:
         "`__wrapped__`) is not that of the function the call reaches, so the arguments are "
         "validated, and passed by position, for another function; a `functools.partial` "
         "named with `functools.update_wrapper` or `functools.wraps` does this: set "
-        "`__name__` and `__qualname__` on the partial instead, or register a plain function"
+        f"`__name__` and `__qualname__` on the partial instead, or {_PLAIN}"
     )
     try:
         read = list(inspect.signature(function).parameters.values())
@@ -1469,7 +1636,11 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     registered yet, on which one can be registered before the call (``OpenDispatch``); a
     ``weakref.proxy`` anywhere on the way (``WeakProxy``) and a callable that answers for
     another object (``ProxiedCallable``); a decorator that holds a second wrapper the
-    kernel's walk refuses (``_walk_reason``); a
+    kernel's walk refuses (``_walk_reason``); a class-based decorator that is a
+    descriptor (``_descriptor_cause``); a walk that ends in a callable object's own
+    ``__call__`` with ``*args`` or ``**kwargs`` (``_calls_through_an_object``); a name the
+    arguments give for a parameter a partial or a method's object fills by position
+    (``_filled_by_position``); a
     positional argument bound past a naming wrapper where keeping it would not fail the
     call (``_bound_past_a_wrapper``); a keyword a partial binds that does not reach the
     parameter it names (``_keyword_past_a_parameter``); a value for the function's
@@ -1482,8 +1653,7 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
         return args, None
     unread = (
         "the function this tool runs, or a decorator on it, cannot be inspected, so the "
-        "values it would run with cannot be read; call it from a plain function and "
-        "register that one"
+        f"values it would run with cannot be read; {_PLAIN}"
     )
     try:
         # A class or a builtin wraps nothing, and Pydantic AI validates against the signature
@@ -1499,8 +1669,9 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
         return args, _walk_reason(refused)
     except Exception:  # noqa: BLE001, a callable the kernel does not walk
         # a partial that binds by position and carries a name of its own, further in than
-        # the tool itself, is one this gate can say more about
-        return args, _bound_partial_cause(function) or unread
+        # the tool itself, and a class-based decorator that is a descriptor, are ones this
+        # gate can say more about
+        return args, _bound_partial_cause(function) or _descriptor_cause(function) or unread
     try:
         unreadable = _unreadable_step(function, levels, callables, takes_ctx, validated)
     except _DeclaredSignature as refused:
@@ -1512,6 +1683,11 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
         return args, unread
     if unreadable is not None:
         return args, unreadable
+    through = _calls_through_an_object(callables, levels) or _carried_cause(
+        function, validated, unread
+    )
+    if through is not None:
+        return args, through
     inner = levels[-1]
     if validated:
         another = _another_signature(function, inner)
@@ -1520,6 +1696,9 @@ def _with_defaults(ctx: Any, tool_name: str, args: Any) -> tuple[Any, Optional[s
     opaque = _opaque_wrapper(levels, takes_ctx)
     if opaque is not None:
         return args, opaque
+    filled = _filled_by_position(function, args)
+    if filled is not None:
+        return args, filled
     if not validated:
         for level in levels:
             for name, parameter in level.items():

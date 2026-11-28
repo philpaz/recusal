@@ -753,9 +753,10 @@ does about it:
   against the kernel's levels, and the kernel had read one more. 0.2.1 takes the
   callables from the kernel (`reached_callables`), and its own walk of steps follows the
   links the kernel's does (`cache_target` among them), so its rules are asked of every
-  callable the kernel lays a level for. Checked by real runs of the stacks this lets
-  through, and by 400,000 generated stacks in which no verdict differs from the gate
-  before the change, beside 0.17.0.
+  callable the kernel lays a level for. This changes verdicts: stacks of these shapes
+  that the gate before it refused are read. The review of 0.2.1 (below) found two
+  shapes among them that ran a value no policy judged, and its generator a further
+  class that did so before the change too.
 - **Reasons and sentences that were not true.** A `__text_signature__` was refused as a
   `__signature__` (the reason now names the attribute, from `DeclaredSignature.declared`);
   the page said "31 decorators" where class-based ones are read 15 deep under a function
@@ -770,6 +771,35 @@ does about it:
 - **Not covered by round thirteen:** MCP toolsets, durable execution, tools the provider
   runs, realtime sessions, `run_stream_events`, any Python but 3.12, and mutation testing
   of the gate.
+
+**The review of 0.2.1 before its release** (read-only, of PR #334 at `098aeb7`, with real
+`Agent` runs). It confirmed that no finding of round thirteen reopened, the depth figures,
+the `run_stream` and no-argument statements and every new reason, and would not release
+0.2.1 as written. What it found, and what closes it:
+
+- **Ran a value no policy judged, in 0.2.0 too.** A method under `functools.wraps(fn)`
+  above `functools.lru_cache` above a wrapper that drops `self` ran the values shifted
+  (the gate counted a cache named again as a copy of the level under it; it counts as
+  the wrapper it calls now). A class-based decorator that answers every attribute from
+  the function with `__getattr__`, over a `functools.partial`, on a context-taking tool,
+  ran defaults nothing showed, because the walk ended at the object's `(*args, **kwargs)`
+  (refused now). The widening of the walk added two stacks of the second class.
+- **Crashed the run.** A name the model sends for a parameter a partial fills by
+  position, where the function takes `**kwargs`, raised `TypeError` out of the run.
+  Refused now.
+- **Advice that admits what it should not.** Followed literally, the advice in four
+  reasons ("call it from a plain function and register that one") gave an allowed tool
+  that ran an unjudged value. Every reason now gives the remedies the gate reads, and
+  says of a plain function that its body is not read and what it must declare. The page
+  no longer says such a function "is read to the end".
+- **Smaller.** The cost of two walks for a view (now one); the changelog and this log
+  quoted counts of generated stacks no committed script reproduces, and said no verdict
+  differed where some did (removed); the page said a keyword a partial binds into
+  `**kwargs` is "never the model's" (the model can send that name); a descriptor
+  class-based decorator got the generic reason (it has its own).
+- Each is held by a test named `test_r13b_` in
+  [`tests/test_pydantic_ai_gate.py`](../tests/test_pydantic_ai_gate.py), and each of those
+  fails on `098aeb7`.
 
 **Where you can help.**
 
