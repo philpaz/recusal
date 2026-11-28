@@ -2924,8 +2924,12 @@ class TestPydanticAiGate:
         """``functools.singledispatch`` picks the implementation that runs by the type of
         the first argument, at call time, and the walk ends at the base function: a
         registered implementation's own ``skip_review=True`` ran unjudged. Refused wherever
-        it stands in a stack, for the function and for ``singledispatchmethod``; with only
-        its base implementation the function that runs is the one that was read."""
+        it stands in a stack, for the function and for ``singledispatchmethod``. With only
+        its base implementation, a kernel up to ``recusal`` 0.16.0 reads it, and the
+        function that runs is the one that was read; the kernel's walk as it stands in
+        this repository after 0.16.0 refuses it (``OpenDispatch``: an implementation can
+        be registered between the walk and the call), and this adapter then gives the
+        reason it gives a function it cannot read. Both outcomes are held here."""
         import functools
         import types
 
@@ -2955,7 +2959,17 @@ class TestPydanticAiGate:
 
         chosen = "the implementation that runs is chosen at call time"
         sent = {"key": "k"}
-        assert adapter._with_defaults(self._ctx_for(lookup), "t", dict(sent))[1] is None
+        cannot_read = "cannot be inspected"
+        refuses_only_base = hasattr(sys.modules["recusal.invocation"], "OpenDispatch")
+
+        def with_only_its_base(function):
+            reason = adapter._with_defaults(self._ctx_for(function), "t", dict(sent))[1]
+            if refuses_only_base:
+                assert cannot_read in reason and chosen not in reason, (function, reason)
+            else:
+                assert reason is None, (function, reason)
+
+        with_only_its_base(lookup)
 
         @lookup.register(str)
         def _lookup_text(key: str, /, deep: bool = False, skip_review: bool = True) -> str:
@@ -2980,13 +2994,13 @@ class TestPydanticAiGate:
                 same, reason = adapter._with_defaults(ctx, "t", dict(sent))
                 assert same == sent and chosen in reason, (function, reason)
                 assert "single-dispatch function" in reason
+        # with only its base: never the sentence that says an implementation is registered
         for function in (only_base, d.forwards(only_base), Service().only_base):
             reason = adapter._with_defaults(self._ctx_for(function), "t", dict(sent))[1]
             assert reason is None or chosen not in reason, (function, reason)
-        assert adapter._with_defaults(self._ctx_for(only_base), "t", dict(sent))[1] is None
+        with_only_its_base(only_base)
         # `functools.wraps` copies the registry to a wrapper above: the base is two steps in
-        stacked = d.forwards(d.forwards(only_base))
-        assert adapter._with_defaults(self._ctx_for(stacked), "t", dict(sent))[1] is None
+        with_only_its_base(d.forwards(d.forwards(only_base)))
 
         # `register(object)` puts another function in the base's place: the registry still
         # has one entry, and the replacement's own `skip_review=True` ran unjudged
@@ -3088,14 +3102,17 @@ class TestPydanticAiGate:
             capabilities=[example.RecusalGate(policy)],
         )
         agent.run_sync("go")
-        assert seen == [{"key": 1, "deep": False}] and ran == [("only", 1, False)]
+        if refuses_only_base:
+            assert seen == [] and ran == []
+        else:
+            assert seen == [{"key": 1, "deep": False}] and ran == [("only", 1, False)]
 
         # a stack with more callables than the gate reads, or one it cannot read, is refused
         monkeypatch.setattr(adapter, "_STEP_LIMIT", 2)
         stacked = d.forwards(d.forwards(only_base))
         reason = adapter._with_defaults(self._ctx_for(stacked), "t", dict(sent))[1]
         assert "cannot be inspected" in reason
-        assert adapter._with_defaults(self._ctx_for(only_base), "t", dict(sent))[1] is None
+        with_only_its_base(only_base)
 
     # --- the refusals the kernel's walk makes by name are reported as what they are ---------
     #

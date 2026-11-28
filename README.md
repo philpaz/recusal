@@ -53,23 +53,24 @@ full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-know
 [How it works](#how-it-works) · [CI](#gate-your-ci) ·
 [Built to be checked](#built-to-be-checked) · [Documentation](#documentation)
 
-> **New with 0.16.0**
+> **New with 0.17.0**
 >
-> - **The kernel refuses what its walk cannot follow to the end.** `recusal.invocation`
->   reads the function a tool call runs. It now refuses a decorator that holds a second
->   wrapper, a function chosen at call time by the type of an argument, a
->   `functools.partialmethod` that shows another signature, a signature a callable
->   declares for itself, and a bound argument a wrapper keeps or hands on by keyword. In
->   each, a value no policy judged could run:
->   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0160---2026-11-26).
-> - **This release is stricter.** Some tools 0.15.1 read are refused now, a few of them
->   although they run correctly, and one limit is stated and not closed:
+> - **The kernel refuses a proxy and an open dispatcher, and finds a held wrapper on
+>   more ways.** `recusal.invocation` reads the function a tool call runs. It now refuses
+>   a `weakref.proxy` anywhere on the way and a single-dispatch function even with
+>   nothing registered, refuses a wrapper a decorator holds that takes the tool's
+>   parameters in another order, and finds a held wrapper with a parameter of its own
+>   behind a class-based decorator, a callable object, a proxy, a cache named again or a
+>   second held level. In each, a value no policy judged could run:
+>   [the entry](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0170---2026-11-27).
+> - **This release is stricter.** Some tools 0.16.0 read are refused now, a few of them
+>   although they run correctly, and some shapes are stated and not closed:
 >   [what is refused, and what is still not found](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#security).
 >
-> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.16.0
-> differs from 0.15.1 in `recusal.invocation` and the version string; the adapters are
+> Each adapter is on PyPI under its own name and version. Under `recusal/`, 0.17.0
+> differs from 0.16.0 in `recusal.invocation` and the version string; the adapters are
 > not part of its wheel. The full list is in the
-> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0160---2026-11-26).
+> [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md#0170---2026-11-27).
 
 <p align="center">
   <img alt="Two verbatim terminal transcripts: the dogfooded hook refuses rm -rf in a live Claude Code session running under --dangerously-skip-permissions, then recusal demo, installed from PyPI, refuses a write to the wrong customer and allows the corrected call" src="https://raw.githubusercontent.com/philpaz/recusal/main/assets/demo-refusal.gif" width="880">
@@ -829,7 +830,7 @@ including the negative case: a tampered audit log must make the gate refuse):
 - uses: actions/setup-python@v6
   with:
     python-version: "3.12"
-- uses: philpaz/recusal@v0.16.0   # or pin an immutable commit SHA for stronger provenance
+- uses: philpaz/recusal@v0.17.0   # or pin an immutable commit SHA for stronger provenance
   with:
     findings: reports/findings.json   # RETRY exits 1, FAIL exits 2 → the merge is blocked
     audit-log: reports/audit.jsonl
