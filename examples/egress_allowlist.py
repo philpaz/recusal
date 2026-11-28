@@ -52,6 +52,25 @@ def recipient_hosts(tool_input):
     ]
 
 
+def http_host(value):
+    """The normalized host of one literal HTTP(S) URL, else ``\"\"``."""
+    host = ""
+    if (
+        isinstance(value, str)
+        and value
+        and not any(c.isspace() for c in value)
+        and "\\" not in value
+    ):
+        # Backslashes and userinfo are where URL parsers disagree on the host.
+        try:
+            parsed = urlparse(value)
+            if parsed.scheme in ("http", "https") and "@" not in parsed.netloc:
+                host = parsed.hostname or ""
+        except ValueError:
+            pass
+    return host.lower().rstrip(".")
+
+
 def make_egress_allowlist(allowed_domains):
     """Bind exact hosts and their dot-delimited subdomains to a local policy."""
     domains = frozenset(domain.lower().rstrip(".") for domain in allowed_domains)
@@ -67,23 +86,7 @@ def make_egress_allowlist(allowed_domains):
         if tool_name == "send_email":
             hosts = recipient_hosts(tool_input)
         else:
-            value = tool_input.get("url")
-            host = ""
-            if (
-                isinstance(value, str)
-                and value
-                and not any(c.isspace() for c in value)
-                and "\\" not in value
-            ):
-                # A backslash or userinfo is where URL parsers disagree: urlparse reads
-                # "https://evil.com\@example.com/" as example.com, a browser as evil.com.
-                try:
-                    parsed = urlparse(value)
-                    if parsed.scheme in ("http", "https") and "@" not in parsed.netloc:
-                        host = parsed.hostname or ""
-                except ValueError:
-                    pass
-            hosts = [host.lower().rstrip(".")]
+            hosts = [http_host(tool_input.get("url"))]
         if all(allowed(host) for host in hosts):
             return []
         return [
