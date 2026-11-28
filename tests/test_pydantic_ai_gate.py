@@ -4078,16 +4078,78 @@ class TestPydanticAiGate:
         seen, answer = run(carrying)
         assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
         assert "reached through a callable object whose own `__call__` takes" in answer[1]
-        # remedy one: the object names what it calls
+
+        # the confirmation review of 0.2.1 (G1): the same object under a partial is laid down
+        # as a partial of its bound `__call__`, and a cache named again can call it from the
+        # middle of the walk; each ran values nothing showed, and each is refused
+        def shown(table: str, limit: int = 10) -> str:
+            """Purge rows."""
+            return "ok"
+
+        class Timed:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        def hidden_nc(table: str, limit: int = 10, cascade: bool = True) -> str:
+            """Purge rows."""
+            ran.append(("hidden", table, limit, cascade))
+            return "ok"
+
+        for fn, ctx_taking in (
+            (
+                logged(
+                    named(functools.partial(Traced(named(functools.partial(purge), purge))), purge)
+                ),
+                True,
+            ),
+            (
+                logged(
+                    named(
+                        functools.partial(Traced(named(functools.partial(purge), purge)), limit=3),
+                        purge,
+                    )
+                ),
+                True,
+            ),
+            (functools.wraps(shown)(functools.lru_cache(Timed(hidden_nc))), False),
+        ):
+            ran.clear()
+            tool = Tool(fn, name="q", takes_ctx=ctx_taking)
+            seen, answer = self._run_tool(example, tool, {"table": "prod"})
+            assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
+            assert "reached through a callable object whose own `__call__` takes" in answer[1]
+        # G1b: a chain of names carried by partials is followed to its end
+        middle = functools.partial(helper)
+        middle.__wrapped__ = Traced(named(functools.partial(purge), purge))
+        outer = named(functools.partial(helper), purge)
+        outer.__wrapped__ = middle
+        seen, answer = run(outer)
+        assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
+        assert "reached through a callable object whose own `__call__` takes" in answer[1]
+        # remedy one: the object names what it calls, over a function or an untyped partial
         seen, _ = run(logged(Named(named(functools.partial(untyped, dry_run=False), untyped))))
         assert seen == [{"table": "prod", "limit": 10, "dry_run": False}]
         assert ran == [("purge", "prod", 10, False)]
-        # remedy two: a plain function that declares every parameter and passes each on
-        hidden = Traced(named(functools.partial(purge), purge))
+        seen, _ = run(logged(Named(purge)))
+        assert seen == [{"table": "prod", "limit": 10, "dry_run": True}]
+        assert ran == [("purge", "prod", 10, True)]
+        # over a partial of an annotated function the partial needs the function's
+        # annotations too, as the reason says, or Pydantic AI cannot build the tool (G3)
+        assert "give the partial the function's `__annotations__`" in answer[1]
+        typed = named(functools.partial(purge, dry_run=False), purge)
+        typed.__annotations__ = dict(purge.__annotations__)
+        seen, _ = run(logged(Named(typed)))
+        assert seen == [{"table": "prod", "limit": 10, "dry_run": False}]
+        assert ran == [("purge", "prod", 10, False)]
 
+        # remedy two: a plain function with the innermost function's parameters and
+        # defaults, calling that function directly
         def plain(ctx: RunContext[None], table: str, limit: int = 10, dry_run: bool = True):
             """Purge rows."""
-            return hidden(ctx, table=table, limit=limit, dry_run=dry_run)
+            return purge(ctx, table, limit=limit, dry_run=dry_run)
 
         seen, _ = run(plain)
         assert seen == [{"table": "prod", "limit": 10, "dry_run": True}]
@@ -4116,17 +4178,63 @@ class TestPydanticAiGate:
                 ran.append((table, dict(more)))
                 return "ok"
 
+        from pydantic_ai import RunContext, Tool
+
+        def with_self(fn):
+            @functools.wraps(fn)
+            def wrapper(self, *args, **kwargs):
+                return fn(self, *args, **kwargs)
+
+            return wrapper
+
+        def logged(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        class Other:
+            @with_self
+            def lookup(svc, table: str, **more: Any) -> str:
+                """Lookup."""
+                ran.append((table, dict(more)))
+                return "ok"
+
+            @classmethod
+            def find(cls, table: str, **more: Any) -> str:
+                """Find."""
+                ran.append((table, dict(more)))
+                return "ok"
+
+        def with_ctx(ctx: RunContext[None], table: str, **more: Any) -> str:
+            """With the run context."""
+            ran.append((table, dict(more)))
+            return "ok"
+
         fixed = functools.partial(extra, "fixed")
         fixed.__name__ = fixed.__qualname__ = "q"
         for tool, sent, name in (
             (fixed, {"table": "evil"}, "table"),
             (Service().lookup, {"table": "t", "self": 1}, "self"),
+            # the confirmation review (G2): the run context's name, a wrapper's name for
+            # the object, and a classmethod's `cls`
+            (Tool(with_ctx, name="q", takes_ctx=True), {"table": "t", "ctx": 1}, "ctx"),
+            (Tool(logged(with_ctx), name="q", takes_ctx=True), {"table": "t", "ctx": 1}, "ctx"),
+            (Other().lookup, {"table": "t", "self": 1}, "self"),
+            (Other().lookup, {"table": "t", "svc": 1}, "svc"),
+            (Other.find, {"table": "t", "cls": 1}, "cls"),
         ):
             ran.clear()
             seen, answer = self._run_tool(example, tool, sent, name="q")
             assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran, answer)
             assert f"the arguments name `{name}`" in answer[1]
             assert "a second value for the parameter" in answer[1]
+        # a key no callable on the way takes is judged and lands in `**more`
+        ran.clear()
+        seen, answer = self._run_tool(example, extra, {"table": "t", "self": 1}, name="q")
+        assert seen == [{"table": "t", "limit": 10, "self": 1}]
+        assert ran == [("t", 10, {"self": 1})]
         ran.clear()
         seen, answer = self._run_tool(example, fixed, {"zzz": 1}, name="q")
         assert seen == [{"limit": 10, "zzz": 1}] and ran == [("fixed", 10, {"zzz": 1})]
@@ -4172,9 +4280,12 @@ class TestPydanticAiGate:
         are read (register the function itself, ``functools.update_wrapper(self, fn)``,
         delete the declaration, bind by keyword, set ``__name__`` and ``__qualname__``,
         branch on the type in one plain function), and where it names a plain function it
-        says the gate judges that function's parameters and does not read its body, and
-        that the function must declare every parameter the call can run with. Each remedy
-        below is followed as written and runs as judged."""
+        says the gate judges that function's parameters and does not read its body. The
+        plain function takes the innermost function's parameters and defaults and calls
+        that function directly: the confirmation review found that declaring every
+        parameter and passing each on to the decorated stack raised a second value where
+        the stack fixes one itself. Each remedy below is followed as written and runs as
+        judged."""
         import functools
         import inspect
 
@@ -4193,7 +4304,7 @@ class TestPydanticAiGate:
             assert "call it from a plain function" not in text
             assert "register that one" not in text
             if "a plain function that" in text or "plain function as the tool" in text:
-                assert "does not read its body" in text or "its body, and what it calls" in text
+                assert "does not read its body" in text or "its body is not read" in text
 
         # A: single-dispatch; the remedy is one plain function that branches on the type
         @functools.singledispatch
@@ -4214,8 +4325,12 @@ class TestPydanticAiGate:
         seen, _ = self._run_tool(example, branching, {"key": 3}, name="q")
         assert seen == [{"key": 3, "limit": 10, "purge": True}] and ran == [("int", 3, 10, True)]
 
-        # B: a held wrapper; the remedy is a plain function declaring its parameter too
-        def audited(fn):
+        # B: a held wrapper, also where the outer wrapper fixes the held one's parameter
+        # itself (the confirmation review, G4: the earlier advice, to declare that parameter
+        # and pass it on to the decorated function, raised a second value for it). The
+        # remedy is a plain function with the innermost function's parameters and defaults
+        # that calls that function directly
+        def audited(fn, fixed):
             @functools.wraps(fn)
             def inner(*args, dry_run=False, **kwargs):
                 ran.append(("dry_run", dry_run))
@@ -4223,25 +4338,45 @@ class TestPydanticAiGate:
 
             @functools.wraps(fn)
             def outer(*args, **kwargs):
+                if fixed:
+                    return inner(*args, dry_run=False, **kwargs)
                 return inner(*args, **kwargs)
 
             return outer
 
-        @audited
         def wipe(table: str, limit: int = 10) -> str:
             ran.append(("wipe", table, limit))
             return "ok"
 
-        def wipe_tool(table: str, limit: int = 10, dry_run: bool = False) -> str:
+        def wipe_tool(table: str, limit: int = 10) -> str:
             """Wipe."""
-            return wipe(table=table, limit=limit, dry_run=dry_run)
+            return wipe(table, limit=limit)
 
-        ran.clear()
-        reason = adapter._with_defaults(self._ctx_for(wipe), "t", {"table": "t"})[1]
-        assert reason.endswith(adapter._PLAIN)
-        seen, _ = self._run_tool(example, wipe_tool, {"table": "t"}, name="q")
-        assert seen == [{"table": "t", "limit": 10, "dry_run": False}]
-        assert ran == [("dry_run", False), ("wipe", "t", 10)]
+        for fixed in (False, True):
+            decorated = audited(wipe, fixed)
+            reason = adapter._with_defaults(self._ctx_for(decorated), "t", {"table": "t"})[1]
+            assert reason.endswith(adapter._PLAIN)
+            ran.clear()
+            seen, _ = self._run_tool(example, wipe_tool, {"table": "t"}, name="q")
+            assert seen == [{"table": "t", "limit": 10}] and ran == [("wipe", "t", 10)]
+
+        assert "calls that function directly, not the decorated one" in adapter._PLAIN
+        assert "passes each on by name" not in adapter._PLAIN
+        assert "call that function directly" in adapter._KERNEL_REMEDY
+
+        # the generic reason, for a stack deeper than the walk reads: the same remedy
+        def forwards(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        deep = wipe
+        for _ in range(32):
+            deep = forwards(deep)
+        reason = adapter._with_defaults(self._ctx_for(deep), "t", {"table": "t"})[1]
+        assert "cannot be inspected" in reason and reason.endswith(adapter._PLAIN)
 
         # C: a declared signature; the remedy is to delete it
         def drop(table: str, limit: int = 10, cascade: bool = True) -> str:
@@ -4307,15 +4442,13 @@ class TestPydanticAiGate:
         ran.clear()
         seen, answer = self._run_tool(example, Named(mode(fetch)), {"table": "t"}, name="q")
         assert seen == [] and ran == [] and "takes `mode`" in answer[1]
-        answered = Answers(mode(fetch))
 
-        def fetch_tool(table: str, limit: int = 10, mode: str = "unsafe") -> str:
-            """Fetch."""
-            return answered(table=table, limit=limit, mode=mode)
+        def fetch_tool(table: str, limit: int = 10) -> str:
+            """Fetch: the innermost function, called directly."""
+            return fetch(table, limit=limit)
 
         seen, _ = self._run_tool(example, fetch_tool, {"table": "t"}, name="q")
-        assert seen == [{"table": "t", "limit": 10, "mode": "unsafe"}]
-        assert ran == [("mode", "unsafe"), ("fetch", "t", 10)]
+        assert seen == [{"table": "t", "limit": 10}] and ran == [("fetch", "t", 10)]
 
         # E: an object that shows a `__code__`; the remedy is update_wrapper(self, fn)
         ran.clear()

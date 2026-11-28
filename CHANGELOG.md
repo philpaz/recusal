@@ -83,42 +83,58 @@ separate distribution on PyPI under its own version and tag.
     the function it names is left out (`cache_target(c) is c.__wrapped__`). Such a
     decorator whose wrapper does hand the object on is refused too, as without the
     cache.
-  - **Review of 0.2.1: a callable object at the end of the walk whose `__call__` takes
-    `*args` or `**kwargs` is refused** (in 0.2.0 too). A class-based decorator that keeps
-    the function in an attribute and answers every other attribute from it
-    (`__getattr__`), over a `functools.partial` or a partial subclass, on a tool that
-    takes the run context: Pydantic AI read the object's `(*args, **kwargs)`, took
-    `*args` for the context and the model's keys into `**kwargs`, and the kernel's walk
-    ended at that `__call__`. Judged `{'table': 'prod'}`, it ran the function's
-    `dry_run=True`, a keyword the partial binds, and the partial subclass's own
-    `force=True`. Refused, with a reason that says to give the object a `__wrapped__`
-    (`functools.update_wrapper(self, fn)`); followed, it runs as judged. The same object
-    reached through the `__wrapped__` a tool that is a partial of a forwarding helper
-    carries is refused too: the gate hands the kernel such a partial without that name,
-    and now also walks what the name leads to.
-  - **Review of 0.2.1: a name a partial fills by position is refused, not raised on**
-    (in 0.2.0 too). `functools.partial(extra, "fixed")` over `def extra(table,
-    limit=10, **more)`: the model's `{'table': 'evil'}` was validated into `**more`,
-    judged, and the call raised `TypeError` (a second value for `table`) out of
-    `run_sync`. So did a name a bound method's object fills (`self`). Each is now
-    refused before the policy is asked, as an answer the model reads.
-  - **Review of 0.2.1: every remedy a reason gives, followed literally, is judged or
-    refused.** Reasons said to call what was refused from a plain function and register
-    that one, which moves it into a body the gate does not read: followed, a
+  - **Review of 0.2.1: a callable object on the way whose `__call__` takes `*args` or
+    `**kwargs` and that names nothing it wraps is refused** (in 0.2.0 too). A
+    class-based decorator that keeps the function in an attribute and answers every
+    other attribute from it (`__getattr__`), over a `functools.partial` or a partial
+    subclass, on a tool that takes the run context: Pydantic AI read the object's
+    `(*args, **kwargs)`, took `*args` for the context and the model's keys into
+    `**kwargs`, and the kernel's walk read nothing past that `__call__`. Judged
+    `{'table': 'prod'}`, it ran the function's `dry_run=True`, a keyword the partial
+    binds, and the partial subclass's own `force=True`. As first closed, only the last
+    level of the walk was asked; the confirmation review found the same object run
+    values nothing showed under a `functools.partial` (which lays its `__call__` down as
+    a partial of the bound method) and two names deep behind the `__wrapped__` partials
+    carry. Every level is asked now, a partial or a method around a level unwrapped to
+    the function and the object it is bound to, so the object is refused also as what a
+    cache named again for another function calls; and the gate, which hands the kernel
+    a tool that is a partial carrying a `__wrapped__` without that name, walks what each
+    such name leads to, along the chain to its end. The reason says to give the object
+    a `__wrapped__` (`functools.update_wrapper(self, fn)`), and, where it wraps a
+    `functools.partial` of an annotated function, to give the partial the function's
+    annotations, without which Pydantic AI cannot build the tool; followed, each runs as
+    judged.
+  - **Review of 0.2.1: a name the model sends that a callable on the way takes for a
+    value it gets otherwise is refused, not raised on** (in 0.2.0 too).
+    `functools.partial(extra, "fixed")` over `def extra(table, limit=10, **more)`: the
+    model's `{'table': 'evil'}` was validated into `**more`, judged, and the call raised
+    `TypeError` (a second value for `table`) out of `run_sync`. So did, as the
+    confirmation review found, the run context's name (`ctx`) and the object of a method
+    under the name a wrapper gives it (`self` over `def lookup(svc, ...)`), and a
+    classmethod's `cls`. A name the function the tool shows does not take, and that any
+    callable the walk reads, the function under any partial or method on the way, or a
+    class tool's `__init__` or `__new__` takes as a parameter, is now refused before the
+    policy is asked, as an answer the model reads.
+  - **Review of 0.2.1: the remedies the reasons give, followed literally, run as judged
+    or are refused.** Reasons said to call what was refused from a plain function and
+    register that one, which moves it into a body the gate does not read: followed, a
     later-registered implementation of a single-dispatch function ran `purge=True`, a
     held wrapper `dry_run=False`, a declared signature's hidden `cascade=True` and a
     proxied wrapper `mode='unsafe'`, each allowed. Each reason now names the remedies the
     gate reads (register the function itself, `functools.update_wrapper(self, fn)`,
     delete a declared signature, bind by keyword, set `__name__` and `__qualname__`,
     give a descriptor's class no `__get__`, branch on the type in one plain function
-    for a dispatcher), and where it names a plain function it says that the function
-    must declare every parameter the call can run with and pass each on by name, and
-    that the gate judges its parameters and does not read its body or what it calls.
-    After the kernel's own words, which end with the kernel's remedy, a reason says the
-    same. The page says it once, under "A plain function in its place", and no longer
-    says that such a function "is read to the end". A test follows the remedies of the
-    four reasons the review named and of the reasons new in 0.2.1, and each runs as
-    judged or is refused.
+    for a dispatcher), and where it names a plain function it says to give that function
+    the parameters and defaults of the innermost function and call that function
+    directly, not the decorated one, and that the gate judges its parameters and does
+    not read its body. (As first rewritten it said to declare every parameter and pass
+    each on to the decorated function, which raised a second value where the decorator
+    fixes that parameter itself.) After the kernel's own words, which end with the
+    kernel's remedy, a reason says the same. The page says it once, under "A plain
+    function in its place", and no longer says that such a function "is read to the
+    end". A test follows the remedies of the four reasons the review named, of the
+    reasons new in 0.2.1 and of the reason for a function that cannot be inspected;
+    each runs as judged or is refused.
   - **Review of 0.2.1, smaller.** A class-based decorator that is also a descriptor
     (`cachetools.cached`) is refused with a reason that says so, where it said "cannot
     be inspected". The page said a keyword a partial binds into `**kwargs` is "never
@@ -130,8 +146,9 @@ separate distribution on PyPI under its own version and tag.
     object whose `__class__` is not its type that holds no `__wrapped__` of its own, or
     one whose own `__call__` takes parameters by name; a single-dispatch function
     nothing is ever registered on; and the held wrappers the 0.17.0 entry below lists.
-    And by rules of this gate's own: a callable object at the end of the walk whose
-    `__call__` takes `*args` or `**kwargs`, also where the model sends every parameter;
+    And by rules of this gate's own: a callable object on the way whose `__call__` takes
+    `*args` or `**kwargs` and that names nothing it wraps, also where the model sends
+    every parameter;
     and a method decorator named again above a cache whose wrapper restates the method's
     parameters and hands the object on, as the same wrapper without the cache is. The
     page lists each with what to write instead.

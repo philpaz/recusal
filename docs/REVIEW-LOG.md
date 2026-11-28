@@ -782,24 +782,46 @@ the `run_stream` and no-argument statements and every new reason, and would not 
   (the gate counted a cache named again as a copy of the level under it; it counts as
   the wrapper it calls now). A class-based decorator that answers every attribute from
   the function with `__getattr__`, over a `functools.partial`, on a context-taking tool,
-  ran defaults nothing showed, because the walk ended at the object's `(*args, **kwargs)`
-  (refused now). The widening of the walk added two stacks of the second class.
+  ran defaults nothing showed, because the walk read nothing past the object's
+  `(*args, **kwargs)`. The review's generator found stacks of this class among those
+  that the change to the kernel's callables (round thirteen, above) lets through.
 - **Crashed the run.** A name the model sends for a parameter a partial fills by
   position, where the function takes `**kwargs`, raised `TypeError` out of the run.
-  Refused now.
 - **Advice that admits what it should not.** Followed literally, the advice in four
   reasons ("call it from a plain function and register that one") gave an allowed tool
-  that ran an unjudged value. Every reason now gives the remedies the gate reads, and
-  says of a plain function that its body is not read and what it must declare. The page
-  no longer says such a function "is read to the end".
-- **Smaller.** The cost of two walks for a view (now one); the changelog and this log
-  quoted counts of generated stacks no committed script reproduces, and said no verdict
-  differed where some did (removed); the page said a keyword a partial binds into
-  `**kwargs` is "never the model's" (the model can send that name); a descriptor
-  class-based decorator got the generic reason (it has its own).
-- Each is held by a test named `test_r13b_` in
-  [`tests/test_pydantic_ai_gate.py`](../tests/test_pydantic_ai_gate.py), and each of those
-  fails on `098aeb7`.
+  that ran an unjudged value. The page said such a function "is read to the end".
+- **Smaller.** The cost of two walks for a view; the changelog and this log quoted
+  counts of generated stacks no committed script reproduces, and said no verdict
+  differed where some did; the page said a keyword a partial binds into `**kwargs` is
+  "never the model's" (the model can send that name); a descriptor class-based decorator
+  got the generic reason.
+- What answered them (commit `5d7deb6`, with the tests named `test_r13b_`) was reviewed
+  in its turn, below; the final state is what that round left.
+
+**The confirmation review of 0.2.1** (read-only, of `40b1d99`, with real `Agent` runs and
+the review's generator of decorator stacks). It confirmed the cache fix, the refusals of
+the shapes reported, the one walk for a view, the changes to the pages and the
+descriptor's reason, and no stack refused at `098aeb7` and read now. It would not release
+0.2.1 as written:
+
+- **Ran a value no policy judged.** The forwarding object of the item above was asked
+  only at the end of the walk: under a `functools.partial` the walk lays its `__call__`
+  down as a partial of the bound method, and the generator's stacks with the object under
+  a partial ran values nothing showed; behind the `__wrapped__` of a partial that names
+  another such partial, two names deep, the same. Every level of the walk is asked now,
+  and the chain of names is followed to its end.
+- **Crashed the run.** The run context's name (`ctx`), a wrapper's name for a method's
+  object (`self` over `def lookup(svc, ...)`) and a classmethod's `cls`, sent by the
+  model into `**kwargs`, still raised `TypeError`. Any name the tool's function does not
+  take and a callable on the way does is refused now.
+- **Advice that does not work.** The `functools.update_wrapper(self, fn)` remedy cannot
+  be built by Pydantic AI over a `functools.partial` of an annotated function (the reason
+  now says to give the partial the function's annotations, which builds and runs as
+  judged); and the plain-function remedy, followed literally, raised a second value
+  where the decorator fixes a parameter itself (the plain function now calls the
+  innermost function directly). Three sentences of this log, the changelog and the page
+  said more than the code did; each is corrected.
+- Each is held by a test named `test_r13b_` that fails on `40b1d99`.
 
 **Where you can help.**
 
