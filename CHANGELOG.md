@@ -99,7 +99,12 @@ separate distribution on PyPI under its own version and tag.
     the function and the object it is bound to, so the object is refused also as what a
     cache named again for another function calls; and the gate, which hands the kernel
     a tool that is a partial carrying a `__wrapped__` without that name, walks what each
-    such name leads to, along the chain to its end. The reason says to give the object
+    such name leads to, along the chain to its end. An object names what it wraps where
+    it holds a `__wrapped__` that is not None, read without `__getattr__` (in its own
+    dictionary, a slot that is set, a property): the review's last finding was a
+    `__wrapped__` slot declared and never set, which the class shows while the object
+    holds nothing, and which ran `dry_run=True` unjudged; it names nothing now and is
+    refused. The reason says to give the object
     a `__wrapped__` (`functools.update_wrapper(self, fn)`), and, where it wraps a
     `functools.partial` of an annotated function, to give the partial the function's
     annotations, without which Pydantic AI cannot build the tool; followed, each runs as

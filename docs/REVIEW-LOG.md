@@ -822,6 +822,12 @@ descriptor's reason, and no stack refused at `098aeb7` and read now. It would no
   innermost function directly). Three sentences of this log, the changelog and the page
   said more than the code did; each is corrected.
 - Each is held by a test named `test_r13b_` that fails on `40b1d99`.
+- **Its last finding, on `3f4c1dd`.** The same forwarding object with a `__wrapped__`
+  slot that is declared and never set was taken for one that names what it wraps (the
+  class shows the slot) and ran `dry_run=True` unjudged. An object names what it wraps
+  now only where it holds a `__wrapped__` value that is not None, read without
+  `__getattr__`; the empty slot names nothing and is refused. Held by the same test,
+  which fails on `3f4c1dd`.
 
 **Where you can help.**
 

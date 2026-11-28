@@ -185,7 +185,11 @@ by keyword), prefer it. Also refused:
   context and the model's keys into `**kwargs`. In 0.2.0 too. Every level of the walk is
   asked, so the same object is refused under a `functools.partial`, as what a cache
   named again for another function calls, and behind the `__wrapped__` that a tool which
-  is a `functools.partial` carries, along a chain of such names to its end. Give the
+  is a `functools.partial` carries, along a chain of such names to its end. An object
+  names what it wraps where it holds a `__wrapped__` that is not None, read without
+  `__getattr__`: in its own dictionary, in a slot that is set, or from a property. A
+  `__wrapped__` slot that is declared and never set names nothing (a lookup on the object
+  then falls to `__getattr__`), and such an object is refused too. Give the
   object a `__wrapped__` that names what it calls (`functools.update_wrapper(self, fn)`
   in its `__init__`). Where that is a `functools.partial` of an annotated function, give
   the partial the function's annotations too (`p.__annotations__ =

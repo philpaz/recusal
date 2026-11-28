@@ -1136,12 +1136,11 @@ def _calls_through_an_object(callables: list[Any], levels: list[Any]) -> Optiona
     context and puts the model's keys in ``**kwargs``). The same object under a
     ``functools.partial`` is laid down as a partial of its bound ``__call__``, and the same
     kind of object called by a cache named again for another function stands in the middle
-    of the walk: both ran values nothing showed. An object that names a ``__wrapped__``
-    of its own (in its own dictionary or its class's) is read through it, and is not
-    this."""
+    of the walk: both ran values nothing showed. An object that holds a ``__wrapped__`` of
+    its own is read through it, and is not this (``_holds_wrapped``)."""
     for callable_, level in zip(callables, levels):
         owner = _object_call(callable_)
-        if owner is None or inspect.getattr_static(owner, "__wrapped__", None) is not None:
+        if owner is None or _holds_wrapped(owner):
             continue
         variadic = [
             ("`*" if parameter.kind is parameter.VAR_POSITIONAL else "`**") + f"{name}`"
@@ -1151,6 +1150,28 @@ def _calls_through_an_object(callables: list[Any], levels: list[Any]) -> Optiona
         if variadic:
             return _through_reason(variadic)
     return None
+
+
+def _holds_wrapped(owner: Any) -> bool:
+    """True if this object holds a ``__wrapped__`` that is a value, read without asking
+    ``__getattr__`` (so a proxy that answers for another object does not count): a value
+    in its own dictionary or a plain one on its class, or what a data descriptor on its
+    class (a slot, a property) gives for it. A slot that is declared and never set
+    (``__slots__ = ("fn", "__wrapped__")``) gives nothing: reading it raises, and it does
+    not count, although the class shows the slot and a lookup on the object then falls
+    to ``__getattr__``. Nor does a value of None, nor a read that raises."""
+    found = inspect.getattr_static(owner, "__wrapped__", None)
+    if found is None:
+        return False
+    kind = type(found)
+    if hasattr(kind, "__get__") and (
+        hasattr(kind, "__set__") or isinstance(found, types.MemberDescriptorType)
+    ):
+        try:
+            found = kind.__get__(found, owner, type(owner))
+        except Exception:  # noqa: BLE001, an empty slot or a read that raises names nothing
+            return False
+    return found is not None
 
 
 def _through_reason(variadic: list[str]) -> str:

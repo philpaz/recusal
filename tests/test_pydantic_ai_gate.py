@@ -4121,6 +4121,37 @@ class TestPydanticAiGate:
             seen, answer = self._run_tool(example, tool, {"table": "prod"})
             assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
             assert "reached through a callable object whose own `__call__` takes" in answer[1]
+
+        # H1: a `__wrapped__` slot that is declared and never set names nothing: the class
+        # shows the slot, and a lookup on the object falls to `__getattr__`. Set, it names
+        # the function, and the object is read through it
+        class Slotted:
+            __slots__ = ("fn", "__wrapped__")
+
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __getattr__(self, name):
+                return getattr(self.fn, name)
+
+            def __call__(self, *args, **kwargs):
+                return self.fn(*args, **kwargs)
+
+        class SlottedSet(Slotted):
+            __slots__ = ()
+
+            def __init__(self, fn):
+                self.fn = fn
+                self.__wrapped__ = fn
+
+        seen, answer = run(logged(Slotted(named(functools.partial(purge), purge))))
+        assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran)
+        assert "reached through a callable object whose own `__call__` takes" in answer[1]
+        assert not adapter._holds_wrapped(Slotted(purge))
+        assert adapter._holds_wrapped(SlottedSet(purge))
+        seen, _ = run(logged(SlottedSet(purge)))
+        assert seen == [{"table": "prod", "limit": 10, "dry_run": True}]
+        assert ran == [("purge", "prod", 10, True)]
         # G1b: a chain of names carried by partials is followed to its end
         middle = functools.partial(helper)
         middle.__wrapped__ = Traced(named(functools.partial(purge), purge))
