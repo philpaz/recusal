@@ -42,10 +42,9 @@ the change of the rounds below, merged in
 commits named under the rounds below are the change as each round read it; they are
 kept on the branches `review-history/kernel-299-pre-rebuild` (`293f22f`) and
 `review-history/kernel-299-rounds-6-8` (all the others). A further change, which
-answers what two adapter reviews found open in the walk of 0.16.0, is on the branch
-`kernel-cache-target-held-order`, in the draft pull request
-[#329](https://github.com/philpaz/recusal/pull/329). It is not merged and not
-released; it is the last entry under the rounds.
+answers what two adapter reviews found open in the walk of 0.16.0, was merged from the
+pull request [#329](https://github.com/philpaz/recusal/pull/329) and is released in
+`recusal` 0.17.0 (tag `v0.17.0`, 2026-11-27); it is the last entry under the rounds.
 
 The part of the kernel under review is `recusal.invocation`
 ([source](../recusal/invocation.py)), which adapters use to read the parameters of a
@@ -378,9 +377,8 @@ decorated tool. `recusal-crewai` still carries its own copy.
   "Not found, by design". Those are stated limits, not fixed.
 - Not reviewed: stacks more than three decorators deep. Rounds seven and eight ran
   generated shapes to three deep, with async and generator wrappers.
-- **After 0.16.0: what two adapter reviews found open in its walk** (branch
-  `kernel-cache-target-held-order`, the draft pull request #329; not merged, not
-  released).
+- **After 0.16.0: what two adapter reviews found open in its walk** (the pull
+  request #329, merged; released in 0.17.0).
   The review of `recusal-openai-agents` 0.2.2 and a review of `recusal-pydantic-ai`
   beside 0.16.0 found the same gaps by different routes, each reproduced on 0.16.0
   before it was changed:
@@ -416,7 +414,7 @@ decorated tool. `recusal-crewai` still carries its own copy.
     reads.
   - Pinned by the tests named `test_o_` and `test_p_` in
     [`tests/test_invocation.py`](../tests/test_invocation.py). The changelog entry
-    under Unreleased lists what is refused although it runs correctly and what is
+    for 0.17.0 lists what is refused although it runs correctly and what is
     still not found.
   - **One round on the change itself**, on its first form (commit `d67e744`). It found
     no tool that 0.16.0 refuses and the change reads, and these, each closed in the
@@ -499,7 +497,7 @@ decorated tool. `recusal-crewai` still carries its own copy.
   tools, with the decorators of the libraries you use, and report an answer that is
   wrong.
 - Read the "Not found, by design" lists in the changelog entries for 0.16.0, and "Still
-  not found, by design" in the kernel entry under Unreleased, and say which of those
+  not found, by design" in the kernel entry for 0.17.0, and say which of those
   shapes exist in real code you know.
 
 ## `recusal-crewai`
@@ -920,10 +918,10 @@ a seventh found the open items.
   `UnreadCache` is raised there by shortening what the cache lists, as the kernel's own
   test does: no supported interpreter gives one.
 - Found by the review of 0.2.2 before its release, in 0.2.1 too, and open beside
-  `recusal` 0.16.0, the newest kernel release. Each is on the package page under what
+  `recusal` 0.16.0. Each is on the package page under what
   the gate does not see, and each is held by a test in `TestStatedLimits` in the same
-  file, which gates the tool and runs it. The kernel's walk as it stands after 0.16.0,
-  not released (the last entry under the kernel's rounds above), refuses all four
+  file, which gates the tool and runs it. The kernel's walk in 0.17.0 (the last entry
+  under the kernel's rounds above) refuses all four
   shapes below, and those tests hold both outcomes, by the kernel they run beside:
   - Behind a `functools.lru_cache` named again for another function, the gate's own
     questions are not asked: its walk follows what the cache names. The kernel's walk
@@ -975,7 +973,7 @@ a seventh found the open items.
   only because `functools.lru_cache` copies the partialmethod's mark onto it. Without a
   proxy of a cache between, the kernel's walk reaches the partialmethod and refuses it.
   Tests in `TestStatedLimits` hold both the refused and the gated shapes. The kernel's
-  walk as it stands after 0.16.0, not released, refuses the proxy, and the gated shapes
+  walk in 0.17.0 refuses the proxy, and the gated shapes
   with it.
 
 **Where you can help.**

@@ -6,11 +6,35 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-27
+
+A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation`, the module a
+gate uses to read the function a tool call runs, refuses a `weakref.proxy` on the way and
+a single-dispatch function with nothing registered, finds a wrapper a decorator holds on
+the ways two adapter reviews found it was missed, and holds such a wrapper to the order
+of the tool's parameters. It adds the public exception classes `ProxiedCallable`,
+`WeakProxy` and `OpenDispatch`, the public functions `cache_target` and
+`reached_callables`, and the attribute `DeclaredSignature.declared`. Each is under
+Security and Changed below. Nothing outside `recusal.invocation` changed: under
+`recusal/`, 0.17.0 differs from 0.16.0 in that module and the version string.
+
+**This release is stricter.** Some tools that 0.16.0 read are refused by 0.17.0, a few of
+them although they run correctly: the kernel entry under Security lists them under
+"Refused although it runs correctly", each with what to write instead, and says what is
+still not found under "Still not found, by design". A tool 0.16.0 refused can be refused
+under another class now, which changes the reason an adapter gives for it. Adapters
+released before 0.17.0 do not name the three new classes: a tool refused under one of
+them is refused with a reason that names only the class, or with a generic one.
+
+The adapter entries under this heading are not part of the `recusal` wheel: each adapter
+is a separate distribution on PyPI under its own version and tag.
+`recusal-openai-agents` 0.2.2 and `recusal-openai-agents-mcp` 0.2.1 were released on
+2026-11-27 under their own tags, and the draft LlamaIndex adapter is not released.
+
 ### Changed
 
 - **Kernel: `recusal.invocation` has a public walk of the callables beside their levels,
-  `reached_callables`, and a public reading of what a cache calls, `cache_target`.** In
-  the repository and not released. Two adapters make a walk of their own beside the
+  `reached_callables`, and a public reading of what a cache calls, `cache_target`.** Two adapters make a walk of their own beside the
   kernel's, to ask a question of each callable or to lay rules of their own beside the
   levels, and each fell behind it: the walk of `recusal-openai-agents` follows what a
   `functools.lru_cache` wrapper names and never stood on what a cache named again
@@ -176,8 +200,7 @@ All notable changes to this project are documented here. The format follows
 
 - **Kernel: `recusal.invocation` refuses a proxy on the way and a single-dispatch function
   with nothing registered, finds a held wrapper wherever its way to the function passes,
-  and refuses a held wrapper that takes the tool's parameters in another order.** In the
-  repository and not released. Found by the review of `recusal-openai-agents` 0.2.2, by
+  and refuses a held wrapper that takes the tool's parameters in another order.** Found by the review of `recusal-openai-agents` 0.2.2, by
   a review of `recusal-pydantic-ai` beside `recusal` 0.16.0, and by a review of this
   change itself. Every shape below is in 0.16.0, ran a value no policy judged there, and
   was reproduced there before the change; each is held by a test in
@@ -186,8 +209,8 @@ All notable changes to this project are documented here. The format follows
   stated limit. The third group answers the review of the change itself: thirteen of
   its cases fail on the change as it first stood, and five pin what is stated and did
   not change. Four more, `test_w_`, are no fix: each holds a sentence of this entry to
-  what happens. Nothing that 0.16.0 refuses is accepted. The change adds public names, so the kernel release that carries
-  it is a MINOR one: the exception classes `ProxiedCallable`, `WeakProxy` and
+  what happens. Nothing that 0.16.0 refuses is accepted. The change adds public names, so 0.17.0 is a MINOR
+  release: the exception classes `ProxiedCallable`, `WeakProxy` and
   `OpenDispatch`, the functions `cache_target` and `reached_callables`, and the
   attribute `DeclaredSignature.declared` (under Changed).
   - *A `weakref.proxy` on the way.* A proxy shows the class and the attributes of the
