@@ -1823,7 +1823,9 @@ def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> A
       argument bound; a ``staticmethod`` to its function;
     - a ``functools.partial`` passes on to its function, with its positional arguments
       bound, and, where its own ``__dict__`` names a ``__wrapped__``
-      (``functools.update_wrapper`` over a partial), to what that ``__dict__`` holds;
+      (``functools.update_wrapper`` over a partial), to what that ``__dict__`` holds,
+      and then its function, where that is a plain function, is on the way whenever
+      the partial is (since 0.17.1: it is what runs);
     - an object of any other type whose class has a plain function as ``__call__`` (a
       class-based decorator, a callable object) passes on to what it holds
       (:func:`_held`): its instance attributes, and the closure cells and named module
@@ -1848,6 +1850,10 @@ def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> A
     if kind is types.FunctionType:
         inner = _own(value, "__wrapped__")
         if inner is not _MISSING:
+            if _wrapped_loops(value):
+                # a chain of ``__wrapped__`` that never ends (``inspect.unwrap`` refuses
+                # one too): what the function stands for is not known
+                raise HiddenWrapper(_HIDDEN_WRAPPER)
             steps.append((inner, bound, 0))
         judged = (value, bound, direct)
     elif kind is _CACHE_WRAPPER:
@@ -1873,10 +1879,15 @@ def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> A
     elif kind is _PARTIAL:
         args = _partial_args(value)
         own = len(args) if type(args) is tuple else 0
-        steps.append((_partial_function(value), bound + own, direct + own))
+        function = _partial_function(value)
+        steps.append((function, bound + own, direct + own))
         wrapped = _entry(_instance_attributes(value), "__wrapped__")
         if wrapped is not _MISSING and wrapped is not None:
             steps.extend((held, bound, 0) for held in _held(value, wrapped))
+            if type(function) is types.FunctionType:
+                # ``functools.wraps(f)(functools.partial(helper, f))``: the helper runs
+                # whenever the partial does, as what a cache named again calls does
+                forced = function
     else:
         # asked once of each class in a walk; the class is kept beside the answer, so
         # that its ``id()`` is not another's while the walk lasts
@@ -1894,6 +1905,23 @@ def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> A
     return steps, judged, forced, odd
 
 
+def _wrapped_loops(function: Any) -> bool:
+    """True if the plain functions ``function`` names through their own ``__dict__`` as
+    ``__wrapped__``, one after the other, come back to one of them. A chain that is only
+    long is bounded where it is followed (:func:`_hidden_levels`). Each is read through
+    the interpreter's own accessor; nothing is called."""
+    seen: List[Any] = []
+    value = function
+    for _ in range(_DEPTH + 1):
+        if type(value) is not types.FunctionType:
+            return False
+        if any(value is other for other in seen):
+            return True
+        seen.append(value)
+        value = _own(value, "__wrapped__")
+    return False
+
+
 def _hidden_levels(
     value: Any,
     read: List[Any],
@@ -1901,7 +1929,7 @@ def _hidden_levels(
     held: Optional[List[Tuple[Any, int]]] = None,
     stood: Optional[List[Any]] = None,
     calls: Optional[Dict[int, Any]] = None,
-) -> List[Tuple[Any, int, int]]:
+) -> List[Tuple[Any, int, int, Any]]:
     """The wrappers the walk did not read between a held ``value`` and a callable it did
     read, or none when ``value`` reaches no such callable: each as the plain function
     whose parameters are a level, the arguments it receives bound when the call gets
@@ -2016,7 +2044,7 @@ def _hidden_levels(
                 for other in nodes:  # what a cache that reaches calls is on the way
                     if other[0] is node[1][2] and not other[3]:
                         other[3] = changed = True
-    found: List[Tuple[Any, int, int]] = []
+    found: List[Tuple[Any, int, int, Any]] = []
     for node in nodes:
         if not node[3] or node[1] is None:
             continue
@@ -2026,7 +2054,7 @@ def _hidden_levels(
         if judged is None:
             continue
         function, its_bound, its_direct = judged
-        found.append((function, its_bound, its_direct))
+        found.append((function, its_bound, its_direct, _named_by_partial(nodes, node)))
         if function is node[0]:
             if _chosen_at_call_time(function):
                 raise HiddenWrapper(_HIDDEN_WRAPPER)
@@ -2035,6 +2063,27 @@ def _hidden_levels(
                 inside = _cells(function) + _named_globals(function)
                 held.extend((each, its_bound) for each in inside)
     return found
+
+
+def _named_by_partial(nodes: List[List[Any]], node: List[Any]) -> Any:
+    """What a ``functools.partial`` names as ``__wrapped__`` in its own ``__dict__``
+    (``functools.wraps(f)(functools.partial(helper, f))``), with how many positional
+    arguments it binds itself, where the plain function of ``node`` was reached as that
+    partial's function; None otherwise. The helper takes its leading places for the
+    partial's own arguments, and the places after them for what the partial is called
+    with, which is where the function the partial is named for has its own
+    (:func:`_held_renamed`)."""
+    parent = node[5]
+    if parent < 0:
+        return None
+    value = nodes[parent][0]
+    if type(value) is not _PARTIAL or _partial_function(value) is not node[0]:
+        return None
+    named = _entry(_instance_attributes(value), "__wrapped__")
+    if named is _MISSING or named is None:
+        return None
+    args = _partial_args(value)
+    return named, len(args) if type(args) is tuple else 0
 
 
 def _bound_taken(function: Any, bound: int, direct: int, declared: Any) -> int:
@@ -2144,7 +2193,9 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
 
     Refused as they stand, whatever their parameters: a way with a step still to take
     32 links from the held value, or 32 held wrappers deep, and a search that stands on
-    16,384 callables (plain values a wrapper holds are not counted); a way through a
+    16,384 callables (plain values a wrapper holds are not counted); since 0.17.1, a
+    held plain function whose chain of ``__wrapped__`` comes back to itself
+    (:func:`_wrapped_loops`); a way through a
     single-dispatch function or method, whatever is registered on it; a way through a
     cache that calls something other than a plain
     function or the function it names, or whose function cannot be told; and a held
@@ -2241,7 +2292,7 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     wrapper read by the walk is accepted, because ``inspect.signature`` of such a partial
     no longer shows the ``*args``. The call fails either way.
     """
-    found: List[Tuple[Any, int, int]] = []
+    found: List[Tuple[Any, int, int, Any]] = []
     calls: Dict[int, Any] = {}
     # what the callables of the walk hold, then what each wrapper found among it holds
     # itself, and so on: each value once for each count of bound arguments
@@ -2268,7 +2319,7 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     hidden: List[Any] = []
     positions: List[Tuple[str, ...]] = []
     renamed: List[str] = []
-    for function, bound, direct in found:
+    for function, bound, direct, via in found:
         for name, defaulted, forwards in _held_in_bound_places(function, bound)[direct:]:
             # the holder may hand its bound argument on by keyword (``held(*args,
             # tenant=self.tenant, **kwargs)``), or keep it: this parameter is then free
@@ -2286,7 +2337,7 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
         taken = _bound_taken(function, bound, direct, declared)
         hidden.append(_held_level(function, taken))
         positions.append(_held_positions(function, taken))
-        renamed.extend(_held_renamed(function, bound, taken, declared))
+        renamed.extend(_held_renamed(function, bound, taken, declared, via))
     levels = [_read_level(parameters) for parameters in walk.found] + hidden
     why = _argument_of_its_own(levels, declared, skip, range(len(walk.found), len(levels)))
     if why is not None:
@@ -2329,7 +2380,9 @@ _HELD_LEFT = {
 }
 
 
-def _held_renamed(function: Any, bound: int, taken: int, declared: Any) -> List[str]:
+def _held_renamed(
+    function: Any, bound: int, taken: int, declared: Any, via: Any = None
+) -> List[str]:
     """The reason to refuse a held plain function that receives ``bound`` arguments bound
     on the way and takes the first ``taken`` of them in named places
     (:func:`_bound_taken`), where the function it hands the call to has another name for
@@ -2343,20 +2396,33 @@ def _held_renamed(function: Any, bound: int, taken: int, declared: Any) -> List[
 
     The function it hands the call to is found from what its own ``__dict__`` names as
     ``__wrapped__``, through what takes those places in ``*args`` and passes them on as
-    the walk reads it (:func:`_named_places`). Empty where none is found, and where the
-    held wrapper names nothing. Read from code objects, defaults and what each type
-    defines in C, as the rest of the held rule is; nothing is called."""
-    if taken <= 0:
+    the walk reads it (:func:`_named_places`). Where the held plain function names
+    nothing and was reached as the function of a ``functools.partial`` that names a
+    ``__wrapped__`` (``via``, :func:`_named_by_partial`: the module's own idiom
+    ``functools.wraps(f)(functools.partial(helper, f))``), it is what the partial names,
+    and the places compared are the helper's after the partial's own arguments. Empty
+    where none is found, and where the held wrapper names nothing otherwise: such a held
+    wrapper (``def forward(receiver, *args, **kwargs)`` with no ``functools.wraps``) is
+    not found, by design, since every correct held wrapper written without it has the
+    same shape. Refused, as every other bound of the walk refuses, where what it hands
+    the call to is still not found after 32 steps. Read from code objects, defaults and
+    what each type defines in C, as the rest of the held rule is; nothing is called."""
+    named, lead = _own(function, "__wrapped__"), 0
+    if named is _MISSING and via is not None:
+        named, lead = via
+    if taken <= lead:
         return []
-    found = _named_places(_own(function, "__wrapped__"))
+    found = _named_places(named)
+    if found is _RAN_OUT:
+        return [_HIDDEN_WRAPPER]  # still going: what it hands the call to is not known
     if found is None:
         return []
     target, offset = found
     code = target.__code__
     if code.co_argcount <= offset:
         return []
-    receives = bound if taken == min(bound, _argcount(function)) else taken
-    own = _held_positions(function, 0)[:taken]
+    receives = (bound if taken == min(bound, _argcount(function)) else taken) - lead
+    own = _held_positions(function, 0)[lead:taken]
     filled = _held_in_bound_places(target, offset + receives)[offset:]
     if not filled:
         return []
@@ -2391,7 +2457,9 @@ def _named_places(value: Any) -> Any:
     receiver before; a ``staticmethod`` to its function; and an object whose class has a
     plain function as ``__call__`` to that ``__call__``, after the object, or where that
     takes everything in ``*args``, to what its instance dictionary names as
-    ``__wrapped__``. Anything else, or a chain of 32 or more, is None."""
+    ``__wrapped__``. Anything else is None. A chain that is still going after 32 steps
+    (one that names itself, among others) is ``_RAN_OUT``: what it reaches is not known,
+    and the caller refuses, as every other bound of the walk does."""
     offset, named = 0, _MISSING
     for _ in range(_DEPTH):
         kind = type(value)
@@ -2437,7 +2505,11 @@ def _named_places(value: Any) -> Any:
             value = _entry(_instance_attributes(value), "__wrapped__")
         if value is _MISSING or value is None:
             return None
-    return None
+    return _RAN_OUT
+
+
+#: What :func:`_named_places` returns for a chain still going at its bound.
+_RAN_OUT: Any = object()
 
 
 def _own_code(names: Any, function: Any) -> Any:
@@ -2623,9 +2695,8 @@ class BoundArgumentKept(ValueError):
     the argument on, and a facade that passes a value of its own in its place (``def
     search(self, *args, **kwargs): return search(self.tenant, *args, **kwargs)`` under
     ``functools.wraps(search)``, where ``tenant`` has a default). What to do: register
-    the function the wrapper calls itself, with every parameter it takes (a value of the
-    application's bound by keyword, ``functools.partial(search, tenant="acme")``, is a
-    parameter the tool declares and a policy judges); or, where the wrapper is to hand
+    the function the wrapper calls itself, with every parameter it takes; or, where the
+    wrapper is to hand
     the argument on, have it take the argument under the name the function has for it
     and hand it on by position. A plain function that names every parameter the tool
     takes and calls the facade is not a remedy: the gate reads its parameters and never
@@ -2661,11 +2732,9 @@ _SHIFTED = (
 #: What to do about a bound argument a wrapper takes under another name than the
 #: function it reaches has for it (:data:`_UNHANDED`, :data:`_SHIFTED`).
 _RENAMED_REMEDY = (
-    "Register the function the wrapper calls itself, with every parameter it takes (a "
-    "value of the application's bound by keyword, `functools.partial(f, name=value)`, is "
-    "a parameter the tool declares and a policy judges), or, where the wrapper is to hand "
-    "the argument on, have it take the argument under the name that function has for it "
-    "and hand it on by position"
+    "Register the function the wrapper calls itself, with every parameter it takes, or, "
+    "where the wrapper is to hand the argument on, have it take the argument under the "
+    "name that function has for it and hand it on by position"
 )
 
 _UNPLACED = (
@@ -2892,7 +2961,18 @@ def _rebound(outer: Any, inner: Any, walk: Any, outside: Optional[int] = 0) -> A
     ``note``, ran ``database`` with the value judged for ``sql``). Such a wrapper has the
     signature of every method decorator that hands its receiver on (``def wrapper(*args,
     **kwargs)``, ``def wrapper(self, *args, **kwargs)`` over ``def method(self, ...)``),
-    and nothing in a signature tells the two apart."""
+    and nothing in a signature tells the two apart. The ordinary example: a method
+    decorator that forgets to pass ``self`` on (``@functools.wraps(m) def method(self,
+    *a, **k): return m(*a, **k)`` over ``def run_sql(self, sql, force=False)``) is
+    read, and called by position ran ``self='S'``, ``sql=True``, ``force=False`` for
+    judged ``{sql: 'S', force: True}``; the remedy is to pass ``self`` on.
+
+    The same holds for a held wrapper that takes a bound argument under another name
+    and names nothing as ``__wrapped__`` (``def forward(receiver, *args, **kwargs):
+    return method(*args, **kwargs)`` with no ``functools.wraps``, behind a
+    ``functools.wraps(method)`` pass-through): it runs shifted by position and is read,
+    because refusing it would refuse every correct held wrapper written without
+    ``functools.wraps``. With ``functools.wraps`` it is refused (:func:`_held_renamed`)."""
     rebound: Any
     if inspect.ismethod(outer):
         level, count, rebound = outer.__func__, 1, types.MethodType(inner, outer.__self__)

@@ -24,7 +24,10 @@ The adapter entry under this heading is not part of the `recusal` wheel:
   `recusal-openai-agents` 0.2.3 beside `recusal` 0.17.0, and reproduced on 0.17.0
   without any framework. Pinned by the tests named `test_x_` in
   `tests/test_invocation.py`; each fails on the code of 0.17.0 but three, which pin what
-  did not change. A facade that exposes a module function as a method and drops its
+  did not change. A review of the change itself (at commit `278aa47`) found three more
+  ways through, each closed below and pinned by a test named `test_y_` that fails on
+  that commit, and asked for two stated limits to be said plainly, each pinned too. A
+  facade that exposes a module function as a method and drops its
   object (`@functools.wraps(execute) def method(self, *args, **kwargs): return
   execute(*args, **kwargs)`, over `def execute(database, sql="SELECT 1", note="")`) is
   read as handing its object on: the object fills `database`, and the levels are
@@ -67,7 +70,15 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     positional arguments fill the places before. One shape 0.17.0 stated as read is
     refused by it now: a held wrapper with a required parameter of its own in the
     leading place, where the holder keeps the receiver (`def second(mode, sql="x",
-    force=False)` over `def run(self, sql="x", force=False)`).
+    force=False)` over `def run(self, sql="x", force=False)`). Under the module's own
+    idiom `functools.wraps(method)(functools.partial(helper, method))`, held, the helper
+    is what runs, and it is judged as a held wrapper is: its own parameters, and its
+    places after the partial's own arguments against the places of what the partial
+    names (`def helper(f, receiver, *args, **kwargs): return f(*args, **kwargs)` ran
+    `self='J:query'`, `query='J:limit'` by position, and is refused). A held plain
+    function whose chain of `__wrapped__` comes back to itself, which 0.17.0 read as
+    reaching nothing, is refused as a chain that never ends, and so is a chain that
+    `_held_renamed` follows past 32 steps.
   - *Both are reported last*, by `reached_parameters` and by `unsupported_signature`,
     after every refusal 0.17.0 makes: a tool 0.17.0 refused is refused with the class
     and the reason it had.
@@ -78,8 +89,9 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     `*args` and no `**kwargs` under a `functools.partial` that binds a keyword, fail by
     position too, and are unchanged.
   - **Refused although it runs correctly**, and read by 0.17.0. This is the whole list.
-    Each is refused where the last place the bound arguments fill has a default, or
-    where the tool declares a parameter an argument passed by position can fill.
+    Each but the last is refused where the last place the bound arguments fill has a
+    default, or where the tool declares a parameter an argument passed by position can
+    fill.
     - A method decorator whose wrapper takes the receiver under another name than the
       method has for it and hands it on (`def wrapper(this, *args, **kwargs): return
       method(this, *args, **kwargs)` over `def method(self, query)`, or `self` over the
@@ -97,11 +109,12 @@ The adapter entry under this heading is not part of the `recusal` wheel:
       search(*args, tenant=self.tenant, **kwargs)`), which runs correctly when called
       by keyword and fails when called by position. 0.17.0 refused the first where the
       parameter has a default. Register the function itself, with every parameter it
-      takes, or bind the value by keyword (`functools.partial(search,
-      tenant="acme")`).
+      takes.
     - A held wrapper that takes a bound argument under another name than the function
       it wraps has for that place and hands it on, through any of the layers above.
       Take it under the name the function has for it and hand it on by position.
+    - A held plain function whose chain of `__wrapped__` comes back to itself, whatever
+      it runs. Name the function it wraps, once.
 
     Refused too, and changing nothing that runs: the same shapes where every call
     fails, by keyword and by position (a facade that keeps its object, over a function
@@ -116,8 +129,18 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     the two apart. The same holds for a held wrapper, and for a wrapper that takes the
     receiver under that name and passes the rest on by position in its body (`def
     wrapper(self, table, limit=10): return fn(table, limit)`), which runs shifted by
-    keyword too. 0.16.0 and 0.17.0 stated the case where the place has a default; the
-    case where it has none is stated now.
+    keyword too. The ordinary example: a method decorator that forgets to pass `self` on
+    (`@functools.wraps(m) def method(self, *a, **k): return m(*a, **k)` over `def
+    run_sql(self, sql, force=False)`) is read, and called by position ran `self='S'`,
+    `sql=True`, `force=False` for judged `{sql: 'S', force: True}`; the remedy is to
+    pass `self` on. `recusal-openai-agents` 0.2.3 states it the same way. And a held
+    wrapper that takes a bound argument under another name but names nothing as
+    `__wrapped__` (`def forward(receiver, *args, **kwargs): return method(*args,
+    **kwargs)` with no `functools.wraps`, behind a `functools.wraps(method)`
+    pass-through) runs shifted by position and is read: refusing it would refuse
+    every correct held wrapper written without `functools.wraps`. The same with
+    `functools.wraps` is refused. 0.16.0 and 0.17.0 stated the case where the
+    place has a default; the case where it has none is stated now.
   - *What the review of `recusal-pydantic-ai` 0.2.1 found beside it*, a cache named
     again over a wrapper that drops `self` (`@functools.wraps(fn) @functools.lru_cache
     def wrapper(self, table, limit=10): return fn(table, limit)` on a method, judged
@@ -322,10 +345,10 @@ The adapter entry under this heading is not part of the `recusal` wheel:
     held wrapper; a held wrapper in another order: give it the tool's parameters in the
     tool's order, or make them keyword-only;
   - a `BoundArgumentKept` where a wrapper takes the bound argument under another name:
-    register the function the wrapper calls itself, with every parameter it takes (a
-    value of the application's bound by keyword is a parameter the tool declares), or
-    have the wrapper take the argument under the name that function has for it and
-    hand it on by position; where a wrapper that passes the call on has a parameter in
+    register the function the wrapper calls itself, with every parameter it takes,
+    or have the wrapper take the argument under the name that function has for it
+    and hand it on by position (binding a value by keyword with `functools.partial`
+    is not advised: `unsupported_signature` refuses every partial tool); where a wrapper that passes the call on has a parameter in
     a bound place: drop it from that wrapper, or register the function under it.
 
   Each remedy is built and checked by a test named `test_x_advice_`: the rewritten tool
@@ -334,16 +357,21 @@ The adapter entry under this heading is not part of the `recusal` wheel:
   `test_x_no_message_advises_a_plain_function_without_saying_what_is_read_of_it` holds
   every message to the rule above. `unsupported_signature` refuses a `functools.partial`
   tool on each Python this change was run on (3.11 to 3.15): `typing.get_type_hints`
-  raises for a partial before 3.14 and finds no annotation on one from 3.14. So of the
-  remedies that make one (a value bound by keyword, a partialmethod over a plain
-  function) it accepts none; `reached_parameters` reads them, and the tests check them
-  by it.
+  raises for a partial before 3.14 and finds no annotation on one from 3.14. So the one
+  remedy that makes one, a partialmethod over a plain function, is accepted by
+  `reached_parameters` and not by `unsupported_signature`, and the tests check it by
+  the first.
   No class, base or public name changed, and the reason strings of the frozen decision
   core are untouched; a gate that shows these messages shows other words.
   `STABILITY.md` does not list them in the frozen surface. Five tests of the Google ADK,
   OpenAI Responses, OpenAI Agents and Pydantic AI lanes quoted the kernel's old advice,
   or expected an adapter's own reason for a tool the kernel now refuses first; they
-  compare with the kernel's own text now, and no adapter changed. The class docstrings of
+  compare with the kernel's own text now, and no adapter changed. So do six tests of
+  `recusal-openai-agents` 0.2.3: four for the same reasons, and two that held as open,
+  gated, what this kernel refuses (a method decorator that names the object `self` over
+  a classmethod's `cls`, and a held `def second(mode, ...)` over `def run(self, ...)`);
+  beside this kernel both are refused before anything runs. The adapter's page states
+  both as open; it is the adapter's to change. The class docstrings of
   `OpenDispatch`, `WeakProxy` and `BoundArgumentKept`, which gave the same advice, say
   the same as the messages.
 

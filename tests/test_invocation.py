@@ -907,7 +907,9 @@ def test_what_a_wrapper_holds_that_is_not_a_hidden_wrapper_is_walked():
         own,
     ]
 
-    # a cycle of ``__wrapped__`` on the held side reaches nothing the walk reads
+    # a cycle of ``__wrapped__`` on the held side: 0.17.0 read it, as reaching nothing
+    # the walk reads; since 0.17.1 it is refused, as a chain that never ends, because
+    # what such a wrapper stands for is not known (``test_x_a_held_wrapped_cycle_``)
     def first(*args, flag=True):
         return None
 
@@ -915,7 +917,8 @@ def test_what_a_wrapper_holds_that_is_not_a_hidden_wrapper_is_walked():
         return None
 
     first.__wrapped__, second.__wrapped__ = second, first  # type: ignore[attr-defined]
-    assert _levels(_holding(first, search)) == [_FORWARD, own]
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(_holding(first, search))
 
     # a cell that was never filled
     def unfilled(function):
@@ -10042,3 +10045,156 @@ def test_x_no_message_advises_a_plain_function_without_saying_what_is_read_of_it
         assert "register that one" not in text, text
         if "plain function" in text:
             assert invocation._PLAIN_BODY in text, text
+        # ``unsupported_signature`` refuses every ``functools.partial`` tool, so no
+        # advice says to bind a value with one
+        assert "functools.partial(f," not in text, text
+
+
+# --- the review of 0.17.1 as it stood at 278aa47 ------------------------------------------
+
+
+def _y_method():
+    def method(self, query: str, limit: int = 5) -> str:
+        _X.append({"self": self if isinstance(self, str) else "S", "query": query})
+        return "rows"
+
+    return method
+
+
+def _y_tool(method, held):
+    """A ``functools.wraps(method)`` pass-through that calls ``held``, as a method."""
+    import functools
+
+    @functools.wraps(method)
+    def wrapper(*args, **kwargs):
+        return held(*args, **kwargs)
+
+    return type("S", (), {"search": wrapper})().search
+
+
+def test_y_a_helper_held_under_a_partial_named_for_the_method_is_judged():
+    """The review's F1. The module's own idiom ``functools.wraps(f)(functools.partial(
+    helper, f))``, held: the helper takes the receiver as ``receiver`` and drops it. The
+    held rule read the helper's own ``__wrapped__``, found none, and compared nothing; by
+    position it ran ``self='q'``, ``query=5``. The helper runs whenever the partial does,
+    so it is judged, its places after the partial's own arguments against the method's.
+    A helper that hands the receiver on is refused too, as the walk refuses its twin."""
+    import functools
+
+    def dropping(f, receiver, *args, **kwargs):
+        return f(*args, **kwargs)
+
+    def handing(f, self, *args, **kwargs):
+        return f(self, *args, **kwargs)
+
+    def forcing(f, *args, force=True, **kwargs):
+        return f(*args, **kwargs)
+
+    method = _y_method()
+    tool = _y_tool(method, functools.wraps(method)(functools.partial(dropping, method)))
+    _, (by_position, _) = _x_calls(tool, {"query": "q", "limit": 5})
+    assert by_position == [{"self": "q", "query": 5}]
+    with pytest.raises(HiddenWrapper, match="`receiver` is a leading parameter"):
+        reached_parameters(tool)
+    # the helper is judged for a parameter of its own as well, and read where it passes
+    # everything on under the method's own name for the receiver
+    tool = _y_tool(method, functools.wraps(method)(functools.partial(forcing, method)))
+    assert "`force` is a parameter" in unsupported_signature(tool)
+    tool = _y_tool(method, functools.wraps(method)(functools.partial(handing, method)))
+    _x_read_and_run(tool, {"query": "q", "limit": 5}, {"self": "S", "query": "q"})
+
+
+def test_y_a_held_wrapped_cycle_is_refused():
+    """The review's F3. A held wrapper whose ``__wrapped__`` is a pass-through that names
+    itself reached nothing the walk reads, so nothing of it was judged, and by position
+    it ran ``self='q'``, ``query=5``. A chain of ``__wrapped__`` that never ends is
+    refused, as ``inspect.unwrap`` refuses one; and a chain ``_held_renamed`` follows that
+    is still going at 32 steps refuses, as every other bound of the walk does."""
+    import types
+
+    method = _y_method()
+
+    def loop(*args, **kwargs):
+        return method(*args, **kwargs)
+
+    loop.__wrapped__ = loop  # type: ignore[attr-defined]
+
+    def forward(receiver, *args, **kwargs):
+        return method(*args, **kwargs)
+
+    forward.__wrapped__ = loop  # type: ignore[attr-defined]
+    tool = _y_tool(method, forward)
+    _, (by_position, _) = _x_calls(tool, {"query": "q", "limit": 5})
+    assert by_position == [{"self": "q", "query": 5}]
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._HIDDEN_WRAPPER
+    assert invocation._wrapped_loops(loop) and invocation._wrapped_loops(forward)
+    assert not invocation._wrapped_loops(method) and not invocation._wrapped_loops(_traced(method))
+
+    # the follower's own bound: a cycle through objects it steps through, not functions
+    class Passing:
+        def __call__(self, *args, **kwargs):
+            return method(*args, **kwargs)
+
+    one, two = Passing(), Passing()
+    one.__wrapped__, two.__wrapped__ = two, one  # type: ignore[attr-defined]
+    assert invocation._named_places(one) is invocation._RAN_OUT
+    assert invocation._held_renamed(forward, 1, 1, {"query": None}, (one, 0)) == [
+        invocation._HIDDEN_WRAPPER
+    ]
+    assert types.FunctionType is type(forward)
+
+
+def test_y_a_held_wrapper_that_names_nothing_is_still_read():
+    """The review's F2, stated and not closed. A held ``def forward(receiver, *args,
+    **kwargs)`` written without ``functools.wraps`` names nothing as ``__wrapped__``,
+    and is read, though by position it runs shifted; refusing it would refuse every
+    correct held wrapper written without ``functools.wraps``. With ``functools.wraps``
+    the same wrapper is refused."""
+    import functools
+
+    method = _y_method()
+
+    def forward(receiver, *args, **kwargs):
+        return method(*args, **kwargs)
+
+    tool = _y_tool(method, forward)
+    _, (by_position, _) = _x_calls(tool, {"query": "q", "limit": 5})
+    assert by_position == [{"self": "q", "query": 5}]
+    assert _levels(tool) == [_FORWARD, ["query", "limit"]]
+    assert unsupported_signature(tool) is None
+    with pytest.raises(HiddenWrapper, match="`receiver` is a leading parameter"):
+        reached_parameters(_y_tool(method, functools.wraps(method)(forward)))
+    assert "with no ``functools.wraps``" in invocation._rebound.__doc__
+
+
+def test_y_a_method_decorator_that_forgets_self_is_still_read():
+    """The review's C3-1, stated and not closed: the ordinary method decorator that
+    forgets to pass ``self`` on takes the receiver under the method's own name, so no
+    name is in doubt. Called by position it ran ``self='S'``, ``sql=True``,
+    ``force=False`` for judged ``{sql: 'S', force: True}``; the remedy is to pass
+    ``self`` on, and that is read and runs as judged."""
+    import functools
+
+    def run_sql(self, sql: str, force: bool = False) -> str:
+        _X.append({"self": self if isinstance(self, str) else "RECV", "sql": sql, "force": force})
+        return "ran"
+
+    @functools.wraps(run_sql)
+    def forgets(self, *a, **k):
+        return run_sql(*a, **k)
+
+    @functools.wraps(run_sql)
+    def passes(self, *a, **k):
+        return run_sql(self, *a, **k)
+
+    Tools = type("Tools", (), {"forgets": forgets, "passes": passes})
+    tool = Tools().forgets
+    _, (by_position, _) = _x_calls(tool, {"sql": "S", "force": True})
+    assert by_position == [{"self": "S", "sql": True, "force": False}]
+    assert unsupported_signature(tool) is None
+    assert "forgets to pass ``self`` on" in invocation._rebound.__doc__
+    _x_read_and_run(
+        Tools().passes, {"sql": "S", "force": True}, {"self": "RECV", "sql": "S", "force": True}
+    )

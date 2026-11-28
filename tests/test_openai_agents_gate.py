@@ -4618,8 +4618,7 @@ class TestKernelRefusals:
             invocation.reached_parameters(func)
         assert type(raised.value) is invocation.ProxiedCallable
         found = str(raised.value)
-        assert found == invocation._ANSWERS_FOR_WRAPPED
-        assert found.endswith("register a plain function that calls it")
+        assert found == invocation._ANSWERS_FOR_WRAPPED  # the kernel's own advice
         self.refused_when_gated(example, func, self.PROXIED.format(found), ran)
         self.refused_when_called(
             example, self.wrapping(tool(self.Forwards)), self.PROXIED.format(found), ran
@@ -4683,8 +4682,7 @@ class TestKernelRefusals:
         with pytest.raises(invocation.ProxiedCallable) as raised:
             invocation.reached_parameters(func)
         found = str(raised.value)
-        assert found == invocation._SHOWS_ANOTHER_CLASS
-        assert found.endswith("register a plain function that calls it")
+        assert found == invocation._SHOWS_ANOTHER_CLASS  # the kernel's own advice
         self.refused_when_called(example, self.wrapping(func), self.PROXIED.format(found), ran)
 
     # --- PartialMethodSignature -----------------------------------------------------------------
@@ -5749,6 +5747,16 @@ class TestStatedLimits:
                     return "recorded"
 
             tool = Tools.run_sql
+        if receiver != "self":
+            # since recusal 0.17.1 the kernel's walk refuses this form: the decorator
+            # names the object `self` where the method has `cls`, and a call by position
+            # that kept it runs shifted (the kernel's changelog, under Security)
+            policy = self.Recording(lambda name, args: [])
+            wrapped = example.function_tool(tool, name_override="run_sql", strict_mode=False)
+            with pytest.raises(TypeError, match="bound argument"):
+                example.gate_tools([wrapped], policy)
+            assert events == [] and policy.seen == []
+            return
         outputs, seen = self.run(example, tool, {"sql": "S", "force": True})
         assert outputs == {"c1": "recorded"}
         assert seen == [("run_sql", {"sql": "S", "force": True})]
@@ -5886,10 +5894,15 @@ class TestStatedLimits:
         class Tools:
             kept = keeping(run)
 
-        outputs, seen = self.run(example, Tools().kept, {"sql": "S", "force": True})
-        assert outputs == {"c1": "recorded"}
-        assert seen == [("run_sql", {"sql": "S", "force": True})]
-        assert events == [("run", True, False)]  # judged sql="S", force=True
+        # since recusal 0.17.1 the kernel refuses it: the held wrapper takes the place
+        # of the object as `mode` where the function it wraps has `self`
+        policy = self.Recording(lambda name, args: [])
+        tool = example.function_tool(Tools().kept, name_override="run_sql", strict_mode=False)
+        with pytest.raises(TypeError):
+            example.gate_tools([tool], policy)
+        assert events == [] and policy.seen == []
+        assert Tools().kept("S", True) == "recorded"
+        assert events == [("run", True, False)]  # what it ran ungated, by position
 
     def test_open_what_the_walk_raises_for_a_callable_it_cannot_read_names_its_class(self, example):
         """The fourth item 0.2.2 stated as open, narrower now. The kernel's walk raises a
@@ -6292,7 +6305,7 @@ class TestReasonAdvice:
                 events.append(("fetch", sql, force))
                 return "recorded"
 
-        self.refused(example, Named().run_sql, KEPT_RECEIVER_REASON.format(name="this"))
+        self.refused(example, Named().run_sql, _kernel_or_kept(Named().run_sql, "this"))
         assert "name it `self`" in KEPT_RECEIVER_REASON
 
         class Renamed:
@@ -6309,7 +6322,7 @@ class TestReasonAdvice:
         parameter is not the object's: register the function itself."""
         events: list = []
         execute, Warehouse = TestStatedLimits.warehouse(events, "drops")
-        self.refused(example, Warehouse().run_sql, KEPT_RECEIVER_REASON.format(name="database"))
+        self.refused(example, Warehouse().run_sql, _kernel_or_kept(Warehouse().run_sql, "database"))
         arguments = {"database": "d", "sql": "SELECT 1", "note": "n"}
         policy = self.Recording(lambda name, args: [])
         (gated,) = example.gate_tools(
@@ -6496,3 +6509,16 @@ def types_method(func, obj):
     import types
 
     return types.MethodType(func, obj)
+
+
+def _kernel_or_kept(func, name):
+    """The gate's own reason for a receiver a wrapper may keep, or, where the kernel's
+    walk refuses the tool first (recusal 0.17.1), the gate's reason for that refusal,
+    which carries the kernel's text."""
+    from recusal import invocation
+
+    try:
+        invocation.reached_parameters(func)
+    except invocation.BoundArgumentKept as refused:
+        return BOUND_REASON.format(refused)
+    return KEPT_RECEIVER_REASON.format(name=name)

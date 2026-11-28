@@ -523,6 +523,17 @@ decorated tool. `recusal-crewai` still carries its own copy.
   - Pinned by the tests named `test_x_` in
     [`tests/test_invocation.py`](../tests/test_invocation.py) on the pull request's
     branch.
+  - **One review of the change itself**, at commit `278aa47`, again a review by the
+    project and not one from outside it. It found nothing 0.17.0 refuses that the change
+    reads, and no class changed for a tool both refuse. It found three ways through,
+    each closed in the commit after it and pinned by the tests named `test_y_`: a helper
+    held under the module's own idiom `functools.wraps(f)(functools.partial(helper, f))`
+    was not judged; a held wrapper whose chain of `__wrapped__` comes back to itself was
+    read as reaching nothing; and the follower of a held wrapper's way gave up without
+    refusing at its bound. It asked for two limits to be stated plainly, a held wrapper
+    written without `functools.wraps` and a method decorator that forgets to pass `self`
+    on, and for the advice to stop suggesting a `functools.partial`, which
+    `unsupported_signature` refuses. Each is in the changelog entry.
 
 **Where you can help.**
 
