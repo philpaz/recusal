@@ -5157,10 +5157,20 @@ USERS = {
         "unsupported_signature",
     },
     "adapters/pydantic-ai/src/recusal_pydantic_ai/_gate.py": {
+        "BoundArgumentKept",
         "DeclaredSignature",
+        "DispatchedAtCallTime",
+        "HiddenWrapper",
+        "OpenDispatch",
+        "PartialMethodSignature",
+        "ProxiedCallable",
+        "UnreadCache",
+        "WeakProxy",
+        "cache_target",
         "detached",
         "json_data",
-        "reached_parameters",
+        "own_parameters",
+        "reached_callables",
     },
 }
 

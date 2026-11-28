@@ -45,9 +45,13 @@ Install it from PyPI:
 pip install recusal-pydantic-ai
 ```
 
-Requires Python 3.11+ (Pydantic AI's minimum), `recusal>=0.15.0` and
+Requires Python 3.11+ (Pydantic AI's minimum), `recusal>=0.17.0` and
 `pydantic-ai-slim>=2.67.0`. It is tested on every pull request against exactly
-`pydantic-ai-slim==2.67.0`, and weekly against the newest release.
+`pydantic-ai-slim==2.67.0`, and weekly against the newest release. From 0.2.1 the floor
+is `recusal` 0.17.0, whose walk refuses a `weakref.proxy` on the way and a
+single-dispatch function with nothing registered: beside 0.16.0, which 0.2.0 allowed,
+both ran a value no policy judged (see "Refused although it runs correctly" below for
+what this costs).
 
 The package ships inline types (`py.typed`) for your editor and type checker. From 0.1.2
 every function signature in it is annotated.
@@ -131,66 +135,137 @@ the function does (`def wrapper(*args, table, **kwargs)` over `def f(table, limi
 takes `table` keyword-only), a default that differs from the function's, a parameter
 left out or reordered. Give such a wrapper its setting when it is built
 (`@retrying(times=3)`) and not as a parameter of the wrapper itself. The wrapper
-`beartype` generates has keywords of its own and is refused by this rule: call the
-type-checked function from a plain function and register that one. Also refused:
+`beartype` generates has keywords of its own and is refused by this rule: register a
+plain function in its place, as below.
 
-- **A function that declares a signature of its own** (`__signature__`): the parameters
-  Python binds cannot be read. The decorators the `decorator` library builds do this,
-  and so does Pydantic AI's own `tavily_search_tool` when it is given a search setting
+**A plain function in its place.** Where this page or a refusal says to register a plain
+function in place of what was refused, the gate judges that function's parameters and
+does not read its body or what it calls. So give it the parameters of the function that
+does the work (the innermost one, under every decorator), with the same defaults, and
+have it call that function directly, not the decorated one: what a decorator did is then
+the plain function's to do in its body. A plain function that calls the decorated stack
+instead runs whatever the stack fills in itself, unjudged: a decorator that holds a
+wrapper with `dry_run=False` of its own runs that default, and where the decorator fixes
+`dry_run` itself, a plain function that passes `dry_run` on as well makes the call fail
+with a second value for it. Where a remedy is named that the gate reads (register the
+function itself, `functools.update_wrapper(self, fn)`, delete a declared signature, bind
+by keyword), prefer it. Also refused:
+
+- **A callable that declares a signature of its own**: a `__signature__`, a
+  `__text_signature__` that is not the interpreter's, or an object that shows a
+  `__code__` while a call runs its `__call__`. `inspect.signature` can read each in
+  place of the parameters Python binds, so those cannot be read. The reason names which
+  of the three was found (before 0.2.1 it named `__signature__` for all three). The
+  decorators the `decorator` library builds do this, and so does Pydantic AI's own
+  `tavily_search_tool` when it is given a search setting
   to fix (`tavily_search_tool(client=client, include_domains=[...])`). Build that tool
   without the fixed setting and hold the model to the value in your policy, which is
   given each search argument the model can set, or call the Tavily client from a plain
-  function of your own that has the fixed value in its body.
+  function of your own that has the fixed value in its body (that value is then not
+  judged: it is your constant). Otherwise delete the declaration, so the parameters
+  Python binds are read.
 - **A decorator that cannot be inspected**: a class-based decorator that is also a
   descriptor, such as `cachetools.cached`, a `functools.lru_cache` or `functools.cache`
-  wrapper under a `functools.partial`, or a stack more than 31 decorators deep. Call the
-  decorated function from a plain function and register that one.
-- **A decorator that holds a second wrapper of the function**, beside a kernel later
-  than `recusal` 0.15.1 (0.15.1 is the newest release as this is written). A decorator that applies another `functools.wraps` wrapper of
-  the same function inside itself and calls that one, from its closure, by a module global it names or from a
-  class-based decorator's instance, where the inner wrapper takes a parameter of its
-  own: `functools.wraps` points past the inner wrapper, so it is not read like one
-  applied directly. The reason names the parameter. Call the decorated function from a
-  plain function and register that one. Beside 0.15.0 or 0.15.1 this is not detected, and the
-  inner wrapper's parameter runs with a value the policy was not handed. An inner
-  wrapper held any other way (a plain function or a lambda that names nothing as
-  `__wrapped__`, a callable object, a container) is not found by either kernel.
-- **A `functools.partialmethod` over a callable object**, beside a kernel later than
-  `recusal` 0.15.1: refused, with a reason that says so and what to do. Beside 0.15.0 or 0.15.1 it is
-  open, see "Status" below. Over a plain function the same `partialmethod` is read in
-  full beside either kernel.
-- **Four more decorator shapes the kernel's walk read wrongly, beside `recusal`
-  0.15.0 or 0.15.1.** Each let a value run that the policy did not judge: a decorator written as
-  `functools.wraps(f)(functools.partial(helper, f))` over a wrapper with a parameter of
-  its own (the wrapper under the partial was not read); `@functools.wraps(f)` above
-  `@functools.lru_cache` above a wrapper with a parameter of its own (the cache was
-  read as `f`, and the wrapper it calls by nothing); a class-based decorator written
-  inside the decorator, whose `__call__` calls a second wrapper the decorator built, or
-  one at module level whose `__call__` names that wrapper as a global; and a method
-  that delegates to a free function under `functools.wraps` of it and keeps its object,
-  where the free function's first parameter has a default (that parameter ran at its
-  default and was in no signature), with or without decorators on the free function
-  that only pass their arguments on. The second is the same on a method as on a plain
-  function, whatever the cache calls (a wrapper, a `functools.partial`, a callable
-  object, a second cache). A kernel later than 0.15.1 reads the first three
-  like the same decorator written with a nested function, so a wrapper with a parameter
-  of its own is refused, naming the parameter, and one that only passes its arguments
-  on is accepted; it refuses the fourth, naming both parameters. This gate has rules of its own for the first and the fourth and refuses
-  them beside either kernel; the second and the third it refuses through the
-  kernel. Not found by either
-  kernel: a wrapper that takes the bound object under the same name as the first
-  parameter of the function it wraps and does not hand it on. A cache whose
-  function cannot be told from what it refers to is refused, not read. For each, call
-  the function from a plain function and register that one.
-- **A single-dispatch function** (`functools.singledispatch`) with an implementation
-  registered beside its base one, or in its place (`register(object)`): the
-  implementation that runs is chosen at call time, by the type of an argument, so its
-  parameters and defaults cannot be read. Call it from a plain function and register
-  that one. With its base implementation alone it is read like any function, and a
-  function that only has attributes called `registry` and `dispatch` is not taken for
-  one. (Pydantic AI cannot run a `functools.singledispatchmethod` as a tool built from
-  its signature. Given its schema by hand, one with a registered implementation is
-  refused by this rule.)
+  wrapper under a `functools.partial`, or a stack deeper than the kernel's walk reads.
+  The walk reads the tool and at most 31 callables after it: a function decorator is
+  one, and a class-based decorator built with `functools.update_wrapper` is two (what
+  it names as `__wrapped__` and its own `__call__`). So under one function wrapper a
+  stack is read 30 function decorators deep, or 15 class-based ones, and a deeper one
+  is refused. Give a descriptor's class no `__get__`, take a cache out from under the
+  partial, or shorten the stack; otherwise register a plain function in its place, as
+  above. The reason for a descriptor says that cause (before 0.2.1 it said "cannot be
+  inspected").
+- **A callable object on the way whose `__call__` takes `*args` or `**kwargs` and that
+  names nothing it wraps.** The kernel's walk passes through a callable object that names
+  nothing as `__wrapped__` and reads its `__call__`; what that `__call__` hands the call
+  to is not read. A class-based decorator that keeps the function in an attribute and
+  answers every other attribute from it with `__getattr__`, over a `functools.partial`,
+  on a tool that takes the run context, was judged `{"table": "prod"}` and ran the
+  function's `dry_run=True`, which nothing showed: Pydantic AI took `*args` for the
+  context and the model's keys into `**kwargs`. In 0.2.0 too. Every level of the walk is
+  asked, so the same object is refused under a `functools.partial`, as what a cache
+  named again for another function calls, and behind the `__wrapped__` that a tool which
+  is a `functools.partial` carries, along a chain of such names to its end. An object
+  names what it wraps where it holds a `__wrapped__` that is not None, read without
+  `__getattr__`: in its own dictionary, in a slot that is set, or from a property. A
+  `__wrapped__` slot that is declared and never set names nothing (a lookup on the object
+  then falls to `__getattr__`), and such an object is refused too. Give the
+  object a `__wrapped__` that names what it calls (`functools.update_wrapper(self, fn)`
+  in its `__init__`). Where that is a `functools.partial` of an annotated function, give
+  the partial the function's annotations too (`p.__annotations__ =
+  dict(f.__annotations__)`), or Pydantic AI cannot build the tool. Otherwise register a
+  plain function in its place, as above.
+- **A `weakref.proxy`**, as the tool or anywhere on the way to the function. A proxy
+  shows the attributes and the class of the object it stands for and is not that
+  object, so what a call to it runs cannot be told: beside `recusal` 0.16.0 a proxy of
+  a class-based decorator whose `__call__` takes the tool's two parameters swapped ran
+  them swapped, one whose `__call__` has a `dry_run=False` of its own ran it, and a
+  proxy of a cache named again over a wrapper with a parameter of its own ran that
+  parameter at its default. Refused with a reason that says so. Register the function
+  itself, not a proxy of it.
+- **A callable that answers for another object.** The ordinary case is a class-based
+  decorator that keeps the function in an attribute (`self.fn = fn`) and answers every
+  other attribute from it with `__getattr__`: over a function that names a
+  `__wrapped__` of its own (any `functools.wraps` decorator, any `functools.lru_cache`)
+  it answers `__wrapped__` with what that function wraps, and the walk would step past
+  the function it calls. Also an object whose `__class__` is not its type, where it
+  holds no `__wrapped__` of its own or its own `__call__` takes parameters by name. The
+  reason passes on what the kernel found. Call `functools.update_wrapper(self, fn)` in
+  the decorator's `__init__` and it is read to the end; otherwise register a plain
+  function in its place, as above.
+- **A decorator that holds a second wrapper of the function.** A decorator that applies
+  another `functools.wraps` wrapper of the same function inside itself and calls that
+  one, from its closure, by a module global it names, from a class-based decorator's
+  instance, or by way of a class-based decorator, a callable object, a
+  `functools.partial` that carries a `__wrapped__`, a weak proxy, a cache named again
+  or a second held wrapper: `functools.wraps` points past the inner wrapper, so it is
+  not read like one applied directly. Refused where the inner wrapper takes a parameter
+  of its own, and where it takes the tool's parameters in another order (beside
+  `recusal` 0.16.0 one that took them swapped ran them swapped: judged `sql=''`,
+  `force=True`; ran `sql=True`, `force=''`). The reason names the parameters. Register a
+  plain function in its place, as above. Not found, by design
+  of the kernel's walk: an inner wrapper held any other way, among them a plain
+  function or a lambda that names nothing as `__wrapped__`, a callable object's
+  `__call__` that names nothing, a wrapper held in a container, a slot or a non-callable
+  object, and a wrapper built on its first use (the 0.17.0 entry of the
+  [changelog](https://github.com/philpaz/recusal/blob/main/CHANGELOG.md) lists them all,
+  under "Still not found, by design").
+- **A `functools.partialmethod` over a callable object**: refused, with a reason that
+  says so and what to do. Over a plain function the same `partialmethod` is read in
+  full.
+- **Four decorator shapes the kernel's walk reads through.** A decorator written as
+  `functools.wraps(f)(functools.partial(helper, f))`; `@functools.wraps(f)` above
+  `@functools.lru_cache` above another wrapper (the cache names `f` and calls the
+  wrapper); a class-based decorator written inside the decorator, whose `__call__`
+  calls a second wrapper the decorator built, or one at module level whose `__call__`
+  names that wrapper as a global; and a method that delegates to a free function under
+  `functools.wraps` of it and keeps its object, where the free function's first
+  parameter has a default. The kernel reads the second and the third like the same
+  decorator written with a nested function, so a wrapper with a parameter of its own is
+  refused, naming the parameter, and one that only passes its arguments on is accepted,
+  on a method as on a plain function, whatever the cache calls. This gate has rules of
+  its own for the first (a partial that binds by position and carries a name, see
+  below) and the fourth (a bound object past a naming wrapper), and refuses them. Not
+  found: a wrapper that takes the bound object under the same name as the first
+  parameter of the function it wraps and does not hand it on. A cache whose function
+  cannot be told from what it refers to is refused, not read: apply the cache to the
+  function itself. For the others, register a plain function in their place, as above.
+- **A single-dispatch function** (`functools.singledispatch`, or the callable a
+  `singledispatchmethod` hands out). With an implementation registered beside its base
+  one, or in its place (`register(object)`), the implementation that runs is chosen at
+  call time, by the type of an argument, so its parameters and defaults cannot be read.
+  With nothing registered but its base, an implementation can be registered on it at
+  any moment, also between the check and the call: beside `recusal` 0.16.0 a wrapper
+  that registered one on its first use ran its `purge=True` for the very call that was
+  judged without it. Both are refused, each with a reason of its own. Register one plain
+  function as the tool, declaring every parameter any implementation takes, and branch on
+  the type inside its body: a single-dispatch function called from a plain function is
+  not read, so an implementation registered later runs there with defaults no policy saw
+  (before 0.2.1 the reason said to call the dispatcher from a plain function, which does
+  exactly that). A function that only has attributes
+  called `registry` and `dispatch` is not taken for one. (Pydantic AI cannot run a
+  `functools.singledispatchmethod` as a tool built from its signature. Given its schema
+  by hand, one is refused by this rule.)
 - **A `functools.partial` that binds a value by position over a wrapper that names a
   parameter.** The partial's own signature, which is what Pydantic AI and the gate
   read, drops the leading parameter of every wrapper under it, and that parameter's
@@ -203,10 +278,26 @@ type-checked function from a plain function and register that one. Also refused:
   names any parameter of its own, of any kind and name, with or without a default, the
   run context included, refuses the call, whether or not a body that kept the value
   would fail. So `functools.partial(scoped(purge), "acme")` is refused for any
-  `scoped` whose wrapper names `tenant`. Bind the value by keyword, or call the wrapped
-  function from a plain function and register that one. A value bound by position
+  `scoped` whose wrapper names `tenant`. Bind the value by keyword, or register a plain
+  function in its place, as above. A value bound by position
   directly over the function, or over wrappers that only forward, is read as the
-  function's leading parameter and is not refused. Two more refusals of such a partial:
+  function's leading parameter and is not refused. A value a `functools.partial` binds
+  by position is not shown to the policy: it is your application's constant, not the
+  model's, and the policy is handed the parameters left to the model.
+  `functools.partial(plain, "fixed")` over `def plain(table, limit=10)` is judged as
+  `{"limit": 10}` and runs `table="fixed"`. (The tool is handed the dict the policy
+  judged, and with `table` in it the call would fail on a second value for `table`.)
+  A value it binds by keyword is the
+  default of the parameter it names, and is shown and judged, as below. Write a policy
+  that needs the bound value against a plain function that takes it as a parameter, or
+  bind it by keyword. A name the model sends that the function the tool shows does not
+  take, and that a callable on the way takes for a value it gets otherwise, is refused:
+  a parameter the partial fills by position, the run context's name (`ctx`), the
+  object of a bound method or a classmethod under whatever name the function or a
+  wrapper on the way gives it (`self`, `svc`, `cls`). Where the function takes
+  `**kwargs`, Pydantic AI accepts such a name, and the call fails on a second value for
+  the parameter; before 0.2.1 the `TypeError` left the run as an exception. Two more
+  refusals of such a partial:
   one that was named with `functools.update_wrapper` or `functools.wraps` (see the next
   point), and one that binds a positional-only parameter of a function that also takes
   `**kwargs` (`functools.partial(fetch, "acme")` over `def fetch(tenant, /, table,
@@ -223,7 +314,8 @@ type-checked function from a plain function and register that one. Also refused:
   it, and `insert(tenant, *rows)` ran `tenant="acme"` with the model's `tenant` as its
   first row. A keyword partial named that way is refused too: Pydantic AI would show,
   and fill in, the function's default in place of the value the partial binds. Set
-  `__name__` and `__qualname__` on the partial instead, or register a plain function.
+  `__name__` and `__qualname__` on the partial instead, or register a plain function in
+  its place, as above.
 - **The object of a bound method past a wrapper that names a positional parameter**
   (`def wrapper(self, *args, **kwargs)`). The object is read as filling the function's
   leading parameter, and the wrapper may keep it. Refused where a wrapper that kept it
@@ -234,8 +326,13 @@ type-checked function from a plain function and register that one. Also refused:
   beyond the object can pass that many on by position (the run context of a
   context-taking tool is one such value, and so is a value a partial binds), and the
   call is refused when the last parameter of the function they reach has a default. A
-  `functools.lru_cache` or `functools.cache` wrapper keeps nothing and does not count
-  as such a wrapper. So a method decorator that restates the method's parameters
+  `functools.lru_cache` or `functools.cache` wrapper applied to the function it names
+  keeps nothing and does not count as such a wrapper; one named again for another
+  function (`functools.wraps(f)` above the cache) counts as the wrapper it calls. Before
+  0.2.1, in 0.2.0 too, it did not: a method decorated with `functools.wraps(fn)` above
+  `functools.lru_cache` above `def wrapper(self, table, limit=10): return fn(table,
+  limit)` was judged `{"table": "t", "limit": 5}` and ran `self="t"`, `table=5`,
+  `limit=10`. So a method decorator that restates the method's parameters
   (`def wrapper(self, table, limit=10)`) over a method with a positional parameter that
   has a default is refused. That refusal is conservative: no wrapper body that passes
   the object on can misuse such a stack, and it is the price of not reading bodies. An
@@ -251,6 +348,72 @@ type-checked function from a plain function and register that one. Also refused:
   function its items one by one, so a string would reach it letter by letter.
   Validation makes the value a list; another one reaches the gate only where a hook of
   yours skips validation (`SkipToolValidation`) or answers a validation error.
+
+**Refused although it runs correctly.** The gate reads parameters, not bodies, so some
+tools that run as judged are refused, each with a reason that says what to write
+instead. New with 0.2.1, which requires `recusal` 0.17.0: the walk of 0.17.0 refuses
+these, and the walk of 0.16.0, beside which 0.2.0 can be installed, read them (the first
+two, and a single-dispatch function nothing is registered on, were checked through this
+gate: as it stood before 0.2.1, beside 0.16.0, it ran them as judged):
+
+- a `weakref.proxy` of a plain function, as the tool or anywhere on the way: register
+  the function itself;
+- the class-based decorator above that keeps the function in an attribute and answers
+  every other attribute with `__getattr__`, over a function that names a `__wrapped__`
+  (any `functools.wraps` decorator, any `functools.lru_cache`), and any other proxy
+  that answers `__wrapped__` only from `__getattr__`: call
+  `functools.update_wrapper(self, fn)` in its `__init__`, or give it a `__wrapped__`
+  attribute that names what it calls. (Over a plain function such a decorator shows
+  that function's `__code__` and is refused as a declared signature, as it was before
+  0.2.1 under a reason that named `__signature__`);
+- an object whose `__class__` is not its type, where it holds no `__wrapped__` of its
+  own, or holds one and its own `__call__` takes parameters by name: register a plain
+  function in its place, as above;
+- a single-dispatch function or method that nothing is ever registered on, as the
+  tool, under a wrapper, or held by a wrapper: register one plain function that branches
+  on the type, as above;
+- a decorator that holds a `functools.wraps` wrapper that takes the tool's parameters
+  in another order and is called by keyword, or one that takes only a later parameter
+  of the tool in the first place: give the held wrapper the tool's parameters in the
+  tool's order, or by keyword only;
+- a decorator that holds a `weakref.proxy` of a callable the walk does not otherwise
+  reach (a helper among them): hold the callable itself;
+- a decorator that holds a cache named again for another function, or one that names
+  nothing, where the cache calls anything but a plain function on the way to the tool's
+  function;
+- a decorator whose held values lead along a chain 32 callables long or more, or to more
+  than 16,384 callables.
+
+New with 0.2.1 by rules of this gate's own, found by the reviews of 0.2.1 before its
+release:
+
+- a callable object anywhere on the way whose `__call__` takes `*args` or `**kwargs`,
+  names nothing it wraps and passes every argument on (the forwarding class-based
+  decorator above, over a `functools.partial`, under one, or called by a cache named
+  again), also where the model sends every parameter and the call runs as judged: give
+  the object a `__wrapped__` (`functools.update_wrapper(self, fn)`, and over a partial
+  of an annotated function the function's annotations on the partial);
+- a method decorator named again above a cache (`functools.wraps(fn)` above
+  `functools.lru_cache`) whose wrapper restates the method's parameters and does hand
+  the object on, over a method whose positional parameter has a default, as the same
+  wrapper without the cache is.
+
+Refused before 0.2.1 too, and still: a declared signature that matches the real
+parameters; a facade method that does hand its bound object on (`BoundArgumentKept`); a
+method decorator that restates the method's parameters over a method whose positional
+parameter has a default (see above); and every wrapper with a parameter of its own,
+whatever its body does with it. For each, register a plain function in its place, as
+above: it calls the innermost function directly, and the gate judges its parameters and
+does not read its body.
+
+No longer refused in 0.2.1: a stack in which a `functools.partial` that binds nothing
+and is named with `functools.update_wrapper` stands under another wrapper
+(`logged(functools.update_wrapper(functools.partial(f), f))`), and `functools.wraps(f)`
+above `functools.lru_cache` above a wrapper of `f` that only passes its arguments on,
+which the gate before 0.2.1 refused as "cannot be inspected" beside `recusal` 0.17.0,
+and 0.16.0 too: it laid a walk of its own beside the kernel's and refused where the two
+counts differed. It now reads the callables the kernel's walk reads
+(`reached_callables`), and each such stack is read, or refused for what it is.
 
 **Defaults are judged.** A default of the innermost function that the arguments leave
 out is added, judged, and passed to the function written out. For a tool built from its
@@ -309,7 +472,10 @@ model chose, so `RecusalGate` judges them too, under the function's name, before
 run: a dict (a multi-argument function's arguments, or a single `dict` argument) is
 judged as it is, any other single value as `{"output": value}`. A refusal asks the model
 again; the function does not run, and when the output retries run out the run ends with
-an error. Plain structured output has no output function and is not judged.
+an error. Under `run_stream` Pydantic AI does not retry: a refusal ends the stream with
+`UnexpectedModelBehavior` ("retries are not supported in `run_stream()`"), and the
+refused function does not run. Plain structured output has no output function and is
+not judged.
 
 - The name is the function's `__name__`, and it is all the policy is given. A decorator
   that does not copy it (`functools.wraps` does) leaves its wrapper's name, so the
@@ -340,9 +506,11 @@ an error. Plain structured output has no output function and is not judged.
 `CallDeferred`) are judged before they leave the run, as the model sent them, which is
 what the application receives: no defaults are filled in and no types converted, so
 write the policy for such a tool against the JSON. A refused call is answered with the
-refusal, which the model reads; an allowed one is handed on with exactly the arguments
-judged. A call waiting for approval is judged when it runs, with the arguments it runs
-with, an approver's overrides included.
+refusal, which the model reads; an allowed one is handed on as the model sent it, which
+is what was judged. A call with no arguments (the model sent none, or the empty string)
+is judged as `{}` and handed on as the model sent it, `None` or `''`. A call waiting for
+approval is judged when it runs, with the arguments it runs with, an approver's
+overrides included.
 
 To answer deferred calls inside the run, give the handler to the gate:
 
@@ -438,9 +606,9 @@ path.
   or, where the wrapper passes the others on by position, each of those reaches the
   parameter before its own), a function that calls
   a single-dispatch function, and a decorator that applies another decorator inside
-  itself (the gate follows the function a wrapper says it wraps, `__wrapped__`, and
-  that is not the one such a wrapper calls): the policy judged the arguments, and what
-  the code does with them is its own.
+  itself where the kernel's walk does not find the inner one (see "A decorator that
+  holds a second wrapper" above): the policy judged the arguments, and what the code
+  does with them is its own.
 - **What a class used as a tool function does when it is built.** The gate reads the
   signature Pydantic AI validates the class against and completes the arguments from
   it. It does not read `__init__`, `__new__` or a metaclass themselves, so none of
@@ -488,24 +656,30 @@ full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-know
 
 ## Status
 
-**In-depth review under way.** Its fixes so far are released in 0.2.0, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes so far are released in 0.2.1, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
 
-**Open from the latest review round**, stated so you can judge them:
+**Open from the latest review round** (round thirteen, beside `recusal` 0.16.0), stated
+so you can judge them. What it found that ran a value no policy judged is closed in 0.2.1
+by its floor, `recusal` 0.17.0, whose walk refuses each shape, and each is held by a
+test of this package. These are stated and not changed:
 
-- Beside `recusal` 0.15.0 or 0.15.1, a tool built with `functools.partialmethod` over a callable
-  object (a class-based decorator instance, for example) is read one level deep: what
-  is under the object is not read, so a value or a default can run that the policy was
-  not handed. Over a plain function the same `partialmethod` is read in full. It is
-  reachable with unannotated parameters or a tool given its schema by hand. The fix is
-  in the kernel: a kernel later than 0.15.1 refuses such a tool before the policy
-  runs, and 0.15.1 is the newest release as this is written. Beside 0.15.0 or 0.15.1, do not register a `partialmethod` over a callable object as a
-  tool.
-- A keyword that a `functools.partial` binds and that names no parameter of the function
-  lands in its `**kwargs` and is not shown to the policy. It is the application's own
-  constant, never the model's.
+- A value a `functools.partial` binds by position is not shown to the policy (see
+  above), and neither is a keyword it binds that names no parameter of the function and
+  lands in its `**kwargs`, when the model leaves that name out: then the application's
+  constant runs. The model can send the same name (`functools.partial(extra, mode="x")`
+  over `def extra(table, limit=10, **more)`, and the model sends `mode="evil"`): its value
+  is then judged, and it runs in place of the constant.
+- What the kernel's walk does not find, by design: an inner wrapper held where no
+  attribute a callable names reaches it (a plain function or a lambda that names nothing
+  as `__wrapped__`, a container, a slot, a wrapper built on its first use), listed in
+  the changelog's 0.17.0 entry under "Still not found, by design". And what a wrapper's
+  body does, which no rule here reads (see "What the gate does not see").
+- Not covered by round thirteen: MCP toolsets, durable execution, tools the provider
+  runs, realtime sessions, `run_stream_events`, any Python but 3.12, and mutation
+  testing of the gate.
 
 **Help make it better.** Read the code, test this adapter against your own stack and tell
 us what you find. Reviews, bug reports and pull requests are all welcome:
