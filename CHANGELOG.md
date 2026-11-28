@@ -540,7 +540,10 @@ adapter is a separate distribution on PyPI under its own version and tag.
   gated, what this kernel refuses (a method decorator that names the object `self` over
   a classmethod's `cls`, and a held `def second(mode, ...)` over `def run(self, ...)`);
   beside this kernel both are refused before anything runs. The adapter's page states
-  both as open; it is the adapter's to change. The class docstrings of
+  both as open; it is the adapter's to change. And one test of `recusal-pydantic-ai`
+  0.2.1 expected the gate's own reason for a wrapper that names the object `self` where
+  the method has `svc`, which the kernel's walk now refuses first; it is refused either
+  way. The class docstrings of
   `OpenDispatch`, `WeakProxy` and `BoundArgumentKept`, which gave the same advice, say
   the same as the messages.
 

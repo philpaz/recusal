@@ -4260,6 +4260,11 @@ class TestPydanticAiGate:
             ran.clear()
             seen, answer = self._run_tool(example, tool, sent, name="q")
             assert seen == [] and ran == [] and answer[0] == "failed", (seen, ran, answer)
+            # since recusal 0.17.1 the kernel's walk refuses a wrapper that names the
+            # object `self` where the method has `svc` first; refused all the same
+            if tool is not fixed and _kernel_refuses_the_receiver(tool):
+                assert "an argument bound on the way" in answer[1], answer
+                continue
             assert f"the arguments name `{name}`" in answer[1]
             assert "a second value for the parameter" in answer[1]
         # a key no callable on the way takes is judged and lands in `**more`
@@ -6121,3 +6126,19 @@ class TestPydanticAiGate:
         assert result.stdout.count("tools that ran: 2") == 2
         assert result.stdout.count("Recusal refused `run_sql` [FAIL]") == 2
         assert "RecusalGate:" in result.stdout and "Hooks(before_tool_execute):" in result.stdout
+
+
+def _kernel_refuses_the_receiver(tool):
+    """Whether the kernel's walk refuses ``tool`` (or the function a ``Tool`` holds) as
+    a ``BoundArgumentKept``: since recusal 0.17.1 it does for a wrapper that takes the
+    object under another name than the method has for it."""
+    from recusal import invocation
+
+    function = getattr(tool, "function", tool)
+    try:
+        invocation.reached_parameters(function)
+    except invocation.BoundArgumentKept:
+        return True
+    except Exception:  # noqa: BLE001, refused for something else
+        return False
+    return False
