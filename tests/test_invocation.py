@@ -1967,7 +1967,59 @@ def _limits():
         again = _with_timeout(tool)
         return tool
 
+    def built_on_first_use(function):
+        state = {}
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            if "guarded" not in state:  # it does not exist when the walk is made
+                state["guarded"] = _with_timeout(function)
+            return state["guarded"](*args, **kwargs)
+
+        return wrapper
+
+    def in_a_namespace(function):
+        import types
+
+        held = types.SimpleNamespace(guarded=_with_timeout(function))
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return held.guarded(*args, **kwargs)
+
+        return wrapper
+
+    def in_an_object_that_is_not_callable(function):
+        class Settings:
+            def __init__(self):
+                self.guarded = _with_timeout(function)
+
+        settings = Settings()
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return settings.guarded(*args, **kwargs)
+
+        return wrapper
+
+    def behind_a_weak_reference(function):
+        import weakref
+
+        guarded = _with_timeout(function)
+        _SLOT.append(guarded)  # kept alive, as the application would keep it
+        reference = weakref.ref(guarded)
+
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return reference()(*args, **kwargs)
+
+        return wrapper
+
     return [
+        ("a wrapper built on first use", built_on_first_use),
+        ("in a SimpleNamespace", in_a_namespace),
+        ("in an object that is not callable", in_an_object_that_is_not_callable),
+        ("behind a weakref.ref the wrapper calls", behind_a_weak_reference),
         ("a wrapper of a tool that names nothing as __wrapped__", of_a_tool_that_names_nothing),
         ("a plain inner function", _calling(named_nothing)),
         ("a lambda", _calling(lambda f: lambda *a, timeout=30, **k: f(*a, **k))),
@@ -8124,10 +8176,28 @@ def test_p_a_proxy_that_answers_for_wrapped_without_holding_one_is_refused():
         assert unsupported_signature(proxy(fetch)) is None, proxy
         assert unsupported_signature(proxy(direct)) == _KEPT, proxy
     assert _levels(Silent(fetch)) == [_FORWARD, _FORWARD]
-    assert not invocation._answers_for_wrapped(fetch)
-    assert not invocation._answers_for_wrapped(Named(fetch))
-    assert invocation._answers_for_wrapped(forwarding(_traced(fetch)))
-    assert not invocation._answers_for_wrapped(forwarding(fetch))  # nothing is answered
+    assert not invocation._answers_for_wrapped(_traced(fetch), fetch)
+    assert not invocation._answers_for_wrapped(Named(fetch), fetch)
+    assert invocation._answers_for_wrapped(forwarding(_traced(fetch)), fetch)
+
+    # a placeholder of the name on the class does not make the answer the object's own
+    class Placeholder(forwarding):
+        __slots__ = ()
+        __wrapped__ = None
+
+        def __getattribute__(self, name):
+            if name in ("_target", "__class__"):
+                return object.__getattribute__(self, name)
+            return getattr(object.__getattribute__(self, "_target"), name)
+
+    placed = Placeholder(direct)
+    assert placed("u", timeout=5) == 999999
+    with pytest.raises(invocation.ProxiedCallable):
+        reached_parameters(placed)
+    # a proxy of a function that names nothing answers nothing for ``__wrapped__``: it is
+    # not this refusal (it shows the function's code, and is refused for that)
+    with pytest.raises(DeclaredSignature):
+        reached_parameters(forwarding(fetch))
 
 
 def test_p_a_declared_signature_says_which_attribute():
@@ -8246,10 +8316,11 @@ def test_p_the_callables_of_the_walk_stand_beside_its_levels():
 
 
 def test_p_a_class_based_decorator_is_two_callables_of_the_walk():
-    """The walk reads at most 32 callables after the tool. A function decorator is one of
-    them. A class-based decorator built with ``functools.update_wrapper`` is two: what it
-    names as ``__wrapped__`` and its own ``__call__``, both of which the walk reads. So a
-    stack of them is read half as deep, and a deeper one is refused, not gated."""
+    """The walk reads the tool and at most 31 callables after it; a tool with a 32nd is
+    refused. A function decorator is one of them. A class-based decorator built with
+    ``functools.update_wrapper`` is two: what it names as ``__wrapped__`` and its own
+    ``__call__``, both of which the walk reads. So a stack of them is read half as deep,
+    and a deeper one is refused, not gated."""
     import functools
 
     class Logged:
@@ -8275,3 +8346,626 @@ def test_p_a_class_based_decorator_is_two_callables_of_the_walk():
 
     assert deepest(_traced) == 30
     assert deepest(Logged) == 15
+
+
+# --- the review of the change after 0.16.0 -------------------------------------------------
+#
+# A review of the change the two blocks above pin found the order rule wrong under a bound
+# argument the holder keeps, one held wrapper judged for one of two ways to it, objects
+# that show another class than their own, and exceptions that were no refusal.
+
+
+def _v_search(self, sql: str, force: bool = False) -> str:
+    return f"sql={sql!r} force={force!r}"
+
+
+def _v_holding(second, hands_on):
+    """A method decorator that holds ``second`` and keeps its receiver, or hands it on."""
+    import functools
+
+    def decorate(method):
+        if hands_on:
+
+            @functools.wraps(method)
+            def first(self, *args, **kwargs):
+                return second(self, *args, **kwargs)
+
+        else:
+
+            @functools.wraps(method)
+            def first(self, *args, **kwargs):
+                return second(*args, **kwargs)
+
+        return first
+
+    return decorate
+
+
+def test_v_the_order_of_a_held_wrapper_is_judged_where_the_holder_keeps_its_receiver():
+    """A method decorator holds ``def second(force, sql)`` and its own wrapper keeps the
+    receiver: ``second(*args, **kwargs)``. The order rule took the first place of a held
+    wrapper under a method for the receiver's whatever its name, so it compared ``sql``
+    alone, read the tool, and a call by position ran the two swapped. And it refused
+    the same decorator over ``def second(sql, force)``, the tool's own order, for a
+    place that wrapper does not take. A place named as the tool names a parameter is
+    that parameter's."""
+    import functools
+    import types
+
+    @functools.wraps(_v_search)
+    def swapped(force, sql):
+        return _v_search(None, sql=sql, force=force)
+
+    @functools.wraps(_v_search)
+    def in_order(sql, force=False):
+        return _v_search(None, sql=sql, force=force)
+
+    @functools.wraps(_v_search)
+    def swapped_with_self(self, force, sql):
+        return _v_search(self, sql=sql, force=force)
+
+    @functools.wraps(_v_search)
+    def in_order_with_self(self, sql, force=False):
+        return _v_search(self, sql=sql, force=force)
+
+    held = {
+        "kept, swapped": _v_holding(swapped, False)(_v_search),
+        "kept, in order": _v_holding(in_order, False)(_v_search),
+        "handed on, swapped": _v_holding(swapped_with_self, True)(_v_search),
+        "handed on, in order": _v_holding(in_order_with_self, True)(_v_search),
+    }
+    Tools = type("Tools", (), {f"tool_{index}": each for index, each in enumerate(held.values())})
+    tools = types.SimpleNamespace(
+        swapped=Tools().tool_0,
+        in_order=Tools().tool_1,
+        swapped_with_self=Tools().tool_2,
+        in_order_with_self=Tools().tool_3,
+    )
+    expected = invocation._HELD_IN_ANOTHER_PLACE.format(name="force", declared="sql")
+    assert tools.swapped("DROP", False) == "sql=False force='DROP'"  # judged the other way
+    for tool in (tools.swapped, tools.swapped_with_self):
+        with pytest.raises(HiddenWrapper) as refused:
+            reached_parameters(tool)
+        assert str(refused.value) == expected
+        assert unsupported_signature(tool) == expected
+    assert tools.in_order("DROP", False) == "sql='DROP' force=False"
+    for tool in (tools.in_order, tools.in_order_with_self):
+        assert _levels(tool) == [_FORWARD, ["sql", "force"]], tool  # as 0.16.0 read both
+        assert unsupported_signature(tool) is None
+
+    # the same under a ``functools.partial`` that binds the first parameter
+    def fetch(tenant: str, sql: str, force: bool = False) -> str:
+        return f"sql={sql!r} force={force!r}"
+
+    def bound(held):
+        @functools.wraps(fetch)
+        def wrapper(tenant, *args, **kwargs):
+            return held(*args, **kwargs)
+
+        return functools.partial(wrapper, "acme")
+
+    @functools.wraps(fetch)
+    def flipped(force, sql):
+        return fetch("T", sql=sql, force=force)
+
+    @functools.wraps(fetch)
+    def straight(sql, force=False):
+        return fetch("T", sql=sql, force=force)
+
+    assert bound(flipped)("DROP", False) == "sql=False force='DROP'"
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(bound(flipped))
+    assert str(refused.value) == expected
+    assert _levels(bound(straight))[0] == _FORWARD
+    assert invocation._bound_taken(swapped, 1, 0, {"sql", "force"}) == 0
+    assert invocation._bound_taken(swapped_with_self, 1, 0, {"sql", "force"}) == 1
+    assert invocation._bound_taken(swapped, 1, 1, {"sql", "force"}) == 1  # filled for certain
+
+
+def test_v_a_held_wrapper_reached_two_ways_is_judged_for_each():
+    """A held callable object keeps ``functools.partial(hw)``, where ``hw(skip_review=True,
+    *args, **kwargs)`` has a leading parameter of its own: refused. With an attribute
+    listed first that reaches the same ``hw`` as a method of the object, which nothing
+    calls, the search stood on ``hw`` once, with the method's bound count, took
+    ``skip_review`` for the receiver's place and read the tool."""
+    import functools
+    import types
+
+    fetch = _fetch()
+    seen = []
+
+    @functools.wraps(fetch)
+    def held(skip_review=True, *args, **kwargs):
+        seen.append(skip_review)
+        return fetch(*args, **kwargs)
+
+    def tool(method_first):
+        class Holder:
+            def __init__(self):
+                if method_first:
+                    self.alias = types.MethodType(held, self)  # never called
+                self.run = functools.partial(held)
+
+            def __call__(self, *args, **kwargs):
+                return self.run(*args, **kwargs)
+
+        holder = Holder()
+
+        @functools.wraps(fetch)
+        def wrapper(*args, **kwargs):
+            return holder(*args, **kwargs)
+
+        return wrapper
+
+    for method_first in (False, True):
+        del seen[:]
+        tool(method_first)(url="u", timeout=5)
+        assert seen == [True]  # a default no policy judged
+        with pytest.raises(HiddenWrapper, match="`skip_review`"):
+            reached_parameters(tool(method_first))
+        assert "`skip_review`" in (unsupported_signature(tool(method_first)) or "")
+
+
+def _v_liars():
+    """Callable objects whose ``__class__`` property shows a type they are not."""
+    import functools
+    import types
+
+    def liar(shown_class, **faces):
+        class Liar:
+            def __init__(self, real, **attributes):
+                self._real = real
+                vars(self).update(attributes)
+
+            @property
+            def __class__(self):
+                return shown_class
+
+            def __call__(self, *args, **kwargs):
+                return self._real(*args, **kwargs)
+
+        return Liar
+
+    def as_function(shown, real):
+        face = {
+            name: getattr(shown, name)
+            for name in ("__code__", "__defaults__", "__kwdefaults__", "__annotations__")
+        }
+        return liar(types.FunctionType)(real, __name__=shown.__name__, **face)
+
+    def as_method(shown, real):
+        return liar(types.MethodType)(real, __func__=lambda self, *a, **k: None, __self__="S")
+
+    def as_partial(shown, real):
+        return liar(functools.partial)(real, func=shown, args=(), keywords={})
+
+    return [("a function", as_function), ("a method", as_method), ("a partial", as_partial)]
+
+
+@pytest.mark.parametrize("name, build", _v_liars(), ids=lambda v: v if type(v) is str else "")
+def test_v_an_object_that_shows_another_class_than_its_own_is_refused(name, build):
+    """The walk tells a function, a method and a ``functools.partial`` by ``isinstance``
+    and ``inspect``, which ask ``__class__``, and a property can answer that. The object
+    was read as the face it showed while a call ran its own ``__call__``, which passes
+    on to a wrapper with a parameter of its own. In 0.16.0 too."""
+    fetch = _fetch()
+    tool = build(fetch, _forcing(fetch))
+    assert tool("u") == 999999
+    with pytest.raises(invocation.ProxiedCallable) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._SHOWS_ANOTHER_CLASS
+    assert type(refused.value) is invocation.ProxiedCallable
+
+
+def test_v_what_shows_another_class_and_holds_a_wrapped_of_its_own():
+    """A transparent proxy of ``wrapt`` shows the class of what it wraps and holds a
+    ``__wrapped__`` of its own, in a slot or in C: it is read as before, through that.
+    Refused, of such objects, is one whose own ``__call__`` takes a parameter by name:
+    behind the class it shows, that ``__call__`` is not read."""
+    import types
+
+    fetch = _fetch()
+
+    class Transparent:
+        __slots__ = ("__wrapped__",)
+
+        def __init__(self, wrapped):
+            self.__wrapped__ = wrapped
+
+        @property
+        def __class__(self):
+            return type(self.__wrapped__)
+
+        def __getattr__(self, name):
+            return getattr(self.__wrapped__, name)
+
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    class Keeping(Transparent):
+        __slots__ = ()
+
+        def __call__(self, *args, timeout=30, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    tool = Transparent(fetch)
+    assert isinstance(tool, types.FunctionType) and type(tool) is Transparent
+    assert _levels(tool)[-1] == _FETCH
+    assert unsupported_signature(tool) is None
+    assert invocation._shows_another_class(tool) is None
+    assert invocation._shows_another_class(fetch) is None
+    keeping = Keeping(fetch)
+    assert keeping("u", timeout=5) == 999999
+    with pytest.raises(invocation.ProxiedCallable) as refused:
+        reached_parameters(keeping)
+    assert str(refused.value) == invocation._SHOWS_ANOTHER_CLASS_AND_TAKES
+
+
+def test_v_a_subclass_of_partial_with_a_call_of_its_own_is_read_as_a_callable_object():
+    """``reached_parameters`` read a ``functools.partial`` for its function alone. A
+    subclass with a ``__call__`` of its own runs that, with whatever parameters it has,
+    and need not call the function at all. Its ``__call__`` is a level now."""
+    import functools
+
+    fetch = _fetch()
+
+    class Guarded(functools.partial):
+        def __call__(self, *args, timeout=30, **kwargs):
+            return self.func(*args, **kwargs)
+
+    tool = Guarded(fetch)
+    assert tool("u", timeout=5) == 999999
+    assert _levels(tool) == [_FETCH, ["args", "timeout", "kwargs"]]
+    assert _levels(_traced(tool)) == [_FORWARD, _FETCH, ["args", "timeout", "kwargs"]]
+    assert _levels(functools.partial(fetch)) == [_FETCH]  # a plain one, as before
+
+    class Plain(functools.partial):
+        pass
+
+    assert _levels(Plain(fetch)) == [_FETCH]
+
+
+def test_v_a_cache_that_names_nothing_is_read_as_what_it_calls():
+    """``functools.lru_cache`` with its ``__wrapped__`` set to None, or deleted. The walk
+    followed what the cache names and read nothing under such a cache, and the deleted
+    one raised ``AttributeError``, which is no refusal."""
+    import functools
+
+    fetch = _fetch()
+
+    def cache(delete):
+        made = functools.lru_cache(maxsize=None)(_traced(_forcing(fetch)))
+        if delete:
+            del made.__wrapped__
+        else:
+            made.__wrapped__ = None
+        return made
+
+    for delete in (False, True):
+        tool = cache(delete)
+        assert tool("u") == 999999
+        assert _levels(tool) == [_FORWARD, ["args", "force", "kwargs"], _FETCH], delete
+        assert unsupported_signature(tool) is not None, delete
+        assert _levels(_traced(tool))[2] == ["args", "force", "kwargs"]
+        assert invocation.cache_target(tool).__wrapped__.__wrapped__ is fetch
+
+    class Tools:
+        find = cache(True)
+
+    under_a_method = _levels(Tools().find)  # the object is bound to what the cache calls
+    assert under_a_method[0] == _FORWARD and ["args", "force", "kwargs"] in under_a_method
+    held = _calling(lambda function: cache(True))(fetch)
+    with pytest.raises(HiddenWrapper):  # held, it is followed to what it calls as well
+        reached_parameters(held)
+
+
+def test_v_what_the_code_of_a_callable_raises_is_a_refusal():
+    """The public functions raise ``DeclaredSignature``, ``TypeError`` or ``ValueError``,
+    which a gate turns into a refusal. A ``weakref.proxy`` whose object is gone raised
+    ``ReferenceError`` from all of them, and a ``__getattr__`` that raises for
+    ``__wrapped__`` raised whatever it raised. An exception that is not an ``Exception``
+    is still passed on."""
+    import weakref
+
+    def dead():
+        return weakref.proxy(_forcing(_fetch()))
+
+    for read in (reached_parameters, invocation.reached_callables, invocation.own_parameters):
+        with pytest.raises(invocation.WeakProxy) as refused:
+            read(dead())
+        assert str(refused.value) == invocation._GONE
+    assert unsupported_signature(dead()) is not None
+
+    def raising(error):
+        class Tool:
+            def __call__(self, url: str, timeout: int = 5) -> int:
+                return timeout
+
+            def __getattr__(self, name):
+                if name == "__wrapped__":
+                    raise error("boom")
+                raise AttributeError(name)
+
+        return Tool()
+
+    for error in (RuntimeError, KeyError, ReferenceError):
+        with pytest.raises(ValueError) as refused:
+            reached_parameters(raising(error))
+        assert str(refused.value) == invocation._RAISED_WHEN_READ
+        assert "boom" not in str(refused.value)
+        assert type(refused.value.__cause__) is error
+        assert unsupported_signature(raising(error)) == "its signature cannot be inspected"
+    with pytest.raises(KeyboardInterrupt):
+        reached_parameters(raising(KeyboardInterrupt))
+    assert _levels(raising(AttributeError)) == [["url", "timeout"], ["url", "timeout"]]
+
+
+def test_v_a_held_proxy_of_a_partial_or_a_method_the_walk_stood_on_is_followed():
+    """A decorator over a ``functools.partial``, or over a bound method, that holds a
+    ``weakref.proxy`` of what it wraps and calls that. The proxy was known only for a
+    function or an object the walk read, and a partial or a method is read through its
+    function, so these two were refused although they run correctly."""
+    import functools
+    import weakref
+
+    fetch = _fetch()
+    partial = functools.partial(fetch)
+
+    class Tools:
+        def find(self, url: str, timeout: int = 999999) -> int:
+            return timeout
+
+    method = Tools().find
+    for wrapped in (fetch, partial, method):
+        tool = _calling(weakref.proxy)(wrapped)
+        assert tool("u", timeout=5) == 5
+        assert _levels(tool)[0] == _FORWARD, wrapped
+    helper = functools.partial(print)
+    with pytest.raises(HiddenWrapper, match="holds a `weakref.proxy` of a callable"):
+        reached_parameters(_holding(weakref.proxy(helper), fetch))
+
+
+def test_v_only_callables_count_towards_the_bound_of_the_search():
+    """The bound on one search counted every value a wrapper found holds, so a
+    class-based decorator with some hundreds of plain attributes and one harmless held
+    wrapper was refused, and so was a wrapper that holds 600 harmless callable objects.
+    Plain values are not counted, and the bound is far above what a decorator holds."""
+    import functools
+
+    fetch = _fetch()
+
+    class Decorated:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            for index in range(600):
+                setattr(self, f"setting_{index}", index)
+            self.traced = _traced(function)
+
+        def __call__(self, *args, **kwargs):
+            return self.traced(*args, **kwargs)
+
+    assert _levels(Decorated(fetch)) == [_FORWARD, _FORWARD, _FETCH]
+
+    class Hook:
+        def __call__(self, event):
+            return None
+
+    hooks = [Hook() for _ in range(600)]
+
+    class Hooked:
+        def __init__(self):
+            vars(self).update({f"hook_{index}": hook for index, hook in enumerate(hooks)})
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+    assert _levels(_holding(Hooked(), fetch)) == [_FORWARD, _FETCH]
+    assert invocation._HELD_NODES >= 16384
+
+
+def test_v_a_declared_signature_takes_whatever_arguments_0_16_0_took():
+    assert DeclaredSignature("a", "b").args == ("a", "b")
+    assert DeclaredSignature("a", "b").declared is None
+    assert DeclaredSignature("__signature__").declared == "__signature__"
+    assert DeclaredSignature("__signature__", "x").declared is None
+    assert str(DeclaredSignature("a message")) == "a message"
+
+
+def test_v_the_lookup_of_wrapped_is_made_once_for_each_callable():
+    """A ``__wrapped__`` property that answers differently each time: the proxy test
+    made the lookup a second time, so the walk read another answer than 0.16.0 did."""
+    fetch = _fetch()
+    asked = []
+
+    class Once:
+        @property
+        def __wrapped__(self):
+            asked.append(1)
+            return fetch if len(asked) == 1 else None
+
+        def __call__(self, *args, **kwargs):
+            return fetch(*args, **kwargs)
+
+    assert _levels(Once()) == [_FORWARD, _FORWARD, _FETCH]
+    assert len(asked) == 1
+
+
+def test_v_an_object_with_many_attributes_copied_from_its_function_is_read_in_step():
+    """What ``functools.update_wrapper`` copied from the function onto a class-based
+    decorator is left out of what the decorator holds. Each attribute was compared with
+    every copied one; they are told by ``id()`` now, and the reading is the same."""
+    import functools
+
+    fetch = _fetch()
+    for index in range(3000):
+        setattr(fetch, f"note_{index}", object())
+    fetch.guarded = _with_timeout(fetch)  # a function's own attribute: copied, not read
+
+    class Decorated:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, *args, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    tool = Decorated(fetch)
+    assert _levels(tool) == [_FORWARD, _FORWARD, _FETCH]
+    tool.kept = _with_timeout(fetch)  # the decorator's own: read, and refused
+    with pytest.raises(HiddenWrapper):
+        reached_parameters(tool)
+
+
+def test_v_the_decorator_that_hands_its_attributes_on_and_what_makes_it_read():
+    """Refused although it runs correctly, and stated: a class-based decorator that keeps
+    the function in an attribute and hands every other attribute on to it, over a
+    function that names a ``__wrapped__``. With ``functools.update_wrapper(self, fn)``
+    in its ``__init__`` it holds the name itself and is read to the end."""
+    import functools
+
+    fetch = _fetch()
+
+    class Counted:
+        def __init__(self, function, named):
+            if named:
+                functools.update_wrapper(self, function)
+            self.function = function
+            self.calls = 0
+
+        def __call__(self, *args, **kwargs):
+            self.calls += 1
+            return self.function(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.function, name)
+
+    for inner in (_traced(fetch), functools.lru_cache(maxsize=None)(fetch)):
+        as_written = Counted(inner, named=False)
+        assert as_written("u", timeout=5) == 5  # it runs correctly
+        with pytest.raises(invocation.ProxiedCallable) as refused:
+            reached_parameters(as_written)
+        assert str(refused.value) == invocation._ANSWERS_FOR_WRAPPED
+        named = Counted(inner, named=True)
+        assert _levels(named)[-1] == _FETCH
+        assert unsupported_signature(named) is None
+    # and over a wrapper with a parameter of its own, named, it is refused for that
+    assert unsupported_signature(Counted(_with_timeout(fetch), named=True)) == _KEPT
+
+
+def test_v_a_dispatcher_built_over_a_dispatcher_is_refused_as_open():
+    """A tool that was refused can be refused by another class. ``functools`` copies the
+    inner dispatcher's ``register`` onto the outer one, so an implementation registered
+    through the outer lands on the inner: the outer has nothing registered, and the walk
+    meets it first. 0.16.0 walked on to the inner and raised ``DispatchedAtCallTime``."""
+    import functools
+
+    def base(key: str, deep: bool = False) -> str:
+        return "base"
+
+    inner = functools.singledispatch(base)
+    outer = functools.singledispatch(inner)
+    outer.register(int, lambda key, deep=False, skip_review=True: "int")
+    assert outer(1) == "int" and int in inner.registry
+    with pytest.raises(DispatchedAtCallTime):
+        reached_parameters(inner)
+    with pytest.raises(invocation.OpenDispatch):
+        reached_parameters(outer)
+
+
+def test_v_what_an_object_a_cache_named_again_calls_holds_is_searched():
+    """A stated limit, pinned from both sides. A cache named again for the function
+    calls a callable object that names nothing and keeps a wrapper with a parameter of
+    its own. Where the object keeps it in its instance dictionary it is found and
+    refused, as in 0.16.0. Where it keeps it in a slot it is not read, and ``timeout``
+    runs at the wrapper's default: the limit the review's generated stacks still show."""
+    fetch = _fetch()
+
+    class Calling:
+        def __init__(self, function):
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    class Slotted:
+        __slots__ = ("function",)
+
+        def __init__(self, function):
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    tool = _again(Calling(_with_timeout(fetch)), fetch)
+    assert tool("u", timeout=5) == 999999
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == _KEPT
+    assert unsupported_signature(tool) == _KEPT
+    assert unsupported_signature(_again(Calling(_traced(fetch)), fetch)) is None
+    assert unsupported_signature(_again(Slotted(_with_timeout(fetch)), fetch)) is None  # stated
+
+
+def test_v_an_instance_dictionary_that_cannot_be_read_tells_nothing():
+    """A class that answers ``__dict__`` with a property hides the instance dictionary
+    from every reading that runs nothing. The proxy ``wrapt`` 2 builds in Python is such
+    a class: it keeps ``__wrapped__`` in that dictionary, shows the class of what it
+    wraps, and hands every other attribute on. So nothing is told of such an object, and
+    it is read as 0.16.0 read it: the proxy of ``wrapt`` correctly, in both builds, and,
+    as a stated limit, a proxy of that shape that keeps nothing of its own and answers
+    ``__wrapped__`` for its target."""
+    import functools
+
+    fetch = _fetch()
+
+    class Hidden:
+        """As the Python build of ``wrapt`` 2 keeps what it wraps."""
+
+        def __init__(self, wrapped):
+            object.__setattr__(self, "__wrapped__", wrapped)
+
+        @property
+        def __dict__(self):
+            return self.__wrapped__.__dict__
+
+        @property
+        def __class__(self):
+            return type(self.__wrapped__)
+
+        def __getattr__(self, name):
+            return getattr(self.__wrapped__, name)
+
+        def __call__(*args, **kwargs):
+            self, *rest = args
+            return self.__wrapped__(*rest, **kwargs)
+
+    tool = Hidden(_traced(fetch))
+    assert tool("u", timeout=5) == 5
+    assert _levels(tool)[-1] == _FETCH
+    assert unsupported_signature(tool) is None
+
+    class Keeping:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+
+        def __call__(self, *args, timeout=30, **kwargs):
+            return self.__wrapped__(*args, **kwargs)
+
+    class Answering:
+        """Keeps its target where nothing reads it and answers ``__wrapped__`` for it."""
+
+        def __init__(self, target):
+            object.__setattr__(self, "_target", target)
+
+        @property
+        def __dict__(self):
+            return {}
+
+        def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, "_target"), name)
+
+        def __call__(self, *args, **kwargs):
+            return object.__getattribute__(self, "_target")(*args, **kwargs)
+
+    limit = Answering(Keeping(fetch))
+    assert limit("u", timeout=5) == 999999  # the argument is kept from the function
+    reached_parameters(limit)  # and it is read: the stated limit

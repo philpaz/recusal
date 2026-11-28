@@ -28,9 +28,10 @@ All notable changes to this project are documented here. The format follows
   exception was raised with no message, and gates wrote "a `__signature__`" for a tool
   refused for a `__text_signature__`. It now has `declared`, one of `"__signature__"`,
   `"__text_signature__"` and `"__code__"`, and a message that says the same in a
-  sentence and names no value. Raised without an argument, as code written for 0.16.0
-  raises it, it is what it was: `declared` is None and the message empty. The reason
-  `unsupported_signature` returns for it is unchanged.
+  sentence and names no value. Raised without an argument, or with any others, as code
+  written for 0.16.0 may raise it, it is what it was: `declared` is None and the
+  arguments are kept as given. The reason `unsupported_signature` returns for it is
+  unchanged.
 - **Kernel: the reason for a bound argument a wrapper may not hand on says only what
   holds for the parameter.** Where the function that takes a bound place passes the
   call on, 0.16.0 gave the reason written for another case: "`query`, the last they
@@ -176,15 +177,18 @@ All notable changes to this project are documented here. The format follows
 - **Kernel: `recusal.invocation` refuses a proxy on the way and a single-dispatch function
   with nothing registered, finds a held wrapper wherever its way to the function passes,
   and refuses a held wrapper that takes the tool's parameters in another order.** In the
-  repository and not released. Found by the review of `recusal-openai-agents` 0.2.2 and
-  by a review of `recusal-pydantic-ai` beside `recusal` 0.16.0. Every shape below is in
-  0.16.0, ran a value no policy judged there, and was reproduced there before the change;
-  each is held by a test in `tests/test_invocation.py` whose name starts `test_o_` or
-  `test_p_`, and each of those but the one that pins a stated limit fails on the code of
-  0.16.0. Nothing that 0.16.0 refuses is accepted. The change adds public names, so the
-  kernel release that carries it is a MINOR one: the exception classes `ProxiedCallable`,
-  `WeakProxy` and `OpenDispatch`, the functions `cache_target` and `reached_callables`,
-  and the attribute `DeclaredSignature.declared` (under Changed).
+  repository and not released. Found by the review of `recusal-openai-agents` 0.2.2, by
+  a review of `recusal-pydantic-ai` beside `recusal` 0.16.0, and by a review of this
+  change itself. Every shape below is in 0.16.0, ran a value no policy judged there, and
+  was reproduced there before the change; each is held by a test in
+  `tests/test_invocation.py` whose name starts `test_o_`, `test_p_` or `test_v_`. Of
+  the first two groups each but one fails on the code of 0.16.0, and that one pins a
+  stated limit. The third group answers the review of the change itself: thirteen of
+  its cases fail on the change as it first stood, and five pin what is stated and did
+  not change. Nothing that 0.16.0 refuses is accepted. The change adds public names, so the kernel release that carries
+  it is a MINOR one: the exception classes `ProxiedCallable`, `WeakProxy` and
+  `OpenDispatch`, the functions `cache_target` and `reached_callables`, and the
+  attribute `DeclaredSignature.declared` (under Changed).
   - *A `weakref.proxy` on the way.* A proxy shows the class and the attributes of the
     object it stands for and is not that object, and the walk tells three things by the
     type of the callable itself: a `functools.lru_cache` wrapper named again for another
@@ -202,19 +206,42 @@ All notable changes to this project are documented here. The format follows
     two types `weakref.proxy` builds, found at the first walk. The walk still reads
     through the proxy, as 0.16.0 did, and raises at its end, after every other refusal,
     so a tool 0.16.0 refused keeps the class it was refused with; `unsupported_signature`
-    gives the proxy as its reason last, after a parameter of a wrapper's own.
-  - *A proxy that answers for `__wrapped__` without holding one.* A transparent proxy
-    written in Python (a lazy object, a tracing shim) that forwards every attribute to
-    its target from `__getattr__` has the same effect where it keeps the target in a
-    slot: what it names as `__wrapped__` is what the TARGET wraps. Refused with the new
-    `recusal.invocation.ProxiedCallable`, a `TypeError` and the base class of
-    `WeakProxy`: the lookup of `__wrapped__` answers, and neither the object's instance
-    dictionary nor the dictionary of its class or of a base has the name. An attribute,
-    a slot and a property of that name are each in one of those and are read as before;
-    an object whose instance dictionary cannot be read (a `__dict__` property, a
-    dictionary that is not a plain `dict`) is left as 0.16.0 reads it. Where such a
-    proxy keeps its target in its instance dictionary, the target is found as something
-    it holds (below), which is how 0.16.0 already refused some of these.
+    gives the proxy as its reason last, after a parameter of a wrapper's own. A proxy
+    whose object is gone raised `ReferenceError` out of the public functions, in 0.16.0
+    too; it is a `WeakProxy` now.
+  - *An object that answers for `__wrapped__` without holding one.* The ordinary shape
+    is a class-based decorator that keeps the function it decorates in an attribute
+    (`self.fn = fn`) and hands every attribute it does not have on to it (`def
+    __getattr__(self, name): return getattr(self.fn, name)`). Over a function that
+    names a `__wrapped__` of its own (a `functools.wraps` decorator, a
+    `functools.lru_cache`) the decorator then answers `__wrapped__` with what THAT
+    function wraps, and the walk stepped from the decorator past the function it calls:
+    past a wrapper with a parameter of its own, past a dispatcher, past a cache named
+    again. A transparent proxy written in Python (a lazy object, a tracing shim) is the
+    same shape. Refused with the new `recusal.invocation.ProxiedCallable`, a
+    `TypeError` and the base class of `WeakProxy`: the lookup of `__wrapped__` answers,
+    and neither the dictionary of the object's class or of a base nor its instance
+    dictionary has the name. An attribute, a slot and a property of that name are each
+    in one of those, and such an object is read as before; a plain value held under
+    the name must be the very object the lookup gave, so a placeholder on the class
+    (`__wrapped__ = None`) beside a `__getattribute__` that answers does not count.
+    An instance dictionary that
+    is a subclass of `dict` is read through `dict.items` itself. Where the class
+    answers `__dict__` with a property, the instance dictionary cannot be read without
+    running code, nothing is told of the object, and it is read as 0.16.0 read it: the
+    proxy `wrapt` 2 builds in Python keeps `__wrapped__` exactly so. The walk makes
+    the lookup of `__wrapped__` once for each callable, as 0.16.0 did.
+  - *An object that shows another class than its own.* The walk tells a function, a
+    method and a `functools.partial` by `isinstance` and `inspect`, which ask
+    `__class__`, and a property can answer that. Such an object was read as the face
+    it showed (a function's code, a method's function, a partial's function) while a
+    call ran its own `__call__`. Refused as a `ProxiedCallable` where it holds no
+    `__wrapped__` of its own, and where it holds one and its own `__call__`, written
+    in Python, takes a parameter by name. A transparent proxy of `wrapt` shows the
+    class of what it wraps, holds a `__wrapped__` of its own and takes only
+    `*args, **kwargs`: it is read as before, in both of its builds (run with `wrapt`
+    1.17.2 and 2.5.2; the Python build of 2.5.2 keeps `__wrapped__` behind a
+    `__dict__` property, where nothing is told of it).
   - *A single-dispatch function with nothing registered.* 0.16.0 read the registry at
     the walk and accepted a dispatcher that could run only its base. That holds for the
     moment of the walk and no longer. A `functools.wraps(dispatcher)` wrapper that
@@ -230,6 +257,16 @@ All notable changes to this project are documented here. The format follows
     `DispatchedAtCallTime` that an implementation is registered. A dispatcher a wrapper
     holds on a way to the function is refused as a `HiddenWrapper` whatever is
     registered on it.
+  - *A tool that was refused can be refused by another class.* The walk refuses for
+    the first cause it meets, and `OpenDispatch` is met where 0.16.0 walked on. So a
+    tool 0.16.0 refused as a `DispatchedAtCallTime`, a `HiddenWrapper`, a
+    `DeclaredSignature`, a `BoundArgumentKept` or a plain `ValueError` is refused as
+    an `OpenDispatch` where a dispatcher with nothing registered stands before that
+    cause. One ordinary case: a single-dispatch function built over another, with an
+    implementation registered through the outer one. `functools.update_wrapper` copies
+    the inner dispatcher's `register` onto the outer, so the implementation lands on
+    the inner, the outer has nothing registered, and the outer is met first. A gate
+    that keys its reason on the class says something else for such a tool than it did.
   - *A held wrapper that takes the tool's parameters in another order.* A decorator
     holds `def second(force, sql)`, a `functools.wraps` wrapper of `f(sql, force)`, and
     its own wrapper passes `(*args, **kwargs)` on to it. It names nothing the tool does
@@ -240,7 +277,18 @@ All notable changes to this project are documented here. The format follows
     wrapper is in no level returned. So its order is judged in the kernel: refused as a
     `HiddenWrapper` when it takes, in a place an argument passed by position can fill,
     another name than the tool declares in that place. The reason names the two
-    parameters and no value.
+    parameters and no value. Under an argument bound on the way (the receiver of a
+    method, a positional argument of a `functools.partial`), whether the decorator
+    hands that argument on to the held wrapper or keeps it cannot be read, and the
+    places are counted by the one piece of evidence there is, the name: a leading
+    place of the held wrapper named as the tool names one of its parameters is that
+    parameter's, and a place named otherwise (`self`, `cls`) is the bound argument's.
+    So under a method a held `def second(force, sql)` and a held `def second(self,
+    force, sql)` are both refused, and `def second(sql, force)` and `def second(self,
+    sql, force)` are both read, as 0.16.0 read them. As this change first stood it
+    took the first place under a method for the receiver's whatever its name: it read
+    the first of the four, which ran swapped, and refused the third for a place that
+    wrapper does not take. Its review found both.
   - *A held wrapper whose way to the function passes anything but the closed set.*
     0.16.0 followed a held value through a closed set of types and gave up at anything
     else, so a held `functools.wraps` wrapper with a parameter of its own was not found,
@@ -254,52 +302,100 @@ All notable changes to this project are documented here. The format follows
     passes on to what it holds; where it names a `__wrapped__` its `__call__` is judged
     as a wrapper is, so a held class-based decorator whose `__call__` keeps an argument
     is refused too. A partial is followed to the `__wrapped__` its own dictionary
-    names. A cache named again is followed to the function it calls. What a wrapper
-    found on such a way holds in its own closure and named globals is searched in its
-    turn. A held `weakref.proxy` of a callable the walk read is known for it from the
-    weak references the interpreter lists for that callable, without the proxy being
-    asked, and is followed; a held proxy of any other callable is refused. Nothing held
-    is run, called, compared or hashed, as before.
-  - **Refused although it runs correctly**, and read by 0.16.0. A `weakref.proxy` of a
-    plain function, as a tool or anywhere on the way: register the function itself. A
-    proxy that answers `__wrapped__` from `__getattr__` with the very object it calls:
-    give it a `__wrapped__` attribute, slot or property. A single-dispatch function or
-    method that nothing is ever registered on: register a plain function that calls it.
-    A decorator that holds a `functools.wraps` wrapper in another order than the tool's
-    and calls it by keyword or puts the values back, and one that holds a wrapper which
-    takes only a later parameter of the tool in the first place: give the held wrapper
-    the tool's parameters in the tool's order, or by keyword only. A decorator that
-    holds a `weakref.proxy` of a callable the walk did not read, a helper among them:
-    hold the callable itself. A decorator that holds a cache named again for another
-    function, where the cache calls anything but a plain function (a
-    `functools.partial`, a callable object, a second cache) that leads to the function;
-    0.16.0 refused that only for a cache named for the function itself. A decorator
-    that holds a chain of more than 32 callables. For each, a plain function that names
-    every parameter the tool takes and calls the decorated one is read to the end.
+    names. A cache named again is followed to the function it calls, and so is a held
+    cache that names nothing. What a wrapper found on such a way holds in its own
+    closure and named globals is searched in its turn. A wrapper reached two ways,
+    with another count of bound arguments each (through a `functools.partial` of it
+    and through a method of it), is judged for each way; as this change first stood
+    it was judged for the first way found alone, and an attribute nothing calls could
+    hide a parameter of the wrapper's own. A held `weakref.proxy` of a callable the
+    walk stood on (a function, an object, and a method or a partial itself) is known
+    for it from the weak references the interpreter lists for that callable, without
+    the proxy being asked, and is followed; a held proxy of any other callable is
+    refused. Nothing held is run, called, compared or hashed, as before.
+  - *Three more callables the walk did not read to the end*, in 0.16.0 too. A subclass
+    of `functools.partial` with a `__call__` of its own was read for its function
+    alone; that `__call__` is what runs, and it is a level `reached_parameters`
+    returns now. A `functools.lru_cache` wrapper whose `__wrapped__` is None, or was
+    deleted, was read as nothing under it, and the deleted one raised
+    `AttributeError` out of the walk; it is read as the function it calls. And what
+    the code of a callable raises while it is read (a `__getattr__` that raises for
+    `__wrapped__`, a property) was passed on as it was: the public functions now raise
+    `ValueError` in its place, with the exception as its cause, and still pass on an
+    exception that is not an `Exception` (`KeyboardInterrupt`).
+  - **Refused although it runs correctly**, and read by 0.16.0. This is the whole list.
+    - A `weakref.proxy` of a plain function, as a tool or anywhere on the way. Register
+      the function itself.
+    - A class-based decorator that keeps the function in an attribute and answers every
+      other attribute from it with `__getattr__`, over a function that names a
+      `__wrapped__` (any `functools.wraps` decorator, any `functools.lru_cache`), and
+      any other proxy that answers `__wrapped__` only from `__getattr__`, also where
+      what it answers is the very object it calls. Call
+      `functools.update_wrapper(self, fn)` in its `__init__`, or give it a
+      `__wrapped__` attribute, slot or property that names the object it calls; it is
+      then read to the end.
+    - An object whose `__class__` is not its type and that holds no `__wrapped__` of
+      its own, whatever it calls. Register a plain function that calls it.
+    - A single-dispatch function or method that nothing is ever registered on, as a
+      tool, under a wrapper, or held by a wrapper of the function. Register a plain
+      function that calls it.
+    - A decorator that holds a `functools.wraps` wrapper in another order than the
+      tool's and calls it by keyword or puts the values back, and one that holds a
+      wrapper which takes only a later parameter of the tool in the first place. Give
+      the held wrapper the tool's parameters in the tool's order, or by keyword only.
+    - A decorator that holds a `weakref.proxy` of a callable the walk did not stand on,
+      a helper among them. Hold the callable itself.
+    - A decorator that holds a cache named again for another function, or one that
+      names nothing, where the cache calls anything but a plain function (a
+      `functools.partial`, a callable object, a second cache) that leads to the
+      function; 0.16.0 refused that only for a cache named for the function itself.
+    - A decorator that holds a chain of callables, one behind the other, in which
+      something stands 32 links or more from what the decorator holds, and one whose
+      held values lead to more than 16,384 callables.
+
+    For each, a plain function that names every parameter the tool takes and calls
+    the decorated one is read to the end. Not on the list, because it is not refused:
+    a class-based decorator with hundreds of plain attributes, or a wrapper that holds
+    hundreds of harmless callable objects. As this change first stood a search stopped
+    at 512 values of any kind and refused both.
   - *Still not found, by design.* A second wrapper that names nothing as `__wrapped__`
     (a plain inner function, a lambda, a helper), and the `__call__` of a callable
-    object that names nothing, which is passed through and not judged. A wrapper held
-    by an object that keeps it where no instance dictionary shows it: a slot, a C
-    structure, as a wrapper a C extension builds and both builds of `wrapt` do (read in
-    `wrapt` 1.17.2), so the same decorator still gets the same verdict whichever way
-    that library was built. A wrapper held in a container, a class attribute, a
-    function's own attribute, or as an argument a `functools.partial` binds. A subclass
-    of `functools.partial` on a held way. A proxy that forwards a call and names
-    nothing as `__wrapped__`, which is read as the callable object it is. A proxy
-    where `weakref` could not be imported or its two types were not the interpreter's
-    own at the first walk, and everything where the checks are off: read as in 0.16.0.
-    A dispatcher another library builds, and one reached through a helper that names
-    nothing as `__wrapped__`.
-  - *A stated limit, unchanged.* The walk reads at most 32 callables after the tool. A
-    function decorator is one of them; a class-based decorator built with
+    object that names nothing, which is passed through and not judged. A wrapper built
+    on first use (`if "held" not in state: state["held"] = guarded(f)` in the body of
+    the wrapper that calls it): it does not exist when the walk is made, which is the
+    reason a dispatcher with nothing registered is refused, and this one is NOT
+    closed, because nothing marks a wrapper that will build another. A wrapper held by
+    an object that keeps it where no instance dictionary shows it: a slot or a C
+    structure, as a wrapper a C extension builds and both builds of `wrapt` 1.17.2
+    do, or a dictionary behind a `__dict__` property, as the Python build of `wrapt`
+    2.5.2 does, so the same decorator still gets the same verdict whichever way that
+    library was built. A wrapper held by an object that is not callable (a
+    settings object, a `types.SimpleNamespace`, an instance whose method the wrapper
+    calls), in a container, in a class attribute, in a function's own attribute, as an
+    argument a `functools.partial` binds, or behind a `weakref.ref` the wrapper calls
+    to get it. A subclass of `functools.partial` on a held way. A proxy that forwards
+    a call and names nothing as `__wrapped__`, over a `functools.partial` for one,
+    which is read as the callable object it is. An object whose class answers
+    `__dict__` with a property, where it answers for `__wrapped__` or shows another
+    class: what it holds cannot be read, so it is read as in 0.16.0, whatever it
+    forwards to. An object that shows another class,
+    holds a `__wrapped__` of its own and has a `__call__` that takes only `*args,
+    **kwargs`: read by what it holds, as a proxy of `wrapt` is, whatever its
+    `__call__` does. A proxy where `weakref` could not be imported or its two types
+    were not the interpreter's own at the first walk, and everything where the checks
+    are off: read as in 0.16.0. A dispatcher another library builds, and one reached
+    through a helper that names nothing as `__wrapped__`.
+  - *A stated limit, unchanged.* The walk reads the tool and at most 31 callables
+    after it; a tool with a 32nd is refused with "too many wrappers to inspect", not
+    gated. A function decorator is one of them; a class-based decorator built with
     `functools.update_wrapper` is two, what it names as `__wrapped__` and its own
     `__call__`. So under one function wrapper a stack of function decorators is read
-    30 deep and a stack of class-based ones 15 deep, and a deeper one is refused with
-    "too many wrappers to inspect", not gated. A test now holds both figures.
+    30 deep and a stack of class-based ones 15 deep. A test now holds both figures.
   - *What it costs.* The search of what a wrapper holds reads more than it did: every
     callable object a wrapper holds is read through its class and its instance
-    dictionary, where 0.16.0 skipped it by its type. Nothing is kept between walks for
-    it.
+    dictionary, where 0.16.0 skipped it by its type, and each plain value such an
+    object holds is told by its type and passed over. Nothing is kept between walks
+    for it.
   - *Beside the adapters as released.* No adapter is changed here. An adapter that
     turns whatever the walk raises into a refusal refuses these without a change, with
     the reason it gives a function it cannot read, until a release of it names the

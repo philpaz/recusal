@@ -386,15 +386,22 @@ decorated tool. `recusal-crewai` still carries its own copy.
   - A `weakref.proxy` on the way was read through as the object it stands for, so what
     the walk tells by type was not told: a cache named again behind it was read by its
     name, a dispatcher with an implementation registered as its base, and the
-    `__call__` of a class-based decorator not at all. A proxy written in Python that
-    forwards `__wrapped__` to its target had the same effect. Both are refused
-    (`WeakProxy`, `ProxiedCallable`).
+    `__call__` of a class-based decorator not at all. An object that answers for
+    `__wrapped__` without holding one had the same effect: a proxy written in Python,
+    and the ordinary class-based decorator that keeps the function in an attribute and
+    hands every other attribute on to it with `__getattr__`. Both are refused
+    (`WeakProxy`, `ProxiedCallable`), the second although such a decorator runs
+    correctly; with `functools.update_wrapper(self, fn)` in its `__init__` it is read.
   - A single-dispatch function with nothing registered was read as its base, and a
     wrapper that registers an implementation on its first use ran it for the call that
     was judged. Refused (`OpenDispatch`), although one nothing is ever registered on
     runs correctly.
   - A held wrapper that takes the tool's parameters in another order was read as
-    passing them on. Refused.
+    passing them on. Refused where it takes, in a place an argument passed by position
+    can fill, another name than the tool declares there. Under a bound argument (a
+    method's receiver, a positional argument of a partial) a leading place named as
+    the tool names a parameter is counted as that parameter's, and a place named
+    otherwise as the bound argument's.
   - A held wrapper with a parameter of its own was not found where its way to the
     function passed a class-based decorator, a callable object, a `functools.partial`
     that carries a `__wrapped__`, a weak proxy, a cache named again for another
@@ -410,13 +417,36 @@ decorated tool. `recusal-crewai` still carries its own copy.
     [`tests/test_invocation.py`](../tests/test_invocation.py). The changelog entry
     under Unreleased lists what is refused although it runs correctly and what is
     still not found.
-  - Not reviewed in a round of its own yet. The generated stacks of the
-    `recusal-openai-agents` review were run again through that adapter beside this
-    change; the scripts are not in the repository, so no count is stated here.
+  - **One round on the change itself**, on its first form (commit `d67e744`). It found
+    no tool that 0.16.0 refuses and the change reads, and these, each closed in the
+    commit after it and pinned by the tests named `test_v_`:
+    - The order rule was wrong under a bound argument. Under a method it took the
+      first place of a held wrapper for the receiver's whatever its name, so a held
+      `def second(force, sql)` whose decorator keeps the receiver was read and ran
+      swapped, and the same decorator over `def second(sql, force)` was refused for a
+      place that wrapper does not take. The rule above is the corrected one.
+    - A held wrapper reached two ways, with another count of bound arguments each,
+      was judged for the first way alone, so an attribute nothing calls could hide a
+      parameter of the wrapper's own. It is judged for each way.
+    - Read by 0.16.0 too, and closed: an object whose `__class__` shows a function, a
+      method or a partial it is not; a subclass of `functools.partial` with a
+      `__call__` of its own; a cache whose `__wrapped__` is None or deleted. And two
+      exceptions that were no refusal: the `ReferenceError` of a proxy whose object is
+      gone, and whatever a `__getattr__` raised for `__wrapped__`.
+    - Refused although it ran correctly, and read again: a class-based decorator with
+      some hundreds of plain attributes, a wrapper that holds hundreds of harmless
+      callable objects (the search stopped at 512 values of any kind), and a held
+      proxy of a partial or of a bound method the walk had read.
+    - Sentences that were not true of the code, in the changelog, in this log and on
+      the `recusal-openai-agents` page: corrected.
+  - The generated stacks of the `recusal-openai-agents` review, and the three-layer
+    stacks of the review of the change, were run again beside the corrected change;
+    the scripts are not in the repository, so no count is stated here.
   - Still open: a wrapper held where no instance dictionary shows it (a slot, a wrapper
-    a C extension builds), in a container, in a class attribute or as an argument a
-    `functools.partial` binds; a second wrapper that names nothing as `__wrapped__`;
-    and the `__call__` of a held callable object that names nothing.
+    a C extension builds), by an object that is not callable, in a container, in a
+    class attribute or as an argument a `functools.partial` binds; a second wrapper
+    that names nothing as `__wrapped__`; a wrapper built on first use; and the
+    `__call__` of a held callable object that names nothing.
 
 **Where you can help.**
 
@@ -639,8 +669,8 @@ not, and the package page states the first two.
   can judge one value while the tool runs another, and a default can run unjudged. Over
   a plain function the same `partialmethod` is read correctly. The gap is in the
   kernel's walk (`own_parameters`, `_next_callables`) and in the adapter's `_steps`.
-  Fixed in the kernel's walk in commit `4650c71`, which is not released; the released
-  kernels, 0.15.0 and 0.15.1, have the gap.
+  Fixed in the kernel's walk in commit `4650c71`, which is released in `recusal`
+  0.16.0; 0.15.0 and 0.15.1, which this package also allows, have the gap.
 - **Wrong advice, fixed in 0.2.0.** The README and two refusal reasons said to set
   `__name__` and `__doc__` on a partial. Pydantic AI needs `__name__` and
   `__qualname__`, which they now say.

@@ -594,8 +594,9 @@ The first three are open beside `recusal` 0.16.0, which is the newest release of
 kernel and the only one 0.2.2 can be installed beside today. The kernel's walk as it
 stands in this repository after 0.16.0, which is not released, closes them: it refuses
 a `weakref.proxy` anywhere among the callables it reads, a single-dispatch function
-with nothing registered, a held wrapper that takes the tool's parameters in another
-order, and a held wrapper with a parameter of its own on each of the ways listed.
+with nothing registered, a held wrapper that takes, in a place an argument passed by
+position can fill, another name than the tool declares there, and a held wrapper with
+a parameter of its own on each of the ways listed.
 0.2.2 is not changed for it. Beside that kernel it refuses a proxy and a dispatcher
 with nothing registered, behind a cache named again, with the name of the kernel's
 exception class alone ("the function it runs cannot be inspected (WeakProxy)", or

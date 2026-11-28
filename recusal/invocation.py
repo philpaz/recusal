@@ -212,16 +212,15 @@ class DeclaredSignature(Exception):
     #: The attribute that declares the signature, or None where none was given.
     declared: Optional[str] = None
 
-    def __init__(self, declared: Optional[str] = None) -> None:
-        if declared is None:
-            super().__init__()
-        elif type(declared) is str and declared in _DECLARED:
-            self.declared = declared
-            super().__init__(_DECLARED[declared])
+    def __init__(self, *args: Any) -> None:
+        if len(args) == 1 and type(args[0]) is str and args[0] in _DECLARED:
+            self.declared = args[0]
+            super().__init__(_DECLARED[args[0]])
         else:
-            # anything else is a message: an exception is built again from its message
-            # when it is copied or unpickled, and ``declared`` is then put back on it
-            super().__init__(declared)
+            # anything else is taken as 0.16.0 took it, whatever the arguments: an
+            # exception is also built again from its message when it is copied or
+            # unpickled, and ``declared`` is then put back on it
+            super().__init__(*args)
 
 
 #: What a :class:`DeclaredSignature` says, by the attribute found.
@@ -250,12 +249,13 @@ class HiddenWrapper(ValueError):
     Raised for exactly what :func:`_refuse_hidden_wrapper` describes, which also lists what
     is not found: among others a second wrapper that names nothing as ``__wrapped__``, and
     one that is or is held by an object that keeps it where no instance dictionary shows
-    it (a slot, a wrapper a C extension builds). Raised too for a held wrapper that takes
-    the tool's parameters in another order, for a way from a held value that cannot be
-    judged by parameters, and for a held ``weakref.proxy`` of a callable the walk did not
-    read. Where a parameter is the cause, the message is the reason a wrapper the walk
-    reads would get for it, or names it and the place it stands in; no message names a
-    value."""
+    it (a slot, a wrapper a C extension builds). Raised too for a held wrapper that
+    takes, in a place an argument passed by position can fill, another name than the
+    tool declares in that place (the places are counted as :func:`_bound_taken` says),
+    for a way from a held value that cannot be judged by parameters, and for a held
+    ``weakref.proxy`` of a callable the walk did not stand on. Where a parameter is the
+    cause, the message is the reason a wrapper the walk reads would get for it, or names
+    it and the place it stands in; no message names a value."""
 
 
 class UnreadCache(HiddenWrapper):
@@ -319,23 +319,37 @@ class PartialMethodSignature(TypeError):
 
 class ProxiedCallable(TypeError):
     """A callable on the way answers for another object, so the walk cannot tell what a
-    call to it runs. Two shapes are told, each exactly: a ``weakref.proxy``
-    (:class:`WeakProxy`, a subclass), and an object that answers for ``__wrapped__``
-    without holding one (:func:`_answers_for_wrapped`): the lookup finds the name, and
-    neither the object's own dictionary nor its class or a base of it has it, so the
-    object's ``__getattr__`` or ``__getattribute__`` answered, as a proxy that forwards
-    every attribute to the object it stands for does. What such a proxy names as
-    ``__wrapped__`` is what that OBJECT wraps, and the walk would step past the object:
-    past the ``__call__`` of a class-based decorator, the registry of a dispatcher, the
-    function a cache named again calls.
+    call to it runs. Three shapes are told, each exactly.
+
+    A ``weakref.proxy`` (:class:`WeakProxy`, a subclass).
+
+    An object that answers for ``__wrapped__`` without holding one
+    (:func:`_answers_for_wrapped`): the lookup finds the name, and neither the
+    dictionary of its class or of a base nor its instance dictionary has it, so the
+    object's ``__getattr__`` or ``__getattribute__`` answered. The ordinary shape is a
+    class-based decorator that keeps the function it decorates in an attribute
+    (``self.fn = fn``) and hands every attribute it does not have on to it
+    (``__getattr__``): over a function that names a ``__wrapped__`` of its own (any
+    ``functools.wraps`` decorator, any ``functools.lru_cache``) it answers with what
+    THAT function wraps, and the walk would step from the decorator past the function
+    it calls: past a wrapper's own parameter, the registry of a dispatcher, the
+    function a cache named again calls. A proxy that forwards every attribute is the
+    same shape.
+
+    An object that shows another class than its own (:func:`_shows_another_class`): its
+    ``__class__`` is not its type, and it holds no ``__wrapped__`` of its own, or its
+    own ``__call__`` takes a parameter by name.
 
     Raised at the end of the walk, after every other refusal, so a tool 0.16.0 refused
-    keeps the class it was refused with. Refused although it runs correctly: a proxy
-    that answers ``__wrapped__`` from ``__getattr__`` with the very object it calls
-    (give it a ``__wrapped__`` attribute, a slot or a property of that name, and it is
-    read). Not found: a proxy that forwards a call and names nothing as ``__wrapped__``
-    is read as the callable object it is, by its own ``__call__``. The message names
-    the cause and what to do, and no value."""
+    keeps the class it was refused with. Refused although it runs correctly: the
+    class-based decorator above over any function that names a ``__wrapped__``, and a
+    proxy that answers ``__wrapped__`` from ``__getattr__`` with the very object it
+    calls. Either is read to the end once it holds the name itself:
+    ``functools.update_wrapper(self, fn)`` in its ``__init__``, or a ``__wrapped__``
+    attribute, slot or property that names the object it calls. Not found: a proxy
+    that forwards a call and names nothing as ``__wrapped__`` is read as the callable
+    object it is, by its own ``__call__``. The message names the cause and what to do,
+    and no value."""
 
 
 _ANSWERS_FOR_WRAPPED = (
@@ -362,8 +376,10 @@ class WeakProxy(ProxiedCallable):
     raised where the two types were not to be had at the first walk
     (:func:`_proxy_types`) or the checks are off (:func:`_prepare`): a proxy is then
     read through and nothing is said, as in 0.16.0. A proxy a callable only HOLDS is
-    not this refusal but a :class:`HiddenWrapper` (:func:`_hidden_levels`). The message
-    names the cause and what to do, and no value."""
+    not this refusal but a :class:`HiddenWrapper` (:func:`_hidden_levels`). A proxy
+    whose object is gone raises ``ReferenceError`` when anything is asked of it: that
+    is raised again as this class (:func:`_refusal_of`), where 0.16.0 passed the
+    ``ReferenceError`` on. The message names the cause and what to do, and no value."""
 
 
 _WEAK_PROXY = (
@@ -422,7 +438,50 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     anything else ``inspect.signature`` would read as a ``functools.partialmethod``
     (:func:`_refuse_partialmethod`): that raises :class:`PartialMethodSignature`, a
     ``TypeError``.
+
+    What the callable's own code raises while it is read (a ``__getattr__``, a property,
+    a ``__class__`` that raises) is not passed on as it is: an ``Exception`` that is
+    none of the refusals above is raised again as a ``ValueError``, and the
+    ``ReferenceError`` of a ``weakref.proxy`` whose object is gone as a
+    :class:`WeakProxy` (:func:`_refusal_of`). An exception that is not an ``Exception``
+    (``KeyboardInterrupt``, what an audit hook raises to stop the process) is passed on.
     """
+    try:
+        return _parameters_of(func, _depth)
+    except (DeclaredSignature, TypeError, ValueError):
+        raise
+    except Exception as raised:  # noqa: BLE001, the callable's own code raised
+        raise _refusal_of(raised, (func,)) from raised
+
+
+_RAISED_WHEN_READ = (
+    "a callable on the way raised when the walk read it (its own `__getattr__`, a "
+    "property or another hook of its class), so it cannot be inspected"
+)
+
+_GONE = (
+    "a callable on the way is a `weakref.proxy` of an object that no longer exists, so a "
+    "call to it runs nothing; register the function itself, or a plain function that "
+    "calls it"
+)
+
+
+def _refusal_of(raised: BaseException, stood: Any) -> Exception:
+    """The refusal raised in place of an exception that is none of the walk's own and
+    that the code of a callable raised while it was read: a :class:`WeakProxy` for the
+    ``ReferenceError`` of a ``weakref.proxy`` among ``stood`` whose object is gone, a
+    ``ValueError`` for anything else. The text names no value and no class of the
+    application's."""
+    if isinstance(raised, ReferenceError):
+        _prepare()  # the two types of a proxy are found at the first walk
+        if any(_a_weak_proxy(each) for each in stood):
+            return WeakProxy(_GONE)
+    return ValueError(_RAISED_WHEN_READ)
+
+
+def _parameters_of(func: Any, _depth: int) -> Any:
+    """:func:`own_parameters`, before what the callable's own code raises is turned into
+    a refusal."""
     if _depth > 8:
         raise ValueError("too many wrappers to inspect")
     if isinstance(func, type):
@@ -435,8 +494,9 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
         return own_parameters(_cache_target(func), _depth + 1)
     if inspect.ismethod(func) and isinstance(func.__func__, _PASS_THROUGH):
         _refuse_shown_signature(func)  # a method shows what its cache declares
-        inner, named = _cache_target(func.__func__), func.__func__.__wrapped__
-        if inspect.isfunction(named):
+        inner = _cache_target(func.__func__)
+        named = getattr(func.__func__, "__wrapped__", None)
+        if named is None or inspect.isfunction(named):
             # what the cache calls, with the object bound, whatever it is: the function
             # it names, a wrapper, a ``functools.partial``, a callable object, a second
             # cache. The function it names is read as well, bound, as a callable of its
@@ -680,9 +740,11 @@ def _cache_target(cache: Any) -> Any:
     """The function a ``functools.lru_cache`` wrapper on the walk calls
     (:func:`_cache_calls`). Raises :class:`UnreadCache`, a :class:`HiddenWrapper`, where
     it cannot be known."""
-    called = _cache_calls(cache, cache.__wrapped__)
+    called = _cache_calls(cache, getattr(cache, "__wrapped__", None))
     if called is _MISSING:
         raise UnreadCache(_REWRAPPED_CACHE)
+    if called is None:  # it names nothing, and what it refers to cannot be listed
+        raise UnreadCache(_UNNAMED_CACHE)
     return called
 
 
@@ -715,13 +777,7 @@ def cache_target(cache: Any) -> Any:
     kind = type(cache)
     if not any(base is _PASS_THROUGH[0] for base in type.__dict__["__mro__"].__get__(kind)):
         raise TypeError("not a `functools.lru_cache` wrapper")
-    named = getattr(cache, "__wrapped__", None)
-    called = _cache_calls(cache, named)
-    if called is _MISSING:
-        raise UnreadCache(_REWRAPPED_CACHE)
-    if called is None:
-        raise UnreadCache(_UNNAMED_CACHE)
-    return called
+    return _cache_target(cache)
 
 
 _UNNAMED_CACHE = (
@@ -1125,44 +1181,109 @@ def _proxy_types() -> Tuple[Tuple[Any, ...], Any]:
     return (plain, of_a_callable), listing
 
 
-def _answers_for_wrapped(func: Any) -> bool:
-    """True if ``func`` answers the lookup of ``__wrapped__`` with something, while
-    neither its instance dictionary nor the dictionary of its class or of a base has the
-    name: its ``__getattr__`` or ``__getattribute__`` answered. The lookup is the one
-    the walk makes of every callable it stands on, made here once more, so a
-    ``__getattr__`` or a ``__wrapped__`` property of a callable object runs twice for a
-    walk; the dictionaries are read as held values are, with no lookup. Not asked of a
-    plain function or a bound method (a method shows its function's ``__wrapped__`` by
-    the interpreter's own rule), nor of a class. An attribute, a slot and a property of
-    that name are each in a dictionary of the class or of the instance, and are not
-    this."""
+def _names_wrapped(func: Any, answered: Any = _MISSING) -> Optional[bool]:
+    """Whether ``func`` holds a ``__wrapped__`` of its own: True if its instance
+    dictionary has the name, or the dictionary of its class or of a base has it (an
+    attribute, a slot, a property, an accessor a C type defines); False if neither
+    has; None where that cannot be told. With ``answered``, what the lookup of the name
+    gave, a plain value held under the name must be that very object: a class that
+    keeps a placeholder there (``__wrapped__ = None``) and answers from
+    ``__getattribute__`` holds another thing than it answered with. What a descriptor
+    of the class gives is not compared: it is the class's own answer.
+
+    Read as held values are, with no lookup: the class dictionaries from the type, the
+    instance dictionary through the interpreter's own accessor and, where it is an
+    instance of a subclass of ``dict``, through ``dict.items`` itself, which no subclass
+    answers for. Where the class answers ``__dict__`` any other way (a property), the
+    instance may keep the name in a dictionary this cannot read, and nothing is told:
+    the proxy ``wrapt`` 2 builds in Python keeps ``__wrapped__`` exactly so."""
+    kind = type(func)
+    static = _class_attribute(kind, "__wrapped__")
+    if static is not _MISSING and _class_attribute(type(static), "__get__") is not _MISSING:
+        return True  # a property, a slot, an accessor: what the class itself answers
+    accessor = _class_attribute(kind, "__dict__")
+    if type(accessor) is types.GetSetDescriptorType:
+        # an accessor a C type defines can hand out another object's dictionary (a
+        # proxy of ``wrapt`` hands out that of what it wraps), which is why the value
+        # found there is held to what the lookup gave
+        try:
+            own = accessor.__get__(func, kind)
+        except Exception:  # noqa: BLE001, no dictionary to read
+            own = None
+        if any(base is dict for base in _type_mro(type(own))):
+            for key, value in _listed(lambda: dict.items(own)):
+                if type(key) is str and key == "__wrapped__":
+                    return answered is _MISSING or value is answered
+    elif accessor is not _MISSING:
+        return None  # an instance dictionary there may be, and it cannot be read
+    if static is _MISSING:
+        return False
+    return answered is _MISSING or static is answered
+
+
+def _answers_for_wrapped(func: Any, answered: Any) -> bool:
+    """True if ``func``, which answered the lookup of ``__wrapped__`` with ``answered``,
+    holds no such ``__wrapped__`` of its own (:func:`_names_wrapped`): its
+    ``__getattr__`` or ``__getattribute__`` answered. Asked by the walk only after its
+    own lookup found something, so the lookup is made once, as in 0.16.0. Not asked of a
+    plain function
+    or a bound method (a method shows its function's ``__wrapped__`` by the
+    interpreter's own rule), nor of a class."""
     kind = type(func)
     if kind is types.FunctionType or kind is types.MethodType:
         return False
     if any(base is type for base in _type_mro(kind)):
         return False
+    return _names_wrapped(func, answered) is False
+
+
+_SHOWS_ANOTHER_CLASS = (
+    "a callable on the way shows another class than its own (its `__class__` is not its "
+    "type) and holds no `__wrapped__` of its own, so the walk would read it as what it "
+    "shows and not as what a call to it runs; register a plain function that calls it"
+)
+
+_SHOWS_ANOTHER_CLASS_AND_TAKES = (
+    "a callable on the way shows another class than its own (its `__class__` is not its "
+    "type) and its own `__call__` takes a parameter by name, which the walk would not "
+    "read behind the class it shows; register a plain function that calls it"
+)
+
+
+def _shows_another_class(func: Any) -> Optional[str]:
+    """Why a callable that shows another class than its own cannot be read, or None.
+
+    The walk tells a function, a method, a ``functools.partial`` and a cache by
+    ``isinstance`` and by ``inspect``, which ask ``__class__``, and an object can answer
+    that with a property: it is then read as the face it shows (a function's code, a
+    method's function, a partial's function) while a call runs its own ``__call__``.
+    Two such objects are refused. One that holds no ``__wrapped__`` of its own
+    (:func:`_names_wrapped`): nothing ties what it shows to what it calls. And one that
+    holds one, whose own ``__call__`` is a plain function that takes a parameter by
+    name: behind the class it shows, that ``__call__`` is not read.
+
+    Not refused: an object that shows another class, holds a ``__wrapped__`` of its
+    own, and has a ``__call__`` that takes only ``*args`` and ``**kwargs`` or is not
+    written in Python. That is what a transparent proxy of ``wrapt`` is, in both of its
+    builds, and it is read as before, through the ``__wrapped__`` it holds. ``__class__``
+    is asked of the object, as ``isinstance`` asks it; where that raises, nothing is
+    said here and the walk's own tests raise the same."""
+    kind = type(func)
     try:
-        wrapped = getattr(func, "__wrapped__", None)
-    except Exception:  # noqa: BLE001, the walk makes this lookup next and raises the same
-        return False
-    if wrapped is None:
-        return False
-    if _class_attribute(kind, "__wrapped__") is not _MISSING:
-        return False
-    # the instance dictionary, where the class gives its instances one: read through the
-    # interpreter's own accessor. One that cannot be read that way (a ``__dict__``
-    # property, a dictionary that is not a plain ``dict``) may hold the name, so nothing
-    # is said of the object
-    accessor = _class_attribute(kind, "__dict__")
-    if accessor is _MISSING:
-        return True  # no instance dictionary at all: nothing of its own names it
-    if type(accessor) is not types.GetSetDescriptorType:
-        return False
-    try:
-        own = accessor.__get__(func, kind)
-    except Exception:  # noqa: BLE001, no dictionary to read
-        return False
-    return type(own) is dict and _entry(own, "__wrapped__") is _MISSING
+        shown = func.__class__
+    except Exception:  # noqa: BLE001, the walk's own ``isinstance`` raises the same
+        return None
+    if shown is kind:
+        return None
+    named = _names_wrapped(func)
+    if named is None:
+        return None  # it cannot be told what the object holds: read as in 0.16.0
+    if not named:
+        return _SHOWS_ANOTHER_CLASS
+    call = _class_attribute(kind, "__call__")
+    if type(call) is types.FunctionType and _held_level(call, 1)[0]:
+        return _SHOWS_ANOTHER_CLASS_AND_TAKES
+    return None
 
 
 def _a_weak_proxy(func: Any) -> bool:
@@ -1174,11 +1295,12 @@ def _a_weak_proxy(func: Any) -> bool:
 
 
 def _stands_for(proxy: Any, read: List[Any]) -> bool:
-    """True if the ``weakref.proxy`` a callable holds is one of a callable the walk read:
-    it is among the weak references the interpreter lists for that callable
-    (``weakref.getweakrefs``, which asks the callable's own C structure and runs
-    nothing). Nothing is asked of the proxy, so a proxy of anything else is not known
-    for what it is."""
+    """True if the ``weakref.proxy`` a callable holds is one of a callable of ``read``,
+    which the caller makes every callable the walk stood on (a function, an object, and
+    a method or a ``functools.partial`` itself): it is among the weak references the
+    interpreter lists for that callable (``weakref.getweakrefs``, which asks the
+    callable's own C structure and runs nothing). Nothing is asked of the proxy, so a
+    proxy of anything else is not known for what it is."""
     if _weak_references is None:
         return False
     for seen in read:
@@ -1390,11 +1512,10 @@ def _held(func: Any, wrapped: Any) -> List[Any]:
         return _cells(func) + _named_globals(func)
     copied = _function_dict(wrapped) if type(wrapped) is types.FunctionType else {}
     copied = _listed(copied.values) if type(copied) is dict else []
-    held = [
-        value
-        for value in _listed(_instance_attributes(func).values)
-        if not any(value is other for other in copied)
-    ]
+    # told by ``id()``: an ``int``, so nothing copied is hashed or compared, and every
+    # value stays referred to from ``copied`` while its ``id()`` is looked for
+    same = {id(other) for other in copied}
+    held = [value for value in _listed(_instance_attributes(func).values) if id(value) not in same]
     # the ``__call__`` of its class is what runs: a class written inside a decorator closes
     # over what the decorator built, and one written at module level names it as a global
     call = _class_attribute(type(func), "__call__")
@@ -1528,6 +1649,7 @@ def _walk(tool: Any, declared: Any) -> Any:
         held=[],
         taken=[],
         given=[],
+        stood=[],
         proxied=None,
         checked=_prepare(),
     )
@@ -1561,27 +1683,36 @@ def _refuse_kept_by_name(walk: Any, levels: List[Any]) -> None:
 
 
 #: How many callables one search of what a held value reaches stands on before the way
-#: is refused as it stands (:func:`_hidden_levels`), and how many held values one walk
-#: searches (:func:`_refuse_hidden_wrapper`).
-_HELD_NODES = 512
+#: is refused as it stands (:func:`_hidden_levels`), and how many values that the
+#: wrappers found hold one walk searches after those the callables of the walk hold
+#: (:func:`_refuse_hidden_wrapper`). Only callables the search stands on are counted: a
+#: plain value a wrapper holds, however many there are, is none. A bound on the work of
+#: one walk, far above what a decorator holds.
+_HELD_NODES = 16384
 
 #: Types whose values no search of a held value stands on, asked first because most of
 #: what a wrapper holds is one of them: none passes a call on to a function it wraps.
-_NEVER_FOLLOWED = (
-    str,
-    int,
-    float,
-    bool,
-    type(None),
-    bytes,
-    list,
-    tuple,
-    dict,
-    set,
-    frozenset,
-    type,
-    types.ModuleType,
-    types.BuiltinFunctionType,
+#: By the ``id()`` of the type, so that a type is told without being hashed or compared
+#: (a metaclass can answer both); each is a built-in type, which lives as long as the
+#: interpreter does.
+_NEVER_FOLLOWED = frozenset(
+    id(kind)
+    for kind in (
+        str,
+        int,
+        float,
+        bool,
+        type(None),
+        bytes,
+        list,
+        tuple,
+        dict,
+        set,
+        frozenset,
+        type,
+        types.ModuleType,
+        types.BuiltinFunctionType,
+    )
 )
 
 
@@ -1596,13 +1727,13 @@ def _python_call(kind: Any) -> Any:
     """The plain function the class ``kind`` or a base of it has as ``__call__``, read
     from the dictionaries of the classes (:func:`_class_attribute`), or None: an
     instance of such a class is a callable object whose ``__call__`` can be read."""
-    if any(kind is never for never in _NEVER_FOLLOWED):
+    if id(kind) in _NEVER_FOLLOWED:
         return None
     call = _class_attribute(kind, "__call__")
     return call if type(call) is types.FunctionType else None
 
 
-def _held_steps(value: Any, bound: int, direct: int) -> Any:
+def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> Any:
     """Where a search of what a held value reaches goes from ``value``
     (:func:`_hidden_levels`), or None for a value it does not stand on. A tuple of:
 
@@ -1636,10 +1767,14 @@ def _held_steps(value: Any, bound: int, direct: int) -> Any:
       level. An object that names nothing there is passed through and its own
       ``__call__`` is not judged: it is not known to be a wrapper of anything.
 
-    A subclass of one of the first five is an object of another type and is read as the
-    last. Anything else is not stood on: a value with no ``__call__`` written in Python
-    (a built-in, a wrapper a C extension builds), and an object that keeps what it wraps
-    where no instance dictionary shows it (a slot, a C structure)."""
+    A cache that names nothing (its ``__wrapped__`` is None, or was deleted) passes on
+    to what it calls alone. A subclass of one of the first five is an object of another
+    type and is read as the last, where its class has a ``__call__`` written in Python;
+    a subclass of ``functools.partial`` that has none is not stood on. Nothing else is
+    stood on either: a value with no ``__call__`` written in Python (a built-in, a
+    wrapper a C extension builds), an object that is not callable, and an object that
+    keeps what it wraps where no instance dictionary shows it (a slot, a C structure).
+    ``calls`` keeps, for one walk, the ``__call__`` found for each class asked."""
     kind = type(value)
     steps: List[Tuple[Any, int, int]] = []
     judged: Any = None
@@ -1652,16 +1787,17 @@ def _held_steps(value: Any, bound: int, direct: int) -> Any:
         judged = (value, bound, direct)
     elif kind is _CACHE_WRAPPER:
         inner = _own(value, "__wrapped__")
-        if inner is not _MISSING:
-            called = _cache_calls(value, inner)
-            if called is _MISSING:
+        named = inner is not _MISSING and inner is not None
+        called = _cache_calls(value, inner if named else None)
+        if called is _MISSING:
+            odd = True
+        elif called is not None and (not named or called is not inner):
+            if type(called) is types.FunctionType:
+                forced = called
+            else:
                 odd = True
-            elif called is not inner:
-                if type(called) is types.FunctionType:
-                    forced = called
-                else:
-                    odd = True
-                steps.append((called, bound, direct))
+            steps.append((called, bound, direct))
+        if named:
             steps.append((inner, bound, direct if forced is _MISSING else 0))
     elif kind is types.MethodType:
         steps.append((_method_function(value), bound + 1, direct + 1))
@@ -1677,7 +1813,12 @@ def _held_steps(value: Any, bound: int, direct: int) -> Any:
         if wrapped is not _MISSING and wrapped is not None:
             steps.extend((held, bound, 0) for held in _held(value, wrapped))
     else:
-        call = _python_call(kind)
+        # asked once of each class in a walk; the class is kept beside the answer, so
+        # that its ``id()`` is not another's while the walk lasts
+        known = calls.get(id(kind))
+        if known is None:
+            known = calls[id(kind)] = (kind, _python_call(kind))
+        call = known[1]
         if call is None:
             return None
         wrapped = _entry(_instance_attributes(value), "__wrapped__")
@@ -1692,62 +1833,68 @@ def _hidden_levels(
     value: Any,
     read: List[Any],
     bound: int,
-    in_bound_places: Optional[List[Tuple[str, bool, bool]]] = None,
-    positions: Optional[List[Tuple[str, ...]]] = None,
     held: Optional[List[Tuple[Any, int]]] = None,
-) -> List[Any]:
-    """The levels of the wrappers the walk did not read between a held ``value`` and a
-    callable it did read, or none when ``value`` reaches no such callable.
+    stood: Optional[List[Any]] = None,
+    calls: Optional[Dict[int, Any]] = None,
+) -> List[Tuple[Any, int, int]]:
+    """The wrappers the walk did not read between a held ``value`` and a callable it did
+    read, or none when ``value`` reaches no such callable: each as the plain function
+    whose parameters are a level, the arguments it receives bound when the call gets
+    there, and how many of its leading places are filled for certain.
 
     ``value`` is followed, step by step (:func:`_held_steps`), through everything it may
-    pass a call on to, each callable stood on once, until nothing new is found. A
-    callable REACHES when it is, by identity, one of ``read``, when one of its steps
-    reaches, or when a cache that reaches calls it. Each plain function that reaches is
-    a wrapper the walk never read, and so is the ``__call__`` of an object that reaches
-    and names a ``__wrapped__``: their parameters are returned for the same judgement
-    the walk's own levels get, in the order they were found, the nearest first.
+    pass a call on to, until nothing new is found. A callable is stood on once for each
+    count of bound arguments and of places filled for certain it is reached with: the
+    same wrapper reached two ways (through a ``functools.partial`` of it, and through a
+    method of it) is judged for each. A callable REACHES when it is, by identity, one of
+    ``read``, when one of its steps reaches, or when a cache that reaches calls it. Each
+    plain function that reaches is a wrapper the walk never read, and so is the
+    ``__call__`` of an object that reaches and names a ``__wrapped__``: they are
+    returned, in the order they were found, the nearest first, for the judgement the
+    caller makes (:func:`_refuse_hidden_wrapper`).
 
     ``bound`` is the number of leading arguments the callable that holds ``value``
-    receives bound (its receiver, when the walk reached it as a method): the held
-    wrapper is passed them too, so they are not parameters of its own, exactly as they
-    are not for the level the walk read. Each bound method, ``classmethod`` and bound
-    positional argument of a ``functools.partial`` on the way adds to it, and an object
-    adds itself for its ``__call__``. That holds where the holder hands them on by
-    position. Where it hands one on by keyword, the leading parameter of a held wrapper
-    is free: it takes a judged keyword of its name, or runs with its own default. Those
-    parameters are added to ``in_bound_places`` (:func:`_held_in_bound_places`), for the
-    caller to refuse (:func:`_refuse_hidden_wrapper`). For each level, the parameters a
-    positional argument can fill are added to ``positions`` (:func:`_held_positions`),
-    and what each plain function found holds itself (its closure cells and the module
-    globals its code names) to ``held``, with the arguments it receives bound: the
-    caller searches those in turn.
+    receives bound (its receiver, when the walk reached it as a method). Each bound
+    method, ``classmethod`` and bound positional argument of a ``functools.partial`` on
+    the way adds to it, and an object adds itself for its ``__call__``. Whether the
+    holder hands its bound arguments on to the held wrapper, by position or by keyword,
+    or keeps them, cannot be read: the caller judges what follows from each. What each
+    plain function found holds itself (its closure cells and the module globals its code
+    names) is added to ``held``, with the arguments it receives bound: the caller
+    searches those in turn.
 
     One value is followed without being read: a ``weakref.proxy`` of a callable reaches
-    when it is one of a callable of ``read`` (:func:`_stands_for`).
+    when it is one of a callable the walk stood on, any of ``stood``
+    (:func:`_stands_for`).
 
     Raises :class:`HiddenWrapper` when the way cannot be judged by parameters: a step is
-    still to be taken 32 links from ``value``, or the search stands on 512 callables; a
-    callable that reaches is a single-dispatch function or method, whatever is
-    registered on it, or a cache that calls something other than a plain function or the
-    function it names, or whose function cannot be told; or ``value`` leads to a
-    ``weakref.proxy`` of a callable that is not known to stand for one the walk read,
-    whether or not anything reaches."""
-    # most of what a callable holds leads nowhere, and is told at once: the callable it
-    # wraps, which the walk read; a value of a type that is never followed; a plain
+    still to be taken 32 links from ``value``, or the search stands on 16,384
+    callables; a callable that reaches is a single-dispatch function or method,
+    whatever is registered on it, or a cache that calls something other than a plain
+    function or the function it names, or whose function cannot be told; or ``value``
+    leads to a ``weakref.proxy`` of a callable that is not known to stand for one the
+    walk stood on, whether or not anything reaches."""
+    # most of what a callable holds leads nowhere, and is told at once: a value of a type
+    # that is never followed; the callable it wraps, which the walk read; a plain
     # function that names nothing as ``__wrapped__``
     kind = type(value)
-    for never in _NEVER_FOLLOWED:
-        if kind is never:
-            return []
+    if id(kind) in _NEVER_FOLLOWED:
+        return []
     for seen in read:
         if value is seen:
             return []
     if kind is types.FunctionType and _own(value, "__wrapped__") is _MISSING:
         return []
-    # each callable stood on: the value, what is known of it (:func:`_held_steps`), the
-    # callables it steps to (by their place here), whether it reaches, and whether it is
-    # a proxy that is not read
+    if calls is None:
+        calls = {}
+    # each callable stood on, for one count of bound arguments and of certain places:
+    # the value, what is known of it (:func:`_held_steps`), the callables it steps to
+    # (by their place here), whether it reaches, whether it is a proxy that is not read,
+    # and the callable it was first reached from. ``places`` finds one again by the
+    # ``id()`` of the value and the two counts: an ``int`` key, so nothing of the value
+    # is hashed or compared, and every value stays referred to from ``pending``
     nodes: List[List[Any]] = []
+    places: Dict[Tuple[int, int, int], int] = {}
     pending: List[Tuple[Any, int, int, int, int]] = [(value, bound, 0, 0, -1)]
     at = 0
     while at < len(pending):
@@ -1755,13 +1902,19 @@ def _hidden_levels(
         at += 1
         if depth >= _DEPTH:
             raise HiddenWrapper(_HIDDEN_WRAPPER)  # still going: what it reaches is not known
-        place = -1
-        for index, node in enumerate(nodes):
-            if node[0] is value:
-                place = index  # stood on before: a cycle, or a second way to it
-                break
+        above = parent
+        while above >= 0 and nodes[above][0] is not value:
+            above = nodes[above][5]
+        if above >= 0:
+            continue  # a cycle: this way leads back to a callable it came through
+        key = (id(value), bound, direct)
+        place = places.get(key, -1)
         if place < 0:
-            reaches = any(value is seen for seen in read)
+            reaches = False
+            for seen in read:
+                if value is seen:
+                    reaches = True
+                    break
             known: Any = None
             unread = False
             if reaches:
@@ -1769,18 +1922,20 @@ def _hidden_levels(
             elif any(type(value) is proxy for proxy in _PROXIES):
                 if type(value) is not _PROXIES[-1]:
                     continue  # a proxy of what is not callable passes no call on
-                reaches = _stands_for(value, read)
+                reaches = _stands_for(value, read if stood is None else stood)
                 unread = not reaches
             else:
-                known = _held_steps(value, bound, direct)
+                known = _held_steps(value, bound, direct, calls)
                 if known is None:
                     continue
             if len(nodes) >= _HELD_NODES:
                 raise HiddenWrapper(_HIDDEN_WRAPPER)
-            place = len(nodes)
-            nodes.append([value, known, [], reaches, unread])
+            place = places[key] = len(nodes)
+            nodes.append([value, known, [], reaches, unread, parent])
             if known is not None:
-                pending.extend((*step, depth + 1, place) for step in known[0])
+                for step in known[0]:
+                    if id(type(step[0])) not in _NEVER_FOLLOWED:
+                        pending.append((*step, depth + 1, place))
         if parent >= 0:
             nodes[parent][2].append(place)
     for node in nodes:
@@ -1796,8 +1951,7 @@ def _hidden_levels(
                 for other in nodes:  # what a cache that reaches calls is on the way
                     if other[0] is node[1][2] and not other[3]:
                         other[3] = changed = True
-    levels: List[Any] = []
-    places: List[Tuple[str, bool, bool]] = []
+    found: List[Tuple[Any, int, int]] = []
     for node in nodes:
         if not node[3] or node[1] is None:
             continue
@@ -1807,10 +1961,7 @@ def _hidden_levels(
         if judged is None:
             continue
         function, its_bound, its_direct = judged
-        levels.append(_held_level(function, its_bound))
-        places.extend(_held_in_bound_places(function, its_bound)[its_direct:])
-        if positions is not None:
-            positions.append(_held_positions(function, its_bound))
+        found.append((function, its_bound, its_direct))
         if function is node[0]:
             if _chosen_at_call_time(function):
                 raise HiddenWrapper(_HIDDEN_WRAPPER)
@@ -1818,9 +1969,31 @@ def _hidden_levels(
                 # what a wrapper found holds is held too: a second wrapper inside it
                 inside = _cells(function) + _named_globals(function)
                 held.extend((each, its_bound) for each in inside)
-    if in_bound_places is not None:
-        in_bound_places.extend(places)
-    return levels
+    return found
+
+
+def _bound_taken(function: Any, bound: int, direct: int, declared: Any) -> int:
+    """How many leading places of a held plain function the arguments bound on the way
+    are taken to fill: the ``direct`` places a ``functools.partial`` or a method directly
+    over it fills for certain, and after them, up to ``bound``, each place whose name
+    the tool does NOT declare (``self``, ``cls``, a tenant a partial binds).
+
+    Whether the holder hands its bound arguments on cannot be read: ``def first(self,
+    *args, **kwargs): return second(*args, **kwargs)`` keeps its receiver, and one that
+    returns ``second(self, *args, **kwargs)`` hands it on. The name of the place is the
+    evidence there is. A place named as the tool names one of its own parameters is
+    that parameter's and not the bound argument's: a held ``def second(sql, force)``
+    under a method takes the tool's two parameters and no receiver, in the tool's
+    order, and a held ``def second(force, sql)`` takes them swapped. 0.16.0 and the
+    first form of the order rule took the first place for the receiver's whatever its
+    name, so the first of these was refused for a place it does not take and the second
+    read. A place named otherwise is the bound argument's, as before."""
+    code = function.__code__
+    limit = min(bound, code.co_argcount)
+    taken = min(direct, limit)
+    while taken < limit and code.co_varnames[taken] not in declared:
+        taken += 1
+    return taken
 
 
 _HELD_WEAK_PROXY = (
@@ -1864,32 +2037,38 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
       ``staticmethod`` or a ``classmethod``, each by its exact type, or an object of
       another type whose class has a plain function as ``__call__``;
     - what it passes a call on to, followed through such callables, reaches by identity
-      a callable the walk read: any callable this walk took the parameters of, or the
-      function of a method or a ``functools.partial`` it took them through. The way may
-      pass a class-based decorator, a callable object, a ``functools.partial`` that
-      carries a ``__wrapped__``, a cache named again for another function (through the
-      function it calls), and a ``weakref.proxy`` of a callable the walk read;
+      a callable the walk read: any function or callable object this walk took the
+      parameters of, a ``functools.partial`` that carries a ``__wrapped__``, and the
+      function of a method or of a ``functools.partial`` it took them through (a held
+      method or partial of that function is followed to it, and reaches there). The
+      way may pass a class-based decorator, a callable object, a ``functools.partial``
+      that carries a ``__wrapped__``, a cache named again for another function or one
+      that names nothing (through the function it calls), and a ``weakref.proxy`` of a
+      callable the walk stood on, a method or a partial itself among them;
     - a plain function on the way, or the ``__call__`` of an object on the way that
       names a ``__wrapped__``, has a parameter of its own, by the same rule and the same
       code that judge a wrapper the walk reads (:func:`_argument_of_its_own`: a name the
       tool does not declare, or a name a forwarding wrapper keeps that another level
       takes too). A wrapper that only passes ``(*args, **kwargs)`` on has none, and
       neither has one that copies the tool's own parameters in the tool's order. The
-      leading arguments the holder receives bound (its receiver, when the walk reached
-      it as a method) are not parameters of the held wrapper either.
+      leading places of the held wrapper that the arguments bound on the way are taken
+      to fill (:func:`_bound_taken`: the holder's receiver, when the walk reached it as
+      a method) are not parameters of its own either.
 
     What a plain function found on such a way holds itself (its closure cells and the
     module globals its code names) is searched in its turn, and so on: a second wrapper
-    held by a held wrapper is found like the first.
+    held by a held wrapper is found like the first. A wrapper reached two ways, with
+    another count of bound arguments each, is judged for each.
 
     Refused as they stand, whatever their parameters: a way with a step still to take
     32 links from the held value, or 32 held wrappers deep, and a search that stands on
-    512 callables; a way through a single-dispatch function or method, whatever is
-    registered on it; a way through a cache that calls something other than a plain
+    16,384 callables (plain values a wrapper holds are not counted); a way through a
+    single-dispatch function or method, whatever is registered on it; a way through a
+    cache that calls something other than a plain
     function or the function it names, or whose function cannot be told; and a held
     ``weakref.proxy`` of a callable that is not known to stand for a callable the walk
-    read (:func:`_stands_for`), whether or not anything behind it reaches the function:
-    a proxy is not read.
+    stood on (:func:`_stands_for`), whether or not anything behind it reaches the
+    function: a proxy is not read.
 
     Refused with it: a held wrapper whose leading parameter, in the place of an
     argument the holder receives bound, has a default the tool does not declare; and
@@ -1913,11 +2092,17 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     force)``). A caller that passes the judged values by position hands that wrapper
     one parameter's value as another's. The levels the walk reads are returned to the
     caller, who can hold their order to the way it passes arguments; a held level is
-    returned to nobody, so its order is judged here, for every caller. Refused although
-    it runs correctly: such a wrapper where the decorator calls it by keyword, or puts
-    the values back, and where the gate passes every argument by name. A held wrapper
-    that takes the tool's leading parameters in the tool's order, or its parameters by
-    keyword only, is read.
+    returned to nobody, so its order is judged here, for every caller. The places are
+    counted after those the arguments bound on the way are taken to fill, and which
+    those are is told by the name alone (:func:`_bound_taken`): under a method, a held
+    ``def second(force, sql)`` takes no receiver and is refused, as ``def second(self,
+    force, sql)`` is, and ``def second(sql, force)`` and ``def second(self, sql,
+    force)`` are both read. What cannot be told is whether the holder agrees with the
+    names: a holder that hands its receiver on to ``def second(sql, force)`` fills
+    ``sql`` with it, and that is read. Refused although it runs correctly: a wrapper in
+    another order where the decorator calls it by keyword, or puts the values back, and
+    where the gate passes every argument by name. A held wrapper that takes the tool's
+    leading parameters in the tool's order, or its parameters by keyword only, is read.
 
     Only parameters are judged: a held wrapper is not read for the other things the walk
     refuses a callable it reads for (a declared ``__signature__``). And what a callable
@@ -1931,9 +2116,12 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     ``__wrapped__``, which is passed through and not judged); one that is, or is held
     by, an object that keeps it where no instance dictionary shows it (a slot, a C
     structure, as a wrapper a C extension builds and the proxies of ``wrapt`` do), or
+    by an object that is not callable (a settings object, a ``types.SimpleNamespace``),
+    or behind a ``weakref.ref`` the wrapper calls to get it, or
     whose way to the function it wraps passes through such an object, or through a
     subclass of ``functools.partial`` or another callable with no ``__call__`` written
-    in Python; one
+    in Python; a wrapper built on first use, which does not exist when the walk is
+    made; one
     held anywhere but where a callable on the walk THAT NAMES A ``__wrapped__`` holds
     things, which is its closure cells and named module globals (a plain function), or its
     instance attributes and the closure cells and named module globals of its class's
@@ -1954,42 +2142,50 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     wrapper read by the walk is accepted, because ``inspect.signature`` of such a partial
     no longer shows the ``*args``. The call fails either way.
     """
-    hidden: List[Any] = []
-    in_bound_places: List[Tuple[str, bool, bool]] = []
-    positions: List[Tuple[str, ...]] = []
+    found: List[Tuple[Any, int, int]] = []
+    calls: Dict[int, Any] = {}
     # what the callables of the walk hold, then what each wrapper found among it holds
     # itself, and so on: each value once for each count of bound arguments
     roots: List[Tuple[Any, int, int]] = [(value, bound, 0) for value, bound in walk.held]
-    at = 0
+    first, at = len(roots), 0
     while at < len(roots):
         value, bound, depth = roots[at]
         at += 1
         inside: List[Tuple[Any, int]] = []
-        hidden.extend(_hidden_levels(value, walk.read, bound, in_bound_places, positions, inside))
+        found.extend(_hidden_levels(value, walk.read, bound, inside, walk.stood, calls))
         for each, its_bound in inside:
-            if any(each is root and its_bound == had for root, had, _ in roots):
+            if id(type(each)) in _NEVER_FOLLOWED:
                 continue
-            if depth + 1 >= _DEPTH or len(roots) >= _HELD_NODES:
+            if any(each is root and its_bound == had for root, had, _ in roots[first:]):
+                continue
+            if depth + 1 >= _DEPTH or len(roots) - first >= _HELD_NODES:
                 raise HiddenWrapper(_HIDDEN_WRAPPER)  # still going: not known
             roots.append((each, its_bound, depth + 1))
-    if not hidden:
-        return hidden
+    if not found:
+        return []
     declared = _declared(walk)
     if declared is None:
         raise HiddenWrapper(_HIDDEN_WRAPPER)
-    for name, defaulted, forwards in in_bound_places:
-        # the holder may hand its bound argument on by keyword (``held(*args,
-        # tenant=self.tenant, **kwargs)``), or keep it: this parameter is then free
-        if name in declared:
-            if forwards:
-                # the judged keyword of this name stops at the held wrapper, and
-                # whether that hands it on cannot be read
-                raise HiddenWrapper(_HELD_IN_BOUND_PLACE.format(name=name))
-            # a wrapper that passes the call on to nothing takes the judged keyword
-            # and runs with it
-        elif defaulted:
-            # nothing fills it: the wrapper runs with a default the tool does not show
-            raise HiddenWrapper(_HELD_DEFAULT_IN_BOUND_PLACE.format(name=name))
+    hidden: List[Any] = []
+    positions: List[Tuple[str, ...]] = []
+    for function, bound, direct in found:
+        for name, defaulted, forwards in _held_in_bound_places(function, bound)[direct:]:
+            # the holder may hand its bound argument on by keyword (``held(*args,
+            # tenant=self.tenant, **kwargs)``), or keep it: this parameter is then free
+            if name in declared:
+                if forwards:
+                    # the judged keyword of this name stops at the held wrapper, and
+                    # whether that hands it on cannot be read
+                    raise HiddenWrapper(_HELD_IN_BOUND_PLACE.format(name=name))
+                # a wrapper that passes the call on to nothing takes the judged
+                # argument of that name itself: the place is the tool's parameter's,
+                # not the bound argument's (:func:`_bound_taken`)
+            elif defaulted:
+                # nothing fills it: the wrapper runs with a default the tool does not show
+                raise HiddenWrapper(_HELD_DEFAULT_IN_BOUND_PLACE.format(name=name))
+        taken = _bound_taken(function, bound, direct, declared)
+        hidden.append(_held_level(function, taken))
+        positions.append(_held_positions(function, taken))
     levels = [_read_level(parameters) for parameters in walk.found] + hidden
     why = _argument_of_its_own(levels, declared, skip, range(len(walk.found), len(levels)))
     if why is not None:
@@ -1998,8 +2194,8 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     # the order it passes arguments in; a held level is returned to nobody, so its order
     # is judged here, for a caller that passes by position
     leading = [parameter.name for parameter in _leading(declared)]
-    for taken in positions:
-        for name, shown in zip(taken, leading):
+    for places in positions:
+        for name, shown in zip(places, leading):
             if name != shown:
                 raise HiddenWrapper(_HELD_IN_ANOTHER_PLACE.format(name=name, declared=shown))
     return hidden
@@ -2451,7 +2647,11 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
     ``functools.update_wrapper``): both are followed, because its ``__call__`` is what runs.
     A ``__call__`` that Python would call without the object (a ``staticmethod``, a
     ``partial``, any other non-function) raises ``TypeError``: what it binds cannot be read
-    as a method's parameters.
+    as a method's parameters. A subclass of ``functools.partial`` with a ``__call__`` of
+    its own is both a partial and such an object: its function is followed, and that
+    ``__call__`` too, which is what runs. A ``functools.lru_cache`` wrapper is followed
+    to the function it calls where that is not the one it names, and where it names
+    nothing (its ``__wrapped__`` is None, or was deleted).
 
     ``__wrapped__`` is the only link from a wrapper to what it calls that is followed. Two
     shapes that defeat it are refused, wherever one stands on the way. A single-dispatch
@@ -2469,15 +2669,19 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
     So is an object that answers for ``__wrapped__`` without holding one
     (:class:`ProxiedCallable`, :func:`_answers_for_wrapped`).
     """
-    if walk.checked and walk.proxied is None:
-        # told before anything is asked of it: a proxy answers ``isinstance`` and every
-        # attribute as the object it stands for does. It is read through all the same,
-        # as 0.16.0 read it, so that a tool 0.16.0 refused keeps its reason; the walk
-        # refuses the proxy at its end (:func:`_reached`)
-        if _a_weak_proxy(func):
-            walk.proxied = WeakProxy(_WEAK_PROXY)
-        elif _answers_for_wrapped(func):
-            walk.proxied = ProxiedCallable(_ANSWERS_FOR_WRAPPED)
+    if walk.checked:
+        walk.stood.append(func)
+        if walk.proxied is None:
+            # told before anything is asked of it: a proxy answers ``isinstance`` and
+            # every attribute as the object it stands for does. It is read through all
+            # the same, as 0.16.0 read it, so that a tool 0.16.0 refused keeps its
+            # reason; the walk refuses the proxy at its end (:func:`_reached`)
+            if _a_weak_proxy(func):
+                walk.proxied = WeakProxy(_WEAK_PROXY)
+            else:
+                shows = _shows_another_class(func)
+                if shows is not None:
+                    walk.proxied = ProxiedCallable(shows)
     # a ``staticmethod`` (Python 3.10+) shows its function as ``__wrapped__``, taken below
     if inspect.ismethod(func):
         inners = _next_callables(func.__func__, walk, None if bound is None else bound + 1)
@@ -2491,35 +2695,44 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
         # ``inspect.signature`` shows for it: followed like any other, as it is named
         wrapped = getattr(func, "__wrapped__", None)
         if wrapped is not None:
+            _note_an_answer(func, wrapped, walk)
             walk.read.append(func)
             if walk.checked and bound is not None:
                 walk.held.extend((value, bound) for value in _held(func, wrapped))
             found.append(wrapped)
+        # a subclass of ``functools.partial`` with a ``__call__`` of its own is a callable
+        # object too: that ``__call__`` is what runs, and it need not call the function
+        call = inspect.getattr_static(type(func), "__call__", None)
+        if inspect.isfunction(call):
+            found.append(types.MethodType(call, func))
         return found
     found = []
     wrapped = getattr(func, "__wrapped__", None)
+    if wrapped is not None:
+        _note_an_answer(func, wrapped, walk)
     _refuse_call_time_dispatch(func, wrapped)
     walk.read.append(func)
     if wrapped is not None:
         if walk.checked and bound is not None:
             walk.held.extend((value, bound) for value in _held(func, wrapped))
         found.append(wrapped)
-        if isinstance(func, _PASS_THROUGH):
-            # a cache named again for another function (``functools.wraps(f)`` over
-            # ``functools.lru_cache`` over a wrapper): the wrapper it calls is the one
-            # that stands for ``f``. Its parameters are the cache's own level
-            # (:func:`own_parameters`); what it holds and what it hands the call to are
-            # read here, as for a wrapper that names ``f`` itself
-            called = _cache_target(func)
-            if called is not wrapped:
-                if type(called) is types.FunctionType and walk.checked and bound is not None:
-                    walk.held.extend((value, bound) for value in _held(called, wrapped))
-                found.extend(_next_callables(called, walk, bound))
-                if not inspect.isfunction(wrapped):
-                    # a cache NAMED for something that is not a plain function is read,
-                    # under a method, by the names alone (:func:`own_parameters`): the
-                    # wrapper it calls is then read here, as a callable of its own
-                    found.append(called)
+    if isinstance(func, _PASS_THROUGH):
+        # a cache named again for another function (``functools.wraps(f)`` over
+        # ``functools.lru_cache`` over a wrapper): the wrapper it calls is the one that
+        # stands for ``f``. Its parameters are the cache's own level
+        # (:func:`own_parameters`); what it holds and what it hands the call to are
+        # read here, as for a wrapper that names ``f`` itself. So is what a cache calls
+        # that names nothing: its ``__wrapped__`` set to None, or deleted
+        called = _cache_target(func)
+        if called is not wrapped:
+            if type(called) is types.FunctionType and walk.checked and bound is not None:
+                walk.held.extend((value, bound) for value in _held(called, wrapped))
+            found.extend(_next_callables(called, walk, bound))
+            if wrapped is not None and not inspect.isfunction(wrapped):
+                # a cache NAMED for something that is not a plain function is read,
+                # under a method, by the names alone (:func:`own_parameters`): the
+                # wrapper it calls is then read here, as a callable of its own
+                found.append(called)
     if not (inspect.isfunction(func) or inspect.isbuiltin(func) or isinstance(func, type)):
         call = inspect.getattr_static(type(func), "__call__", None)
         if inspect.isfunction(call):
@@ -2527,6 +2740,15 @@ def _next_callables(func: Any, walk: Any, bound: Optional[int] = 0) -> List[Any]
         elif call is not None and not isinstance(call, _C_CALL):
             raise TypeError("its callable object's `__call__` is not a plain method")
     return found
+
+
+def _note_an_answer(func: Any, wrapped: Any, walk: Any) -> None:
+    """Note on ``walk`` a callable that answered the lookup of ``__wrapped__`` with
+    ``wrapped`` without holding it (:func:`_answers_for_wrapped`), for the refusal at
+    the end of the walk. Asked once the walk has made that lookup and found something,
+    so it is made once."""
+    if walk.checked and walk.proxied is None and _answers_for_wrapped(func, wrapped):
+        walk.proxied = ProxiedCallable(_ANSWERS_FOR_WRAPPED)
 
 
 def reached_parameters(func: Any, skip: Tuple[str, ...] = ()) -> List[Any]:
@@ -2556,6 +2778,15 @@ def reached_parameters(func: Any, skip: Tuple[str, ...] = ()) -> List[Any]:
     :class:`WeakProxy`, or answers for ``__wrapped__`` without holding one; raised at
     the end of the walk, after every other refusal), ``TypeError`` or ``ValueError`` for
     a callable it cannot read, which a gate turns into a refusal.
+
+    Those are all it raises of its own accord, and so for :func:`reached_callables`
+    and :func:`own_parameters`. What the code of a callable on the way raises while it
+    is read (a ``__getattr__`` that raises for ``__wrapped__``, a property, a
+    ``__class__`` that raises) is raised again as a ``ValueError`` with that exception
+    as its cause, and the ``ReferenceError`` of a ``weakref.proxy`` whose object is
+    gone as a :class:`WeakProxy` (:func:`_refusal_of`); 0.16.0 passed both on as they
+    were. An exception that is not an ``Exception`` is passed on: ``KeyboardInterrupt``,
+    and what an audit hook raises to stop the process.
 
     The levels are returned in the order of each callable's own parameters, and the
     walk does not judge that order: a caller that passes arguments by position holds
@@ -2619,6 +2850,17 @@ def _reached(
     With ``stood``, each callable a level is read from is added to it, in the order of
     the levels (:func:`reached_callables`)."""
     walk = _walk(func, declared)
+    try:
+        return _walked(func, skip, walk, proxied, stood)
+    except (DeclaredSignature, TypeError, ValueError):
+        raise
+    except Exception as raised:  # noqa: BLE001, the code of a callable on the way raised
+        raise _refusal_of(raised, [func, *walk.stood]) from raised
+
+
+def _walked(func: Any, skip: Any, walk: Any, proxied: Any, stood: Any) -> List[Any]:
+    """:func:`_reached`, before what the code of a callable on the way raises is turned
+    into a refusal (:func:`_refusal_of`)."""
     found = walk.found
     found.append(own_parameters(func))
     if stood is not None:
