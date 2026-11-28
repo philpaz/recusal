@@ -8969,3 +8969,148 @@ def test_v_an_instance_dictionary_that_cannot_be_read_tells_nothing():
     limit = Answering(Keeping(fetch))
     assert limit("u", timeout=5) == 999999  # the argument is kept from the function
     reached_parameters(limit)  # and it is read: the stated limit
+
+
+# --- stated behaviour, pinned after the second pass of that review -------------------------
+#
+# Nothing below is a fix: each test holds a sentence of the changelog to what happens.
+
+
+def test_w_what_the_name_rule_reads_that_runs_otherwise():
+    """Stated limits, in 0.16.0 too. Under a bound argument the places of a held wrapper
+    are counted by their names and the holder is not read. A holder that hands its
+    receiver on to a held wrapper whose leading place is named as the tool names a
+    parameter is read: a call with every declared parameter fails, and one that leaves
+    the defaulted one out runs with the receiver in the first parameter's place and the
+    arguments shifted. And a held wrapper with a required parameter of its own in the
+    leading place, where the holder keeps the receiver, is read: the place is taken
+    for the receiver's."""
+    import functools
+
+    ran = []
+
+    def run(self, sql: str = "x", force: bool = False) -> str:
+        ran.append((sql, force))
+        return "ran"
+
+    @functools.wraps(run)
+    def in_order(sql, force=False):
+        return run(None, sql, force)
+
+    @functools.wraps(run)
+    def with_its_own(mode, sql="x", force=False):
+        return run(None, sql, force)
+
+    class Tools:
+        handed_on = _v_holding(in_order, True)(run)
+        kept = _v_holding(with_its_own, False)(run)
+
+    tools = Tools()
+    assert _levels(tools.handed_on) == [_FORWARD, ["sql", "force"]]
+    assert unsupported_signature(tools.handed_on) is None
+    with pytest.raises(TypeError):
+        tools.handed_on("S", True)  # three positional arguments for two places
+    tools.handed_on("S")
+    assert ran.pop() == (tools, "S")  # judged sql="S", force=False
+
+    assert _levels(tools.kept) == [_FORWARD, ["sql", "force"]]  # ``mode`` is in no level
+    assert unsupported_signature(tools.kept) is None
+    tools.kept("S", True)
+    assert ran.pop() == (True, False)  # judged sql="S", force=True
+
+
+def test_w_an_object_that_shows_another_class_and_restates_its_parameters():
+    """Refused although it runs correctly, and stated: an object that shows another class,
+    holds a ``__wrapped__`` of its own, and whose own ``__call__`` names the parameters
+    and hands each on in order. A subclass of ``wrapt.CallableObjectProxy`` is one, in
+    the builds of ``wrapt`` that keep ``__wrapped__`` where it can be read; this is that
+    shape without ``wrapt``. And stated as read, in 0.16.0 too: the same object with a
+    ``staticmethod`` as ``__call__``, which without the lie is refused for it."""
+    fetch = _fetch()
+
+    class Transparent:
+        __slots__ = ("__wrapped__",)
+
+        def __init__(self, wrapped):
+            self.__wrapped__ = wrapped
+
+        @property
+        def __class__(self):
+            return type(self.__wrapped__)
+
+        def __getattr__(self, name):
+            return getattr(self.__wrapped__, name)
+
+    class Restating(Transparent):
+        __slots__ = ()
+
+        def __call__(self, url, timeout=5):
+            return self.__wrapped__(url, timeout)
+
+    tool = Restating(fetch)
+    assert tool("u", 5) == 5 and tool("u", timeout=7) == 7  # it runs correctly
+    with pytest.raises(invocation.ProxiedCallable) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._SHOWS_ANOTHER_CLASS_AND_TAKES
+
+    seen = []
+
+    def keeping(*args, timeout=30, **kwargs):
+        seen.append(timeout)
+        return 999999
+
+    class Static(Transparent):
+        __slots__ = ()
+        __call__ = staticmethod(keeping)
+
+    class Honest:
+        __slots__ = ("__wrapped__",)
+        __call__ = staticmethod(keeping)
+
+        def __init__(self, wrapped):
+            self.__wrapped__ = wrapped
+
+    lying = Static(fetch)
+    assert lying("u", timeout=5) == 999999 and seen == [5]  # its own parameter took it
+    assert _levels(lying)[-1] == _FETCH  # read: the stated limit
+    with pytest.raises(TypeError, match="is not a plain method"):
+        reached_parameters(Honest(fetch))
+
+
+def test_w_a_dead_proxy_is_a_weak_proxy_where_the_walk_stands_on_it():
+    """As the tool and as what a wrapper names, a ``weakref.proxy`` whose object is gone
+    is refused as a ``WeakProxy``. As the function of a ``functools.partial`` or of a
+    method it is a plain ``ValueError``: a refusal either way, and stated as it is."""
+    import functools
+    import types
+    import weakref
+
+    def dead():
+        return weakref.proxy(_forcing(_fetch()))
+
+    named = _traced(_fetch())
+    named.__wrapped__ = dead()
+    for tool in (dead(), named):
+        with pytest.raises(invocation.WeakProxy):
+            reached_parameters(tool)
+    for tool in (functools.partial(dead()), types.MethodType(dead(), object())):
+        with pytest.raises(ValueError) as refused:
+            reached_parameters(tool)
+        assert type(refused.value) is ValueError
+        assert unsupported_signature(tool) is not None
+
+
+def test_w_whatever_is_raised_while_the_walk_reads_is_one_refusal(monkeypatch):
+    """The consequence of the exception contract, stated: an ``Exception`` raised while
+    the walk reads is a ``ValueError`` that names the callable's hooks, a fault of the
+    kernel's own included, and the original is its cause."""
+
+    def fault(walk, skip):
+        raise KeyError("a fault of the kernel's own")
+
+    monkeypatch.setattr(invocation, "_refuse_hidden_wrapper", fault)
+    with pytest.raises(ValueError) as refused:
+        reached_parameters(_fetch())
+    assert str(refused.value) == invocation._RAISED_WHEN_READ
+    assert "`__getattr__`" in str(refused.value)
+    assert type(refused.value.__cause__) is KeyError

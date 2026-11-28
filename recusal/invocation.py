@@ -378,7 +378,9 @@ class WeakProxy(ProxiedCallable):
     read through and nothing is said, as in 0.16.0. A proxy a callable only HOLDS is
     not this refusal but a :class:`HiddenWrapper` (:func:`_hidden_levels`). A proxy
     whose object is gone raises ``ReferenceError`` when anything is asked of it: that
-    is raised again as this class (:func:`_refusal_of`), where 0.16.0 passed the
+    is raised again as this class where the proxy is the tool or what a wrapper names
+    as ``__wrapped__``, and as a plain ``ValueError`` where it is the function of a
+    ``functools.partial`` or of a method (:func:`_refusal_of`); 0.16.0 passed the
     ``ReferenceError`` on. The message names the cause and what to do, and no value."""
 
 
@@ -443,8 +445,13 @@ def own_parameters(func: Any, _depth: int = 0) -> Any:
     a ``__class__`` that raises) is not passed on as it is: an ``Exception`` that is
     none of the refusals above is raised again as a ``ValueError``, and the
     ``ReferenceError`` of a ``weakref.proxy`` whose object is gone as a
-    :class:`WeakProxy` (:func:`_refusal_of`). An exception that is not an ``Exception``
+    :class:`WeakProxy` where ``func`` itself is that proxy (:func:`_refusal_of`); a
+    dead proxy that is the function of a ``functools.partial`` or of a method is a
+    plain ``ValueError``. An exception that is not an ``Exception``
     (``KeyboardInterrupt``, what an audit hook raises to stop the process) is passed on.
+    So ANY ``Exception`` raised while this reads, one from a fault of this module's own
+    included, comes out as a ``ValueError`` whose message names the callable's hooks;
+    the original is its ``__cause__``.
     """
     try:
         return _parameters_of(func, _depth)
@@ -468,10 +475,20 @@ _GONE = (
 
 def _refusal_of(raised: BaseException, stood: Any) -> Exception:
     """The refusal raised in place of an exception that is none of the walk's own and
-    that the code of a callable raised while it was read: a :class:`WeakProxy` for the
-    ``ReferenceError`` of a ``weakref.proxy`` among ``stood`` whose object is gone, a
-    ``ValueError`` for anything else. The text names no value and no class of the
-    application's."""
+    that was raised while a callable was read: a :class:`WeakProxy` for a
+    ``ReferenceError`` where one of ``stood`` is a ``weakref.proxy``, a ``ValueError``
+    for anything else. ``stood`` are the callables the walk stood on (the tool, what a
+    ``__wrapped__`` named, what a cache calls), so a dead proxy is a :class:`WeakProxy`
+    as the tool and under a wrapper. As the function of a ``functools.partial`` or of a
+    method it is a ``ValueError``: reading the partial or the method raises before the
+    walk stands on the proxy, and for the partial the lookup of a declared signature
+    has already turned the ``ReferenceError`` into its own ``ValueError``.
+
+    The ``ValueError`` says that a callable on the way raised when it was read, and
+    names the callable's hooks. That is said of every ``Exception`` that gets here,
+    one raised by a fault of this module's own included: the cause is not told apart,
+    and the original exception is the ``__cause__`` of the refusal. The text names no
+    value and no class of the application's."""
     if isinstance(raised, ReferenceError):
         _prepare()  # the two types of a proxy are found at the first walk
         if any(_a_weak_proxy(each) for each in stood):
@@ -1263,11 +1280,30 @@ def _shows_another_class(func: Any) -> Optional[str]:
     name: behind the class it shows, that ``__call__`` is not read.
 
     Not refused: an object that shows another class, holds a ``__wrapped__`` of its
-    own, and has a ``__call__`` that takes only ``*args`` and ``**kwargs`` or is not
-    written in Python. That is what a transparent proxy of ``wrapt`` is, in both of its
+    own, and has a ``__call__`` that takes only ``*args`` and ``**kwargs`` or is not a
+    plain function. That is what a transparent proxy of ``wrapt`` is, in both of its
     builds, and it is read as before, through the ``__wrapped__`` it holds. ``__class__``
     is asked of the object, as ``isinstance`` asks it; where that raises, nothing is
-    said here and the walk's own tests raise the same."""
+    said here and the walk's own tests raise the same.
+
+    Refused although it runs correctly: such an object whose ``__call__`` names the
+    parameters and hands each on in order (a subclass of ``wrapt.CallableObjectProxy``
+    with ``def __call__(self, sql, force=False): return self.__wrapped__(sql,
+    force)``). It is refused in both builds of ``wrapt`` 1.17.2 and in the C build of
+    2.5.2, and read in the Python build of 2.5.2, where :func:`_names_wrapped` tells
+    nothing; 0.16.0 read it in all four.
+
+    Still read, in 0.16.0 too, each needing code written to deceive. This asks
+    ``__class__`` once and compares it with the type; every other test by which the
+    walk tells a function, a method, a partial and a cache (``isinstance``,
+    ``inspect``) believes ``__class__``. So a ``__class__`` property that answers the
+    real type at the one lookup made here and another type at the rest is read as the
+    face it shows, and so is one that answers by who asks (it reads the caller's
+    frame, or raises ``AttributeError`` to this function alone). And an object that
+    shows another class, holds a ``__wrapped__`` of its own, and has something other
+    than a plain function as ``__call__`` (a ``staticmethod``) with a parameter of its
+    own is read, where the same object without the lie is refused for that
+    ``__call__``."""
     kind = type(func)
     try:
         shown = func.__class__
@@ -1686,8 +1722,12 @@ def _refuse_kept_by_name(walk: Any, levels: List[Any]) -> None:
 #: is refused as it stands (:func:`_hidden_levels`), and how many values that the
 #: wrappers found hold one walk searches after those the callables of the walk hold
 #: (:func:`_refuse_hidden_wrapper`). Only callables the search stands on are counted: a
-#: plain value a wrapper holds, however many there are, is none. A bound on the work of
-#: one walk, far above what a decorator holds.
+#: plain value a wrapper holds, however many there are, is none. A bound on ONE
+#: search, from one held value, far above what a decorator holds. It is no bound on
+#: the walk: a walk makes one search for each value its callables hold, so its work is
+#: linear in the number of held values and has no ceiling of its own (a class-based
+#: decorator with many callable attributes that each lead to one large shared graph
+#: pays for that graph once for each attribute).
 _HELD_NODES = 16384
 
 #: Types whose values no search of a held value stands on, asked first because most of
@@ -1984,10 +2024,26 @@ def _bound_taken(function: Any, bound: int, direct: int, declared: Any) -> int:
     evidence there is. A place named as the tool names one of its own parameters is
     that parameter's and not the bound argument's: a held ``def second(sql, force)``
     under a method takes the tool's two parameters and no receiver, in the tool's
-    order, and a held ``def second(force, sql)`` takes them swapped. 0.16.0 and the
-    first form of the order rule took the first place for the receiver's whatever its
-    name, so the first of these was refused for a place it does not take and the second
-    read. A place named otherwise is the bound argument's, as before."""
+    order, and a held ``def second(force, sql)`` takes them swapped. The first form of
+    the order rule took the first place for the receiver's whatever its name, so the
+    first of these was refused for a place it does not take and the second read
+    (0.16.0, which had no order rule, read both). A place named otherwise is the bound
+    argument's, as before.
+
+    Read although it runs otherwise, in 0.16.0 too, because the holder is not read and
+    may disagree with the names. A holder that hands its bound argument ON to a held
+    wrapper whose leading place is named as the tool names a parameter (``return
+    second(self, *args, **kwargs)`` over ``def second(sql, force=False)``; the same
+    under a ``functools.partial`` that binds the leading argument; a receiver's place
+    named like a parameter of the tool; a tool that declares a parameter called
+    ``self``; a holder that names its receiver like a parameter of the tool): a call
+    that passes every declared parameter fails with ``TypeError``, and one that leaves
+    a defaulted parameter out runs with the bound argument in the first parameter's
+    place and the arguments shifted. And a held wrapper with a REQUIRED parameter of
+    its own in the leading place, where the holder keeps the receiver (``def
+    second(mode, sql="x", force=False)``): the place is taken for the receiver's, the
+    parameter is in no level, and a call by position runs with the arguments shifted
+    one place."""
     code = function.__code__
     limit = min(bound, code.co_argcount)
     taken = min(direct, limit)
@@ -2784,9 +2840,14 @@ def reached_parameters(func: Any, skip: Tuple[str, ...] = ()) -> List[Any]:
     is read (a ``__getattr__`` that raises for ``__wrapped__``, a property, a
     ``__class__`` that raises) is raised again as a ``ValueError`` with that exception
     as its cause, and the ``ReferenceError`` of a ``weakref.proxy`` whose object is
-    gone as a :class:`WeakProxy` (:func:`_refusal_of`); 0.16.0 passed both on as they
-    were. An exception that is not an ``Exception`` is passed on: ``KeyboardInterrupt``,
-    and what an audit hook raises to stop the process.
+    gone as a :class:`WeakProxy` where the proxy is the tool or what a wrapper names,
+    and as a ``ValueError`` where it is the function of a partial or of a method
+    (:func:`_refusal_of`); 0.16.0 passed both on as they were. An exception that is not
+    an ``Exception`` is passed on: ``KeyboardInterrupt``, and what an audit hook raises
+    to stop the process. The consequence: any ``Exception`` raised while the walk
+    reads, one from a fault of this module's own included, is reported as a
+    ``ValueError`` refusal whose message names the callable's hooks, with the original
+    as its ``__cause__``.
 
     The levels are returned in the order of each callable's own parameters, and the
     walk does not judge that order: a caller that passes arguments by position holds

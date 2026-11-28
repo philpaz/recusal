@@ -27,10 +27,11 @@ How to check this page:
 - A release date is the date of the tagged commit: `git log -1 --format=%ci <tag>`.
 - A fix that is not on `main` yet is named with its pull request. Its changelog entry and
   its tests are on that pull request's branch.
-- This page states no count of generated cases. Several rounds ran generated test
-  spaces, and the scripts that produce them are in the repository for `recusal-openai`
-  only ([`tools/review/`](../tools/review)). Adding the others is one of the ways to
-  help.
+- This page states no count of generated cases, with one exception that says so
+  where it stands: the confirmation pass on the kernel change after 0.16.0, whose
+  counts are that pass's own report. Several rounds ran generated test spaces, and the
+  scripts that produce them are in the repository for `recusal-openai` only
+  ([`tools/review/`](../tools/review)). Adding the others is one of the ways to help.
 
 ## The kernel: `recusal`
 
@@ -439,6 +440,47 @@ decorated tool. `recusal-crewai` still carries its own copy.
       proxy of a partial or of a bound method the walk had read.
     - Sentences that were not true of the code, in the changelog, in this log and on
       the `recusal-openai-agents` page: corrected.
+  - **A confirmation pass on the corrected change** (commit `9516c7f`), again a review
+    of the change by the project and not one from outside it. It changed no behaviour:
+    what it found is sentences and stated limits, corrected in the commit after it,
+    which differs from `9516c7f` in `recusal/invocation.py` by docstrings and comments
+    alone. The counts below are the pass's own report; its scripts are not in the
+    repository.
+    - What it ran again: the probes of the first pass, unchanged; and its sweep of
+      generated stacks, 979,496 of them, compared three ways. Refused by 0.16.0 and
+      read now: 0. Read again since the first form of the change: 6,266 stacks, in the
+      two classes that were meant to be (a held wrapper in the tool's own order under
+      a bound argument, and a held proxy of a partial or a method the walk stood on),
+      none of them misrunning because of it. Accepted while a call misruns: 733 stacks
+      of one stated class (a proxy that forwards a call and names nothing as
+      `__wrapped__`, over a `functools.partial`), accepted by 0.16.0 too. It made
+      25,620 calls of the public functions on callables whose hooks raise: none raised
+      anything outside `DeclaredSignature`, `TypeError` and `ValueError`. It read
+      library objects in four configurations of `wrapt` (1.17.2 and 2.5.2, each in its
+      C and its Python build) and found one verdict change beyond those the changelog
+      stated, the first item below.
+    - What it found, each now stated in the changelog and the docstrings, and pinned
+      where a test can hold it (`test_w_`): the list of what is refused although it
+      runs correctly left out an object that shows another class, holds a `__wrapped__`
+      of its own and names its parameters in its own `__call__` (a subclass of
+      `wrapt.CallableObjectProxy`; refused in three of the four configurations, read
+      in the Python build of 2.5.2); the name rule for a bound place reads two shapes
+      that run otherwise, a holder that hands its receiver on to a wrapper whose
+      leading place is named like a parameter of the tool, and a held wrapper with a
+      required parameter of its own in the leading place; the bound of 16,384
+      callables is on one search and not on a walk, which has no ceiling (it measured
+      10, 40 and 160 callable attributes over one shared graph of 16,000 objects at
+      0.75 s, 3.1 s and 12.2 s); a proxy whose object is gone is a `WeakProxy` as the
+      tool and under a wrapper, and a plain `ValueError` as the function of a partial
+      or of a method; three `__class__` properties written to deceive are still read,
+      as in 0.16.0, because the walk's other type tests believe `__class__`; and any
+      `Exception` raised while the walk reads, a fault of the kernel's own included,
+      is reported as a `ValueError` that names the callable's hooks.
+    - What it did not cover: Python 3.9 to 3.11, the free-threaded build, threads,
+      the paths where the checks are off, the adapters' tests and messages, any corpus
+      of real method decorators, depths four and five other than by sampling, more
+      than one base signature, `skip` parameters, Django's lazy objects, and wrappers
+      a C extension builds other than those of `wrapt`.
   - The generated stacks of the `recusal-openai-agents` review, and the three-layer
     stacks of the review of the change, were run again beside the corrected change;
     the scripts are not in the repository, so no count is stated here.

@@ -185,7 +185,8 @@ All notable changes to this project are documented here. The format follows
   the first two groups each but one fails on the code of 0.16.0, and that one pins a
   stated limit. The third group answers the review of the change itself: thirteen of
   its cases fail on the change as it first stood, and five pin what is stated and did
-  not change. Nothing that 0.16.0 refuses is accepted. The change adds public names, so the kernel release that carries
+  not change. Four more, `test_w_`, are no fix: each holds a sentence of this entry to
+  what happens. Nothing that 0.16.0 refuses is accepted. The change adds public names, so the kernel release that carries
   it is a MINOR one: the exception classes `ProxiedCallable`, `WeakProxy` and
   `OpenDispatch`, the functions `cache_target` and `reached_callables`, and the
   attribute `DeclaredSignature.declared` (under Changed).
@@ -208,7 +209,9 @@ All notable changes to this project are documented here. The format follows
     so a tool 0.16.0 refused keeps the class it was refused with; `unsupported_signature`
     gives the proxy as its reason last, after a parameter of a wrapper's own. A proxy
     whose object is gone raised `ReferenceError` out of the public functions, in 0.16.0
-    too; it is a `WeakProxy` now.
+    too. It is a `WeakProxy` now where it is the tool itself or what a wrapper names as
+    `__wrapped__`; where it is the function of a `functools.partial` or of a method,
+    it is refused with a plain `ValueError`.
   - *An object that answers for `__wrapped__` without holding one.* The ordinary shape
     is a class-based decorator that keeps the function it decorates in an attribute
     (`self.fn = fn`) and hands every attribute it does not have on to it (`def
@@ -241,7 +244,14 @@ All notable changes to this project are documented here. The format follows
     class of what it wraps, holds a `__wrapped__` of its own and takes only
     `*args, **kwargs`: it is read as before, in both of its builds (run with `wrapt`
     1.17.2 and 2.5.2; the Python build of 2.5.2 keeps `__wrapped__` behind a
-    `__dict__` property, where nothing is told of it).
+    `__dict__` property, where nothing is told of it). That holds for the transparent
+    proxy alone. A subclass of `wrapt.CallableObjectProxy` with a `__call__` of its
+    own that names the parameters (`def __call__(self, sql, force=False): return
+    self.__wrapped__(sql, force)`) is the second refusal: refused in both builds of
+    1.17.2 and in the C build of 2.5.2, and read in the Python build of 2.5.2, where
+    what it holds cannot be read. 0.16.0 read it in all four. The tests by which the walk
+    tells a function, a method, a partial and a cache (`isinstance`, `inspect`)
+    believe `__class__`, here as in 0.16.0.
   - *A single-dispatch function with nothing registered.* 0.16.0 read the registry at
     the walk and accepted a dispatcher that could run only its base. That holds for the
     moment of the walk and no longer. A `functools.wraps(dispatcher)` wrapper that
@@ -322,7 +332,11 @@ All notable changes to this project are documented here. The format follows
     the code of a callable raises while it is read (a `__getattr__` that raises for
     `__wrapped__`, a property) was passed on as it was: the public functions now raise
     `ValueError` in its place, with the exception as its cause, and still pass on an
-    exception that is not an `Exception` (`KeyboardInterrupt`).
+    exception that is not an `Exception` (`KeyboardInterrupt`). The consequence is
+    stated: ANY `Exception` raised while the walk reads, one from a fault of the
+    kernel's own included, is reported as a `ValueError` refusal whose message names
+    the callable's hooks ("a callable on the way raised when the walk read it"). The
+    original exception is its `__cause__`, and that is where to look.
   - **Refused although it runs correctly**, and read by 0.16.0. This is the whole list.
     - A `weakref.proxy` of a plain function, as a tool or anywhere on the way. Register
       the function itself.
@@ -336,6 +350,14 @@ All notable changes to this project are documented here. The format follows
       then read to the end.
     - An object whose `__class__` is not its type and that holds no `__wrapped__` of
       its own, whatever it calls. Register a plain function that calls it.
+    - An object whose `__class__` is not its type, that holds a `__wrapped__` of its
+      own, and whose own `__call__`, written in Python, takes parameters by name, also
+      where that `__call__` hands each of them on in order. The instance found: a
+      subclass of `wrapt.CallableObjectProxy` with `def __call__(self, sql,
+      force=False): return self.__wrapped__(sql, force)`, refused in both builds of
+      `wrapt` 1.17.2 and in the C build of 2.5.2, read in the Python build of 2.5.2.
+      Give that `__call__` only `*args, **kwargs`, or register a plain function that
+      calls the proxy.
     - A single-dispatch function or method that nothing is ever registered on, as a
       tool, under a wrapper, or held by a wrapper of the function. Register a plain
       function that calls it.
@@ -385,6 +407,33 @@ All notable changes to this project are documented here. The format follows
     were not the interpreter's own at the first walk, and everything where the checks
     are off: read as in 0.16.0. A dispatcher another library builds, and one reached
     through a helper that names nothing as `__wrapped__`.
+  - *What the name rule for a bound place reads that runs otherwise*, in 0.16.0 too.
+    Under an argument bound on the way the places of a held wrapper are counted by
+    their names, and the holder is not read, so a holder that disagrees with the names
+    is read as if it agreed. Two shapes. A holder that hands its bound argument ON to
+    a held wrapper whose leading place is named as the tool names a parameter (a
+    method whose decorator returns `second(self, *args, **kwargs)` over `def
+    second(sql, force=False)`; the same under a `functools.partial` that binds the
+    leading argument; a receiver's place named like a parameter of the tool; a tool
+    that declares a parameter called `self`; a holder that names its receiver like a
+    parameter of the tool): a call that passes every declared parameter fails with
+    `TypeError`, and a call that leaves a defaulted parameter out runs with the bound
+    argument in the first parameter's place and the arguments shifted (`tool("S")` ran
+    `sql=<the receiver>`, `force='S'`). And a held wrapper with a REQUIRED parameter of
+    its own in the leading place, where the holder keeps the receiver (`def
+    second(mode, sql='x', force=False)`): the place is taken for the receiver's, and
+    `tool("S", True)` ran `sql=True`, `force=False`. Both are pinned by a test as what
+    happens.
+  - *What a `__class__` written to deceive still does*, in 0.16.0 too. The refusal of
+    an object that shows another class asks `__class__` once and compares it with the
+    object's type; every other test the walk makes of a callable's type believes
+    `__class__`. So these are read, and each needs code written for the purpose: a
+    `__class__` property that answers the object's real type at the one lookup the
+    refusal makes and another type at the rest; one that answers by who asks (it
+    reads the caller's frame, or raises `AttributeError` to that one function); and an
+    object that shows another class, holds a `__wrapped__` of its own, and has
+    something other than a plain function as `__call__` (a `staticmethod`) with a
+    parameter of its own, which the same object without the lie is refused for.
   - *A stated limit, unchanged.* The walk reads the tool and at most 31 callables
     after it; a tool with a 32nd is refused with "too many wrappers to inspect", not
     gated. A function decorator is one of them; a class-based decorator built with
@@ -395,7 +444,13 @@ All notable changes to this project are documented here. The format follows
     callable object a wrapper holds is read through its class and its instance
     dictionary, where 0.16.0 skipped it by its type, and each plain value such an
     object holds is told by its type and passed over. Nothing is kept between walks
-    for it.
+    for it. The bound of 16,384 callables is on ONE search, from one held value, and a
+    walk makes one search for each value its callables hold: the work is linear in the
+    number of held values, and there is no ceiling for the walk as a whole. The review
+    of the change measured a class-based decorator with 10, 40 and 160 callable
+    attributes, each leading to one shared graph of 16,000 callable objects, at 0.75 s,
+    3.1 s and 12.2 s on its machine. As this change first stood the bound was 512 for
+    each value.
   - *Beside the adapters as released.* No adapter is changed here. An adapter that
     turns whatever the walk raises into a refusal refuses these without a change, with
     the reason it gives a function it cannot read, until a release of it names the
