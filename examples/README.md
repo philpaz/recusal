@@ -50,6 +50,7 @@ Some are imported by other examples rather than run directly.
 | 7 | [`action_budget.py`](action_budget.py) | Actions beyond a persisted hard attempt budget (returns a RETRY verdict; the soft limit only warns). |
 | 8 | [`quality_gate.py`](quality_gate.py) | Missing or invalid quality measurements, low coverage and failing tests (RETRY, without starting a deployment). |
 | 9 | [`approved_tool_policy.py`](approved_tool_policy.py) | Unnamed, malformed or unapproved tool names; approved names still need argument checks. |
+| 24 | [`audit_operations.py`](audit_operations.py) | Demonstrates incomplete-tail, integrity and external-head refusals, preserving damaged logs before operator recovery. |
 
 ## Framework adapters (offline, optional pinned SDKs)
 

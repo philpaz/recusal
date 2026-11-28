@@ -948,6 +948,49 @@ file (`recusal audit verify audit.jsonl --expect-head "N:<hash>"`) with the head
 somewhere the agent cannot write. Appends are lock-serialized, so parallel tool calls
 extend one chain.
 
+## 24. Operate the audit log when it refuses
+
+A refused audit append also refuses the tool call. Stop the log's writers before
+investigating or recovering it, and preserve a copy of the damaged bytes first.
+The [offline operations example](../examples/audit_operations.py) creates three
+temporary logs and demonstrates these different recovery paths:
+
+| Refusal | What it establishes | Operator response |
+|---|---|---|
+| `AuditFramingError` from `append` | The unterminated final line is not complete JSON. No new entry was written. | Keep the original file; truncate the working copy to the error's `offset`; run strict verification before resuming. |
+| `AuditIntegrityError` with `verify_on_open=True` | The existing file fails strict verification. | Investigate. Do not delete failing records or recompute hashes to make it pass. Restore from an independently trusted source when one is available, then verify. |
+| `AuditIntegrityError` with `expected_head` | The local file does not match the protected external count and hash, even if its remaining prefix verifies alone. | Keep the external head authoritative. Recover the missing or altered records from a trusted source; require the recovered file to match that head before resuming. |
+
+Run all three cases without touching an existing log:
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from examples.audit_operations import run_examples
+
+with TemporaryDirectory(prefix="recusal-audit-operations-") as directory:
+    run_examples(Path(directory))
+```
+
+The module also runs directly with `python examples/audit_operations.py`. Its tests
+check that the damaged copies retain the evidence, recovered files verify, and a
+following append extends the preserved chain. The code block above runs in CI.
+`examples/` is repository teaching code, not an installed package API; copy the
+module into a checkout or hook project when adapting it.
+
+Framing recovery only removes the incomplete tail identified by the error. It
+does not establish that earlier records are trustworthy: if verification still
+fails, stop and investigate. A complete final JSON record that only lost its
+newline is handled automatically by `append` and must not be truncated.
+
+This example retains trusted copies and head anchors in memory because it runs
+offline in one process. Production recovery needs durable copies and anchors
+outside the agent's write reach. If those cannot establish a trustworthy history,
+keep the gate stopped. Changing the external anchor to match damaged local data
+would erase the evidence of loss. This is an operator procedure, not an automatic
+repair service or a concurrent file-recovery tool.
+
 ---
 
 **These are starting points, not turnkey security.** Read each one, tune the lists and
