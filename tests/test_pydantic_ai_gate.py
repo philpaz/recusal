@@ -4354,7 +4354,12 @@ class TestPydanticAiGate:
         reason = adapter._with_defaults(
             self._ctx_for(functools.partial(listed, limit=77)), "t", {"table": "t"}
         )[1]
-        assert "make that parameter positional-or-keyword" in reason
+        # Python 3.11 shows no signature for such a partial, and the walk refuses it as
+        # one that cannot be inspected; from 3.12 the gate's own rule names the cause
+        if sys.version_info >= (3, 12):
+            assert "make that parameter positional-or-keyword" in reason
+        else:
+            assert "cannot be inspected" in reason and reason.endswith(adapter._PLAIN)
         made = functools.partial(ordinary, limit=77)
         made.__name__ = made.__qualname__ = "q"
         ran.clear()

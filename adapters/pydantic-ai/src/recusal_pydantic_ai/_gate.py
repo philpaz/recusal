@@ -44,6 +44,7 @@ from __future__ import annotations
 import functools
 import inspect
 import types
+import weakref
 from collections import deque
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
@@ -1527,10 +1528,15 @@ def _descriptor_cause(function: Any) -> Optional[str]:
     """The reason for a stack the kernel's walk could not read because a callable on it is
     an object ``inspect`` takes for a method descriptor (its class defines ``__get__`` and
     no ``__set__``) called through a ``__call__`` written in Python, or a ``staticmethod``
-    object: the test ``inspect`` itself makes, and the kernel after it. None where there
-    is none or the callables cannot be read that far."""
+    object: the test ``inspect`` itself makes, and the kernel after it. And the reason for
+    a ``weakref.proxy`` told by its own type, where the walk failed before its end, where
+    it raises ``WeakProxy``: on Python 3.11.1 ``inspect.signature`` supports no proxy of a
+    callable object, and the walk raised a plain ``ValueError``. None where there is none
+    or the callables cannot be read that far."""
     try:
         for step in _steps(function):
+            if type(step) in weakref.ProxyTypes:
+                return _WEAK_PROXY
             if inspect.isfunction(step) or inspect.ismethod(step) or isinstance(step, type):
                 continue
             if not inspect.ismethoddescriptor(step):
