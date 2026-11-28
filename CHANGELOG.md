@@ -426,8 +426,8 @@ All notable changes to this project are documented here. The format follows
     happens.
   - *What a `__class__` written to deceive still does*, in 0.16.0 too. The refusal of
     an object that shows another class asks `__class__` once and compares it with the
-    object's type; every other test the walk makes of a callable's type believes
-    `__class__`. So these are read, and each needs code written for the purpose: a
+    object's type; the tests by which the walk tells a function, a method, a partial
+    and a cache (`isinstance`, `inspect`) believe `__class__`. So these are read, and each needs code written for the purpose: a
     `__class__` property that answers the object's real type at the one lookup the
     refusal makes and another type at the rest; one that answers by who asks (it
     reads the caller's frame, or raises `AttributeError` to that one function); and an
