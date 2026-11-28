@@ -5869,8 +5869,11 @@ class TestStatedLimits:
         """Stated from 0.2.3, in 0.2.2 too: the kernel's name rule for a bound place, which
         its entry for 0.17.0 states. A method decorator keeps the object and calls a held
         wrapper that has a required parameter of its own in the leading place. The kernel
-        takes that place for the object's and finds nothing to refuse; the SDK hands the
-        judged values on by position, so the function runs with them one place off."""
+        of 0.17.0 takes that place for the object's and finds nothing to refuse; the SDK
+        hands the judged values on by position, so the function runs with them one place
+        off. The kernel of 0.17.1 refuses it, as a held wrapper that takes the object's
+        place under another name than the function it wraps has for it, so the tool is
+        refused before anything runs; ungated, it runs one place off."""
         import functools
 
         events: list = []
@@ -5898,8 +5901,9 @@ class TestStatedLimits:
         # of the object as `mode` where the function it wraps has `self`
         policy = self.Recording(lambda name, args: [])
         tool = example.function_tool(Tools().kept, name_override="run_sql", strict_mode=False)
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="holds a second wrapper") as refusal:
             example.gate_tools([tool], policy)
+        assert "`mode` is a leading parameter" in str(refusal.value)  # the kernel's text
         assert events == [] and policy.seen == []
         assert Tools().kept("S", True) == "recorded"
         assert events == [("run", True, False)]  # what it ran ungated, by position

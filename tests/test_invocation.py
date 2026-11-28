@@ -10156,6 +10156,63 @@ def test_y_a_held_wrapped_cycle_is_refused():
     assert types.FunctionType is type(forward)
 
 
+@pytest.mark.parametrize("kind", ["class-based decorator", "cache", "partial", "function"])
+def test_y_a_held_wrapped_loop_through_any_object_is_refused(kind):
+    """The second review of 0.17.1, at 6f37caa. A held ``def forward(receiver, *a, **k)``
+    names as ``__wrapped__`` an object that names ``forward`` again: a class-based
+    decorator, a ``functools.lru_cache`` or a ``functools.partial``. The loop check
+    stopped at the first value that is not a plain function, so the way reached nothing
+    and was read; by position it ran ``self='q'``, ``query=5``. Every value on the chain
+    is told by identity now, whatever kind of object it is."""
+    import functools
+
+    method = _y_method()
+
+    def forward(receiver, *args, **kwargs):
+        return method(*args, **kwargs)
+
+    if kind == "class-based decorator":
+
+        class Passing:
+            def __call__(self, *args, **kwargs):
+                return method(*args, **kwargs)
+
+        link: Any = Passing()
+    elif kind == "cache":
+        link = functools.lru_cache(maxsize=None)(lambda *a, **k: method(*a, **k))
+    elif kind == "partial":
+        link = functools.partial(lambda *a, **k: method(*a, **k))
+    else:
+
+        def link(*args, **kwargs):
+            return method(*args, **kwargs)
+
+    forward.__wrapped__ = link  # type: ignore[attr-defined]
+    link.__wrapped__ = forward
+    tool = _y_tool(method, forward)
+    _, (by_position, _) = _x_calls(tool, {"query": "q", "limit": 5})
+    assert by_position == [{"self": "q", "query": 5}]
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._HIDDEN_WRAPPER
+    assert invocation._wrapped_loops(forward) and invocation._wrapped_loops(link)
+
+    # the follower tells a repeat by identity too, before its bound: two objects that
+    # take everything in ``*args`` and name each other
+    class Passing:
+        def __call__(self, *args, **kwargs):
+            return method(*args, **kwargs)
+
+    one, two = Passing(), Passing()
+    one.__wrapped__, two.__wrapped__ = two, one  # type: ignore[attr-defined]
+    assert invocation._named_places(one) is invocation._RAN_OUT
+    # an ordinary held wrapper with no loop is read as before
+    assert not invocation._wrapped_loops(_traced(method))
+    _x_read_and_run(
+        _y_tool(method, _traced(method)), {"query": "q", "limit": 5}, {"self": "S", "query": "q"}
+    )
+
+
 def test_y_a_held_wrapper_that_names_nothing_is_still_read():
     """The review's F2, stated and not closed. A held ``def forward(receiver, *args,
     **kwargs)`` written without ``functools.wraps`` names nothing as ``__wrapped__``,

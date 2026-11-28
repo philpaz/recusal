@@ -75,10 +75,12 @@ adapter is a separate distribution on PyPI under its own version and tag.
     is what runs, and it is judged as a held wrapper is: its own parameters, and its
     places after the partial's own arguments against the places of what the partial
     names (`def helper(f, receiver, *args, **kwargs): return f(*args, **kwargs)` ran
-    `self='J:query'`, `query='J:limit'` by position, and is refused). A held plain
-    function whose chain of `__wrapped__` comes back to itself, which 0.17.0 read as
-    reaching nothing, is refused as a chain that never ends, and so is a chain that
-    `_held_renamed` follows past 32 steps.
+    `self='J:query'`, `query='J:limit'` by position, and is refused). A held value
+    whose chain of `__wrapped__` comes back, by identity, to a value already on it,
+    through a plain function, a class-based decorator, a `functools.lru_cache` or a
+    `functools.partial`, which 0.17.0 read as reaching nothing, is refused as a
+    chain that never ends; so is a chain `_held_renamed` follows that comes back on
+    itself or is still going at 32 steps.
   - *Both are reported last*, by `reached_parameters` and by `unsupported_signature`,
     after every refusal 0.17.0 makes: a tool 0.17.0 refused is refused with the class
     and the reason it had.
@@ -113,8 +115,8 @@ adapter is a separate distribution on PyPI under its own version and tag.
     - A held wrapper that takes a bound argument under another name than the function
       it wraps has for that place and hands it on, through any of the layers above.
       Take it under the name the function has for it and hand it on by position.
-    - A held plain function whose chain of `__wrapped__` comes back to itself, whatever
-      it runs. Name the function it wraps, once.
+    - A held value whose chain of `__wrapped__` comes back on itself, through any kind
+      of object, whatever it runs. Name the function it wraps, once.
 
     Refused too, and changing nothing that runs: the same shapes where every call
     fails, by keyword and by position (a facade that keeps its object, over a function

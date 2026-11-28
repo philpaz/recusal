@@ -1847,13 +1847,13 @@ def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> A
     judged: Any = None
     forced: Any = _MISSING
     odd = False
+    if _wrapped_loops(value):
+        # a chain of ``__wrapped__`` that comes back on itself, through any kind of
+        # object (``inspect.unwrap`` refuses one too): what it stands for is not known
+        raise HiddenWrapper(_HIDDEN_WRAPPER)
     if kind is types.FunctionType:
         inner = _own(value, "__wrapped__")
         if inner is not _MISSING:
-            if _wrapped_loops(value):
-                # a chain of ``__wrapped__`` that never ends (``inspect.unwrap`` refuses
-                # one too): what the function stands for is not known
-                raise HiddenWrapper(_HIDDEN_WRAPPER)
             steps.append((inner, bound, 0))
         judged = (value, bound, direct)
     elif kind is _CACHE_WRAPPER:
@@ -1906,20 +1906,35 @@ def _held_steps(value: Any, bound: int, direct: int, calls: Dict[int, Any]) -> A
 
 
 def _wrapped_loops(function: Any) -> bool:
-    """True if the plain functions ``function`` names through their own ``__dict__`` as
-    ``__wrapped__``, one after the other, come back to one of them. A chain that is only
-    long is bounded where it is followed (:func:`_hidden_levels`). Each is read through
-    the interpreter's own accessor; nothing is called."""
+    """True if what ``function`` names as ``__wrapped__``, and what that names in turn,
+    one after the other, comes back, by identity, to a value already on the chain,
+    whatever kind of object it is. Each link is read where the object keeps it, as the
+    held rule reads it: the own ``__dict__`` of a plain function or of a
+    ``functools.lru_cache`` wrapper, and the instance dictionary of a
+    ``functools.partial`` or of any other object (:func:`_instance_attributes`); a
+    ``weakref.proxy`` is not asked. A chain that is only long is bounded where it is
+    followed (:func:`_hidden_levels`). Nothing is called."""
     seen: List[Any] = []
     value = function
     for _ in range(_DEPTH + 1):
-        if type(value) is not types.FunctionType:
-            return False
         if any(value is other for other in seen):
             return True
         seen.append(value)
-        value = _own(value, "__wrapped__")
+        value = _wrapped_link(value)
+        if value is _MISSING or value is None:
+            return False
     return False
+
+
+def _wrapped_link(value: Any) -> Any:
+    """What ``value`` names as ``__wrapped__`` where it keeps the name, read without a
+    lookup (:func:`_wrapped_loops`), or ``_MISSING``."""
+    kind = type(value)
+    if kind is types.FunctionType or kind is _CACHE_WRAPPER:
+        return _own(value, "__wrapped__")
+    if id(kind) in _NEVER_FOLLOWED or any(kind is proxy for proxy in _PROXIES):
+        return _MISSING
+    return _entry(_instance_attributes(value), "__wrapped__")
 
 
 def _hidden_levels(
@@ -2194,8 +2209,8 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     Refused as they stand, whatever their parameters: a way with a step still to take
     32 links from the held value, or 32 held wrappers deep, and a search that stands on
     16,384 callables (plain values a wrapper holds are not counted); since 0.17.1, a
-    held plain function whose chain of ``__wrapped__`` comes back to itself
-    (:func:`_wrapped_loops`); a way through a
+    held value whose chain of ``__wrapped__`` comes back on itself, through any
+    kind of object (:func:`_wrapped_loops`); a way through a
     single-dispatch function or method, whatever is registered on it; a way through a
     cache that calls something other than a plain
     function or the function it names, or whose function cannot be told; and a held
@@ -2359,7 +2374,8 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
 _HELD_RENAMED = (
     "`{taken}` is a leading parameter of a wrapper a decorator holds, in the place of an "
     "argument bound on the way (the object of a method, a positional argument of a "
-    "`functools.partial`), and the function that wrapper names as `__wrapped__` has "
+    "`functools.partial`), and the function it hands the call to (the one it names as "
+    "`__wrapped__`, or the one a `functools.partial` it is the function of names) has "
     "another name for that place. Whether the held wrapper hands the argument on cannot "
     "be read from a signature: if it keeps it, each bound argument after it fills the "
     "parameter before its own, and `{filled}`, the last they would fill, {left}. A held "
@@ -2457,11 +2473,16 @@ def _named_places(value: Any) -> Any:
     receiver before; a ``staticmethod`` to its function; and an object whose class has a
     plain function as ``__call__`` to that ``__call__``, after the object, or where that
     takes everything in ``*args``, to what its instance dictionary names as
-    ``__wrapped__``. Anything else is None. A chain that is still going after 32 steps
-    (one that names itself, among others) is ``_RAN_OUT``: what it reaches is not known,
-    and the caller refuses, as every other bound of the walk does."""
+    ``__wrapped__``. Anything else is None. A chain that comes back, by identity, to a
+    value already on it, whatever kind of object, or that is still going after 32 steps,
+    is ``_RAN_OUT``: what it reaches is not known, and the caller refuses, as every
+    other bound of the walk does."""
     offset, named = 0, _MISSING
+    seen: List[Any] = []
     for _ in range(_DEPTH):
+        if any(value is other for other in seen):
+            return _RAN_OUT  # it comes back on itself: what it reaches is not known
+        seen.append(value)
         kind = type(value)
         if kind is types.FunctionType:
             if _argcount(value) > offset:

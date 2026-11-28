@@ -529,7 +529,7 @@ decorated tool. `recusal-crewai` still carries its own copy.
     reads, and no class changed for a tool both refuse. It found three ways through,
     each closed in the commit after it and pinned by the tests named `test_y_`: a helper
     held under the module's own idiom `functools.wraps(f)(functools.partial(helper, f))`
-    was not judged; a held wrapper whose chain of `__wrapped__` comes back to itself was
+    was not judged; a held wrapper whose chain of `__wrapped__` comes back on itself was
     read as reaching nothing; and the follower of a held wrapper's way gave up without
     refusing at its bound. It asked for two limits to be stated plainly, a held wrapper
     written without `functools.wraps` and a method decorator that forgets to pass `self`
