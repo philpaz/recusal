@@ -6,6 +6,181 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+The kernel change below is on the pull request
+[#336](https://github.com/philpaz/recusal/pull/336) and is not released. It is meant for a
+PATCH release under `STABILITY.md`: it adds no public name and changes no class or base;
+it refuses tools 0.17.0 read (a security fix, under Security) and changes the advice in
+the refusal messages of `recusal.invocation` (under Changed), which are outside the frozen
+list. Under `recusal/` nothing but `recusal.invocation` changed, and the plugin's vendored
+copy of it is regenerated.
+
+### Security
+
+- **Kernel: `recusal.invocation` no longer settles a doubt about a bound argument by a
+  reason that holds for a call by keyword alone.** Found by the review of
+  `recusal-openai-agents` 0.2.3 beside `recusal` 0.17.0, and reproduced on 0.17.0
+  without any framework. Pinned by the tests named `test_x_` in
+  `tests/test_invocation.py`; each fails on the code of 0.17.0 but three, which pin what
+  did not change. A facade that exposes a module function as a method and drops its
+  object (`@functools.wraps(execute) def method(self, *args, **kwargs): return
+  execute(*args, **kwargs)`, over `def execute(database, sql="SELECT 1", note="")`) is
+  read as handing its object on: the object fills `database`, and the levels are
+  `[['args', 'kwargs'], ['sql', 'note']]`. The wrapper takes the object as `self`, where
+  `execute` has `database`, so whether it hands it on is in doubt, and 0.17.0 took the
+  doubt for settled because `database` has no default: a call by keyword that kept the
+  object fails for want of it. A call by position does not fail. Beside a framework that
+  hands every declared parameter in by position (the review traced the OpenAI Agents SDK
+  doing so in `FuncSchema.to_call_args`), the tool was gated, judged `sql='SELECT 1'`,
+  `note='DELETE FROM audit_log'`, and ran `execute(database='SELECT 1', sql='DELETE FROM
+  audit_log', note='')`. The same under a `functools.lru_cache` of the facade, and for
+  `def fetch(sql, force=False)`: judged `force=True`, ran `fetch(sql=True,
+  force=False)`. The kernel cannot know whether a framework calls by keyword or by
+  position.
+  - *The rule.* The walk settled the doubt where the function the bound arguments reach
+    has a place for each of them and the last has no default and is not declared by the
+    tool. It now settles it there only where the tool also declares no parameter an
+    argument passed by position can fill (none, or keyword-only ones alone), so that
+    every call that kept an argument fails. Otherwise the tool is refused as a
+    `BoundArgumentKept`, whose reason says that the last place has no default, that a
+    call by keyword fails and that one by position runs with each value one place from
+    where it was judged. Where more arguments are bound outside the method (a
+    `functools.partial` of it), the partial is judged by the same rule, with the doubt
+    it is handed; where they cannot be counted (an object that only passes for a
+    `functools.partial`), the tool is refused.
+  - *The same in a wrapper a decorator holds.* The held rule takes a held wrapper's
+    leading place in the place of a bound argument for that argument's, and said of a
+    required one that a call that did not hand the receiver on fails, which also holds
+    for a call by keyword alone. A held wrapper that takes a bound argument under
+    another name than the function it hands the call to has for that place (`def
+    forward(receiver, *args, **kwargs): return method(*args, **kwargs)`, held, over `def
+    method(self, query, limit=5)`) is now refused as a `HiddenWrapper` where the last
+    place the bound arguments would fill on that function is not declared by the tool
+    and has a default, or has none while the tool declares a parameter an argument
+    passed by position can fill. Judged `query='q'`, `limit=5`; ran `self='q'`,
+    `query=5`. That function is found from what the held wrapper names as
+    `__wrapped__`, through what takes the arguments in `*args` and passes them on: a
+    `functools.lru_cache`, a cache named again, a class-based decorator, a
+    `functools.partial` named for the function, and a `functools.partial`, whose own
+    positional arguments fill the places before. One shape 0.17.0 stated as read is
+    refused by it now: a held wrapper with a required parameter of its own in the
+    leading place, where the holder keeps the receiver (`def second(mode, sql="x",
+    force=False)` over `def run(self, sql="x", force=False)`).
+  - *Both are reported last*, by `reached_parameters` and by `unsupported_signature`,
+    after every refusal 0.17.0 makes: a tool 0.17.0 refused is refused with the class
+    and the reason it had.
+  - *The other places the walk reasons that a call fails, looked at.* The held
+    `def wrapper(self, *args, **kwargs)` said so of a call by keyword alone; its
+    docstring now says what a call by position does (see "Still read" below). A held
+    wrapper that cannot take the bound arguments at all, and a held wrapper with
+    `*args` and no `**kwargs` under a `functools.partial` that binds a keyword, fail by
+    position too, and are unchanged.
+  - **Refused although it runs correctly**, and read by 0.17.0. This is the whole list.
+    Each is refused where the last place the bound arguments fill has a default, or
+    where the tool declares a parameter an argument passed by position can fill.
+    - A method decorator whose wrapper takes the receiver under another name than the
+      method has for it and hands it on (`def wrapper(this, *args, **kwargs): return
+      method(this, *args, **kwargs)` over `def method(self, query)`, or `self` over the
+      `cls` of a classmethod). Take the receiver under the name the method has for it
+      and hand it on by position: that is read.
+    - A facade that hands its receiver on to a function that names that place
+      otherwise (`return naming(self, *args, **kwargs)` over `def naming(owner, user,
+      *args, **kwargs)`), and a wrapper that takes the positional argument a
+      `functools.partial` binds under another name than the function has for it and
+      hands it on, where that place has no default. 0.17.0 refused both where it has
+      one.
+    - A facade that passes a value of its own in the place of a first parameter that
+      has no default (`return search(self.tenant, *args, **kwargs)` over `def
+      search(tenant, limit=10)`), and one that hands it on by keyword (`return
+      search(*args, tenant=self.tenant, **kwargs)`), which runs correctly when called
+      by keyword and fails when called by position. 0.17.0 refused the first where the
+      parameter has a default. Register the function itself, with every parameter it
+      takes, or bind the value by keyword (`functools.partial(search,
+      tenant="acme")`).
+    - A held wrapper that takes a bound argument under another name than the function
+      it wraps has for that place and hands it on, through any of the layers above.
+      Take it under the name the function has for it and hand it on by position.
+
+    Refused too, and changing nothing that runs: the same shapes where every call
+    fails, by keyword and by position (a facade that keeps its object, over a function
+    with two required parameters).
+  - *Still read, by design.* The same facade where it takes its object in `*args`
+    (`def method(*args, **kwargs): return execute(*args[1:], **kwargs)`) or under the
+    very name the function has for that place (`def method(database, *args,
+    **kwargs)`): a call by position runs shifted just the same, and one by keyword
+    fails. No name is in doubt, and the shape is that of every method decorator that
+    hands its receiver on (`def wrapper(*args, **kwargs)`, and `def wrapper(self,
+    *args, **kwargs)` over `def method(self, ...)`), so nothing in a signature tells
+    the two apart. The same holds for a held wrapper, and for a wrapper that takes the
+    receiver under that name and passes the rest on by position in its body (`def
+    wrapper(self, table, limit=10): return fn(table, limit)`), which runs shifted by
+    keyword too. 0.16.0 and 0.17.0 stated the case where the place has a default; the
+    case where it has none is stated now.
+  - *What the review of `recusal-pydantic-ai` 0.2.1 found beside it*, a cache named
+    again over a wrapper that drops `self` (`@functools.wraps(fn) @functools.lru_cache
+    def wrapper(self, table, limit=10): return fn(table, limit)` on a method, judged
+    `{table: 't', limit: 5}`, ran `self='t', table=5, limit=10`), is not changed in the
+    kernel. The wrapper takes the receiver as `self`, the name the method has for it,
+    so it is the last shape under "Still read", and the kernel reads it alike with the
+    cache and without. The adapter refuses it without the cache by a rule of its own,
+    which did not see the cache: it is the adapter's to close.
+
+### Changed
+
+- **Kernel: the advice in the refusal messages of `recusal.invocation` no longer
+  reopens the gap it refuses.** Found by the same two reviews: advice of the form
+  "register a plain function that calls it" or "a plain function that names every
+  parameter the tool takes", followed literally, gives a tool the gate allows that then
+  runs the refused hazard, because a gate reads a plain function's parameters and never
+  its body. Reproduced: a class-based decorator with `__get__` (`dry_run=False` ran), a
+  weak proxy (`mode='unsafe'` ran), a held wrapper in another order (`fetch(sql=True,
+  force='S')` ran), a `BoundArgumentKept` (`search(tenant='Q', query=5, limit=10)`
+  ran), and a single-dispatch function with nothing registered (an implementation
+  registered after the walk ran). Every message with advice now names a remedy that
+  removes the cause, and where one still mentions a plain function it says that the
+  gate reads its parameters and never its body, so anything it calls is not judged:
+  - a single-dispatch function with nothing registered: register the base function
+    itself where nothing is to be registered, and otherwise one plain function as the
+    tool that branches on the type in its own body and calls no dispatcher;
+  - an object that answers for `__wrapped__`: give it a `__wrapped__` of its own
+    (`functools.update_wrapper(self, fn)`), or register the object it calls itself;
+  - a weak proxy, and one whose object is gone: register the function itself, not a
+    proxy of it; a held one: hold the callable itself, not a proxy of it;
+  - an object whose class defines `__get__`: give the class no `__get__`, call
+    `functools.update_wrapper(self, fn)` in its `__init__`, and apply it to the
+    function or to the bound method, or register the function it decorates itself;
+  - a cache whose function cannot be told: register the function itself, without the
+    cache or the decorator that applies it;
+  - a `functools.partialmethod` over a callable that does not bind: register that
+    callable itself, or put the partialmethod over a plain function;
+  - an object that shows another class: register the object it calls itself; one whose
+    own `__call__` takes parameters by name: give that `__call__` only `*args` and
+    `**kwargs` and hand them on to its `__wrapped__`, or register that `__wrapped__`;
+  - a held wrapper with a parameter in the place of a bound argument: drop it from the
+    held wrapper; a held wrapper in another order: give it the tool's parameters in the
+    tool's order, or make them keyword-only;
+  - a `BoundArgumentKept` where a wrapper takes the bound argument under another name:
+    register the function the wrapper calls itself, with every parameter it takes (a
+    value of the application's bound by keyword is a parameter the tool declares), or
+    have the wrapper take the argument under the name that function has for it and
+    hand it on by position; where a wrapper that passes the call on has a parameter in
+    a bound place: drop it from that wrapper, or register the function under it.
+
+  Each remedy is built and checked by a test named `test_x_advice_`: the rewritten tool
+  is read to the end and every call of it, by position and by keyword, runs with what
+  the reading shows, or it is refused for a cause the reading names; and
+  `test_x_no_message_advises_a_plain_function_without_saying_what_is_read_of_it` holds
+  every message to the rule above. `unsupported_signature` refuses a `functools.partial`
+  tool on each Python this change was run on (3.11 to 3.15): `typing.get_type_hints`
+  raises for a partial before 3.14 and finds no annotation on one from 3.14. So of the
+  remedies that make one (a value bound by keyword, a partialmethod over a plain
+  function) it accepts none; `reached_parameters` reads them, and the tests check them
+  by it.
+  No class, base or public name changed, and the reason strings of the frozen decision
+  core are untouched; a gate that shows these messages shows other words.
+  `STABILITY.md` does not list them in the frozen surface. The class docstrings of
+  `OpenDispatch`, `WeakProxy` and `BoundArgumentKept`, which gave the same advice, say
+  the same as the messages.
+
 ## [0.17.0] - 2026-11-27
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation`, the module a

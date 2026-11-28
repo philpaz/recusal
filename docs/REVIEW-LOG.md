@@ -44,7 +44,10 @@ kept on the branches `review-history/kernel-299-pre-rebuild` (`293f22f`) and
 `review-history/kernel-299-rounds-6-8` (all the others). A further change, which
 answers what two adapter reviews found open in the walk of 0.16.0, was merged from the
 pull request [#329](https://github.com/philpaz/recusal/pull/329) and is released in
-`recusal` 0.17.0 (tag `v0.17.0`, 2026-11-27); it is the last entry under the rounds.
+`recusal` 0.17.0 (tag `v0.17.0`, 2026-11-27). A change that answers what two adapter
+reviews found in 0.17.0 is in progress on the pull request
+[#336](https://github.com/philpaz/recusal/pull/336), not merged; it is the last entry
+under the rounds.
 
 The part of the kernel under review is `recusal.invocation`
 ([source](../recusal/invocation.py)), which adapters use to read the parameters of a
@@ -487,6 +490,39 @@ decorated tool. `recusal-crewai` still carries its own copy.
     class attribute or as an argument a `functools.partial` binds; a second wrapper
     that names nothing as `__wrapped__`; a wrapper built on first use; and the
     `__call__` of a held callable object that names nothing.
+- **After 0.17.0: what two adapter reviews found in its walk and its messages** (in
+  progress on the pull request [#336](https://github.com/philpaz/recusal/pull/336), not
+  merged and not released). The review of
+  `recusal-openai-agents` 0.2.3 and that of `recusal-pydantic-ai` 0.2.1, each beside
+  `recusal` 0.17.0, reproduced each of these on 0.17.0; the pull request reduces each to
+  a test without any framework:
+  - A doubt about a bound argument was taken for settled by a reason that holds for a
+    call by keyword alone. A facade that exposes a module function as a method and
+    drops its object, under a wrapper that names the object `self` where the function
+    names that place `database`, was read because `database` has no default, so a call
+    by keyword that kept the object fails. A framework that hands every declared
+    parameter in by position ran `execute(database='SELECT 1', sql='DELETE FROM
+    audit_log', note='')` for judged `sql='SELECT 1'`, `note='DELETE FROM
+    audit_log'`. The change refuses it unless the tool declares no parameter an
+    argument passed by position can fill, and refuses the same shape in a wrapper a
+    decorator holds. Refused although they run correctly: wrappers that take the bound
+    argument under another name and do hand it on, listed in the changelog.
+  - The same facade where it takes its object in `*args`, or under the name the
+    function has for that place, runs shifted the same way and is still read: no name
+    is in doubt, and the shape is that of every method decorator that hands its
+    receiver on. Stated in the changelog, not closed.
+  - A cache named again over a wrapper that names the receiver `self` and drops it
+    (found by the `recusal-pydantic-ai` review) is that stated shape in the kernel,
+    which reads it alike with the cache and without; the adapter's own stricter rule
+    did not see the cache, and is being changed in the adapter.
+  - The advice in the kernel's own refusal messages reopened the gap: "register a plain
+    function that calls it", followed literally, gives a tool a gate reads by its
+    parameters alone, and both reviews ran the refused hazard through one. The change
+    rewrites every piece of advice to a remedy that removes the cause, each built and
+    checked by a test.
+  - Pinned by the tests named `test_x_` in
+    [`tests/test_invocation.py`](../tests/test_invocation.py) on the pull request's
+    branch.
 
 **Where you can help.**
 
