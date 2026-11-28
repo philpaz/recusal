@@ -2209,8 +2209,8 @@ def _refuse_hidden_wrapper(walk: Any, skip: Any) -> List[Any]:
     Refused as they stand, whatever their parameters: a way with a step still to take
     32 links from the held value, or 32 held wrappers deep, and a search that stands on
     16,384 callables (plain values a wrapper holds are not counted); since 0.17.1, a
-    held value whose chain of ``__wrapped__`` comes back on itself, through any
-    kind of object (:func:`_wrapped_loops`); a way through a
+    held value whose chain of ``__wrapped__`` comes back on itself, each link kept in
+    the object's own dictionary (:func:`_wrapped_loops`); a way through a
     single-dispatch function or method, whatever is registered on it; a way through a
     cache that calls something other than a plain
     function or the function it names, or whose function cannot be told; and a held

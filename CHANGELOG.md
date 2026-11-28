@@ -6,9 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-The kernel change below is on the pull request
-[#336](https://github.com/philpaz/recusal/pull/336) and is not released. It is meant for a
-PATCH release under `STABILITY.md`: it adds no public name and changes no class or base;
+## [0.17.1] - 2026-11-27
+
+A PATCH release of the kernel under `STABILITY.md`, from the pull request
+[#336](https://github.com/philpaz/recusal/pull/336): it adds no public name and changes no class or base;
 it refuses tools 0.17.0 read (a security fix, under Security) and changes the advice in
 the refusal messages of `recusal.invocation` (under Changed), which are outside the frozen
 list. Under `recusal/` nothing but `recusal.invocation` changed, and the plugin's vendored
@@ -115,8 +116,12 @@ adapter is a separate distribution on PyPI under its own version and tag.
     - A held wrapper that takes a bound argument under another name than the function
       it wraps has for that place and hands it on, through any of the layers above.
       Take it under the name the function has for it and hand it on by position.
-    - A held value whose chain of `__wrapped__` comes back on itself, through any kind
-      of object, whatever it runs. Name the function it wraps, once.
+    - A held value whose chain of `__wrapped__` comes back on itself through a plain
+      function, a class-based decorator, a `functools.lru_cache` or a `functools.partial`
+      (each link where that object keeps it in its own dictionary), whatever it runs.
+      Name the function it wraps, once. A loop whose link back is a class attribute, a
+      property, a slot or an answer of `__getattr__` is not seen as a loop: it is the
+      held rule's stated limit of a value kept where no instance dictionary shows it.
 
     Refused too, and changing nothing that runs: the same shapes where every call
     fails, by keyword and by position (a facade that keeps its object, over a function

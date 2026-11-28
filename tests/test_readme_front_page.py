@@ -65,44 +65,50 @@ def test_each_thing_the_note_calls_new_is_in_the_repository():
     note = _callout()
     flat = " ".join(line.lstrip("> ") for line in note.splitlines())
     for claim, evidence in (
-        ("refuses a proxy and an open dispatcher", ROOT / "recusal" / "invocation.py"),
+        (
+            "no longer settles a doubt that holds only for a call by keyword",
+            ROOT / "recusal" / "invocation.py",
+        ),
+        (
+            "The advice in every refusal message removes the cause",
+            ROOT / "recusal" / "invocation.py",
+        ),
         ("This release is stricter", ROOT / "CHANGELOG.md"),
     ):
         assert claim in flat, claim
         assert evidence.is_file(), evidence
-    # the refusals the note names have a public class each in the tree
     import functools
-    import weakref
 
     from recusal import invocation
 
-    for name, base in (
-        ("ProxiedCallable", TypeError),
-        ("WeakProxy", invocation.ProxiedCallable),
-        ("OpenDispatch", ValueError),
-    ):
-        assert issubclass(getattr(invocation, name), base), name
+    # the first thing the note names is refused: a method facade that drops its object,
+    # whose judged values a call by position runs one parameter off
+    def execute(database: str, sql: str = "SELECT 1", note: str = "") -> str:
+        return sql
 
-    # the first two the note names are refused: a proxy on the way, and a single-dispatch
-    # function with nothing registered, which an implementation registered after the
-    # walk would change
-    def pay(amount: int) -> int:
-        return amount
+    def as_method(fn):
+        @functools.wraps(fn)
+        def method(self, *args, **kwargs):
+            return fn(*args, **kwargs)
 
-    with pytest.raises(invocation.WeakProxy):
-        invocation.reached_parameters(weakref.proxy(pay))
+        return method
 
-    @functools.singledispatch
-    def charge(amount: int) -> int:
-        return amount
+    class Warehouse:
+        run_sql = as_method(execute)
 
-    with pytest.raises(invocation.OpenDispatch):
-        invocation.reached_parameters(charge)
+    with pytest.raises(invocation.BoundArgumentKept):
+        invocation.reached_parameters(Warehouse().run_sql)
+    # no refusal message of the module tells the user to call the refused tool from a
+    # plain function and register that
+    for name in dir(invocation):
+        value = getattr(invocation, name)
+        if isinstance(value, str):
+            assert "register a plain function that calls it" not in value, name
     # what the note says the changelog lists is there, in the section it links
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     section = changelog.split(f"## [{_version()}]", 1)[1].split("\n## [", 1)[0]
     assert "refused although it runs correctly" in " ".join(section.lower().split())
-    assert "Still not found, by design" in section
+    assert "Still read" in section
     # what the note says of the kernel diff is what the kernel diff is
     assert "in `recusal.invocation` and the version string" in flat
 
