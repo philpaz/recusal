@@ -523,7 +523,7 @@ full](https://github.com/philpaz/recusal/blob/main/SECURITY.md#things-worth-know
 
 ## Status
 
-**In-depth review under way.** Its fixes so far are released in 0.2.2, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
+**In-depth review under way.** Its fixes so far are released in 0.2.3, and the review continues. Recusal is a Beta (`0.x`) open-source project in active
 development: it is not a finished or certified security product, and it is provided under
 Apache-2.0 without warranty.
 [What the reviews are, and where every adapter stands](https://github.com/philpaz/recusal#project-status).
