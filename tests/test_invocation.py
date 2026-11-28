@@ -1178,7 +1178,10 @@ def test_a_held_wrapper_of_a_method_receives_the_receiver_the_method_does():
     """A method's decorator is usually written ``def wrapper(self, *args, **kwargs)``. When
     the tool is the bound method, the walk reads its levels without the receiver; a wrapper
     its decorator holds is passed the same receiver, so its first positional parameter is
-    not one of its own either, whatever it is called. Held and read agree here too."""
+    not one of its own either. Held and read agree here too. Since 0.17.1 a wrapper that
+    takes the receiver under another name than the method has for it (``receiver`` over
+    ``self``) is refused, read or held: ``_receiving`` keeps it, and a call that passes the
+    arguments by position runs the method with each one place from where it was judged."""
     import functools
     import types
 
@@ -1202,13 +1205,24 @@ def test_a_held_wrapper_of_a_method_receives_the_receiver_the_method_does():
         bound = functools.partial(make(search), object())
         return Service().search, Service.build, Service().build, bound
 
-    for make, keeps in (
-        (_receiving, False),
-        (_traced, False),
-        (_copying_method, False),
-        (_keeping_method, True),
+    # the name each case's function has for its receiver, and the name each wrapper takes
+    # it under (None: in ``*args``)
+    receivers = ("self", "cls", "cls", "receiver")
+    for make, keeps, taken in (
+        (_receiving, False, "receiver"),
+        (_traced, False, None),
+        (_copying_method, False, "self"),
+        (_keeping_method, True, "receiver"),
     ):
-        for read, kept in zip(cases(make), cases(held(make))):
+        for read, kept, receiver in zip(cases(make), cases(held(make)), receivers):
+            if taken not in (None, receiver):
+                # taken under another name than the function has for it: refused either
+                # way, read or held, whether the wrapper keeps it or hands it on
+                with pytest.raises(invocation.BoundArgumentKept, match=f"`{taken}`"):
+                    reached_parameters(read)
+                with pytest.raises(HiddenWrapper):
+                    reached_parameters(kept)
+                continue
             reached_parameters(read)  # read on the walk, it is a level, never a hidden wrapper
             if not isinstance(read, functools.partial):
                 why = unsupported_signature(read)
@@ -1220,8 +1234,9 @@ def test_a_held_wrapper_of_a_method_receives_the_receiver_the_method_does():
             else:
                 reached_parameters(kept)
     service_tool = cases(held(_receiving))[0]
-    assert unsupported_signature(service_tool) is None
-    assert _levels(service_tool) == [_FORWARD, ["query", "limit"]]
+    assert service_tool("q", 5) == 5  # by position: ``self='q'``, ``query=5``
+    assert "`receiver` is a leading parameter" in unsupported_signature(service_tool)
+    assert _levels(cases(held(_traced))[0]) == [_FORWARD, ["query", "limit"]]
     assert "`timeout` is a parameter" in unsupported_signature(cases(held(_keeping_method))[0])
 
     # the receiver is counted once for every binding on the way, and never forgotten: a
@@ -1372,10 +1387,13 @@ def test_a_held_wrapper_is_passed_every_argument_bound_on_the_way(name, bound, b
     """A held wrapper receives every leading argument bound before it: one for each method
     the walk went through and each bound method that holds it, and each positional argument
     of each ``functools.partial``, on the walk and held. Exactly that many of its leading
-    parameters are not its own, whatever they are called: one fewer and its next parameter
-    would be taken for a receiver and a wrapper with a default of its own accepted, one
-    more and a wrapper that only names its receivers refused."""
-    receivers = ", ".join(["me", "them"][:bound])
+    parameters are not its own: one fewer and its next parameter would be taken for a
+    receiver and a wrapper with a default of its own accepted, one more and a wrapper that
+    only names its receivers refused. The receivers are named as the function the held
+    wrapper wraps names them: since 0.17.1 a held wrapper that names one otherwise is
+    refused where a call by position would run shifted
+    (``test_x_a_held_wrapper_that_names_a_receiver_otherwise_is_refused``)."""
+    receivers = ", ".join(["self", "other"][:bound])
     reached_parameters(build(receivers + ", *args, **kwargs"))
     # the parameter right after the receivers is the wrapper's own
     with pytest.raises(HiddenWrapper, match="`force` is a parameter"):
@@ -1387,7 +1405,7 @@ def test_a_held_wrapper_is_passed_every_argument_bound_on_the_way(name, bound, b
         reached_parameters(build("*args, force=True, **kwargs"))
     # one receiver fewer named: what follows is still not the wrapper's own
     if bound == 2:
-        reached_parameters(build("me, *args, **kwargs"))
+        reached_parameters(build("self, *args, **kwargs"))
 
 
 def _receiver_witnesses():
@@ -1416,9 +1434,9 @@ def _receiver_witnesses():
             lambda: bind(held_by(method, "me, force=True, *a, **k"), this),
         ),
         (
-            "partial(g, a, b); held (x, y, *a, **k): both are bound",
+            "partial(g, a, b); held (self, other, *a, **k): both are bound",
             True,
-            lambda: part(held_by(two, "x, y, *a, **k"), this, 1),
+            lambda: part(held_by(two, "self, other, *a, **k"), this, 1),
         ),
         (
             "partial(g) with no arguments; held (force=True, *a, **k)",
@@ -1431,9 +1449,9 @@ def _receiver_witnesses():
             lambda: part(held_by(plain, "force=True, *a, **k"), limit=3),
         ),
         (
-            "a method of a method; held (x, y, *a, **k): two receivers",
+            "a method of a method; held (self, other, *a, **k): two receivers",
             True,
-            lambda: bind(bind(held_by(two, "x, y, *a, **k"), this), this),
+            lambda: bind(bind(held_by(two, "self, other, *a, **k"), this), this),
         ),
         (
             "a plain tool; held bound method of (me, force=True, *a, **k)",
@@ -1443,14 +1461,14 @@ def _receiver_witnesses():
             ),
         ),
         (
-            "partial(bound method, 1); held (x, y, *a, **k)",
+            "partial(bound method, 1); held (self, other, *a, **k)",
             True,
-            lambda: part(bind(held_by(two, "x, y, *a, **k"), this), 1),
+            lambda: part(bind(held_by(two, "self, other, *a, **k"), this), 1),
         ),
         (
-            "a bound method of partial(g, 1); held (x, y, *a, **k)",
+            "a bound method of partial(g, 1); held (self, other, *a, **k)",
             True,
-            lambda: bind(part(held_by(two, "x, y, *a, **k"), 1), this),
+            lambda: bind(part(held_by(two, "self, other, *a, **k"), 1), this),
         ),
         (
             "a plain tool; held partial((x, y, *a, **k), 1, 2)",
@@ -1465,9 +1483,11 @@ def _receiver_witnesses():
             ),
         ),
         (
-            "a bound method; held partial((me, *a, **k)) with no arguments",
+            "a bound method; held partial((self, *a, **k)) with no arguments",
             True,
-            lambda: bind(_calling_held(method, part(_wrapper_taking(method, "me, *a, **k"))), this),
+            lambda: bind(
+                _calling_held(method, part(_wrapper_taking(method, "self, *a, **k"))), this
+            ),
         ),
         (
             "a bound method; held (*a, force=True, **k): keyword-only is its own",
@@ -1535,7 +1555,7 @@ def test_the_arguments_of_a_partial_subclass_are_read_as_before():
 
     hidden = _calling(_with_timeout)(search)
     kept = _calling_held(method, _wrapper_taking(method, "me, force=True, *args, **kwargs"))
-    passing = _calling_held(method, _wrapper_taking(method, "me, *args, **kwargs"))
+    passing = _calling_held(method, _wrapper_taking(method, "self, *args, **kwargs"))
     for kind in (functools.partial, Plain, Counting):
         del read[:]
         with pytest.raises(HiddenWrapper, match="`timeout` is a parameter"):
@@ -3625,7 +3645,7 @@ def _refused_as_a_partialmethod(func) -> None:
     assert issubclass(PartialMethodSignature, TypeError)
     assert not issubclass(PartialMethodSignature, ValueError)
     assert str(refused.value) == invocation._PARTIALMETHOD
-    assert "register a plain function that calls it" in str(refused.value)
+    assert "plain function that calls it" not in str(refused.value)  # 0.17.0's advice
     assert "put the partialmethod over a plain function" in str(refused.value)
     # the kernel's own check gives that reason, before any other about the signature shown
     assert unsupported_signature(func) == invocation._PARTIALMETHOD
@@ -4512,7 +4532,7 @@ def test_a_cache_whose_function_cannot_be_told_is_refused_or_read_as_before(monk
     assert type(refused.value) is invocation.UnreadCache
     assert issubclass(invocation.UnreadCache, HiddenWrapper)
     assert str(refused.value) == invocation._REWRAPPED_CACHE
-    assert "apply the cache to the function itself" in str(refused.value)
+    assert "register the function itself, without the cache" in str(refused.value)
     assert unsupported_signature(tool) == invocation._REWRAPPED_CACHE
     with pytest.raises(HiddenWrapper):
         invocation.own_parameters(tool)
@@ -4656,7 +4676,8 @@ def test_c_a_bound_argument_a_wrapper_takes_under_another_name_is_refused():
             f"is taken by a wrapper as `{taken}`" in text
             and "`query`, the last they would fill" in text
         )
-        assert "register that one" in text and "*" not in text.replace("`*", "")
+        assert "Register the function the wrapper calls itself" in text
+        assert "*" not in text.replace("`*", "")
         assert issubclass(invocation.BoundArgumentKept, ValueError)
     with pytest.raises(invocation.BoundArgumentKept) as refused:
         reached_parameters(method)
@@ -4736,11 +4757,21 @@ def test_c_an_ordinary_bound_method_or_partial_is_not_refused():
             return required(*args, **kwargs)
 
     service = Service()
-    for name in ("plain", "traced", "named", "other", "cached", "on_class", "delegating"):
+    for name in ("plain", "traced", "named", "cached", "on_class"):
         tool = getattr(service, name)
         reached_parameters(tool)
-        assert unsupported_signature(tool) is None or name == "delegating", name
+        assert unsupported_signature(tool) is None, name
     assert _levels(service.plain) == [["query", "limit"]]
+    # since 0.17.1: a wrapper that takes the receiver under another name than the method
+    # has for it, which a call by keyword that kept it fails on and one by position does
+    # not. ``other`` hands it on and runs correctly; ``delegating`` keeps it, and the tool
+    # declares only ``limit``, so by position the judged ``limit`` runs as ``query``
+    assert service.other("q", 5) == "rows"
+    with pytest.raises(invocation.BoundArgumentKept, match="`this`.*`self`, the last"):
+        reached_parameters(service.other)
+    if list(inspect_signature(service.delegating)) == ["limit"]:  # 3.9 shows ``query`` too
+        with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`query`, the last"):
+            reached_parameters(service.delegating)
 
     def table(table: str = "users", limit: int = 10) -> str:
         return table
@@ -5327,9 +5358,11 @@ def test_f1_the_name_goes_with_each_bound_argument_also_where_partials_merge():
 
 def test_f1_an_ordinary_method_under_layers_is_read_as_before():
     """What must not be refused: a method decorator that names the receiver and hands it
-    on, over any layers; a facade that hands its receiver on under another name; a
-    decorated ``classmethod``; a delegating method whose function takes no default
-    first."""
+    on, over any layers; a decorated ``classmethod``. Until 0.17.0 also a decorator that
+    names the receiver otherwise than the method, a facade that hands its receiver on
+    under another name, and a delegating method whose function takes no default first:
+    a call by keyword that kept the receiver fails on each, and a call by position does
+    not, so since 0.17.1 each is refused, the first two although they run correctly."""
     import functools
 
     def naming_self(function):
@@ -5391,7 +5424,11 @@ def test_f1_an_ordinary_method_under_layers_is_read_as_before():
             return 1
 
     # the name that counts is the one the nearest wrapper has for the argument: a facade
-    # hands its receiver on to a wrapper that names it as the function under it does
+    # hands its receiver on to a wrapper that names it as the function under it does.
+    # 0.17.0 read it, the receiver's ``owner`` on the wrapper having no default; since
+    # 0.17.1 that settles nothing, because a call by position that kept the receiver
+    # would run ``owner`` with the value judged for ``limit``. Refused although it runs
+    # correctly, and read once the facade takes its receiver as ``owner``
     def owned(owner: Any = None, limit: int = 10) -> str:
         return "rows"
 
@@ -5404,17 +5441,34 @@ def test_f1_an_ordinary_method_under_layers_is_read_as_before():
         def call(self, *args, **kwargs):
             return naming_owner(self, *args, **kwargs)
 
-    assert Facade().call(limit=5) == "rows"
-    reached_parameters(Facade().call)
+        @functools.wraps(naming_owner)
+        def named(owner, *args, **kwargs):
+            return naming_owner(owner, *args, **kwargs)
+
+    assert Facade().call(limit=5) == "rows" and Facade().call(5) == "rows"
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`owner`, the last"):
+        reached_parameters(Facade().call)
+    reached_parameters(Facade().named)
 
     service = Service()
     for name in ("one", "two", "three", "four", "five", "six"):
         tool = getattr(service, name)
         assert tool("q", 5) == "rows"
+        if name in ("three", "five", "six"):
+            # ``instance`` where the method has ``self``, ``self`` where it has ``cls``:
+            # read by 0.17.0, refused since 0.17.1 although it runs correctly (a call by
+            # position that kept the receiver would not)
+            taken = "self" if name == "five" else "instance"
+            with pytest.raises(invocation.BoundArgumentKept, match=f"`{taken}`"):
+                reached_parameters(tool)
+            continue
         assert unsupported_signature(tool) is None, name
-        if name not in ("three", "four"):  # a partial of a cache was never read
+        if name != "four":  # a partial of a cache was never read
             reached_parameters(functools.partial(tool, "q"))
-    reached_parameters(service.delegating)
+    if list(inspect_signature(service.delegating)) == ["limit"]:  # 3.9 shows ``query`` too
+        # it keeps its receiver: by position the judged ``limit`` runs as ``query``
+        with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`query`"):
+            reached_parameters(service.delegating)
 
     def table(table: str = "users", limit: int = 10) -> str:
         return table
@@ -5469,9 +5523,15 @@ def test_f2_a_cache_named_again_over_a_method_is_read_as_what_it_calls():
         _SIX.clear()
         assert tool("q", 5) == "rows" and _SIX == [("audited", True), ("fetch", "q", 5)]
         assert list(inspect_signature(tool)) == ["query", "limit"]
+        assert unsupported_signature(decorate(_six_fetch)) is not None  # as on a function
+        if decorate is over_an_object:
+            # its ``__call__`` takes the receiver as ``receiver`` where the method has
+            # ``self``: since 0.17.1 the walk refuses that first, with another reason
+            with pytest.raises(invocation.BoundArgumentKept, match="`receiver`"):
+                reached_parameters(tool)
+            continue
         assert unsupported_signature(tool).startswith(_SIX_UNDECLARED), decorate.__name__
         assert "skip_review" in _levels(tool)[0], decorate.__name__
-        assert unsupported_signature(decorate(_six_fetch)) is not None  # as on a function
 
     # a cache that calls something that only passes arguments on is read, and accepted
     def passing(function):
@@ -5943,7 +6003,8 @@ def test_a_callable_object_that_defines_get_is_refused_with_a_reason_of_its_own(
         text = str(refused.value)
         assert type(refused.value) is ValueError  # the class every gate already names
         assert unsupported_signature(tool) == text == invocation._DESCRIPTOR
-        assert "defines `__get__`" in text and "register a plain function that calls it" in text
+        assert "defines `__get__`" in text and "give the class no `__get__`" in text
+        assert "plain function" not in text  # 0.17.0 advised one that calls it
 
     class Service:
         fetch = Binding(lambda self, query, limit=10: "rows")
@@ -6126,15 +6187,20 @@ def test_s_a_kept_bound_argument_moves_every_argument_bound_after_it(shape):
 
 def test_s_what_a_kept_argument_cannot_move_is_read_as_before():
     """Beside S: where no wrapper takes a bound argument under another name there is no
-    doubt, and where the last parameter the bound arguments fill has no default a call
-    that kept one fails, which settles the doubt for the callables further in."""
+    doubt. Where the last parameter the bound arguments fill has no default, a call BY
+    KEYWORD that kept one fails, and 0.17.0 took that for the doubt settled; a call by
+    position runs, so since 0.17.1 it settles the doubt only for a tool that declares
+    no parameter an argument passed by position can fill (``test_x_``)."""
     import functools
 
     assert _levels(functools.partial(_eight_search, "acme")) == [["region", "limit"]]
     tools = _eight_tools(_eight_search)()
-    assert _levels(tools.search) == [["args", "kwargs"], ["region", "limit"]]
     with pytest.raises(TypeError, match="tenant"):
         tools.search(limit=5)  # the object was kept, and nothing fills ``tenant``
+    # by position it runs: ``tenant`` gets the value judged for ``region``
+    assert tools.search("us", 5) == "rows" and _EIGHT[-1] == ("us", 5, 10)
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`tenant`, the last"):
+        reached_parameters(tools.search)
 
     # two required parameters, two arguments bound after the object: the third is moved
     def query(tenant: str, user: str, region: str = "eu", limit: int = 10) -> str:
@@ -6144,7 +6210,14 @@ def test_s_what_a_kept_argument_cannot_move_is_read_as_before():
     assert functools.partial(facade.search, "acme", "bob")(limit=5) == "eu"
     with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`region`"):
         reached_parameters(functools.partial(facade.search, "acme", "bob"))
-    reached_parameters(functools.partial(facade.search, "acme"))  # ``user`` has no default
+    # ``user`` has no default: by keyword the call fails, by position it runs moved
+    assert list(inspect_signature(functools.partial(facade.search, "acme"))) == [
+        "region",
+        "limit",
+    ]
+    assert functools.partial(facade.search, "acme")("us", 5) == 5  # ``user='us'``, ``region=5``
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`user`, the last"):
+        reached_parameters(functools.partial(facade.search, "acme"))
 
     # an ordinary method, a decorator that names the receiver as the method does, and
     # arguments bound after it
@@ -6174,9 +6247,10 @@ def test_s_what_a_kept_argument_cannot_move_is_read_as_before():
     assert _levels(functools.partial(Repo().under, "q")) == passing * 2 + [["limit"]]
 
     # a facade that hands its receiver on to a wrapper with required parameters, under a
-    # partial: had the receiver been kept, the wrapper would go without its ``user`` and
-    # the call would fail there. That settles the doubt, for the argument the partial
-    # binds too, and the function further in is read though its ``user`` has a default
+    # partial: had the receiver been kept, a call by keyword would go without the
+    # wrapper's ``user`` and fail there. 0.17.0 took that for the doubt settled; a call
+    # by position that kept it runs ``owner='bob'`` and ``user`` with the judged
+    # ``limit``, so it is refused now, although this facade hands its receiver on
     def owned(owner: Any = None, user: str = "u", limit: int = 10) -> str:
         return user
 
@@ -6191,7 +6265,9 @@ def test_s_what_a_kept_argument_cannot_move_is_read_as_before():
 
     handed = functools.partial(Hands().call, "bob")
     assert handed(limit=5) == "bob" and list(inspect_signature(handed)) == ["limit"]
-    assert _levels(handed) == passing * 2 + [["limit"]]
+    assert handed(5) == "bob"  # it hands the receiver on: correct by position too
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`user`, the last"):
+        reached_parameters(handed)
 
     # the keywords a partial binds are bound again to what its function hands the call
     # to: one that function does not take fails the call, and the walk refuses it
@@ -6253,16 +6329,18 @@ def test_fr9_a_facade_that_passes_a_value_of_its_own_is_refused_and_says_so():
     assert "is taken by a wrapper as `self`" in text and "`tenant`, the last they would" in text
     assert "or passes a value of its own in its place" in text
     assert "is refused too, although it runs correctly" in text
-    assert "a plain function that names every parameter the tool takes" in text
+    assert "Register the function the wrapper calls itself" in text
+    assert "plain function" not in text  # 0.17.0 advised one, which is read for its name alone
     assert unsupported_signature(facade.search) == text
     assert "although it runs correctly" in invocation.BoundArgumentKept.__doc__
 
-    # the remedy the message gives: a plain function that names every parameter
-    def search_acme(limit: int = 10) -> str:
-        return facade.search(limit=limit)
-
+    # the remedy the message gives: the function itself is read to the end, and so is a
+    # partial that binds its tenant by keyword, which runs with what the reading shows
+    # (``test_x_`` follows every remedy of every message)
+    assert unsupported_signature(free_search) is None
+    search_acme = functools.partial(free_search, tenant="acme")
     assert search_acme(limit=5) == "acme:5"
-    assert unsupported_signature(search_acme) is None and _levels(search_acme) == [["limit"]]
+    assert _levels(search_acme) == [["tenant", "limit"]]
 
     # the same cost elsewhere: a wrapper that hands the argument on under another name,
     # and a partial that binds a defaulted parameter of a method whose decorator calls
@@ -6284,7 +6362,11 @@ def test_fr9_a_facade_that_passes_a_value_of_its_own_is_refused_and_says_so():
         def fetch(self, query: str = "*", limit: int = 10) -> str:
             return query
 
-    assert _levels(Repo().fetch) == [["args", "kwargs"], ["query", "limit"]]  # bare: read
+    # bare: read by 0.17.0, refused since 0.17.1, where a call by position that kept the
+    # receiver would run ``self`` with the value judged for ``query``
+    assert Repo().fetch("q", 5) == "q"
+    with pytest.raises(invocation.BoundArgumentKept, match="`instance`.*`self`, the last"):
+        reached_parameters(Repo().fetch)
     assert functools.partial(Repo().fetch, "q")(limit=5) == "q"
     with pytest.raises(invocation.BoundArgumentKept, match="`instance`.*`query`"):
         reached_parameters(functools.partial(Repo().fetch, "q"))
@@ -6559,17 +6641,27 @@ def test_k_the_leading_parameter_the_wrapper_keeps_need_not_have_a_default():
         reached_parameters(tool)
 
 
-def test_k_a_facade_over_a_function_that_passes_nothing_on_is_read_as_before():
-    """Not refused: the facade hands its tenant on to the plain function, by position or
-    by keyword. The function takes the judged name itself and passes the call on to
-    nothing, so the value it runs with is the one judged."""
+def test_k_a_facade_over_a_function_that_passes_nothing_on_is_refused_since_0_17_1():
+    """The facade hands its tenant on to the plain function, by position or by keyword,
+    and runs correctly when called by keyword. 0.17.0 read both: the function's
+    ``tenant`` has no default, so a facade that kept its receiver would fail a call by
+    keyword. It would not fail a call by position: ``search(5)`` of a facade that kept
+    it runs ``tenant=5``. The two have the signature of that facade, so both are refused
+    now, although they run correctly; binding the tenant by keyword is read."""
+    import functools
+
     tools = _nine_tools()
     for tool in (tools("acme").search_plain, tools("acme").search_plain_by_keyword):
-        assert _levels(tool) == [["args", "kwargs"], ["limit"]]
-        assert unsupported_signature(tool) is None
         _NINE.clear()
         tool(limit=5)
         assert _NINE == [("search", "acme", 5)]
+        with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`tenant`, the last"):
+            reached_parameters(tool)
+    bound = functools.partial(_nine_search, tenant="acme")
+    assert _levels(bound) == [["tenant", "limit"]]
+    _NINE.clear()
+    bound(limit=5)
+    assert _NINE == [("search", "acme", 5)]
 
 
 def _nine_real(query: str, limit: int = 10, skip_review: bool = True) -> str:
@@ -7585,7 +7677,7 @@ def test_o_a_weak_proxy_is_refused_whatever_it_stands_for():
     with pytest.raises(invocation.WeakProxy):
         reached_parameters(plain)
     for text in (invocation._WEAK_PROXY, invocation._HELD_WEAK_PROXY):
-        assert "register" in text and "999999" not in text
+        assert "itself, not a proxy of it" in text and "999999" not in text
 
     traced = _traced(lookup)
     with pytest.raises(DispatchedAtCallTime):  # behind the proxy, and found all the same
@@ -7992,11 +8084,14 @@ def test_o_the_reason_for_a_bound_argument_says_only_what_holds_for_the_paramete
     text = reason(tool)
     assert "default" not in text  # 0.16.0: "`query`, the last they would fill, runs at a default"
     assert "`query` is left to a keyword of that name" in text
+    remedy = invocation._UNPLACED_REMEDY.format(filled="query")
     assert text == invocation._UNPLACED_UNDER_A_NAME.format(
-        taken="self", filled="query", left=invocation._LEFT[True, False]
+        taken="self", filled="query", left=invocation._LEFT[True, False], remedy=remedy
     )
     text = reason(facade(required, named=False))
-    assert text == invocation._UNPLACED.format(filled="query", left=invocation._LEFT[True, False])
+    assert text == invocation._UNPLACED.format(
+        filled="query", left=invocation._LEFT[True, False], remedy=remedy
+    )
     assert "default" not in text
 
     @functools.wraps(_o_find)
@@ -8005,7 +8100,10 @@ def test_o_the_reason_for_a_bound_argument_says_only_what_holds_for_the_paramete
 
     text = reason(facade(defaulted))
     assert text == invocation._UNPLACED_UNDER_A_NAME.format(
-        taken="self", filled="limit", left=invocation._LEFT[True, True]
+        taken="self",
+        filled="limit",
+        left=invocation._LEFT[True, True],
+        remedy=invocation._UNPLACED_REMEDY.format(filled="limit"),
     )
     assert "or runs at a default no policy judged" in text
 
@@ -8015,7 +8113,9 @@ def test_o_the_reason_for_a_bound_argument_says_only_what_holds_for_the_paramete
 
     text = reason(facade(undeclared, named=False))
     assert text == invocation._UNPLACED.format(
-        filled="skip_review", left=invocation._LEFT[False, True]
+        filled="skip_review",
+        left=invocation._LEFT[False, True],
+        remedy=invocation._UNPLACED_REMEDY.format(filled="skip_review"),
     )
     assert "`skip_review` runs at a default no policy judged" in text
     assert "keyword of that name" not in text
@@ -8983,8 +9083,9 @@ def test_w_what_the_name_rule_reads_that_runs_otherwise():
     parameter is read: a call with every declared parameter fails, and one that leaves
     the defaulted one out runs with the receiver in the first parameter's place and the
     arguments shifted. And a held wrapper with a required parameter of its own in the
-    leading place, where the holder keeps the receiver, is read: the place is taken
-    for the receiver's."""
+    leading place, where the holder keeps the receiver, was read: the place is taken
+    for the receiver's. Since 0.17.1 that one is refused where the function the held
+    wrapper names has another name for the place."""
     import functools
 
     ran = []
@@ -9013,10 +9114,15 @@ def test_w_what_the_name_rule_reads_that_runs_otherwise():
     tools.handed_on("S")
     assert ran.pop() == (tools, "S")  # judged sql="S", force=False
 
-    assert _levels(tools.kept) == [_FORWARD, ["sql", "force"]]  # ``mode`` is in no level
-    assert unsupported_signature(tools.kept) is None
     tools.kept("S", True)
     assert ran.pop() == (True, False)  # judged sql="S", force=True
+    # read by 0.17.0, and refused since 0.17.1: the function the held wrapper names has
+    # ``self`` in the place the wrapper takes as ``mode``, so had the wrapper kept the
+    # receiver a call by position runs shifted (``_held_renamed``). Where the held
+    # wrapper names that place as the function does, it is read still, as stated
+    with pytest.raises(HiddenWrapper, match="`mode` is a leading parameter"):
+        reached_parameters(tools.kept)
+    assert "`mode`" in (unsupported_signature(tools.kept) or "")
 
 
 def test_w_an_object_that_shows_another_class_and_restates_its_parameters():
@@ -9114,3 +9220,821 @@ def test_w_whatever_is_raised_while_the_walk_reads_is_one_refusal(monkeypatch):
     assert str(refused.value) == invocation._RAISED_WHEN_READ
     assert "`__getattr__`" in str(refused.value)
     assert type(refused.value.__cause__) is KeyError
+
+
+# --- 0.17.1: a doubt settled only for a call by keyword, and advice that reopened a gap ---
+#
+# Found by the review of ``recusal-openai-agents`` 0.2.3 and by that of
+# ``recusal-pydantic-ai`` 0.2.1, both beside 0.17.0, and reproduced here without either
+# framework. A framework can hand the judged values in by position, every declared
+# parameter in its order, and the kernel cannot know whether it does: ``_x_calls`` makes
+# both calls. Each ``test_x_`` test fails on 0.17.0.
+
+_X: List[Any] = []
+
+
+def _x_calls(tool, sent):
+    """The judged values, ``sent`` completed with the defaults ``tool`` declares, as a
+    gate completes them; and what a call runs with when a framework hands them in by
+    position (every positional-or-keyword parameter in its order, the keyword-only ones
+    by keyword), then when one hands them in by keyword. Each is what the functions
+    under the tool recorded in ``_X``, or ``TypeError`` where the call raised it."""
+    import inspect
+
+    parameters = inspect.signature(tool).parameters
+    judged = {}
+    for name, parameter in parameters.items():
+        if name in sent:
+            judged[name] = sent[name]
+        elif parameter.default is not parameter.empty:
+            judged[name] = parameter.default
+    positional = [judged[n] for n, p in parameters.items() if p.kind is p.POSITIONAL_OR_KEYWORD]
+    keywords = {n: judged[n] for n, p in parameters.items() if p.kind is p.KEYWORD_ONLY}
+    runs: List[Any] = []
+    for args, named in ((positional, keywords), ((), judged)):
+        del _X[:]
+        try:
+            tool(*args, **named)
+        except TypeError:
+            runs.append(TypeError)
+            continue
+        runs.append(list(_X))
+    return judged, runs
+
+
+def _x_read_and_run(tool, sent, ran, signature=True):
+    """``tool`` is read to the end, and every call of it that runs, by position or by
+    keyword, runs with ``ran``: what the reading shows. With ``signature``,
+    ``unsupported_signature`` accepts it too; without, the tool is a
+    ``functools.partial``, which ``unsupported_signature`` refuses whatever it binds
+    (``typing.get_type_hints`` raises for a partial before Python 3.14 and finds no
+    annotation on one from 3.14), and ``reached_parameters`` reads it."""
+    if signature:
+        assert unsupported_signature(tool) is None
+    reached_parameters(tool)
+    _, runs = _x_calls(tool, sent)
+    assert [ran] in runs, runs
+    for run in runs:
+        assert run is TypeError or run == [ran], runs
+
+
+def _x_execute(database: str, sql: str = "SELECT 1", note: str = "") -> str:
+    _X.append({"database": database, "sql": sql, "note": note})
+    return "recorded"
+
+
+def _x_fetch(sql: str, force: bool = False) -> str:
+    _X.append({"sql": sql, "force": force})
+    return "ok"
+
+
+def _x_facade(function, kind="other name"):
+    """A class whose ``run`` exposes ``function`` as a method and drops its object, the
+    object taken as ``kind`` says: under another name than ``function`` has for that
+    place, in ``*args``, under the very name, or under another name below a cache."""
+    import functools
+
+    if kind == "in *args":
+
+        @functools.wraps(function)
+        def method(*args, **kwargs):
+            return function(*args[1:], **kwargs)
+
+    elif kind == "same name":
+        first = next(iter(inspect_signature(function)))
+        scope: Dict[str, Any] = {"functools": functools, "function": function}
+        exec(
+            f"@functools.wraps(function)\ndef method({first}, *args, **kwargs):\n"
+            "    return function(*args, **kwargs)\n",
+            scope,
+        )
+        method = scope["method"]
+    else:
+
+        @functools.wraps(function)
+        def method(self, *args, **kwargs):
+            return function(*args, **kwargs)
+
+    if kind == "a cache":
+        method = functools.lru_cache(maxsize=None)(method)
+    return type("Warehouse", (), {"run": method})
+
+
+@pytest.mark.parametrize("kind", ["other name", "a cache"])
+def test_x_a_doubt_settled_only_for_a_call_by_keyword_is_refused(kind):
+    """The review of ``recusal-openai-agents`` 0.2.3. The walk binds the facade's object
+    to ``database`` and reads ``execute`` as taking ``(sql, note)``; the wrapper takes
+    the object as ``self``, so whether it hands it on is in doubt. 0.17.0 took the doubt
+    for settled because ``database`` has no default, so a call by keyword that kept the
+    object fails. A call by position does not fail: judged ``sql='SELECT 1'``,
+    ``note='DELETE FROM audit_log'``; ran ``database='SELECT 1'``,
+    ``sql='DELETE FROM audit_log'``."""
+    tool = _x_facade(_x_execute, kind)().run
+    judged, (by_position, by_keyword) = _x_calls(
+        tool, {"sql": "SELECT 1", "note": "DELETE FROM audit_log"}
+    )
+    assert judged == {"sql": "SELECT 1", "note": "DELETE FROM audit_log"}
+    assert by_position == [{"database": "SELECT 1", "sql": "DELETE FROM audit_log", "note": ""}]
+    assert by_keyword is TypeError
+    with pytest.raises(invocation.BoundArgumentKept) as refused:
+        reached_parameters(tool)
+    text = str(refused.value)
+    assert text == invocation._shifted("self", "database")
+    assert "`database`, the last they would fill, has no default" in text
+    assert "by position runs with `database` given the first of them" in text
+    assert unsupported_signature(tool) == text and "DELETE" not in text and "SELECT" not in text
+
+    # the two-parameter form: judged ``force=True``, ran ``fetch(sql=True, force=False)``
+    tool = _x_facade(_x_fetch, kind)().run
+    judged, (by_position, by_keyword) = _x_calls(tool, {"force": True})
+    assert judged == {"force": True} and by_position == [{"sql": True, "force": False}]
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`sql`, the last"):
+        reached_parameters(tool)
+
+
+@pytest.mark.parametrize("kind", ["in *args", "same name"])
+def test_x_a_facade_that_names_its_object_as_the_function_does_is_still_read(kind):
+    """Stated, not closed. The same facade, taking its object in ``*args`` or under the
+    name ``execute`` has for that place, runs shifted by position just the same; but no
+    name is in doubt, and the shape is that of every method decorator that hands its
+    receiver on (``def wrapper(*args, **kwargs)``, ``def wrapper(self, *args,
+    **kwargs)`` over ``def method(self, ...)``). Nothing in a signature tells the two
+    apart, so it is read, as 0.17.0 read it."""
+    tool = _x_facade(_x_execute, kind)().run
+    _, (by_position, by_keyword) = _x_calls(tool, {"sql": "SELECT 1", "note": "x"})
+    assert by_position == [{"database": "SELECT 1", "sql": "x", "note": ""}]
+    assert by_keyword is TypeError
+    assert _levels(tool) == [_FORWARD, ["sql", "note"]]
+    assert unsupported_signature(tool) is None
+
+
+def test_x_the_doubt_is_settled_where_the_tool_declares_nothing_by_position():
+    """Where the tool declares no parameter an argument passed by position can fill,
+    every call that kept the object fails for want of the first parameter, by keyword
+    and by position alike: the doubt is settled there, as in 0.17.0, and the tool read."""
+
+    def execute(database: str, *, sql: str = "SELECT 1", note: str = "") -> str:
+        _X.append({"database": database, "sql": sql, "note": note})
+        return "recorded"
+
+    tool = _x_facade(execute)().run
+    assert [p.kind for p in inspect_signature(tool).values()] == [
+        inspect_signature(execute)["sql"].KEYWORD_ONLY
+    ] * 2
+    assert _x_calls(tool, {"sql": "x"})[1] == [TypeError, TypeError]
+    assert _levels(tool) == [_FORWARD, ["sql", "note"]]
+
+
+def test_x_arguments_bound_after_the_object_are_judged_by_the_partial_that_binds_them():
+    """Under a ``functools.partial`` of the facade, the argument the partial binds is
+    what would fill the first parameter, and the partial is judged by the same rule
+    with the doubt it is handed: refused where its last place has no default and the
+    tool declares a parameter by position, and where it has one, as before. Where an
+    object only passes for a partial, what it binds cannot be counted, and the doubt is
+    not settled under it."""
+    import functools
+
+    def query(tenant: str, user: str, limit: int = 10) -> str:
+        _X.append({"tenant": tenant, "user": user, "limit": limit})
+        return "rows"
+
+    facade = _x_facade(query)()
+    tool = functools.partial(facade.run, "acme")
+    assert _x_calls(tool, {"limit": 5})[1] == [
+        [{"tenant": "acme", "user": 5, "limit": 10}],
+        TypeError,
+    ]
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`user`, the last"):
+        reached_parameters(tool)
+
+
+def test_x_what_only_passes_for_a_partial_does_not_settle_the_doubt(monkeypatch):
+    """The arguments an object binds are counted only for the standard library's
+    ``functools.partial``. Under another class put in ``functools``, the arguments bound
+    outside the facade's method cannot be counted, so the doubt the method raises is not
+    settled there: refused. 0.17.0 settled it."""
+    import functools
+
+    assert invocation._prepare()
+
+    class Lookalike:
+        def __init__(self, func, *args, **keywords):
+            self.func, self.args, self.keywords = func, args, keywords
+
+        def __call__(self, *args, **keywords):
+            return self.func(*self.args, *args, **dict(self.keywords, **keywords))
+
+    facade = _x_facade(_x_execute)()
+    monkeypatch.setattr(functools, "partial", Lookalike)
+    with pytest.raises(invocation.BoundArgumentKept, match="`self`.*`database`"):
+        reached_parameters(Lookalike(facade.run))
+
+
+def _x_receiving(function):
+    """A method decorator whose wrapper takes the receiver as ``receiver`` and keeps it."""
+    import functools
+
+    @functools.wraps(function)
+    def forward(receiver, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    return forward
+
+
+def _x_handing(function):
+    """The same, taking the receiver as ``self``, the name the method has for it, and
+    handing it on by position: what the refusal says to write."""
+    import functools
+
+    @functools.wraps(function)
+    def forward(self, *args, **kwargs):
+        return function(self, *args, **kwargs)
+
+    return forward
+
+
+def test_x_a_held_wrapper_that_names_a_receiver_otherwise_is_refused():
+    """The sibling of the doubt, in a wrapper a decorator holds: the held wrapper takes
+    the receiver as ``receiver``, and the method it names as ``__wrapped__`` has
+    ``self`` in that place. 0.17.0 read it: no tool declares ``receiver``, and it has no
+    default, so a call by keyword that the held wrapper kept the receiver from fails.
+    By position it runs the method with ``self='q'`` and ``query=5``. Refused now,
+    after every refusal 0.17.0 makes; and read once the held wrapper takes the receiver
+    as ``self`` and hands it on."""
+
+    class Service:
+        @_calling(_x_receiving)
+        def search(self, query: str, limit: int = 5) -> str:
+            _X.append({"self": self if isinstance(self, str) else "S", "query": query})
+            return "rows"
+
+        @_calling(_x_handing)
+        def handed(self, query: str, limit: int = 5) -> str:
+            _X.append({"self": self if isinstance(self, str) else "S", "query": query})
+            return "rows"
+
+    tool = Service().search
+    _, (by_position, by_keyword) = _x_calls(tool, {"query": "q", "limit": 5})
+    assert by_position == [{"self": "q", "query": 5}] and by_keyword is TypeError
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._HELD_RENAMED.format(
+        taken="receiver",
+        filled="self",
+        left=invocation._HELD_LEFT[False].format(filled="self"),
+    )
+    assert unsupported_signature(tool) == str(refused.value)
+    _x_read_and_run(Service().handed, {"query": "q"}, {"self": "S", "query": "q"})
+
+    # where the place has a default the held wrapper runs it even by keyword: the walk
+    # reads the holder, which takes the receiver in ``*args``, as handing it on
+    def free(tenant: str = "public", limit: int = 10) -> str:
+        _X.append({"tenant": tenant if isinstance(tenant, str) else "T", "limit": limit})
+        return "rows"
+
+    Tools = type("Tools", (), {"run": _calling(_x_receiving)(free)})
+    _, runs = _x_calls(Tools().run, {"limit": 5})
+    assert runs[1] == [{"tenant": "public", "limit": 5}]  # judged ``limit`` alone
+    with pytest.raises(HiddenWrapper, match="`receiver`.*`tenant`, the last they would fill"):
+        reached_parameters(Tools().run)
+
+
+def _x_layers():
+    """What a held wrapper can name as ``__wrapped__`` between it and the method: each
+    takes the arguments in ``*args`` and passes them on, or binds one before them."""
+    import functools
+
+    def class_based(function):
+        class Logged:
+            def __init__(self, function):
+                functools.update_wrapper(self, function)
+                self.function = function
+
+            def __call__(self, *args, **kwargs):
+                return self.function(*args, **kwargs)
+
+        return Logged(function)
+
+    def helper(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    return [
+        ("nothing", lambda f: f),
+        ("a cache", functools.lru_cache(maxsize=None)),
+        ("a cache named again", _seven_memo),
+        ("a class-based decorator", class_based),
+        ("a partial named for it", lambda f: functools.wraps(f)(functools.partial(helper, f))),
+        ("a wrapper that names the receiver as the method does", _x_handing),
+    ]
+
+
+@pytest.mark.parametrize("name, layer", _x_layers(), ids=lambda v: v if type(v) is str else "")
+def test_x_a_renamed_receiver_is_found_through_what_passes_it_on(name, layer):
+    """The held wrapper's ``__wrapped__`` need not be the method: the name it is compared
+    with is the one the first callable with named places has, found through what takes
+    the arguments in ``*args`` and passes them on, as the walk reads it."""
+
+    def decorate(method):
+        return _calling(_x_receiving)(layer(method))
+
+    class Service:
+        @decorate
+        def search(self, query: str, limit: int = 5) -> str:
+            _X.append({"self": self if isinstance(self, str) else "S", "query": query})
+            return "rows"
+
+        def __hash__(self):
+            return 1
+
+    tool = Service().search
+    _, (by_position, _) = _x_calls(tool, {"query": "q", "limit": 5})
+    assert by_position == [{"self": "q", "query": 5}]
+    with pytest.raises(HiddenWrapper, match="`receiver` is a leading parameter"):
+        reached_parameters(tool)
+
+
+def test_x_a_renamed_receiver_is_found_past_a_value_a_partial_binds():
+    """A partial between the held wrapper and the method binds the method's receiver
+    place itself, so the held wrapper's bound place is compared with the place after
+    it: ``query`` where it takes ``receiver``. Kept, ``limit`` runs as ``query``."""
+    import functools
+
+    def query_of(tenant: str, query: str, limit: int = 5) -> str:
+        _X.append({"tenant": tenant, "query": query, "limit": limit})
+        return "rows"
+
+    def decorate(function):
+        return _calling(_x_receiving)(_traced(functools.partial(function, "acme")))
+
+    Tools = type("Tools", (), {"run": decorate(query_of)})
+    tool = Tools().run
+    assert list(inspect_signature(tool)) == ["limit"]
+    _, (by_position, _) = _x_calls(tool, {"limit": 7})
+    assert by_position == [{"tenant": "acme", "query": 7, "limit": 5}]
+    with pytest.raises(HiddenWrapper, match="`receiver`.*`query`, the last"):
+        reached_parameters(tool)
+
+
+# What every refusal with advice says to write, built and checked: read soundly, which is
+# to say read to the end and run with what the reading shows, by position and by keyword,
+# or refused for a cause the reading names. 0.17.0's advice to call the refused tool from
+# a plain function is followed too, to show what it opened: the gate reads a plain
+# function's parameters and never its body.
+
+
+def _x_recorder(name="table"):
+    def purge(table: str, limit: int = 10) -> str:
+        _X.append({"table": table, "limit": limit})
+        return "ok"
+
+    return purge
+
+
+def _x_keeping(keyword):
+    """A ``functools.wraps`` decorator with a keyword of its own, which it records."""
+    import functools
+
+    def decorate(function):
+        scope: Dict[str, Any] = {"functools": functools, "function": function, "_X": _X}
+        exec(
+            f"@functools.wraps(function)\ndef wrapper(*args, {keyword}=True, **kwargs):\n"
+            f"    _X.append({{{keyword!r}: {keyword}}})\n"
+            "    return function(*args, **kwargs)\n",
+            scope,
+        )
+        return scope["wrapper"]
+
+    return decorate
+
+
+def test_x_advice_for_a_dispatcher_with_nothing_registered():
+    import functools
+
+    @functools.singledispatch
+    def process(item: str, mode: str = "safe") -> str:
+        _X.append({"item": item, "mode": mode})
+        return "base"
+
+    with pytest.raises(invocation.OpenDispatch) as refused:
+        reached_parameters(process)
+    text = str(refused.value)
+    assert text == invocation._OPEN_DISPATCH and invocation._PLAIN_BODY in text
+    assert "register the base function itself" in text and "branches on the type" in text
+
+    def calls_it(item: str, mode: str = "safe") -> str:  # 0.17.0's advice
+        return process(item, mode)
+
+    def branching(item: str, mode: str = "safe") -> str:  # the advice now
+        if isinstance(item, str):
+            _X.append({"item": item, "mode": mode})
+        return "done"
+
+    base = process.__wrapped__
+    for tool in (base, branching):
+        _x_read_and_run(tool, {"item": "t"}, {"item": "t", "mode": "safe"})
+    assert unsupported_signature(calls_it) is None
+    process.register(str, lambda item, mode="safe", purge=True: _X.append({"purge": purge}))
+    assert _x_calls(calls_it, {"item": "t"})[1] == [[{"purge": True}]] * 2  # unjudged
+    for tool in (base, branching):  # a registration after the walk reaches neither
+        _x_read_and_run(tool, {"item": "t"}, {"item": "t", "mode": "safe"})
+
+
+def test_x_advice_for_an_object_that_answers_for_wrapped():
+    import functools
+
+    class Forwarding:
+        def __init__(self, function):
+            self.function = function
+
+        def __getattr__(self, name):
+            return getattr(self.function, name)
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    class Named(Forwarding):
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.function = function
+
+    forcing = _x_keeping("force")(_x_recorder())
+    with pytest.raises(invocation.ProxiedCallable) as refused:
+        reached_parameters(Forwarding(_traced(_x_recorder())))
+    assert str(refused.value) == invocation._ANSWERS_FOR_WRAPPED
+    assert "plain function" not in str(refused.value)
+    # with a ``__wrapped__`` of its own, or as the object it calls, the parameter the
+    # object hid is read, and refused; where there is none, the tool is read and runs so
+    for tool in (Named(forcing), forcing):
+        assert "`force` is a parameter" in unsupported_signature(tool)
+    for tool in (Named(_traced(_x_recorder())), _traced(_x_recorder())):
+        _x_read_and_run(tool, {"table": "t"}, {"table": "t", "limit": 10})
+
+
+def test_x_advice_for_a_weak_proxy():
+    import weakref
+
+    mode = _x_keeping("mode")(_x_recorder())
+    plain = _x_recorder()
+    for target in (mode, plain):
+        with pytest.raises(invocation.WeakProxy) as refused:
+            reached_parameters(weakref.proxy(target))
+        assert str(refused.value) == invocation._WEAK_PROXY
+    for text in (invocation._WEAK_PROXY, invocation._GONE):
+        assert text.endswith("register the function itself, not a proxy of it")
+    assert "`mode` is a parameter" in unsupported_signature(mode)
+    _x_read_and_run(plain, {"table": "t"}, {"table": "t", "limit": 10})
+
+
+def test_x_advice_for_a_callable_object_whose_class_defines_get():
+    import functools
+
+    def audited(binds):
+        class Audited:
+            def __init__(self, function):
+                functools.update_wrapper(self, function)
+                self.function = function
+
+            def __call__(self, *args, dry_run=False, **kwargs):
+                _X.append({"dry_run": dry_run})
+                return self.function(*args, **kwargs)
+
+        class Logged:
+            def __init__(self, function):
+                functools.update_wrapper(self, function)
+                self.function = function
+
+            def __call__(self, *args, **kwargs):
+                return self.function(*args, **kwargs)
+
+        if binds:
+            for kind in (Audited, Logged):
+                kind.__get__ = lambda self, obj, owner=None: (  # type: ignore[attr-defined]
+                    self if obj is None else functools.partial(self, obj)
+                )
+        return Audited, Logged
+
+    purge = _x_recorder()
+    Audited, _ = audited(True)
+    with pytest.raises(ValueError) as refused:
+        reached_parameters(Audited(purge))
+    assert str(refused.value) == invocation._DESCRIPTOR
+    assert "functools.update_wrapper(self, fn)" in str(refused.value)
+
+    def calls_it(table: str, limit: int = 10) -> str:  # 0.17.0's advice
+        return Audited(purge)(table, limit)
+
+    assert unsupported_signature(calls_it) is None
+    assert _x_calls(calls_it, {"table": "t"})[1][0][0] == {"dry_run": False}  # unjudged
+
+    Audited, Logged = audited(False)  # the advice now: no ``__get__``
+    assert "`dry_run` is a parameter" in unsupported_signature(Audited(purge))
+
+    class Repo:
+        def search(self, table: str, limit: int = 10) -> str:
+            _X.append({"table": table, "limit": limit})
+            return "ok"
+
+    for tool in (Logged(purge), Logged(Repo().search), purge):
+        _x_read_and_run(tool, {"table": "t"}, {"table": "t", "limit": 10})
+
+
+def test_x_advice_for_a_cache_whose_function_cannot_be_told(monkeypatch):
+    purge = _x_recorder()
+    tool = _six_cached(_six_audited)(purge)
+    reached_parameters(purge)  # the first walk has been made
+    real = invocation._referents
+    monkeypatch.setattr(invocation, "_referents", lambda value: real(value)[:-1])
+    with pytest.raises(invocation.UnreadCache) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._REWRAPPED_CACHE
+    assert "plain function" not in str(refused.value)
+    _x_read_and_run(purge, {"table": "t"}, {"table": "t", "limit": 10})
+
+
+def test_x_advice_for_a_partialmethod_over_a_callable_object():
+    import functools
+
+    class Logged:
+        def __init__(self, function):
+            functools.update_wrapper(self, function)
+            self.function = function
+
+        def __call__(self, *args, **kwargs):
+            return self.function(*args, **kwargs)
+
+    def scoped(prefix: str, table: str, limit: int = 10) -> str:
+        _X.append({"prefix": prefix, "table": table, "limit": limit})
+        return "ok"
+
+    def method(self, prefix: str, table: str, limit: int = 10) -> str:
+        _X.append({"prefix": prefix, "table": table, "limit": limit})
+        return "ok"
+
+    class Repo:
+        over_an_object = functools.partialmethod(Logged(scoped), "p")
+        over_a_function = functools.partialmethod(method, "p")
+
+    with pytest.raises(PartialMethodSignature) as refused:
+        reached_parameters(Repo().over_an_object)
+    assert str(refused.value) == invocation._PARTIALMETHOD
+    assert invocation._PLAIN_BODY in str(refused.value)
+    ran = {"prefix": "p", "table": "t", "limit": 10}
+    _x_read_and_run(Repo().over_a_function, {"table": "t"}, ran, signature=False)
+    _x_read_and_run(Logged(scoped), {"prefix": "p", "table": "t"}, ran)
+
+
+def test_x_advice_for_an_object_that_shows_another_class():
+    purge = _x_recorder()
+    as_function = dict(_v_liars())["a function"]  # shows a function's face, calls another
+
+    class Transparent:
+        __slots__ = ("__wrapped__",)
+
+        def __init__(self, wrapped):
+            self.__wrapped__ = wrapped
+
+        @property
+        def __class__(self):
+            return type(self.__wrapped__)
+
+        def __getattr__(self, name):
+            return getattr(self.__wrapped__, name)
+
+        def __call__(self, *args, **kwargs):  # the advice: hand everything on
+            return self.__wrapped__(*args, **kwargs)
+
+    class Naming(Transparent):
+        __slots__ = ()
+
+        def __call__(self, table, limit=10):
+            return self.__wrapped__(table, limit)
+
+    for tool, text in (
+        (as_function(purge, purge), invocation._SHOWS_ANOTHER_CLASS),
+        (Naming(purge), invocation._SHOWS_ANOTHER_CLASS_AND_TAKES),
+    ):
+        with pytest.raises(invocation.ProxiedCallable) as refused:
+            reached_parameters(tool)
+        assert str(refused.value) == text and "plain function" not in text
+    for tool in (Transparent(purge), purge):
+        _x_read_and_run(tool, {"table": "t"}, {"table": "t", "limit": 10})
+
+
+def _x_held_holder(held_of, receiver_by_keyword=True):
+    """A method decorator that holds ``held_of(method)`` and hands it the receiver by
+    keyword, as ``self``."""
+    import functools
+
+    def decorate(method):
+        held = held_of(method)
+
+        @functools.wraps(method)
+        def first(self, *args, **kwargs):
+            return held(*args, self=self, **kwargs)
+
+        return first
+
+    return decorate
+
+
+def test_x_advice_for_a_held_wrapper_with_a_parameter_in_a_bound_place():
+    import functools
+
+    def capped(function):
+        @functools.wraps(function)
+        def wrapper(limit: int = 100, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def reviewed(function):
+        @functools.wraps(function)
+        def wrapper(skip_review: bool = True, *args, **kwargs):
+            _X.append({"skip_review": skip_review})
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def dropped(function):  # the advice: the parameter dropped from the held wrapper
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def build(held_of):
+        def search(self, limit: int = 10) -> str:
+            _X.append({"limit": limit})
+            return "rows"
+
+        return type("Tools", (), {"search": _x_held_holder(held_of)(search)})().search
+
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(build(capped))
+    assert str(refused.value) == invocation._HELD_IN_BOUND_PLACE.format(name="limit")
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(build(reviewed))
+    assert str(refused.value) == invocation._HELD_DEFAULT_IN_BOUND_PLACE.format(name="skip_review")
+    for text in (invocation._HELD_IN_BOUND_PLACE, invocation._HELD_DEFAULT_IN_BOUND_PLACE):
+        assert "drop `{name}` from the held wrapper" in text and "plain function" not in text
+    _x_read_and_run(build(dropped), {"limit": 5}, {"limit": 5})
+
+
+def test_x_advice_for_a_held_wrapper_in_another_order():
+    import functools
+
+    def holding(second):
+        def decorate(function):
+            @functools.wraps(function)
+            def first(*args, **kwargs):
+                return second(*args, **kwargs)
+
+            return first
+
+        return decorate
+
+    @functools.wraps(_x_fetch)
+    def swapped(force, sql):
+        return _x_fetch(sql, force)
+
+    @functools.wraps(_x_fetch)
+    def in_order(sql, force=False):
+        return _x_fetch(sql, force)
+
+    @functools.wraps(_x_fetch)
+    def by_keyword(*, sql, force=False):
+        return _x_fetch(sql, force)
+
+    tool = holding(swapped)(_x_fetch)
+    assert _x_calls(tool, {"sql": "S", "force": True})[1][0] == [{"sql": True, "force": "S"}]
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(tool)
+    assert str(refused.value) == invocation._HELD_IN_ANOTHER_PLACE.format(
+        name="force", declared="sql"
+    )
+    assert "plain function" not in str(refused.value)
+    for second in (in_order, by_keyword):
+        _x_read_and_run(
+            holding(second)(_x_fetch), {"sql": "S", "force": True}, {"sql": "S", "force": True}
+        )
+
+
+def test_x_advice_for_a_held_weak_proxy():
+    import weakref
+
+    def helper(*args, **kwargs):
+        return "helped"
+
+    purge = _x_recorder()
+    with pytest.raises(HiddenWrapper) as refused:
+        reached_parameters(_holding(weakref.proxy(helper), purge))
+    assert str(refused.value) == invocation._HELD_WEAK_PROXY
+    assert str(refused.value).endswith("hold the callable itself, not a proxy of it")
+    _x_read_and_run(_holding(helper, purge), {"table": "t"}, {"table": "t", "limit": 10})
+
+
+def test_x_advice_for_a_bound_argument_a_wrapper_may_keep():
+    """The four reasons of ``BoundArgumentKept`` and the reason of a held wrapper that
+    names a receiver otherwise, each with its advice followed. 0.17.0's advice, a plain
+    function that names every parameter and calls the facade, is read for its parameters
+    alone and runs the facade's shift unjudged: judged ``query='Q'``, ``limit=5``; ran
+    ``search(tenant='Q', query=5, limit=10)``."""
+    import functools
+
+    def search(tenant: str = "public", query: str = "*", limit: int = 10) -> str:
+        _X.append({"tenant": tenant, "query": query, "limit": limit})
+        return "rows"
+
+    facade = _x_facade(search)()
+    with pytest.raises(invocation.BoundArgumentKept) as refused:
+        reached_parameters(facade.run)
+    assert str(refused.value) == invocation._unhanded("self", "tenant")
+
+    def calls_it(query: str = "*", limit: int = 10) -> str:  # 0.17.0's advice
+        return facade.run(query, limit)
+
+    assert unsupported_signature(calls_it) is None
+    assert _x_calls(calls_it, {"query": "Q", "limit": 5})[1][0] == [
+        {"tenant": "Q", "query": 5, "limit": 10}
+    ]
+    # the advice now: the function itself, or with the application's value bound by
+    # keyword, or a wrapper that takes the argument under the function's own name for it
+    # and hands it on by position
+    _x_read_and_run(
+        search, {"tenant": "acme", "query": "Q"}, {"tenant": "acme", "query": "Q", "limit": 10}
+    )
+    _x_read_and_run(
+        functools.partial(search, tenant="acme"),
+        {"query": "Q"},
+        {"tenant": "acme", "query": "Q", "limit": 10},
+        signature=False,
+    )
+    for text in (
+        invocation._unhanded("self", "tenant"),
+        invocation._shifted("self", "database"),
+        invocation._unplaced(None, "limit", True, True),
+        invocation._unplaced("self", "limit", True, True),
+    ):
+        assert "plain function" not in text and "register that one" not in text
+
+    class Repo:
+        @_eight_named_instance
+        def renamed(self, query: str = "*", limit: int = 10) -> str:
+            _X.append({"query": query, "limit": limit})
+            return "rows"
+
+        @_eight_named_self
+        def named(self, query: str = "*", limit: int = 10) -> str:
+            _X.append({"query": query, "limit": limit})
+            return "rows"
+
+    with pytest.raises(invocation.BoundArgumentKept, match="`instance`"):
+        reached_parameters(Repo().renamed)
+    _x_read_and_run(Repo().named, {"query": "Q", "limit": 5}, {"query": "Q", "limit": 5})
+
+    # a bound place of a wrapper that passes the call on: the advice drops it
+    def capped(function):
+        @functools.wraps(function)
+        def wrapper(limit: int = 100, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    def tenant_search(tenant: str, limit: int = 10) -> str:
+        _X.append({"tenant": tenant, "limit": limit})
+        return "rows"
+
+    with pytest.raises(invocation.BoundArgumentKept) as refused:
+        reached_parameters(_twelve_tools(capped(tenant_search)).search)
+    assert str(refused.value) == invocation._unplaced(None, "limit", True, True)
+    assert "Drop `limit` from the function that takes it in that place" in str(refused.value)
+    _x_read_and_run(
+        _twelve_tools(_traced(tenant_search)).search,
+        {"limit": 5},
+        {"tenant": "acme", "limit": 5},
+    )
+
+
+def test_x_no_message_advises_a_plain_function_without_saying_what_is_read_of_it():
+    """Every reason the kernel gives that names a plain function says that the gate
+    reads its parameters and never its body, so anything it calls is not judged; and
+    none advises calling the refused tool from one, the advice both reviews followed to
+    a tool that ran the refused hazard."""
+    texts = [
+        value
+        for name, value in vars(invocation).items()
+        if name.startswith("_") and name.isupper() and type(value) is str
+    ]
+    texts += list(invocation._LEFT.values()) + list(invocation._HELD_LEFT.values())
+    texts += [
+        invocation._unhanded("t", "f"),
+        invocation._shifted("t", "f"),
+        invocation._unplaced(None, "f", True, True),
+        invocation._unplaced("t", "f", False, True),
+    ]
+    assert len(texts) > 30
+    for text in texts:
+        assert "that calls it" not in text and "names every parameter" not in text, text
+        assert "register that one" not in text, text
+        if "plain function" in text:
+            assert invocation._PLAIN_BODY in text, text
