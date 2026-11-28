@@ -53,26 +53,29 @@ when you call them, naming the tool and the cause (:func:`_tool_refusal`):
   that object;
 - a decorator whose signature cannot be read, and a function under more wrappers than
   the walk reads;
-- what the kernel's walk (``recusal.invocation.reached_parameters``, ``recusal`` 0.16.0
+- what the kernel's walk (``recusal.invocation.reached_parameters``, ``recusal`` 0.17.0
   or later) refuses by a class of its own, each with a reason that says what was found
-  and what to do (:func:`_unread_reason`): a decorator that holds a second
-  ``functools.wraps`` wrapper of the function, where that wrapper takes a parameter the
-  walk cannot account for or the way from it cannot be judged (``HiddenWrapper``), a
-  ``functools.lru_cache`` wrapper whose function cannot be told (``UnreadCache``), a
-  bound argument the walk cannot follow through a wrapper (``BoundArgumentKept``), and
-  a declared signature (``DeclaredSignature``). Some tools refused for these run
-  correctly, and each of the four finds exact shapes and not every one: the package
-  page lists what is refused although correct and what is not found.
+  and what to do (:func:`_unread_reason`): a decorator that holds a second wrapper of
+  the function, where that wrapper takes a parameter the walk cannot account for, takes
+  the tool's parameters in another order, or the way from it cannot be judged
+  (``HiddenWrapper``), a ``functools.lru_cache`` wrapper whose function cannot be told
+  (``UnreadCache``), a bound argument the walk cannot follow through a wrapper
+  (``BoundArgumentKept``), a declared signature (``DeclaredSignature``), a
+  single-dispatch function with nothing registered (``OpenDispatch``), and a callable
+  that answers for another object (``ProxiedCallable``; a weak proxy, ``WeakProxy``,
+  gets the reason this gate gives the ones it finds). Some tools refused for these run
+  correctly, and each finds exact shapes and not every one: the package page lists what
+  is refused although correct and what is not found.
 
 Which callables are read for that: the function, what its ``__wrapped__`` chain leads to,
-a bound method's function, a callable object's ``__call__`` and the callable a
-``functools.partialmethod`` holds. The kernel's walk also reads the function a
-``functools.lru_cache`` wrapper calls where that is not the one it names; the three
-questions this gate asks itself (a single-dispatch function, a partialmethod, a weak
-proxy) are asked of what the cache names, so none of the three is found behind such a
-cache by this gate's own walk. A function a wrapper holds some other way (in a closure, a
-global, an attribute) is not walked: the kernel's walk refuses the shapes of it named
-above and states the rest as not found (``recusal.invocation``).
+the function a ``functools.lru_cache`` wrapper calls (``recusal.invocation.cache_target``),
+which is not the one it names where ``functools.wraps`` was written above the cache, a
+bound method's function, a callable object's ``__call__`` and the callable a
+``functools.partialmethod`` holds. So the three questions this gate asks itself (a
+single-dispatch function, a partialmethod, a weak proxy) are asked of what such a cache
+calls too; 0.2.2 asked them of what it names alone. A function a wrapper holds some
+other way (in a closure, a global, an attribute) is not walked: the kernel's walk refuses
+the shapes of it named above and states the rest as not found (``recusal.invocation``).
 
 ``gated_agent`` checks the agent when you call it. Build the agent completely, then gate
 it; a tool appended to the gated agent's list afterwards is not gated. The gated copy has
@@ -106,8 +109,12 @@ from recusal.invocation import BoundArgumentKept as _BoundArgumentKept
 from recusal.invocation import DeclaredSignature as _DeclaredSignature
 from recusal.invocation import DispatchedAtCallTime as _DispatchedAtCallTime
 from recusal.invocation import HiddenWrapper as _HiddenWrapper
+from recusal.invocation import OpenDispatch as _OpenDispatch
 from recusal.invocation import PartialMethodSignature as _PartialMethodSignature
+from recusal.invocation import ProxiedCallable as _ProxiedCallable
 from recusal.invocation import UnreadCache as _UnreadCache
+from recusal.invocation import WeakProxy as _WeakProxy
+from recusal.invocation import cache_target as _cache_target
 from recusal.invocation import detached as _detached
 from recusal.invocation import reached_parameters as _reached_parameters
 
@@ -345,6 +352,42 @@ _WEAK_PROXY = (
     "the gate judges that function's parameters, and what its body calls is not read."
 )
 
+#: For the kernel walk's ``OpenDispatch`` (``recusal`` 0.17.0): a single-dispatch function,
+#: or the callable a ``singledispatchmethod`` hands out, whose registry is exactly its base.
+#: This gate refuses every dispatcher its own walk reaches with ``_SINGLEDISPATCH``; this
+#: reason is for one only the kernel's walk finds. True of every one: it runs its base now,
+#: and one that nothing is ever registered on runs correctly.
+_OPEN_DISPATCH = (
+    "it runs a single-dispatch function (`functools.singledispatch`, or the callable a "
+    "`singledispatchmethod` hands out) that has nothing registered but its base. It runs "
+    "that base now, but an implementation can be registered on it at any moment, also "
+    "after the gate checked a call and before it runs (by another call of the same model "
+    "turn, or by a wrapper on its first use), and that implementation would then run for "
+    "the judged call, with any parameter of its own at a default no policy judged. A tool "
+    "refused for this runs correctly as long as nothing is ever registered on it. Where "
+    "nothing is to be registered, register the base function itself; otherwise register "
+    "one plain function as the tool and branch on the type inside its body; the gate "
+    "judges that function's parameters, and what its body calls is not read."
+)
+
+#: For the kernel walk's ``ProxiedCallable`` that is not a ``WeakProxy`` (``recusal``
+#: 0.17.0): a callable on the way answers for ``__wrapped__`` without holding one, or shows
+#: another class than its own. The kernel's own text goes in the braces, whole: it says
+#: which of the two was found, names no value, and ends with what to register, a plain
+#: function, which the gate's closing words then speak of. A tool refused for this may run
+#: correctly.
+_PROXIED_CALLABLE = (
+    "a callable on the way to the function it runs answers for another object (it answers "
+    "for `__wrapped__` without holding one, as a proxy or a class-based decorator that "
+    "hands every attribute on with `__getattr__` does, or it shows another class than its "
+    "own), so the gate cannot tell what a call to it runs. A tool refused for this may run "
+    "correctly. A class-based decorator that keeps the function in an attribute and hands "
+    "the other attributes on with `__getattr__` is read once it holds `__wrapped__` "
+    "itself: call `functools.update_wrapper(self, fn)` in its `__init__`. The kernel's "
+    "walk reports: {}; the gate judges that function's parameters, and what its body calls "
+    "is not read."
+)
+
 #: For the kernel walk's ``HiddenWrapper``. The kernel's own text goes in the braces. It
 #: says what was found: a parameter of the held wrapper that the tool does not declare, a
 #: parameter the tool does declare that the held wrapper takes itself, or only that the way
@@ -466,26 +509,28 @@ def _held_partialmethod(link: Any) -> Any:
 
 
 def _steps(link: Any) -> list[Any]:
-    """The callables ``link`` may hand a call to. Four steps the kernel's walk takes
+    """The callables ``link`` may hand a call to. Five steps the kernel's walk takes
     (``recusal.invocation._next_callables``): a ``functools.partial``'s function, a bound
     method's function, what ``__wrapped__`` names (as the callable shows it, so a method's
     function's, a ``functools.lru_cache`` wrapper's and the function under a
-    ``staticmethod`` or a ``classmethod`` are followed) and the ``__call__`` of its type
-    as the class holds it, unless that is implemented in C, as a function's own is. The
-    walk of ``recusal`` 0.16.0 takes all four. That of 0.15.0 and 0.15.1 took them too,
-    with one difference: it did not read the ``__wrapped__`` a ``functools.partial``
-    itself carries, which this function reads. And one step that walk does not take: the
-    callable a ``functools.partialmethod`` holds, when ``link`` is one or carries one.
+    ``staticmethod`` or a ``classmethod`` are followed), the function a
+    ``functools.lru_cache`` wrapper calls, and the ``__call__`` of its type as the class
+    holds it, unless that is implemented in C, as a function's own is. And two steps
+    that walk does not take: what a cache named again names (below), and the callable a
+    ``functools.partialmethod`` holds, when ``link`` is one or carries one.
 
-    One step the walk of 0.16.0 takes is not taken here: from a ``functools.lru_cache``
-    wrapper to the function it calls, where that is not the function it names as
-    ``__wrapped__`` (``functools.wraps(f)`` written above the cache). What the cache
-    names is followed. So the questions asked of these callables (a single-dispatch
-    function, a partialmethod, a weak proxy) are not asked of what such a cache calls.
-    The kernel's walk reads that function and refuses what it refuses there, which is
-    less: it does not refuse a single-dispatch function with nothing registered, and it
-    does not refuse a weak proxy, so what stands behind a proxy there (a cache named
-    again, a dispatcher with an implementation registered) is not read as what it is.
+    The function a cache calls is not always the one it names: ``functools.wraps(f)``
+    written above the cache, or ``functools.update_wrapper(cached, f)``, names ``f``
+    while the cache calls the function it was built over. Both are followed here: what
+    the cache names, which the kernel's walk does not follow from such a cache, and what
+    the kernel's ``cache_target`` says it calls, which is the step that walk takes (0.2.2
+    followed the name alone). So the questions asked of these callables (a
+    single-dispatch function, a partialmethod, a weak proxy) are asked of what such a
+    cache calls too. ``cache_target`` is asked only of an object whose own type is the
+    cache's (a ``weakref.proxy`` of a cache is not one: it is refused as a proxy), and
+    it raises ``UnreadCache`` where what the cache calls cannot be told, which
+    :func:`_wrapper_refusal` turns into a refusal of its own. It calls nothing the cache
+    holds.
 
     ``__wrapped__`` is read with ``getattr``, as Python and the kernel's walk read it, so
     a ``__wrapped__`` property or a ``__getattr__`` of the callable runs here. ``__call__``
@@ -498,6 +543,9 @@ def _steps(link: Any) -> list[Any]:
     wrapped = getattr(link, "__wrapped__", None)
     if wrapped is not None:
         found.append(wrapped)
+    if type(link) is _LRU_WRAPPER:
+        # what the cache calls, which is what it names unless it was named again
+        found.append(_cache_target(link))
     call = inspect.getattr_static(type(link), "__call__", None)
     if call is not None and not isinstance(call, _C_CALL):
         found.append(call)
@@ -661,10 +709,20 @@ def _unread_reason(exc: Exception, reached: list[Any]) -> str:
     reasons this gate gives the ones it finds itself. The text of a ``HiddenWrapper`` and
     of a ``BoundArgumentKept`` is the kernel's and is passed on: it is built from
     parameter names, and from no value. An ``UnreadCache`` is a ``HiddenWrapper``, so it
-    is asked for first. Anything else the walk raises names only its class: its text is
-    not the kernel's to vouch for."""
+    is asked for first. A single-dispatch function with nothing registered
+    (``OpenDispatch``, which is not a ``DispatchedAtCallTime``) and a callable that
+    answers for another object (``ProxiedCallable``) have reasons of their own; a weak
+    proxy (``WeakProxy``, a ``ProxiedCallable``) gets the reason this gate gives the ones
+    it finds itself, and is asked for first. Anything else the walk raises names only its
+    class: its text is not the kernel's to vouch for."""
     if isinstance(exc, _DispatchedAtCallTime):
         return _SINGLEDISPATCH
+    if isinstance(exc, _OpenDispatch):
+        return _OPEN_DISPATCH
+    if isinstance(exc, _WeakProxy):
+        return _WEAK_PROXY
+    if isinstance(exc, _ProxiedCallable):
+        return _PROXIED_CALLABLE.format(exc)
     if isinstance(exc, _PartialMethodSignature):
         return _PARTIALMETHOD_REFUSED
     if isinstance(exc, _DeclaredSignature):
@@ -694,9 +752,10 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
     runs it at a default that is in no schema; one that takes a parameter of the function
     leaves the function at its own default; one that reorders them swaps the values.
 
-    The walk reads the callable, what ``__wrapped__`` leads to, a bound method's function,
-    a callable object's ``__call__`` and the callable a ``functools.partialmethod`` holds
-    (:func:`_steps`). Three kinds of callable are refused wherever they stand among those:
+    The walk reads the callable, what ``__wrapped__`` leads to, the function a
+    ``functools.lru_cache`` wrapper calls, a bound method's function, a callable object's
+    ``__call__`` and the callable a ``functools.partialmethod`` holds (:func:`_steps`).
+    Three kinds of callable are refused wherever they stand among those:
 
     - a ``functools.singledispatch`` function or a ``singledispatchmethod``, with or
       without an implementation registered: which implementation runs is chosen at call
@@ -714,13 +773,12 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
       ``functools.partial``, which the SDK refuses itself.
 
     The questions are asked of every callable :func:`_reached_callables` finds; a
-    callable they cannot be asked of is refused. A function a wrapper holds in a closure,
-    a global or an attribute is not among them. The kernel's walk refuses some shapes of
-    that, a held ``functools.wraps`` wrapper that takes a parameter the tool does not
-    declare among them (``HiddenWrapper``), and what it raises is turned into a reason
-    by :func:`_unread_reason`. A single-dispatch function held that way is not found,
-    and neither is a held wrapper that takes the tool's own parameters in another
-    order."""
+    callable they cannot be asked of is refused, and a cache whose function cannot be
+    told (``UnreadCache``, raised by the kernel's ``cache_target`` in :func:`_steps`) is
+    refused with the reason the kernel's walk gets for it. A function a wrapper holds in
+    a closure, a global or an attribute is not among them. The kernel's walk refuses the
+    shapes of that its docstrings list (``HiddenWrapper``), and what it raises is turned
+    into a reason by :func:`_unread_reason`."""
     get_callable = getattr(tool.on_invoke_tool, "_get_wrapped_callable", None)
     func = get_callable() if callable(get_callable) else None
     try:
@@ -728,6 +786,8 @@ def _wrapper_refusal(tool: FunctionTool, schema: FuncSchema) -> Optional[str]:
         dispatches = any(_is_dispatcher(link) for link in reached)
         proxied = any(type(link) in weakref.ProxyTypes for link in reached)
         partialmethod = any(_held_partialmethod(link) is not None for link in reached)
+    except _UnreadCache:
+        return _UNREAD_CACHE
     except Exception as exc:  # noqa: BLE001, a callable the gate cannot question is refused
         return _DISPATCH_NOT_READ.format(type(exc).__name__)
     if dispatches:

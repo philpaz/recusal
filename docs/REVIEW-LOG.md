@@ -809,7 +809,10 @@ merged in [#297](https://github.com/philpaz/recusal/pull/297). The review contin
 seventh round found the open items below, which the package page states. 0.2.2 is not a
 review round: it requires `recusal` 0.16.0, whose walk closes the first two open items
 of round seven, and gives each refusal of that walk a reason of its own (the changelog
-entry for 0.2.2).
+entry for 0.2.2). 0.2.3 is not a review round either: it requires `recusal` 0.17.0,
+whose walk and whose `cache_target` close the first three of the four items the review
+of 0.2.2 left open, and gives the three refusals that walk adds reasons of their own
+(the changelog entry for 0.2.3, under Unreleased).
 [Package](../adapters/openai-agents/README.md).
 
 **The rounds.** `review-history/openai-agents` holds a first commit and the commits of
@@ -917,12 +920,13 @@ a seventh found the open items.
   [`tests/test_openai_agents_gate.py`](../tests/test_openai_agents_gate.py)). An
   `UnreadCache` is raised there by shortening what the cache lists, as the kernel's own
   test does: no supported interpreter gives one.
-- Found by the review of 0.2.2 before its release, in 0.2.1 too, and open beside
-  `recusal` 0.16.0. Each is on the package page under what
-  the gate does not see, and each is held by a test in `TestStatedLimits` in the same
-  file, which gates the tool and runs it. The kernel's walk in 0.17.0 (the last entry
-  under the kernel's rounds above) refuses all four
-  shapes below, and those tests hold both outcomes, by the kernel they run beside:
+- Found by the review of 0.2.2 before its release, in 0.2.1 too, open beside
+  `recusal` 0.16.0, and closed in 0.2.3, which requires `recusal` 0.17.0. The first
+  two are closed by the gate's own walk, which now follows what a cache named again
+  calls (the kernel's `cache_target`) and asks its own questions there, and by the
+  kernel's walk of 0.17.0 (the last entry under the kernel's rounds above), which
+  refuses them as well; the last two by that walk alone. Each is held as refused by a
+  test named `test_closed_` in `TestStatedLimits` in the same file:
   - Behind a `functools.lru_cache` named again for another function, the gate's own
     questions are not asked: its walk follows what the cache names. The kernel's walk
     reads what the cache calls, and refuses a single-dispatch function there only once
@@ -972,9 +976,31 @@ a seventh found the open items.
   its own at its default. Built directly over the method, that second cache is refused,
   only because `functools.lru_cache` copies the partialmethod's mark onto it. Without a
   proxy of a cache between, the kernel's walk reaches the partialmethod and refuses it.
-  Tests in `TestStatedLimits` hold both the refused and the gated shapes. The kernel's
-  walk in 0.17.0 refuses the proxy, and the gated shapes
-  with it.
+  Closed in 0.2.3: the gate's own walk follows what the outer cache calls and refuses
+  the proxy, and the kernel's walk in 0.17.0 refuses it too. Tests in
+  `TestStatedLimits` hold each shape as refused.
+- The fourth item the review of 0.2.2 left open, and open in 0.2.3, narrower: what the
+  kernel's walk raises for a callable it cannot read, other than by a class of its own,
+  is refused with the name of the exception class alone (a cache named again over a
+  `functools.partial` of a second cache: "cannot be inspected (ValueError)"). Beside
+  `recusal` 0.17.0, 0.2.2 refused the three classes that kernel adds that way too
+  (`WeakProxy`, `OpenDispatch`, `ProxiedCallable`); in 0.2.3 each has a reason, held by
+  `TestKernelRefusals`.
+- Found while 0.2.3 was prepared, in 0.2.2 too, and open: the kernel's stated limit of
+  its name rule for a bound place reaches this gate. A held wrapper with a required
+  parameter of its own in the leading place, under a method decorator that keeps the
+  object, is gated, and the function runs with the judged values one place off (judged
+  `sql="S"`, `force=True`; ran `sql=True`, `force=False`). The kernel's entry for 0.17.0
+  states it; the package page states it under what the gate does not see, from 0.2.3.
+- Refused although they run correctly beside `recusal` 0.17.0, and gated by 0.2.2 beside
+  `recusal` 0.16.0, each run through the gate while 0.2.3 was prepared: a weak proxy of
+  a plain function and a single-dispatch function nothing is registered on, each behind
+  a cache named again; a class-based decorator that hands its attributes on with
+  `__getattr__` over a function that names a `__wrapped__`; a decorator that holds a
+  wrapper in another order and calls it by keyword; a decorator that holds a weak proxy
+  of a helper; and a decorator that holds a cache named again for another function
+  over a `functools.partial`. The package page and the changelog entry for 0.2.3 list
+  them with what to write instead.
 
 **Where you can help.**
 
