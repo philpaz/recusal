@@ -1694,8 +1694,10 @@ def _walk(tool: Any, declared: Any) -> Any:
     read, which the walk returns), read (``read``) and found held (``held``), for the
     judgement made at its end, what is known of its bound arguments (``taken``, and
     ``given`` for :func:`_refuse_kept_by_name`; :func:`_rebound`), what the tool
-    declares (``declared``, :func:`_declared`), and whether the two checks are on
-    (``checked``, :func:`_prepare`: where it is False the walk collects nothing held).
+    declares (``declared``, :func:`_declared`), whether the two checks are on
+    (``checked``, :func:`_prepare`: where it is False the walk collects nothing held),
+    and the refusals 0.17.1 adds, made last of all (``late``: :func:`_rebound`,
+    :func:`_held_renamed`).
     A plain namespace, not a class of this module: importing the module defines no
     class but the exceptions it adds."""
     declared = _MISSING if declared is None else declared
@@ -2679,9 +2681,9 @@ _UNPLACED = (
 #: What to do about a bound place of a wrapper that passes the call on
 #: (:data:`_UNPLACED`, :data:`_UNPLACED_UNDER_A_NAME`).
 _UNPLACED_REMEDY = (
-    "Drop `{filled}` from the function that takes it in that place, so that it passes "
-    "the argument on with the rest, or register the function under it itself, with "
-    "every parameter it takes"
+    "Drop that parameter from the function that takes it in that place, so that it "
+    "passes the argument on with the rest, or register the function under it itself, "
+    "with every parameter it takes"
 )
 
 _UNPLACED_UNDER_A_NAME = (

@@ -4371,7 +4371,14 @@ class TestKernelRefusals:
         found = str(raised.value)
         assert "is taken by a wrapper as `self`" in found
         assert "`tenant`, the last they would fill, runs at a default no policy judged" in found
-        assert found.endswith("names every parameter the tool takes, and register that one")
+        # the kernel's own advice, which 0.17.1 rewrote
+        assert found.endswith(
+            getattr(
+                invocation,
+                "_RENAMED_REMEDY",
+                "names every parameter the tool takes, and register that one",
+            )
+        )
         self.refused_when_gated(example, self.facade(ran), self.BOUND.format(found), ran)
         self.refused_when_called(
             example, self.wrapping(self.facade(ran)), self.BOUND.format(found), ran

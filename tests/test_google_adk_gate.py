@@ -738,7 +738,7 @@ class TestGoogleAdkGate:
         tool = self._unread_cache(monkeypatch)
         words = invocation.unsupported_signature(tool)
         assert words.startswith("a `functools.lru_cache` wrapper names one function")
-        assert words.endswith("from a plain function and register that one")
+        assert words == invocation._REWRAPPED_CACHE  # the kernel's own, 0.17.1 rewrote it
         adapter = _adapter()
         assert adapter._with_remedy(tool, words) == words
         assert adapter._with_remedy(tool, words, ("tool_context",)) == words
@@ -839,7 +839,8 @@ class TestGoogleAdkGate:
         adapter = _adapter()
         prepared, reason = adapter._prepared(example.FunctionTool(Repo().fetch), {"table": "t"})
         assert prepared is None and reason.startswith("its signature cannot be judged")
-        words = "it is a `functools.partialmethod` over a callable that does not bind as a method (a callable object, a class-based decorator), or a wrapper of one: its signature shows the parameters of what the partialmethod binds, not its own, so what runs under it cannot be read; register a plain function that calls it, or put the partialmethod over a plain function"
+        # the kernel's own text, which says what to do and which 0.17.1 rewrote
+        words = getattr(invocation, "_PARTIALMETHOD", "")
         if hasattr(invocation, "PartialMethodSignature"):
             # the reason is the true one, not "`table` is not annotated"
             assert reason == f"its signature cannot be judged ({words})"

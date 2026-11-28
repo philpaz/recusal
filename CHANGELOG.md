@@ -177,7 +177,10 @@ copy of it is regenerated.
   by it.
   No class, base or public name changed, and the reason strings of the frozen decision
   core are untouched; a gate that shows these messages shows other words.
-  `STABILITY.md` does not list them in the frozen surface. The class docstrings of
+  `STABILITY.md` does not list them in the frozen surface. Five tests of the Google ADK,
+  OpenAI Responses, OpenAI Agents and Pydantic AI lanes quoted the kernel's old advice,
+  or expected an adapter's own reason for a tool the kernel now refuses first; they
+  compare with the kernel's own text now, and no adapter changed. The class docstrings of
   `OpenDispatch`, `WeakProxy` and `BoundArgumentKept`, which gave the same advice, say
   the same as the messages.
 

@@ -3260,7 +3260,8 @@ class TestPydanticAiGate:
             "a cache on the function this tool runs cannot be read: a `functools.lru_cache` "
             "wrapper names one function as `__wrapped__` and calls another"
         )
-        assert "apply the cache to the function itself" in reason
+        # the kernel's own advice, which 0.17.1 rewrote
+        assert invocation._REWRAPPED_CACHE.rsplit("; ", 1)[-1] in reason
         assert "holds a second wrapper" not in reason
         assert adapter._UnreadCache is invocation.UnreadCache
 
@@ -3400,6 +3401,8 @@ class TestPydanticAiGate:
         ``table="prod"``, the default of the parameter the partial was read as filling.
         Refused unless a wrapper that keeps the value fails the call."""
         import functools
+
+        from recusal import invocation
 
         ran, seen = [], []
         d = self._decorators()
@@ -3712,10 +3715,20 @@ class TestPydanticAiGate:
             (functools.partial(restated_methods.all_defaulted, 5), moves_up.format("first"), False),
             (behind_a_keyword, moves_up.format("second"), False),
         ):
+            # since recusal 0.17.1 the kernel's own walk refuses some of these first, for a
+            # doubt a call by position does not settle; the tool is refused either way
+            try:
+                invocation.reached_parameters(function, ("ctx",) if takes_ctx else ())
+                kernel = None
+            except invocation.BoundArgumentKept as refused:
+                kernel = str(refused)
             for validated in (True, False):
                 ctx = self._ctx_for(function, takes_ctx=takes_ctx, validated=validated)
                 same, reason = adapter._with_defaults(ctx, "t", {"limit": 5})
                 assert same == {"limit": 5}, function
+                if kernel is not None and cause not in reason:
+                    assert kernel in reason, (function, reason)
+                    continue
                 assert cause in reason, (function, reason)
                 if cause.startswith(past):
                     assert "each moves up a place and the call does not fail" in reason

@@ -2639,7 +2639,7 @@ class TestWhatCannotBeTiedToWhatRuns:
         tool = self._unread_cache(monkeypatch)
         words = invocation.unsupported_signature(tool)
         assert words.startswith("a `functools.lru_cache` wrapper names one function")
-        assert words.endswith("from a plain function and register that one")
+        assert words == invocation._REWRAPPED_CACHE  # the kernel's own, 0.17.1 rewrote it
         out = ex.judge_and_run("fetch", '{"url": "u"}', {"fetch": tool}, lambda n, a: [])
         assert out == f"Recusal refused `fetch`: its signature cannot be judged ({words})"
         module = importlib.import_module("recusal_openai._gate")
@@ -2735,7 +2735,8 @@ class TestWhatCannotBeTiedToWhatRuns:
         out = ex.judge_and_run("fetch", '{"table": "t"}', tools, lambda n, a: seen.append(a) or [])
         assert out.startswith("Recusal refused `fetch`: its signature cannot be judged")
         assert seen == [] and got == []
-        words = "it is a `functools.partialmethod` over a callable that does not bind as a method (a callable object, a class-based decorator), or a wrapper of one: its signature shows the parameters of what the partialmethod binds, not its own, so what runs under it cannot be read; register a plain function that calls it, or put the partialmethod over a plain function"
+        # the kernel's own text, which says what to do and which 0.17.1 rewrote
+        words = getattr(invocation, "_PARTIALMETHOD", "")
         if hasattr(invocation, "PartialMethodSignature"):
             # the reason is the true one, not "`table` is not annotated"
             assert out == f"Recusal refused `fetch`: its signature cannot be judged ({words})"

@@ -10007,7 +10007,7 @@ def test_x_advice_for_a_bound_argument_a_wrapper_may_keep():
     with pytest.raises(invocation.BoundArgumentKept) as refused:
         reached_parameters(_twelve_tools(capped(tenant_search)).search)
     assert str(refused.value) == invocation._unplaced(None, "limit", True, True)
-    assert "Drop `limit` from the function that takes it in that place" in str(refused.value)
+    assert "Drop that parameter from the function that takes it in that place" in str(refused.value)
     _x_read_and_run(
         _twelve_tools(_traced(tenant_search)).search,
         {"limit": 5},
