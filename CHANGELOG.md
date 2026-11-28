@@ -6,6 +6,103 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+The adapter entry under this heading is not part of the `recusal` wheel: the adapter is a
+separate distribution on PyPI under its own version and tag.
+
+### Security
+
+- **`recusal-pydantic-ai` 0.2.1: the package requires `recusal` 0.17.0, every refusal
+  the kernel's walk makes by a class of its own has a reason of its own, and the
+  callables the gate lays beside the kernel's levels are the kernel's own.** Found by
+  review round thirteen of this package, beside `recusal` 0.16.0, and reproduced for
+  this entry on `pydantic-ai-slim` 2.67.0 and Python 3.12.5, each with a real `Agent`
+  run of this gate as it stood on main before this change (commit `87e6e69`).
+  - **The floor is `recusal>=0.17.0`** (0.2.0: `>=0.15.0`). Beside 0.16.0 these ran a
+    value no policy judged: a tool registered as `weakref.proxy(x)` where `x` itself is
+    refused (a class-based decorator whose `__call__` takes the tool's two parameters
+    swapped ran them swapped, judged `sql=''`, `force=True`, ran `sql=True`,
+    `force=''`; one with a `dry_run=False` of its own ran it; a cache named again over
+    a wrapper with a parameter of its own, and a dispatcher with an implementation
+    registered behind a proxy, ran that parameter); a decorator that holds a
+    `functools.wraps` wrapper which takes the tool's parameters swapped, or one with a
+    parameter of its own reached by way of a class-based decorator, a callable object,
+    a weak proxy or a second held wrapper; a subclass of `functools.partial` with a
+    `__call__` of its own that has a parameter of its own; and a single-dispatch
+    function with nothing registered behind a wrapper that registers an implementation
+    on its first use, which ran that implementation's `purge=True` for the very call
+    that was judged without it. The walk of 0.17.0 refuses each. The package imports
+    the classes that are new in 0.17.0, so beside an older kernel it fails at import
+    rather than run. Each shape is held by a test whose name starts `test_r13_` in
+    `tests/test_pydantic_ai_gate.py`.
+  - **A reason of its own for each new refusal**, where 0.2.0 said "the function this
+    tool runs, or a decorator on it, cannot be inspected". A `WeakProxy` says what a
+    proxy is, that one of a plain function runs correctly and is refused all the same,
+    and to register the function itself. An `OpenDispatch` says that nothing but the
+    base is registered and an implementation can be registered between the check and
+    the call; it does not say that one is registered, which the reason for a
+    `DispatchedAtCallTime` says. A `ProxiedCallable` passes on the kernel's words for
+    the shape it found and says that the ordinary case, a class-based decorator that
+    answers every other attribute from the function with `__getattr__`, is read to the
+    end with `functools.update_wrapper(self, fn)` in its `__init__`. The kernel's
+    classes are imported and asked with `isinstance`; the stand-in for a kernel without
+    them (`_NotInThisKernel`) is removed.
+  - **The reason for a declared signature names what is declared.** A function with a
+    `__text_signature__`, and an object that shows a `__code__` (a class-based
+    decorator over a plain function that answers every attribute from it), were refused
+    as declaring "a signature of its own (`__signature__`)". The reason now names the
+    attribute the kernel found (`DeclaredSignature.declared`), says the refusal holds
+    also where the declaration matches the real parameters, and says what to register.
+  - **The callables beside the levels are the kernel's.** The gate laid the callables
+    of a walk of its own beside the kernel's levels and refused a stack where the two
+    counts differed, so beside 0.16.0 and 0.17.0 it refused, as "cannot be inspected",
+    stacks the kernel reads to the end: `logged(functools.update_wrapper(
+    functools.partial(f), f))` (round thirteen), and `functools.wraps(f)` above
+    `functools.lru_cache` above a wrapper of `f` that only passes its arguments on.
+    `_view` now takes them from `recusal.invocation.reached_callables`, called with the
+    argument `reached_parameters` is, and the gate's own walk of steps (`_steps`, which
+    the rules for a single-dispatch function, a partial that binds by position, a bound
+    method and a keyword partial are asked of) follows every link the kernel's walk
+    follows: what a cache named again calls (`cache_target`), the `__wrapped__` a
+    partial carries further in than the tool, and the `__call__` of a subclass of
+    `functools.partial`. Checked: each stack that this lets through is read or refused
+    for what it is through a real agent run (a keyword partial named that way, a wrapper
+    with a parameter of its own above it, a cache named again over one, a partial
+    subclass: each refused, naming its cause), and over 400,000 generated
+    stacks of wrappers, partials, caches, methods and `partialmethod` (171,013 of them
+    built into tools; validated, given their schema by hand, and handed in by a hook)
+    no verdict differs from the gate at `87e6e69` beside 0.17.0, in either direction.
+    The walk is made twice for a tool (once for each list).
+  - **Refused although it runs correctly**, new with 0.2.1 because 0.17.0 refuses it:
+    a `weakref.proxy` of a plain function; a class-based decorator that answers
+    `__wrapped__` from `__getattr__` over a function that names a `__wrapped__`; an
+    object whose `__class__` is not its type that holds no `__wrapped__` of its own, or
+    one whose own `__call__` takes parameters by name; a single-dispatch function
+    nothing is ever registered on; and the held wrappers the 0.17.0 entry below lists.
+    The page lists each with what to write instead.
+  - **Stated on the package page, not changed.** A value a `functools.partial` binds
+    by position is not shown to the policy (judged `{'limit': 10}`, ran
+    `table='fixed'`): it is the application's constant, and the tool is handed the
+    dict the policy judged, which with that parameter in it would fail on a second
+    value. Under `run_stream` a refused output function ends the stream with
+    `UnexpectedModelBehavior` ("retries are not supported in `run_stream()`"), where
+    under `run` it asks the model again; the function does not run either way. A call
+    handed to the application with no arguments is judged as `{}` and handed on as the
+    model sent it, `None` or `''`; the page said "with exactly the arguments judged".
+    The depth of a stack: under one function wrapper, 30 function decorators or 15
+    class-based ones built with `functools.update_wrapper`, each two callables of the
+    walk; the page said "31 decorators". Each sentence is held by a test.
+  - **The page.** Its sentences that a kernel later than `recusal` 0.15.1 is not yet
+    released, and its caveats for 0.15.0 and 0.15.1, are gone with the floor; its
+    status names 0.2.1; it lists what round thirteen did not cover.
+  - **Released here, from main since 0.2.0** (the 0.16.0 entry below lists them as not
+    released): the refusals the kernel's walk makes by name in 0.16.0
+    (`DispatchedAtCallTime`, `HiddenWrapper`, `UnreadCache`, `PartialMethodSignature`,
+    `BoundArgumentKept`) are reported with reasons of their own and not as a function
+    that cannot be inspected; a tool that is a `functools.partial` named with
+    `functools.update_wrapper` is handed to the kernel's walk without that name, so the
+    gate's own rules judge it (`_without_its_own_wrapped`); and the page says what
+    Recusal does not enforce, under "Beyond the gate".
+
 ## [0.17.0] - 2026-11-27
 
 A MINOR release of the kernel under `STABILITY.md`: `recusal.invocation`, the module a

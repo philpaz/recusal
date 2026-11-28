@@ -409,9 +409,10 @@ decorated tool. `recusal-crewai` still carries its own copy.
     `__signature__`" for a `__text_signature__`; and the reason for a bound argument
     said a parameter "runs at a default" where it has none. Both say what holds.
   - Two public functions are added so that an adapter needs no walk of its own beside
-    the kernel's: `reached_callables` and `cache_target`. No adapter uses them yet, so
-    `recusal-pydantic-ai` still refuses the stack the changelog names, which the kernel
-    reads.
+    the kernel's: `reached_callables` and `cache_target`. No adapter used them at the
+    release of 0.17.0, so `recusal-pydantic-ai` 0.2.0 still refuses the stack the
+    changelog names, which the kernel reads; `recusal-pydantic-ai` 0.2.1 uses both
+    (see its section below).
   - Pinned by the tests named `test_o_` and `test_p_` in
     [`tests/test_invocation.py`](../tests/test_invocation.py). The changelog entry
     for 0.17.0 lists what is refused although it runs correctly and what is
@@ -656,12 +657,15 @@ repository, so its rounds, its numbers and the commands that reproduce them are 
 ## `recusal-pydantic-ai`
 
 **Where it stands.** `recusal-pydantic-ai` 0.2.0 is released (tag
-`recusal-pydantic-ai-v0.2.0`, 2026-11-22), with the fixes of the rounds below, merged in
-[#292](https://github.com/philpaz/recusal/pull/292). The review continues: its package
-page states the open items below. [Package](../adapters/pydantic-ai/README.md).
+`recusal-pydantic-ai-v0.2.0`, 2026-11-22), with the fixes of rounds one to eleven,
+merged in [#292](https://github.com/philpaz/recusal/pull/292). 0.2.1 is prepared, with
+the answer to round thirteen and the changes on main since 0.2.0, and requires `recusal`
+0.17.0; it is not released until its tag says so. The review continues: its package page
+states the open items below. [Package](../adapters/pydantic-ai/README.md).
 
 **The rounds.** Eleven rounds have a commit each on `review-history/pydantic-ai`, after
-the first commit. A twelfth found the open items below.
+the first commit. A twelfth found the open items below, and a thirteenth, read-only,
+reviewed the adapter beside `recusal` 0.16.0.
 
 - **The findings recorded on 2026-11-19** (commit `ef48d32`). An output function ran with
   no policy asked. A toolset wrapper changed the arguments after the gate judged them. A
@@ -710,7 +714,8 @@ not, and the package page states the first two.
   a plain function the same `partialmethod` is read correctly. The gap is in the
   kernel's walk (`own_parameters`, `_next_callables`) and in the adapter's `_steps`.
   Fixed in the kernel's walk in commit `4650c71`, which is released in `recusal`
-  0.16.0; 0.15.0 and 0.15.1, which this package also allows, have the gap.
+  0.16.0; 0.15.0 and 0.15.1, which 0.2.0 also allows, have the gap. 0.2.1 requires
+  0.17.0.
 - **Wrong advice, fixed in 0.2.0.** The README and two refusal reasons said to set
   `__name__` and `__doc__` on a partial. Pydantic AI needs `__name__` and
   `__qualname__`, which they now say.
@@ -722,6 +727,49 @@ not, and the package page states the first two.
   reason describes a `functools.partial` where the developer wrote a `partialmethod`.
 - **Tests.** Some checks are not pinned by a test: in the rule that the signature
   Pydantic AI validates against is the one the gate reads, and in `_as_bound`.
+
+**Round thirteen** (read-only, of the adapter on main beside `recusal` 0.16.0, with real
+`Agent` runs on `pydantic-ai-slim` 2.67.0 and Python 3.12.5). What it found, and what 0.2.1
+does about it:
+
+- **Ran a value no policy judged, beside 0.16.0, all in how a decorated tool is read.**
+  A tool registered as `weakref.proxy(x)` was gated where `x` itself is refused: a
+  class-based decorator that takes the tool's parameters swapped ran them swapped, one
+  with a `dry_run=False` of its own ran it, a proxy of a cache named again or of a
+  registered dispatcher ran a parameter of what stands behind it. A wrapper a decorator
+  only holds, in four shapes, ran its own parameter or the tool's two swapped. A wrapper
+  that registers an implementation of a single-dispatch function on its first use ran
+  that implementation for the call that was judged. Closed in the kernel's walk, released
+  in `recusal` 0.17.0, and in this package by its floor: 0.2.1 requires 0.17.0, and gives
+  each of the three new refusals (`WeakProxy`, `ProxiedCallable`, `OpenDispatch`) a reason
+  of its own where 0.2.0 said "cannot be inspected". Each shape is held by a test named
+  `test_r13_` in [`tests/test_pydantic_ai_gate.py`](../tests/test_pydantic_ai_gate.py), and
+  was reproduced again through the gate on main before 0.2.1 beside 0.16.0. The cost,
+  stated on the page: some of these run correctly and are refused (a proxy of a plain
+  function, the class-based decorator that answers attributes from `__getattr__`, a
+  single-dispatch function nothing is registered on).
+- **A false refusal.** `logged(functools.update_wrapper(functools.partial(f), f))` was
+  refused as "cannot be inspected": the gate counted the callables of a walk of its own
+  against the kernel's levels, and the kernel had read one more. 0.2.1 takes the
+  callables from the kernel (`reached_callables`), and its own walk of steps follows the
+  links the kernel's does (`cache_target` among them), so its rules are asked of every
+  callable the kernel lays a level for. Checked by real runs of the stacks this lets
+  through, and by 400,000 generated stacks in which no verdict differs from the gate
+  before the change, beside 0.17.0.
+- **Reasons and sentences that were not true.** A `__text_signature__` was refused as a
+  `__signature__` (the reason now names the attribute, from `DeclaredSignature.declared`);
+  the page said "31 decorators" where class-based ones are read 15 deep under a function
+  wrapper; a value a `functools.partial` binds by position is not shown to the policy and
+  the page did not say so (stated, not changed: it is the application's constant);
+  under `run_stream` a refused output function ends the stream, where the page said a
+  refusal asks the model again (stated); a call handed to the application with no
+  arguments is judged as `{}` and handed on as `None` or `''`, where the page said
+  "exactly the arguments judged" (stated); two lines of the page said 0.15.1 is the
+  newest kernel, and the page and the project README said the fixes so far are released
+  in 0.2.0, which was not true of what is installable (each corrected in 0.2.1).
+- **Not covered by round thirteen:** MCP toolsets, durable execution, tools the provider
+  runs, realtime sessions, `run_stream_events`, any Python but 3.12, and mutation testing
+  of the gate.
 
 **Where you can help.**
 
